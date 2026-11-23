@@ -1004,39 +1004,51 @@ fn parallel_call_shapes_handles_shared_subgraphs_identically_to_serial() {
     let c8 = closed_functions_with_slots(&shared_spine, &[], Slots::new(8).unwrap());
     assert_eq!(c8.len(), c1.len());
 
-    // Cross-form shared child inside two distinct top-level forms.
+    // Cross-slice shared child inside two distinct top-level forms (no duplicate
+    // on the `Do` spine, so the parallel scan runs workers and triggers the
+    // cross-slice overlap check).
     let shared_fn_expr = base
         .exprs
         .iter()
         .position(|e| matches!(e.kind, ExprKind::Fn { .. }))
         .map(light_cljs::ExprId)
         .unwrap();
-    if let ExprKind::Do(items) = &base.exprs[base.root.0].kind {
-        let last = *items.last().unwrap();
-        let copy = light_cljs::analyzer::Expr {
-            kind: ExprKind::Vector(vec![shared_fn_expr, shared_fn_expr]),
-            span: 0..0,
-            context: light_cljs::analyzer::ExprContext::Discard,
-            source_index: 0,
-        };
-        let copy_id = light_cljs::ExprId(base.exprs.len());
-        base.exprs.push(copy);
-        let new_root = light_cljs::analyzer::Expr {
-            kind: ExprKind::Do(vec![base.root, copy_id, last]),
-            span: 0..0,
-            context: light_cljs::analyzer::ExprContext::Return,
-            source_index: 0,
-        };
-        let new_root_id = light_cljs::ExprId(base.exprs.len());
-        base.exprs.push(new_root);
-        base.root = new_root_id;
-    }
+    let c1_before = closed_functions_with_slots(&base, &[], Slots::ONE);
+    let c8_before = closed_functions_with_slots(&base, &[], Slots::new(8).unwrap());
+    assert!(
+        c1_before.closed(shared_fn_expr),
+        "first defn should be closed before cross-slice sharing"
+    );
+    assert!(
+        c8_before.closed(shared_fn_expr),
+        "first defn should be closed at j=8 before cross-slice sharing"
+    );
+
+    let copy = light_cljs::analyzer::Expr {
+        kind: ExprKind::Vector(vec![shared_fn_expr]),
+        span: 0..0,
+        context: light_cljs::analyzer::ExprContext::Discard,
+        source_index: 0,
+    };
+    let copy_id = light_cljs::ExprId(base.exprs.len());
+    base.exprs.push(copy);
+    let new_root = light_cljs::analyzer::Expr {
+        kind: ExprKind::Do(vec![base.root, copy_id]),
+        span: 0..0,
+        context: light_cljs::analyzer::ExprContext::Return,
+        source_index: 0,
+    };
+    let new_root_id = light_cljs::ExprId(base.exprs.len());
+    base.exprs.push(new_root);
+    base.root = new_root_id;
+
     let s1 = analyze_with_slots(&base, None, &[], Slots::ONE);
     let s8 = analyze_with_slots(&base, None, &[], Slots::new(8).unwrap());
     assert_eq!(s8.direct_calls(), s1.direct_calls());
     let c1 = closed_functions_with_slots(&base, &[], Slots::ONE);
     let c8 = closed_functions_with_slots(&base, &[], Slots::new(8).unwrap());
     assert_eq!(c8.len(), c1.len());
+    assert!(!c1.closed(shared_fn_expr));
     assert!(!c8.closed(shared_fn_expr));
 }
 

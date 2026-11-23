@@ -2768,8 +2768,8 @@ impl Program {
             Namespaces(&'a mut crate::arena::Arena<String>),
             Exprs(&'a mut crate::arena::Arena<Expr>),
             ExprBucket {
+                len: usize,
                 bucket: crate::arena::FrozenBucket<Expr>,
-                out: &'a mut [Expr],
             },
             Locals(&'a mut crate::arena::Arena<LocalBinding>),
             RecurTargets(&'a mut crate::arena::Arena<RecurTarget>),
@@ -2781,33 +2781,14 @@ impl Program {
 
         let exprs_frozen = self.exprs.frozen();
         let split_exprs = exprs_frozen >= PARALLEL_EXPRS_THRESHOLD;
-        let mut expr_entries = if split_exprs {
-            let mut entries = Vec::with_capacity(self.exprs.len());
-            entries.resize(
-                exprs_frozen,
-                Expr {
-                    kind: ExprKind::Nil,
-                    span: 0..0,
-                    context: ExprContext::Discard,
-                    source_index: 0,
-                },
-            );
-            Some(entries)
-        } else {
-            None
-        };
 
         let mut jobs: Vec<(u64, UnfreezeJob<'_>)> = Vec::new();
-        if let Some(entries) = expr_entries.as_mut() {
+        if split_exprs {
             let parts = slots.get().saturating_mul(2).min(exprs_frozen).max(1);
             let buckets = self.exprs.take_frozen_buckets(parts);
-            let mut rest = entries.as_mut_slice();
             for (len, bucket) in buckets {
-                let (out, tail) = rest.split_at_mut(len);
-                rest = tail;
-                jobs.push((len as u64, UnfreezeJob::ExprBucket { bucket, out }));
+                jobs.push((len as u64, UnfreezeJob::ExprBucket { len, bucket }));
             }
-            debug_assert!(rest.is_empty());
         } else if exprs_frozen > 0 {
             jobs.push((exprs_frozen as u64, UnfreezeJob::Exprs(&mut self.exprs)));
         }
@@ -2854,22 +2835,47 @@ impl Program {
             ));
         }
 
-        crate::scheduler::map(slots, jobs, |job| match job {
-            UnfreezeJob::Namespaces(arena) => arena.unfreeze(),
-            UnfreezeJob::Exprs(arena) => arena.unfreeze(),
-            UnfreezeJob::ExprBucket { bucket, out } => {
-                crate::arena::Arena::unfreeze_bucket(bucket, out);
+        let results = crate::scheduler::map(slots, jobs, |job| match job {
+            UnfreezeJob::Namespaces(arena) => {
+                arena.unfreeze();
+                None
             }
-            UnfreezeJob::Locals(arena) => arena.unfreeze(),
-            UnfreezeJob::RecurTargets(arena) => arena.unfreeze(),
-            UnfreezeJob::Globals(arena) => arena.unfreeze(),
-            UnfreezeJob::JsGlobals(arena) => arena.unfreeze(),
-            UnfreezeJob::Strings(arena) => arena.unfreeze(),
-            UnfreezeJob::NamedLiterals(arena) => arena.unfreeze(),
+            UnfreezeJob::Exprs(arena) => {
+                arena.unfreeze();
+                None
+            }
+            UnfreezeJob::ExprBucket { len, bucket } => {
+                Some(crate::arena::Arena::unfreeze_bucket(bucket, len))
+            }
+            UnfreezeJob::Locals(arena) => {
+                arena.unfreeze();
+                None
+            }
+            UnfreezeJob::RecurTargets(arena) => {
+                arena.unfreeze();
+                None
+            }
+            UnfreezeJob::Globals(arena) => {
+                arena.unfreeze();
+                None
+            }
+            UnfreezeJob::JsGlobals(arena) => {
+                arena.unfreeze();
+                None
+            }
+            UnfreezeJob::Strings(arena) => {
+                arena.unfreeze();
+                None
+            }
+            UnfreezeJob::NamedLiterals(arena) => {
+                arena.unfreeze();
+                None
+            }
         });
 
-        if let Some(entries) = expr_entries {
-            self.exprs.finish_unfreeze(entries);
+        if split_exprs {
+            let buckets: Vec<Vec<Expr>> = results.into_iter().flatten().collect();
+            self.exprs.finish_unfreeze_buckets(buckets);
         }
     }
 

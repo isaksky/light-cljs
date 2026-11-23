@@ -246,19 +246,26 @@ impl BitSet {
     }
 
     #[inline]
-    fn intersects(&self, other: &Self) -> bool {
-        self.words
-            .iter()
-            .zip(&other.words)
-            .any(|(&a, &b)| (a & b) != 0)
-    }
-
-    #[inline]
     fn union_with(&mut self, other: &Self) {
         for (dst, &src) in self.words.iter_mut().zip(&other.words) {
             *dst |= src;
         }
     }
+}
+
+/// Dense per-worker scratch cap for [`Scan::new_with_slots`] (`visited` +
+/// `multi_parent` bitsets = `2 * ceil(expr_count / 64) * 8` bytes per active
+/// worker). Keeps large `--jobs` values bounded on large arenas while leaving
+/// typical job counts (e.g. `--jobs 8` on 200k-line programs) at full width.
+const SCAN_MAX_WORKER_SCRATCH_BYTES: usize = 8 * 1024 * 1024;
+
+fn scan_worker_slots(slots: Slots, expr_count: usize) -> Slots {
+    let per_worker_bytes = 2 * expr_count.div_ceil(64) * std::mem::size_of::<u64>();
+    if per_worker_bytes == 0 {
+        return slots;
+    }
+    let max_workers = (SCAN_MAX_WORKER_SCRATCH_BYTES / per_worker_bytes).max(1);
+    Slots::new(slots.get().min(max_workers)).unwrap_or(Slots::ONE)
 }
 
 /// Whether the UTF-16 slice `units` contains the pure-ASCII byte sequence
@@ -1452,7 +1459,7 @@ fn texts_with_arity(program: &Program, kind: &ExprKind, mut text: impl FnMut(&st
 }
 
 /// Which tables [`Scan::new_with_slots`] populates.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ScanMode {
     Full,
     Inlining,
@@ -1529,14 +1536,17 @@ impl Scan {
 
         let count = program.exprs.len();
         assert!(count < MULTI_PARENT as usize, "fewer than 2^32 - 1 exprs");
-        if slots == Slots::ONE || count < PARALLEL_SCAN_THRESHOLD {
+        let worker_slots = scan_worker_slots(slots, count);
+        if worker_slots == Slots::ONE || count < PARALLEL_SCAN_THRESHOLD {
             return Self::new_serial(program, exports, mode);
         }
 
-        // Collect the top-level `Do` spine in exact DFS pop order. If the spine
-        // shares any node or has fewer than 2 top-level forms, fall back to the
-        // serial DFS.
-        let mut spine_dos: Vec<u32> = Vec::new();
+        // Collect the top-level `Do` spine in exact DFS pop order, recording
+        // `(top_forms.len(), do_id)` so each spine `Do` (including empty `Do`s)
+        // is interleaved back into `order` at its exact serial DFS position.
+        // If the spine shares any node or has fewer than 2 top-level forms,
+        // fall back to the serial DFS.
+        let mut spine_dos: Vec<(usize, u32)> = Vec::new();
         let mut top_forms: Vec<ExprId> = Vec::new();
         let mut spine_parent: HashMap<ExprId, ExprId> = HashMap::new();
         let mut spine_seen = BitSet::new(count);
@@ -1545,7 +1555,7 @@ impl Scan {
         let mut stack = vec![program.root];
         while let Some(id) = stack.pop() {
             if let ExprKind::Do(items) = &program.exprs[id.0].kind {
-                spine_dos.push(id.0 as u32);
+                spine_dos.push((top_forms.len(), id.0 as u32));
                 for &child in items {
                     spine_parent.insert(child, id);
                     if spine_seen.set(child.0) {
@@ -1568,7 +1578,6 @@ impl Scan {
 
         struct ScanSlice {
             touched_spine: bool,
-            visited: BitSet,
             /// `(expr_id, parent_id_or_MULTI_PARENT)` in exact DFS order.
             nodes: Vec<(u32, u32)>,
             defs: Vec<(GlobalId, ExprId)>,
@@ -1585,7 +1594,11 @@ impl Scan {
             inferred_sites: Vec<ExprId>,
         }
 
-        let num_slices = slots.get().saturating_mul(2).min(top_forms.len()).max(1);
+        let num_slices = worker_slots
+            .get()
+            .saturating_mul(2)
+            .min(top_forms.len())
+            .max(1);
         let slice_len = top_forms.len().div_ceil(num_slices);
         let jobs: Vec<(u64, std::ops::Range<usize>)> = (0..top_forms.len())
             .step_by(slice_len)
@@ -1599,7 +1612,7 @@ impl Scan {
         let spine_parent_ref = &spine_parent;
         let spine_seen_ref = &spine_seen;
 
-        let mut slices = crate::scheduler::map(slots, jobs, |range| {
+        let slices = crate::scheduler::map(worker_slots, jobs, |range| {
             let mut visited = BitSet::new(count);
             let mut multi_parent = BitSet::new(count);
             let mut nodes: Vec<(u32, u32)> = Vec::new();
@@ -1631,10 +1644,10 @@ impl Scan {
                     break;
                 }
             }
+            drop(visited);
 
             let mut slice = ScanSlice {
                 touched_spine,
-                visited,
                 nodes,
                 defs: Vec::new(),
                 unfixed: Vec::new(),
@@ -1650,6 +1663,7 @@ impl Scan {
                 inferred_sites: Vec::new(),
             };
             if touched_spine {
+                drop(multi_parent);
                 return slice;
             }
             for node in &mut slice.nodes {
@@ -1769,21 +1783,35 @@ impl Scan {
             slice
         });
 
-        // Verify slices are completely disjoint from each other and from the spine.
+        // Verify slices are completely disjoint from each other and from the spine
+        // using a single coordinator bitset over each slice's visited node IDs.
         let mut global_visited = BitSet::new(count);
-        for &id in &spine_dos {
+        for &(_, id) in &spine_dos {
             global_visited.set(id as usize);
         }
-        for slice in &mut slices {
-            if slice.touched_spine || global_visited.intersects(&slice.visited) {
-                return Self::new_serial(program, exports, mode);
+        let mut overlap = false;
+        'check: for slice in &slices {
+            if slice.touched_spine {
+                overlap = true;
+                break;
             }
-            global_visited.union_with(&slice.visited);
-            // Release per-slice bitsets before allocating merged tables.
-            slice.visited.words = Vec::new();
+            for &(id_raw, _) in &slice.nodes {
+                if global_visited.set(id_raw as usize) {
+                    overlap = true;
+                    break 'check;
+                }
+            }
         }
         drop(global_visited);
         drop(spine_seen);
+        if overlap {
+            drop(slices);
+            drop(spine_parent);
+            drop(spine_dos);
+            drop(top_forms);
+            drop(top);
+            return Self::new_serial(program, exports, mode);
+        }
 
         let globals = program.globals.len();
         let locals = program.locals.len();
@@ -1793,9 +1821,7 @@ impl Scan {
         }
         let total_nodes: usize = slices.iter().map(|s| s.nodes.len()).sum();
         let mut order = if keep_order {
-            let mut order = Vec::with_capacity(spine_dos.len() + total_nodes);
-            order.extend_from_slice(&spine_dos);
-            order
+            Vec::with_capacity(spine_dos.len() + total_nodes)
         } else {
             Vec::new()
         };
@@ -1834,10 +1860,21 @@ impl Scan {
             Vec::new()
         };
 
+        let mut spine_cursor = 0usize;
+        let mut form_idx = 0usize;
         for slice in slices {
             for (id_raw, par_raw) in slice.nodes {
                 parent[id_raw as usize] = par_raw;
                 if keep_order {
+                    if form_idx < top_forms.len() && id_raw == top_forms[form_idx].0 as u32 {
+                        while spine_cursor < spine_dos.len()
+                            && spine_dos[spine_cursor].0 <= form_idx
+                        {
+                            order.push(spine_dos[spine_cursor].1);
+                            spine_cursor += 1;
+                        }
+                        form_idx += 1;
+                    }
                     order.push(id_raw);
                 }
             }
@@ -1878,6 +1915,13 @@ impl Scan {
             if track_inferred {
                 inferred_sites.extend(slice.inferred_sites);
             }
+        }
+        if keep_order {
+            while spine_cursor < spine_dos.len() {
+                order.push(spine_dos[spine_cursor].1);
+                spine_cursor += 1;
+            }
+            debug_assert_eq!(form_idx, top_forms.len());
         }
 
         Self::finish(
@@ -2747,4 +2791,101 @@ fn raw_javascript(program: &Program, body: ExprId) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::analyzer::{Expr, ExprContext};
+
+    #[test]
+    fn parallel_scan_preserves_nested_do_dfs_order() {
+        let mut source = String::new();
+        for i in 0..450 {
+            source.push_str(&format!("(defn f-{i} [x] (+ x {i}))\n"));
+        }
+        source.push_str("(+ (f-0 1) (f-449 2))\n");
+        let mut program = crate::analyze(&source, &crate::parse(&source).unwrap()).unwrap();
+        assert!(
+            program.exprs.len() >= 4_096,
+            "need >= 4096 exprs to exercise parallel scan, got {}",
+            program.exprs.len()
+        );
+
+        let top_items = match &program.exprs[program.root.0].kind {
+            ExprKind::Do(items) => items.clone(),
+            _ => panic!("expected top-level Do"),
+        };
+        let split = top_items.len() / 3;
+        let push_do = |program: &mut Program, items: Vec<ExprId>| -> ExprId {
+            let id = ExprId(program.exprs.len());
+            program.exprs.push(Expr {
+                kind: ExprKind::Do(items),
+                span: 0..0,
+                context: ExprContext::Return,
+                source_index: 0,
+            });
+            id
+        };
+        // Build nested Do spine with empty Dos at the start, middle, and end.
+        let empty_start = push_do(&mut program, Vec::new());
+        let left_inner = push_do(&mut program, top_items[..split].to_vec());
+        let left_outer = push_do(&mut program, vec![left_inner]);
+        let empty_mid = push_do(&mut program, Vec::new());
+        let mid_do = push_do(&mut program, top_items[split..2 * split].to_vec());
+        let right_do = push_do(&mut program, top_items[2 * split..].to_vec());
+        let empty_end = push_do(&mut program, Vec::new());
+        program.root = push_do(
+            &mut program,
+            vec![
+                empty_start,
+                left_outer,
+                empty_mid,
+                mid_do,
+                right_do,
+                empty_end,
+            ],
+        );
+
+        for mode in [ScanMode::Full, ScanMode::Closed] {
+            let serial = Scan::new_serial(&program, &[], mode);
+            for slots in [Slots::new(4).unwrap(), Slots::new(8).unwrap()] {
+                let parallel = Scan::new_with_slots(&program, &[], mode, slots);
+                assert_eq!(
+                    parallel.order,
+                    serial.order,
+                    "DFS order mismatch for mode {mode:?} at slots={}",
+                    slots.get()
+                );
+                assert_eq!(
+                    parallel.parent,
+                    serial.parent,
+                    "parent table mismatch for mode {mode:?} at slots={}",
+                    slots.get()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn parallel_scan_bounds_scratch_at_large_slot_counts() {
+        let large = scan_worker_slots(Slots::new(1024).unwrap(), 1_000_000);
+        let per_worker = 2 * 1_000_000usize.div_ceil(64) * std::mem::size_of::<u64>();
+        assert!(large.get() < 1024);
+        assert!(large.get() >= 8);
+        assert!(large.get() * per_worker <= SCAN_MAX_WORKER_SCRATCH_BYTES);
+
+        // Typical 200k-line builds at --jobs 8 keep full worker width.
+        assert_eq!(
+            scan_worker_slots(Slots::new(8).unwrap(), 1_510_000).get(),
+            8
+        );
+        // Serial stays serial.
+        assert_eq!(scan_worker_slots(Slots::ONE, 1_000_000), Slots::ONE);
+        // Huge arenas cap down cleanly to at least 1 worker.
+        assert_eq!(
+            scan_worker_slots(Slots::new(64).unwrap(), 100_000_000),
+            Slots::ONE
+        );
+    }
 }

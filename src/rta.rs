@@ -1910,7 +1910,9 @@ mod tests {
              (defrecord Box [w h] Shape (area [_] (* w h)) (perimeter [_] (+ w h)))
              (defmulti dispatch-kind :kind)
              (defmethod dispatch-kind :a [_] 1)
-             (defmethod dispatch-kind :b [_] 2)\n",
+             (defmethod dispatch-kind :b [_] 2)
+             (def loadable-ref (light.lazy/loadable-type))
+             (def early-ctor (.-cljs$lang$ctorStr loadable-ref))\n",
         );
         for i in 0..400 {
             source.push_str(&format!(
@@ -1919,9 +1921,10 @@ mod tests {
         }
         // Exercise getBasis, EMPTY, ordered UPSTREAM_MEMBERS (both via strings,
         // properties, and escaped js*), record method slot, protocol mask,
-        // and non-ASCII string literals.
+        // cross-chunk LoadableType decoration attribution, and non-ASCII literals.
         source.push_str(
             r#"
+            (def late-ctor (.-cljs$lang$ctorStr loadable-ref))
             (def s1 "first")
             (def s2 "cnt")
             (def s3 "EMPTY")
@@ -1931,7 +1934,7 @@ mod tests {
             (def s7 "café—unrelated—λ")
             (def s8 (js* "'\\x6deta'"))
             [(area (->Box 3 4)) (dispatch-kind {:kind :a}) (helper-0 1) (helper-399 2)
-             s1 s2 s3 s4 s5 s6 s7 s8]
+             loadable-ref early-ctor late-ctor s1 s2 s3 s4 s5 s6 s7 s8]
             "#,
         );
         let program = crate::analyze(&source, &crate::parse(&source).unwrap()).unwrap();
@@ -1939,6 +1942,24 @@ mod tests {
             program.exprs.len() >= 4_096,
             "need >= 4096 exprs to exercise parallel RTA post-walk, got {}",
             program.exprs.len()
+        );
+        let ctor_reads: Vec<crate::ExprId> = program
+            .exprs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, expr)| match &expr.kind {
+                crate::analyzer::ExprKind::Property { property: name, .. }
+                    if name == "cljs$lang$ctorStr" =>
+                {
+                    Some(crate::ExprId(i))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ctor_reads.len(), 2);
+        assert!(
+            ctor_reads[1].0 - ctor_reads[0].0 >= 2_000,
+            "expected cljs$lang$ctorStr reads in different parallel scan chunks, got {ctor_reads:?}"
         );
         let mut top = Vec::new();
         fn flatten_ids(program: &crate::Program, id: crate::ExprId, out: &mut Vec<crate::ExprId>) {
@@ -1988,6 +2009,14 @@ mod tests {
         assert_eq!(
             parallel.named_loadable_members(),
             serial.named_loadable_members()
+        );
+        assert!(
+            parallel
+                .named_loadable_members()
+                .contains(&("typeNames", ctor_reads[0])),
+            "expected typeNames attributed to earlier cljs$lang$ctorStr read {:?}, got {:?}",
+            ctor_reads[0],
+            parallel.named_loadable_members()
         );
         assert_eq!(parallel.needs_multi_tables(), serial.needs_multi_tables());
         assert_eq!(parallel.lean_multimethods(), serial.lean_multimethods());
