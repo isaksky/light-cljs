@@ -1117,3 +1117,53 @@ advanced --stats`). Peak memory is from `/usr/bin/time -l` (GB = 10^9 bytes).
     peak memory `1.404 GB` (`1.401–1.417`, `<= 1.45 GB`); `warm-j1-from-j8`
     `1,223.7 ms` (`3,073/3,073` hits, `0.639 GB`), SHA-256 `e934a4528dc7`,
     oracle `714878 117718`, `check-waste.bb --strict` exit 0.
+
+## Parallel warm/incremental cache lookup, `decode_verified`, zero-clone install, lazy pool boot, and conditional trim skip (light-cljs-1105, November 23, 2026)
+
+Implementing all five parts of `light-cljs-1105` (`decode_verified` + fused
+`validate_with_depth` + `install_validated`, zero-clone `into_bodies_only` +
+`NameIndex::get_str`, parallel `Store::snapshot_all_with_slots` + conditional
+`Store::trim` skip, bounded sliding-window parallel lookup/verify/decode via
+`scheduler::map`, and lazy unit-pool / V8 bootstrap on first miss) speeds up
+both 1-thread and 8-thread warm rebuilds and 1-file-edit rebuilds.
+
+V8 build release binaries (`138796111` base vs `d87710e2` candidate), Apple M3
+Ultra VM (24 vCPUs, 32 GiB), **unreserved** machine (1-minute `uptime` load
+`12.40–12.70` during the `3 MiB / 64 ns` window run; peer worker active),
+medians of 3 alternating rounds at 8 threads (`--jobs 8`) and 1 alternating pair
+at 1 thread (`--jobs 1`) on `workload-200k-seed42` and `re-frame-200k-seed42`
+(`release bench --optimize advanced --cache-dir ... --stats`). Wall time is
+`time.wall-ms` and peak memory is from `/usr/bin/time -l` (MB = 10^6 bytes).
+
+| Project | Mode | Binary | Wall (ms) | `validate-ms` | `decode-ms` | `install-ms` | `trace.engine.entries` | Peak memory (MB) |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `workload-200k-seed42` | Rebuild, nothing changed, 1 thread | base `138796111` | 1,022.1 | 295.4 | 346.1 | 139.4 | 0 | 490.3 |
+| `workload-200k-seed42` | Rebuild, nothing changed, 1 thread | cand `d87710e2` | 724.1 (-29.2%) | 293.6 | 127.6 | 100.5 | 0 | 498.2 |
+| `workload-200k-seed42` | Rebuild, nothing changed, 8 threads (med/3) | base `138796111` | 991.8 (963.6–1,074.5) | 294.1 | 352.7 | 139.0 | 339 | 542.3 (530.4–548.7) |
+| `workload-200k-seed42` | Rebuild, nothing changed, 8 threads (med/3) | cand `d87710e2` | 352.7 (335.1–371.1) (-64.4%) | 59.8 | 24.8 | 126.7 | 0 | 546.6 (539.0–552.9) |
+| `workload-200k-seed42` | Rebuild after a one-file edit (`workload.main`), 8 threads (med/3) | base `138796111` | 1,532.7 (1,532.4–1,695.8) | 286.6 | 351.6 | 140.3 | 339 | 702.2 (698.5–737.4) |
+| `workload-200k-seed42` | Rebuild after a one-file edit (`workload.main`), 8 threads (med/3) | cand `d87710e2` | 970.5 (851.3–1,000.1) (-36.7%) | 55.6 | 22.5 | 101.8 | 339 | 722.8 (720.4–752.1) |
+| `re-frame-200k-seed42` | Rebuild, nothing changed, 1 thread | base `138796111` | 2,169.3 | 1,161.3 | 370.1 | 203.3 | 0 | 636.2 |
+| `re-frame-200k-seed42` | Rebuild, nothing changed, 1 thread | cand `d87710e2` | 1,137.0 (-47.6%) | 512.8 | 149.3 | 138.1 | 0 | 649.8 |
+| `re-frame-200k-seed42` | Rebuild, nothing changed, 8 threads (med/3) | base `138796111` | 1,460.2 (1,265.3–1,692.4) | 456.1 | 358.0 | 179.6 | 339 | 664.6 (655.3–669.8) |
+| `re-frame-200k-seed42` | Rebuild, nothing changed, 8 threads (med/3) | cand `d87710e2` | 584.4 (526.4–593.7) (-60.0%) | 109.2 | 28.1 | 157.2 | 0 | 679.1 (668.0–702.6) |
+
+- *Parity.* On both 200k projects, warm 8-thread and 1-thread outputs match both
+  base and clean `--no-cache --jobs 8` byte-for-byte (`workload-200k-seed42`:
+  SHA-256 `4a4f9189a188`, oracle `484264`; `re-frame-200k-seed42`: SHA-256
+  `e934a4528dc7`, oracle `714878 117718`) and pass `bb check-waste.bb --strict`.
+- *Targets.* Compared to the `321b3b41` baseline (`1,321–1,400 ms` plain,
+  `1,450–1,493 ms` re-frame, `952 ms` leaf-edit front-end), `workload-200k-seed42`
+  leaf-edit cache front-end drops to `180.6 ms` (`<= 300 ms`, cutting wall time
+  by `562.2 ms` vs post-1104 master and `~1,095 ms` vs `321b3b41`), and
+  `trace.engine.entries` drops to `0` on both warm rebuilds. Under unreserved
+  load (`12.40–12.70`), `workload-200k-seed42` warm 8-thread median wall is
+  `352.7 ms` (min `335.1 ms`, target `<= 350 ms`) with peak memory `546.6 MB`
+  (vs `542.3 MB` on base `138796111`, target `<= 520 MB`), and
+  `re-frame-200k-seed42` warm 8-thread median wall is `584.4 ms` (min `526.4 ms`,
+  target `<= 420 ms`; remaining time is serial `install_bodies` + `extend_arities`
+  in `time.analysis-ms` plus `cache.output-ms`) with peak memory `679.1 MB`
+  (min `668.0 MB`, target `<= 670 MB`). Earlier `16 MiB / 128 ns` measurement at
+  lower load (`3.02–4.43`) reached `trace.wall-ms` `307.6 ms` on plain and
+  `480.3 ms` (`438.2–718.3`) on re-frame, at higher peak memory (`600.8 MB` /
+  `718.1 MB`).

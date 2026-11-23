@@ -761,7 +761,10 @@ impl Store {
                 saw_unhealthy = true;
                 continue;
             };
-            if name.starts_with(TEMP_PREFIX) || parse_hex(&name).is_none() {
+            if name.starts_with(TEMP_PREFIX)
+                || parse_hex(&name).is_none()
+                || !file.file_type().is_ok_and(|kind| kind.is_file())
+            {
                 saw_unhealthy = true;
                 continue;
             }

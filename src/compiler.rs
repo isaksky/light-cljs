@@ -2975,6 +2975,8 @@ fn analyze_entry(
     // adds them where it charges the unit, in unit order
     // (docs/compiler-concurrency.md, "As built (light-cljs-374)").
     let memory_limit = macros.evaluator_options.memory_limit;
+    let mut initial_environment =
+        (!namespace_workers && analysis.unit_slots.get() > 1).then(|| macros.environment());
     let mut pool_started = false;
     let mut parallel_top: Option<parallel_top_level::ParallelTopLevel> = None;
     let parallel_recording = crate::macro_host::UnitRecording {
@@ -3057,7 +3059,9 @@ fn analyze_entry(
                         analysis.unit_slots,
                         engines,
                         isolates,
-                        macros.environment(),
+                        initial_environment
+                            .take()
+                            .unwrap_or_else(|| macros.environment()),
                         resources,
                         parallel_recording,
                     );

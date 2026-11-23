@@ -1206,6 +1206,7 @@ impl CompileCache {
     /// that writes the function looks its artifact up, so publishing would
     /// only write what no identical rebuild reads.
     pub(crate) fn core_write(&mut self, description: String) {
+        self.prefetched.clear();
         self.pending = Some(Pending::Miss(CORE_WRITE, description));
     }
 
