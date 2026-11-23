@@ -111,12 +111,16 @@ struct MacroFreeAnalysis {
     polls: bool,
     /// What the analysis observed, while a manifest is recorded.
     observations: Option<crate::dependency_manifest::ObservationLog>,
+    /// Shared catalog unit IDs whose compile-time JS this recorded analysis
+    /// emitted on demand, applied when its charges land in canonical order.
+    emitted: Vec<usize>,
 }
 
 /// What a recorded unit's analysis recorded, in order ([`MacroFreeUnit::finish`]).
 pub(crate) struct RecordedUnit {
     pub events: Vec<UnitEvent>,
     pub observations: Option<Box<crate::dependency_manifest::ObservationLog>>,
+    pub emitted: Vec<usize>,
 }
 
 /// While alive, the analysis on this thread is of a unit found macro-free
@@ -146,6 +150,7 @@ impl MacroFreeUnit {
                 site: None,
                 capture: recording.capture,
                 observations: recording.observe.then(Default::default),
+                emitted: Vec::new(),
             }))
         })))
     }
@@ -158,11 +163,12 @@ impl MacroFreeUnit {
     pub(crate) fn finish(mut self) -> RecordedUnit {
         let previous = self.0.take().flatten();
         let analysis = MACRO_FREE_UNIT.with(|unit| unit.replace(previous));
-        let (events, observations) =
-            analysis.map_or_else(Default::default, |a| (a.events, a.observations));
+        let (events, observations, emitted) =
+            analysis.map_or_else(Default::default, |a| (a.events, a.observations, a.emitted));
         RecordedUnit {
             events,
             observations: observations.map(Box::new),
+            emitted,
         }
     }
     /// Whether this thread records a unit's analysis for a compilation that
@@ -198,6 +204,20 @@ pub(crate) fn record_observations(log: crate::dependency_manifest::ObservationLo
             observations.absorb(log);
         }
     });
+}
+/// Record that this recorded analysis emitted deferred unit `id` at compile
+/// time, deferring `Unit::emitted` until the analysis is charged in canonical
+/// order. Returns `false` when no unit/overlay recording is active.
+pub(crate) fn record_emitted(id: usize) -> bool {
+    MACRO_FREE_UNIT.with(|unit| match &mut *unit.borrow_mut() {
+        Some(analysis) => {
+            if !analysis.emitted.contains(&id) {
+                analysis.emitted.push(id);
+            }
+            true
+        }
+        None => false,
+    })
 }
 /// Record `event`, one of the capture's, in the unit this thread records
 /// for a capturing compilation: whether this thread records a unit.

@@ -2489,6 +2489,29 @@ pub fn analyze_namespace_entry_with_provider(
 /// calls; without, no clock is read.
 /// The artifact of a namespace whose first part was captured where its
 /// analysis returned, until its units merge ([`merge_namespace`]).
+/// Information saved when an analyzed namespace's cache keying is deferred
+/// until its `merge_namespace` drain point or the next miss->hit barrier.
+struct DeferredKeying {
+    source_name: Option<String>,
+    forms: Vec<std::ops::Range<usize>>,
+    globals_end: usize,
+    /// When `core_write` skipped lookup for this namespace.
+    core_write: Option<String>,
+    /// Whether `cache.lookup` already ran (and missed or was refused), leaving
+    /// its miss reason in `cache.pending`.
+    looked_up: bool,
+}
+
+/// Keying state of a [`PendingCapture`] in the persistent cache.
+enum PendingPublication {
+    /// No persistent cache is active (capture sink only).
+    None,
+    /// Already keyed at a miss->hit barrier; `None` means bypassed or skipped.
+    Keyed(Option<crate::compile_cache::Publication>),
+    /// Deferred until `merge_namespace` or the next miss->hit barrier.
+    Unkeyed(DeferredKeying),
+}
+
 struct PendingCapture {
     /// The namespace's position in the loader's order.
     index: usize,
@@ -2499,7 +2522,87 @@ struct PendingCapture {
     registrations: usize,
     artifact: Result<crate::namespace_artifact::NamespaceArtifact, String>,
     /// Its key in the persistent cache, which publishes it.
-    publication: Option<Option<crate::compile_cache::Publication>>,
+    publication: PendingPublication,
+}
+
+/// Key a deferred [`PendingCapture`] in canonical source order, isolating its
+/// observations from later in-flight namespaces.
+#[allow(clippy::too_many_arguments)]
+fn key_pending_capture(
+    capture: &PendingCapture,
+    deferred: DeferredKeying,
+    merged: bool,
+    analysis: &NamespaceAnalysis,
+    ordered: &[NamespaceSource],
+    record: &crate::dependency_manifest::LoaderRecord,
+    sources: &dyn SourceProvider,
+    macros: &MacroHost,
+    control: Option<&crate::evaluator::ExecutionControl>,
+    cache: &mut crate::compile_cache::CompileCache,
+) -> Result<Option<crate::compile_cache::Publication>, NamespaceCompileError> {
+    let file = &ordered[capture.index];
+    if !deferred.looked_up {
+        if let Some(core) = deferred.core_write {
+            cache.core_write(core);
+        } else {
+            let cancelled = || macros.halted(control).is_some();
+            let cached = cache
+                .lookup(record, &file.source, sources, &cancelled)
+                .map_err(|message| {
+                    NamespaceCompileError::new(format!("loading {}: {message}", file.name))
+                })?;
+            debug_assert!(
+                cached.is_none(),
+                "deferred lookup ran only for a namespace with no snapshot candidates"
+            );
+        }
+    }
+    let declarations = {
+        let source = crate::compile_cache::DeclarationSource {
+            namespace: &file.name,
+            source_index: capture.index,
+            source_name: deferred.source_name.as_deref().unwrap_or(&file.name),
+            text: &file.source,
+            forms: &deferred.forms,
+            units_end: capture.units.end,
+            registrations_end: capture.registrations,
+            globals_end: deferred.globals_end,
+            merged,
+        };
+        let session = macros.session_handle();
+        let program = analysis.program();
+        crate::compile_cache::declaration_view(
+            program,
+            &capture.start,
+            session.as_deref(),
+            macros,
+            &source,
+        )
+    };
+    struct RestoreLog<'a>(
+        &'a std::cell::RefCell<Option<crate::dependency_manifest::ObservationLog>>,
+        Option<crate::dependency_manifest::ObservationLog>,
+    );
+    impl Drop for RestoreLog<'_> {
+        fn drop(&mut self) {
+            *self.0.borrow_mut() = self.1.take();
+        }
+    }
+    let previous = {
+        let mut slot = macros.engine.dependency_log.borrow_mut();
+        let taken = slot
+            .as_mut()
+            .map(|log| log.take_observations_for(capture.index as u32));
+        std::mem::replace(&mut *slot, taken)
+    };
+    let _restore = RestoreLog(&macros.engine.dependency_log, previous);
+    Ok(cache.analyzed(
+        record,
+        &file.source,
+        macros,
+        analysis.program_namespaces(),
+        declarations,
+    ))
 }
 
 /// What a namespace's drain point reaches ([`merge_namespace`]).
@@ -2507,8 +2610,11 @@ struct Merging<'a, 'b> {
     macros: &'a MacroHost,
     warnings: &'a mut Vec<AnalysisWarning>,
     ordered: &'a [NamespaceSource],
+    record: Option<&'a crate::dependency_manifest::LoaderRecord>,
     sources: &'a dyn SourceProvider,
+    control: Option<&'a crate::evaluator::ExecutionControl>,
     cache: Option<&'a mut crate::compile_cache::CompileCache>,
+    settled_observations: Option<&'a mut crate::dependency_manifest::ObservationLog>,
     sink: Option<&'a mut (dyn FnMut(crate::namespace_artifact::NamespaceCapture) + 'b)>,
     counts: &'a mut crate::compile_stats::CaptureCounts,
     cache_time: &'a mut Duration,
@@ -2536,8 +2642,11 @@ fn merge_namespace(
         macros,
         warnings,
         ordered,
+        record,
         sources,
+        control,
         cache,
+        settled_observations,
         sink,
         counts,
         cache_time,
@@ -2576,6 +2685,12 @@ fn merge_namespace(
     let Some(merged) = merged else {
         return Ok(None);
     };
+    if let Some(settled) = settled_observations
+        && let Some(log) = macros.engine.dependency_log.borrow_mut().as_mut()
+    {
+        let taken = log.take_observations_for(merged.source_index as u32);
+        settled.append_attributed(taken);
+    }
     let point = DrainPoint {
         source_index: merged.source_index,
         lazy: merged.lazy.clone(),
@@ -2612,10 +2727,30 @@ fn merge_namespace(
     }
     compile_stats::add(&mut counts.time, started);
     let started = compile_stats::start(timed);
-    match (cache, capture.publication) {
-        (Some(cache), Some(publication)) => {
+    let publication = std::mem::replace(&mut capture.publication, PendingPublication::None);
+    match (cache, publication) {
+        (Some(cache), PendingPublication::Keyed(publication)) => {
             if let Some(publication) = publication {
                 cache.publish(publication, &file.source, sources, capture.artifact);
+            }
+        }
+        (Some(cache), PendingPublication::Unkeyed(deferred)) => {
+            if let Some(record) = record {
+                let publication = key_pending_capture(
+                    &capture,
+                    deferred,
+                    true,
+                    analysis,
+                    ordered,
+                    record,
+                    sources,
+                    macros,
+                    control,
+                    cache,
+                )?;
+                if let Some(publication) = publication {
+                    cache.publish(publication, &file.source, sources, capture.artifact);
+                }
             }
         }
         _ => {
@@ -2902,16 +3037,15 @@ fn analyze_entry(
             capture: capturing,
         });
     }
-    // While the build records what analysis observes, a namespace is
-    // keyed with what its units observed before the next namespace is
-    // looked up: their outcomes are taken, and their observations logged,
-    // before it, and they are charged, published and merged at their drain
-    // point, as in any build (light-cljs-394). After a unit failed there,
-    // no later namespace settles, since the pool starts none of their
-    // units; the failure is reported at its drain point, as without
-    // settling.
-    let settling = observations.is_some() || cache.is_some();
-    let mut settled_failure = false;
+    // For manifest-only builds (`cache.is_none()`), observations are drained
+    // per namespace in canonical `0, 1, 2, ...` order at `merge_namespace`
+    // instead of stalling after every namespace (light-cljs-1103).
+    let mut settled_observations = (observations.is_some() && cache.is_none()).then(|| {
+        crate::dependency_manifest::ObservationLog {
+            configuration: Some(macros.tables.configuration.fingerprint()),
+            ..Default::default()
+        }
+    });
     let stats_base = stats.as_ref().map_or(0, |stats| stats.namespaces.len());
     // A cancelled build reports its cancellation, whatever the drain points
     // of the namespaces it leaves give.
@@ -2963,8 +3097,11 @@ fn analyze_entry(
                     macros,
                     warnings,
                     ordered: &loader.ordered,
+                    record: loader.record.as_ref(),
                     sources,
+                    control,
                     cache: cache.as_deref_mut(),
+                    settled_observations: settled_observations.as_mut(),
                     sink: capture.as_deref_mut(),
                     counts: &mut capture_counts,
                     cache_time: &mut cache_time,
@@ -2994,10 +3131,9 @@ fn analyze_entry(
     let mut namespace_results = std::collections::VecDeque::new();
     let parallel_recording = crate::macro_host::UnitRecording {
         observe: observations.is_some(),
-        capture: false,
+        capture: capturing,
     };
     let mut parallel_top = if !namespace_workers
-        && !capturing
         && !macros.native_macro_backend()
         && !macros.tables.interactive
         && macros.engine.script_host.is_none()
@@ -3032,6 +3168,7 @@ fn analyze_entry(
             }
             if let Some(parallel) = parallel_top.as_mut() {
                 parallel.extend_graph(&loader.ordered);
+                let cache_ref = cache.as_deref();
                 parallel.dispatch_ready(
                     index,
                     entry_index,
@@ -3041,6 +3178,7 @@ fn analyze_entry(
                     &build,
                     options,
                     parallel_recording,
+                    |name| cache_ref.is_some_and(|c| c.has_candidates(name)),
                 );
             }
             #[cfg(feature = "bbp-macros")]
@@ -3057,40 +3195,40 @@ fn analyze_entry(
                     );
                 }
             }
-            let file = &loader.ordered[index];
             let mark = loader.ordered.len();
-            let symbols = file
-                .syntax
-                .nodes
-                .iter()
-                .filter(|node| matches!(node.kind, crate::parser::NodeKind::Symbol))
-                .map(|node| &file.source[node.span.clone()]);
-            analysis.main_isolate =
-                blocked.admit(&file.name, &file.requires, &file.aliases, symbols);
+            {
+                let file = &loader.ordered[index];
+                let symbols = file
+                    .syntax
+                    .nodes
+                    .iter()
+                    .filter(|node| matches!(node.kind, crate::parser::NodeKind::Symbol))
+                    .map(|node| &file.source[node.span.clone()]);
+                analysis.main_isolate =
+                    blocked.admit(&file.name, &file.requires, &file.aliases, symbols);
+                crate::compile_trace::namespace(
+                    index,
+                    &file.name,
+                    file.source.len(),
+                    &file.requires,
+                );
+                // Its require closure, which bounds what its effect lanes wait
+                // for (light-cljs-672).
+                if let Some(session) = macros.session_handle() {
+                    (session.shared().lanes()).register_namespace(index, &file.name, &file.requires);
+                }
+                macros.observe(|log| log.window = index as u32);
+                build.analyze(index, &file.name, file.path.to_str());
+                // A cancelled compilation stops at the next namespace.
+                if let Some(reason) = control.and_then(|control| control.check().err()) {
+                    cancelled = true;
+                    return Err(NamespaceCompileError::new(format!(
+                        "compiling {}: {}",
+                        file.name, reason.0
+                    )));
+                }
+            }
             let calls_before = macros.executed_expansions();
-            let at = |error: AnalysisError| {
-                NamespaceCompileError::new(error.to_string()).at(
-                    &file.path,
-                    &file.source,
-                    error.span,
-                )
-            };
-            crate::compile_trace::namespace(index, &file.name, file.source.len(), &file.requires);
-            // Its require closure, which bounds what its effect lanes wait
-            // for (light-cljs-672).
-            if let Some(session) = macros.session_handle() {
-                (session.shared().lanes()).register_namespace(index, &file.name, &file.requires);
-            }
-            macros.observe(|log| log.window = index as u32);
-            build.analyze(index, &file.name, file.path.to_str());
-            // A cancelled compilation stops at the next namespace.
-            if let Some(reason) = control.and_then(|control| control.check().err()) {
-                cancelled = true;
-                return Err(NamespaceCompileError::new(format!(
-                    "compiling {}: {}",
-                    file.name, reason.0
-                )));
-            }
             // An artifact installs at the frontier its analysis would have run.
             let started = compile_stats::start(timed);
             // Prepared native factories can have cached core functions under
@@ -3106,14 +3244,72 @@ fn analyze_entry(
             #[cfg(not(feature = "bbp-macros"))]
             let core_write: Option<&str> = None;
             let native_core_writes = core_write.is_some();
+            // Soundness barrier for mixed miss->hit builds (light-cljs-1103):
+            // only flush & key queued unkeyed earlier namespaces when the next
+            // namespace actually has cache candidates in the snapshot.
+            let mut deferred_core_write: Option<String> = None;
+            let mut looked_up = false;
+            let has_candidates = core_write.is_none()
+                && cache
+                    .as_deref()
+                    .is_some_and(|c| c.has_candidates(&loader.ordered[index].name));
+            if has_candidates
+                && let (Some(cache_mut), Some(record)) = (cache.as_deref_mut(), &loader.record)
+            {
+                let mut barrier_failed = false;
+                for slot in &mut captures {
+                    let Some(pending) = slot.as_mut() else {
+                        continue;
+                    };
+                    if !matches!(pending.publication, PendingPublication::Unkeyed(_)) {
+                        continue;
+                    }
+                    if analysis.settle_pending(pending.index, macros).is_err() {
+                        barrier_failed = true;
+                        break;
+                    }
+                    let PendingPublication::Unkeyed(deferred) =
+                        std::mem::replace(&mut pending.publication, PendingPublication::None)
+                    else {
+                        unreachable!()
+                    };
+                    let publication = key_pending_capture(
+                        pending,
+                        deferred,
+                        false,
+                        &analysis,
+                        &loader.ordered,
+                        record,
+                        sources,
+                        macros,
+                        control,
+                        cache_mut,
+                    )?;
+                    pending.publication = PendingPublication::Keyed(publication);
+                }
+                if barrier_failed {
+                    // Drain from the front to report the earliest
+                    // failing namespace identically to `--jobs 1`.
+                    while drain_front!() {}
+                }
+            }
+            let file = &loader.ordered[index];
+            let at = |error: AnalysisError| {
+                NamespaceCompileError::new(error.to_string()).at(
+                    &file.path,
+                    &file.source,
+                    error.span,
+                )
+            };
             let cached = match (cache.as_deref_mut(), &loader.record) {
-                (Some(cache), Some(_)) if let Some(core) = core_write => {
-                    cache.core_write(format!(
+                (Some(_), Some(_)) if let Some(core) = core_write => {
+                    deferred_core_write = Some(format!(
                         "the build may write the core function {core}, which cached macro code may call directly"
                     ));
                     None
                 }
-                (Some(cache), Some(record)) => {
+                (Some(cache), Some(record)) if has_candidates => {
+                    looked_up = true;
                     let cancelled = || macros.halted(control).is_some();
                     cache
                         .lookup(record, &file.source, sources, &cancelled)
@@ -3124,6 +3320,7 @@ fn analyze_entry(
                 _ => None,
             };
             compile_stats::add(&mut cache_time, started);
+            let mut mutated_foreign = false;
             let installed = match cached
                 .as_ref()
                 .or_else(|| install.and_then(|lookup| lookup(&file.name)))
@@ -3132,6 +3329,7 @@ fn analyze_entry(
                 Some(artifact) => {
                     let started = compile_stats::start(timed);
                     let path = file.path.to_string_lossy();
+                    let globals_before = analysis.globals_len();
                     let outcome = analysis.install(
                         artifact,
                         &crate::artifact_install::InstallSource {
@@ -3147,6 +3345,14 @@ fn analyze_entry(
                     compile_stats::add(&mut install_counts.time, started);
                     match outcome {
                         Ok(()) => {
+                            if parallel_top.is_some() {
+                                mutated_foreign = !artifact.patches.is_empty()
+                                    || analysis
+                                        .program()
+                                        .globals
+                                        .range(globals_before..analysis.program().globals.len())
+                                        .any(|g| g.declared && g.namespace != file.name);
+                            }
                             if let (Some(cache), Some(_)) = (cache.as_deref_mut(), &cached) {
                                 cache.installed(macros);
                             }
@@ -3174,7 +3380,6 @@ fn analyze_entry(
             };
             // A decoded artifact is released once installed.
             drop(cached);
-            let mut mutated_foreign = false;
             if installed {
                 captures.push_back(None);
                 lazy_marks.push_back((mark, index));
@@ -3191,241 +3396,236 @@ fn analyze_entry(
                 } else {
                     None
                 };
-                if let Some(parallel_top_level::ReadyNamespace {
-                    mut publication,
-                    metadata,
-                    overlay,
-                }) = parallel_ready
-                {
-                    let session = macros.session_handle().expect("compilation session");
-                    let dispatched_local = publication.dispatched_local_ids();
-                    let any_engine = publication.any_may_enter_engine();
-                    mutated_foreign = publication.mutated_foreign_ns();
-                    publication.charge(macros).map_err(at)?;
-                    let (base_unit_id, pooled_pairs) = session
-                        .publish_overlay(
-                            overlay,
-                            macros,
-                            &dispatched_local,
-                            analysis.unit_slots.get() == 1,
-                            analysis.unit_slots.get() > 1 && !analysis.main_isolate,
-                        )
-                        .map_err(NamespaceCompileError::new)?;
-                    macros
-                        .publish_namespace_metadata(&metadata)
-                        .map_err(NamespaceCompileError::new)?;
-                    let charged = (
-                        macros.engine.expansions.get(),
-                        macros.engine.generated_nodes.get(),
-                    );
-                    let pooled: Vec<usize> = if !pooled_pairs.is_empty()
-                        && session.submit_units(pooled_pairs.clone(), charged)
+                let (names_from, work, captured, globals_end) =
+                    if let Some(parallel_top_level::ReadyNamespace {
+                        mut publication,
+                        metadata,
+                        overlay,
+                        resolution,
+                        snap_globals_len,
+                    }) = parallel_ready
                     {
-                        pooled_pairs.into_iter().map(|(id, _)| id).collect()
-                    } else {
-                        session.note_charged(charged);
-                        Vec::new()
-                    };
-                    if any_engine {
-                        macros.start_session_engine();
-                    }
-                    let mut given = pooled.iter().copied().peekable();
-                    for &local_id in &dispatched_local {
-                        let id = if local_id >= crate::compilation_session::LOCAL_UNIT_BASE {
-                            base_unit_id + (local_id - crate::compilation_session::LOCAL_UNIT_BASE)
-                        } else {
-                            local_id
-                        };
-                        if given.next_if_eq(&id).is_some() {
-                            continue;
-                        }
-                        if session.analyze_held(id, None).is_err() {
-                            break;
-                        }
-                    }
-                    analysis.publish_overlay_namespace(publication, base_unit_id, pooled, warnings);
-                    lazy_marks.push_back((mark, index));
-                    if analysis.kept_unit_failed(macros) {
-                        if let Some(stats) = stats.as_deref_mut() {
-                            stats.namespaces.push(compile_stats::NamespaceStats {
-                                name: file.name.clone(),
-                                macro_calls: macros.executed_expansions() - calls_before,
-                            });
-                        }
-                        return Err(NamespaceCompileError::new(format!(
-                            "compiling {}: a deferred unit failed",
-                            file.name
-                        )));
-                    }
-                    if settling && !settled_failure {
-                        settled_failure = analysis.settle_last(macros).is_err();
-                    }
-                    captures.push_back(None);
-                } else {
-                    let names_from = crate::generated_names::current();
-                    let work = capturing.then(|| macros.begin_namespace_work());
-                    let traced = crate::compile_trace::enter(
-                        crate::compile_trace::Stage::PrepareSource,
-                        index,
-                        None,
-                    );
-                    let resolution = prepare_source(macros, file).map_err(at)?;
-                    drop(traced);
-                    let captured = capturing.then(|| {
-                        let started = compile_stats::start(timed);
-                        let start = analysis.begin_capture(warnings, macros);
-                        compile_stats::add(&mut capture_counts.time, started);
-                        (start, resolution.clone())
-                    });
-                    let input = NamespaceInput {
-                        name: &file.name,
-                        source: &file.source,
-                        syntax: &file.syntax,
-                        aliases: &file.aliases,
-                        requires: &file.requires,
-                    };
-                    #[cfg(feature = "bbp-macros")]
-                    let published = if let Some(result) = namespace_results.pop_front() {
-                        let mut completed = result?;
-                        let session = macros.session_handle().unwrap();
-                        session
-                            .publish_namespace_registrations(completed.registrations)
-                            .map_err(NamespaceCompileError::new)?;
-                        completed.publication.charge(macros).map_err(at)?;
-                        session
-                            .adopt_completed_namespace_units(
-                                completed.publication.deferred_units(),
+                        let names_from = crate::generated_names::current();
+                        let work = capturing.then(|| macros.begin_namespace_work());
+                        let captured = capturing.then(|| {
+                            let started = compile_stats::start(timed);
+                            let start = analysis.begin_capture(warnings, macros);
+                            compile_stats::add(&mut capture_counts.time, started);
+                            (start, resolution)
+                        });
+                        let canonical_globals_len = analysis.globals_len();
+                        let session = macros.session_handle().expect("compilation session");
+                        let dispatched_local = publication.dispatched_local_ids();
+                        let any_engine = publication.any_may_enter_engine();
+                        mutated_foreign = publication.mutated_foreign_ns();
+                        publication.charge(macros).map_err(at)?;
+                        let (base_unit_id, pooled_pairs) = session
+                            .publish_overlay(
+                                overlay,
                                 macros,
+                                &dispatched_local,
+                                analysis.unit_slots.get() == 1,
+                                analysis.unit_slots.get() > 1 && !analysis.main_isolate,
+                                snap_globals_len,
+                                canonical_globals_len,
                             )
                             .map_err(NamespaceCompileError::new)?;
                         macros
-                            .publish_namespace_metadata(&completed.metadata)
+                            .publish_namespace_metadata(&metadata)
                             .map_err(NamespaceCompileError::new)?;
-                        analysis.publish_namespace(completed.publication);
-                        true
-                    } else {
-                        false
-                    };
-                    #[cfg(not(feature = "bbp-macros"))]
-                    let published = false;
-                    let globals_before = analysis.globals_len();
-                    if !published {
-                        analysis
-                            .analyze(
-                                &input,
-                                resolution,
-                                index == entry_index,
-                                macros,
-                                options,
-                                warnings,
-                            )
-                            .map_err(at)?;
-                    }
-                    if parallel_top.is_some() {
-                        mutated_foreign = analysis
-                            .program()
-                            .globals
-                            .range(globals_before..analysis.program().globals.len())
-                            .any(|g| g.declared && g.namespace != file.name);
-                    }
-                    lazy_marks.push_back((mark, index));
-                    // A unit kept on this thread that failed stops the build
-                    // now, before any later top-level pass, as with one slot
-                    // always; its drain point, which the failure's drains
-                    // reach, reports it.
-                    if analysis.kept_unit_failed(macros) {
-                        if let Some(stats) = stats.as_deref_mut() {
-                            stats.namespaces.push(compile_stats::NamespaceStats {
-                                name: file.name.clone(),
-                                macro_calls: macros.executed_expansions() - calls_before,
-                            });
+                        let charged = (
+                            macros.engine.expansions.get(),
+                            macros.engine.generated_nodes.get(),
+                        );
+                        let pooled: Vec<usize> = if !pooled_pairs.is_empty()
+                            && session.submit_units(pooled_pairs.clone(), charged)
+                        {
+                            pooled_pairs.into_iter().map(|(id, _)| id).collect()
+                        } else {
+                            session.note_charged(charged);
+                            Vec::new()
+                        };
+                        if any_engine {
+                            macros.start_session_engine();
                         }
-                        return Err(NamespaceCompileError::new(format!(
-                            "compiling {}: a deferred unit failed",
-                            file.name
-                        )));
-                    }
-                    if settling && !settled_failure {
-                        settled_failure = analysis.settle_last(macros).is_err();
-                    }
-                    if let (Some((start, resolution)), Some(work)) = (&captured, work) {
-                        let started = compile_stats::start(timed);
-                        let path = file.path.to_string_lossy();
-                        let artifact = analysis.finish_capture(
-                            start,
-                            crate::artifact_capture::CaptureInput {
-                                namespace: &file.name,
-                                path: &path,
-                                source_length: file.source.len(),
-                                entry: index == entry_index,
-                                resolution,
-                                aliases: &file.aliases,
-                                requires: &file.requires,
-                                names_from,
-                                options,
-                                work,
-                                control,
-                            },
-                            macros,
+                        let mut given = pooled.iter().copied().peekable();
+                        for &local_id in &dispatched_local {
+                            let id = if local_id >= crate::compilation_session::LOCAL_UNIT_BASE {
+                                base_unit_id
+                                    + (local_id - crate::compilation_session::LOCAL_UNIT_BASE)
+                            } else {
+                                local_id
+                            };
+                            if given.next_if_eq(&id).is_some() {
+                                continue;
+                            }
+                            if session.analyze_held(id, None).is_err() {
+                                break;
+                            }
+                        }
+                        analysis.publish_overlay_namespace(
+                            publication,
+                            base_unit_id,
+                            pooled,
                             warnings,
                         );
-                        let (units, registrations) = match macros.session_handle() {
-                            Some(session) => {
-                                let (units, registrations, _) = session.capture_marks();
-                                (start.units()..units, registrations)
+                        lazy_marks.push_back((mark, index));
+                        if analysis.kept_unit_failed(macros) {
+                            if let Some(stats) = stats.as_deref_mut() {
+                                stats.namespaces.push(compile_stats::NamespaceStats {
+                                    name: file.name.clone(),
+                                    macro_calls: macros.executed_expansions() - calls_before,
+                                });
                             }
-                            None => (0..0, 0),
-                        };
-                        compile_stats::add(&mut capture_counts.time, started);
-                        let started = compile_stats::start(timed);
-                        // Keyed now, published once its units merge.
-                        // What a later source macro can see of it (light-cljs-347).
-                        let declarations = cache.is_some().then(|| {
-                            let source = crate::compile_cache::DeclarationSource {
-                                namespace: &file.name,
-                                source_index: index,
-                                source_name: resolution
-                                    .source_name
-                                    .as_deref()
-                                    .unwrap_or(&file.name),
-                                text: &file.source,
-                                forms: (file.syntax.roots.iter())
-                                    .map(|root| file.syntax.nodes[root.0].span.clone())
-                                    .collect(),
-                            };
-                            let session = macros.session_handle();
-                            let program = analysis.program();
-                            crate::compile_cache::declaration_view(
-                                program,
-                                start,
-                                session.as_deref(),
-                                macros,
-                                &source,
-                            )
-                        });
-                        let publication = match (cache.as_deref_mut(), &loader.record) {
-                            (Some(cache), Some(record)) => Some(cache.analyzed(
-                                record,
-                                &file.source,
-                                macros,
-                                analysis.program_namespaces(),
-                                declarations.flatten(),
-                            )),
-                            _ => None,
-                        };
-                        compile_stats::add(&mut cache_time, started);
-                        let (start, _) = captured.expect("captured");
-                        captures.push_back(Some(PendingCapture {
-                            index,
-                            start,
-                            units,
-                            registrations,
-                            artifact,
-                            publication,
-                        }));
+                            return Err(NamespaceCompileError::new(format!(
+                                "compiling {}: a deferred unit failed",
+                                file.name
+                            )));
+                        }
+                        (names_from, work, captured, analysis.globals_len())
                     } else {
-                        captures.push_back(None);
-                    }
+                        let names_from = crate::generated_names::current();
+                        let work = capturing.then(|| macros.begin_namespace_work());
+                        let traced = crate::compile_trace::enter(
+                            crate::compile_trace::Stage::PrepareSource,
+                            index,
+                            None,
+                        );
+                        let resolution = prepare_source(macros, file).map_err(at)?;
+                        drop(traced);
+                        let captured = capturing.then(|| {
+                            let started = compile_stats::start(timed);
+                            let start = analysis.begin_capture(warnings, macros);
+                            compile_stats::add(&mut capture_counts.time, started);
+                            (start, resolution.clone())
+                        });
+                        let input = NamespaceInput {
+                            name: &file.name,
+                            source: &file.source,
+                            syntax: &file.syntax,
+                            aliases: &file.aliases,
+                            requires: &file.requires,
+                        };
+                        #[cfg(feature = "bbp-macros")]
+                        let published = if let Some(result) = namespace_results.pop_front() {
+                            let mut completed = result?;
+                            let session = macros.session_handle().unwrap();
+                            session
+                                .publish_namespace_registrations(completed.registrations)
+                                .map_err(NamespaceCompileError::new)?;
+                            completed.publication.charge(macros).map_err(at)?;
+                            session
+                                .adopt_completed_namespace_units(
+                                    completed.publication.deferred_units(),
+                                    macros,
+                                )
+                                .map_err(NamespaceCompileError::new)?;
+                            macros
+                                .publish_namespace_metadata(&completed.metadata)
+                                .map_err(NamespaceCompileError::new)?;
+                            analysis.publish_namespace(completed.publication);
+                            true
+                        } else {
+                            false
+                        };
+                        #[cfg(not(feature = "bbp-macros"))]
+                        let published = false;
+                        let globals_before = analysis.globals_len();
+                        if !published {
+                            analysis
+                                .analyze(
+                                    &input,
+                                    resolution,
+                                    index == entry_index,
+                                    macros,
+                                    options,
+                                    warnings,
+                                )
+                                .map_err(at)?;
+                        }
+                        let globals_end = analysis.globals_len();
+                        if parallel_top.is_some() {
+                            mutated_foreign = analysis
+                                .program()
+                                .globals
+                                .range(globals_before..globals_end)
+                                .any(|g| g.declared && g.namespace != file.name);
+                        }
+                        lazy_marks.push_back((mark, index));
+                        // A unit kept on this thread that failed stops the build
+                        // now, before any later top-level pass, as with one slot
+                        // always; its drain point, which the failure's drains
+                        // reach, reports it.
+                        if analysis.kept_unit_failed(macros) {
+                            if let Some(stats) = stats.as_deref_mut() {
+                                stats.namespaces.push(compile_stats::NamespaceStats {
+                                    name: file.name.clone(),
+                                    macro_calls: macros.executed_expansions() - calls_before,
+                                });
+                            }
+                            return Err(NamespaceCompileError::new(format!(
+                                "compiling {}: a deferred unit failed",
+                                file.name
+                            )));
+                        }
+                        (names_from, work, captured, globals_end)
+                    };
+                if let (Some((start, resolution)), Some(work)) = (captured, work) {
+                    let started = compile_stats::start(timed);
+                    let path = file.path.to_string_lossy();
+                    let artifact = analysis.finish_capture(
+                        &start,
+                        crate::artifact_capture::CaptureInput {
+                            namespace: &file.name,
+                            path: &path,
+                            source_length: file.source.len(),
+                            entry: index == entry_index,
+                            resolution: &resolution,
+                            aliases: &file.aliases,
+                            requires: &file.requires,
+                            names_from,
+                            options,
+                            work,
+                            control,
+                        },
+                        macros,
+                        warnings,
+                    );
+                    let (units, registrations) = match macros.session_handle() {
+                        Some(session) => {
+                            let (units, registrations, _) = session.capture_marks();
+                            (start.units()..units, registrations)
+                        }
+                        None => (0..0, 0),
+                    };
+                    compile_stats::add(&mut capture_counts.time, started);
+                    let publication = if cache.is_some() && loader.record.is_some() {
+                        let forms = file
+                            .syntax
+                            .roots
+                            .iter()
+                            .map(|root| file.syntax.nodes[root.0].span.clone())
+                            .collect();
+                        PendingPublication::Unkeyed(DeferredKeying {
+                            source_name: resolution.source_name,
+                            forms,
+                            globals_end,
+                            core_write: deferred_core_write,
+                            looked_up,
+                        })
+                    } else {
+                        PendingPublication::None
+                    };
+                    captures.push_back(Some(PendingCapture {
+                        index,
+                        start,
+                        units,
+                        registrations,
+                        artifact,
+                        publication,
+                    }));
+                } else {
+                    captures.push_back(None);
                 }
             }
             if let Some(parallel) = parallel_top.as_mut() {
@@ -3477,8 +3677,11 @@ fn analyze_entry(
                         macros,
                         warnings,
                         ordered: &loader.ordered,
+                        record: loader.record.as_ref(),
                         sources,
+                        control,
                         cache: cache.as_deref_mut(),
+                        settled_observations: settled_observations.as_mut(),
                         sink: capture.as_deref_mut(),
                         counts: &mut capture_counts,
                         cache_time: &mut cache_time,
@@ -3593,7 +3796,9 @@ fn analyze_entry(
         (manifest, loader.record.take(), observations)
         && cache.is_none()
     {
-        let log = observations.0.borrow_mut().take().unwrap_or_default();
+        let remaining = observations.0.borrow_mut().take().unwrap_or_default();
+        let mut log = settled_observations.unwrap_or_default();
+        log.append_attributed(remaining);
         // The macro host's inventory, not the program's reader contexts, which
         // a drained deferred unit can restore to a snapshot from before a
         // later `defmacro`.

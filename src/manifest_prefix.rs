@@ -76,16 +76,6 @@ impl NamespaceRecords for DependencyManifest {
     }
 }
 
-/// How far into each list of the observation log the prefix has read.
-#[derive(Clone, Copy, Debug, Default)]
-struct Cursors {
-    loaded: usize,
-    named: usize,
-    absent: usize,
-    executes: usize,
-    inputs: usize,
-}
-
 /// The records of a compilation's namespaces `0..len()`, by
 /// [`NamespaceId`].
 #[derive(Debug, Default)]
@@ -105,7 +95,6 @@ pub struct ManifestPrefix {
     /// The inputs recorded while helper units or data readers ran, with
     /// those units' sources, in the order recorded.
     helper_inputs: Vec<(Vec<u32>, InputId)>,
-    cursors: Cursors,
 }
 
 impl NamespaceRecords for ManifestPrefix {
@@ -314,23 +303,21 @@ impl ManifestPrefix {
     }
 
     /// Skip what the observation log recorded while an installed namespace
-    /// was current: nothing, since installing observes nothing.
-    pub(crate) fn skip_observations(&mut self, log: &ObservationLog) {
-        self.cursors = Cursors {
-            loaded: log.loaded.len(),
-            named: log.named.len(),
-            absent: log.absent.len(),
-            executes: log.executes.len(),
-            inputs: self.cursors.inputs,
-        };
-        self.read_inputs(log, None);
-    }
+    /// was current: nothing, since installing observes nothing and analyzed
+    /// namespaces drain their own entries via
+    /// [`ObservationLog::take_observations_for`].
+    pub(crate) fn skip_observations(&mut self, _log: &ObservationLog) {}
 
-    /// Intern the inputs the log recorded since the last read, returning
-    /// those recorded with `own` as the source being analyzed.
+    /// Intern the inputs in `log`, returning those recorded with `own` as the
+    /// source being analyzed.
     fn read_inputs(&mut self, log: &ObservationLog, own: Option<u32>) -> Vec<InputId> {
         let mut owned = Vec::new();
-        for record in &log.inputs[self.cursors.inputs..] {
+        for record in &log.inputs {
+            if let Some(target) = own
+                && record.own != target
+            {
+                continue;
+            }
             let id = {
                 let next = self.inputs.len() as u32;
                 *self
@@ -357,7 +344,6 @@ impl ManifestPrefix {
                 self.helper_inputs.push((helpers, InputId(id)));
             }
         }
-        self.cursors.inputs = log.inputs.len();
         owned
     }
 
@@ -375,7 +361,7 @@ impl ManifestPrefix {
         let (mut record, mut rows) = self.loaded(loader);
         let id = self.namespaces.len() as u32;
         let mut absent = Vec::new();
-        for &(observer, position) in &log.loaded[self.cursors.loaded..] {
+        for &(observer, position) in &log.loaded {
             if observer != id {
                 continue;
             }
@@ -388,7 +374,7 @@ impl ManifestPrefix {
                 rows.push((NamespaceId(observed), EdgeKinds::OBSERVED));
             }
         }
-        for (observer, observed, kinds) in &log.named[self.cursors.named..] {
+        for (observer, observed, kinds) in &log.named {
             if *observer != id {
                 continue;
             }
@@ -400,16 +386,12 @@ impl ManifestPrefix {
                 None => absent.push(observed.clone()),
             }
         }
-        for (observer, name) in &log.absent[self.cursors.absent..] {
+        for (observer, name) in &log.absent {
             if *observer == id {
                 absent.push(name.clone());
             }
         }
-        let coarse = log.executes[self.cursors.executes..].contains(&id);
-        self.cursors.loaded = log.loaded.len();
-        self.cursors.named = log.named.len();
-        self.cursors.absent = log.absent.len();
-        self.cursors.executes = log.executes.len();
+        let coarse = log.executes.contains(&id);
         merge(&mut rows);
         // Helpers: what each macro provider depends on directly through its
         // requires and observations.

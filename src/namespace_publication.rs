@@ -233,27 +233,26 @@ impl NamespaceJob {
             .as_ref()
             .map(|e| e.as_ref() as &dyn crate::evaluator::MacroEvaluator);
         let logs_capture = recording_cfg.capture;
-        let started_gensyms = if logs_capture {
+        if logs_capture {
             crate::generated_names::start_log();
-            match engine {
-                Some(engine) => {
-                    crate::compilation_session::CompilationSession::take_gensyms_from_engine(engine)
-                        .map(drop)
-                }
-                None => Ok(()),
-            }
-        } else {
-            Ok(())
-        };
-        let started_namespaces = match engine {
-            Some(engine) if logs_capture => {
-                crate::compilation_session::CompilationSession::take_namespaces_from_engine(
-                    engine, false,
-                )
-                .map(drop)
-            }
-            _ => Ok(()),
-        };
+        }
+        let captures_namespaces =
+            logs_capture && engine.is_some_and(|engine| !engine.has_native_bridge());
+        let pending_capture = (engine.is_some() && (logs_capture || captures_namespaces)).then(|| {
+            crate::macro_host::PendingCaptureGuard::install(
+                host.engine.work_cache.clone(),
+                crate::macro_host::PendingUnitCapture {
+                    on_worker: true,
+                    logs_gensyms: logs_capture,
+                    logs_namespaces: captures_namespaces,
+                    pooled: false,
+                    session: None,
+                    gensym_error: false,
+                    namespace_error: false,
+                    entered: false,
+                },
+            )
+        });
         let recording = crate::macro_host::MacroFreeUnit::enter(
             input.name.to_owned(),
             false,
@@ -264,6 +263,18 @@ impl NamespaceJob {
             .top
             .analyze(input, resolution, result, host, options, &mut warnings);
         let recorded = recording.finish();
+        let capture = pending_capture.and_then(|guard| guard.finish());
+        let entered = capture.as_ref().is_some_and(|c| c.entered);
+        let started_gensyms = if capture.as_ref().is_some_and(|c| c.gensym_error) {
+            Err(String::new())
+        } else {
+            Ok(())
+        };
+        let started_namespaces = if capture.as_ref().is_some_and(|c| c.namespace_error) {
+            Err(String::new())
+        } else {
+            Ok(())
+        };
         let trace_rows = crate::compile_trace::take_worker_rows();
         let mut gensyms = if logs_capture {
             let logged = crate::generated_names::stop_log();
@@ -272,11 +283,28 @@ impl NamespaceJob {
             Ok(Vec::new())
         };
         let namespaces = match engine {
-            Some(engine) if logs_capture => started_namespaces.and_then(|()| {
-                crate::compilation_session::CompilationSession::take_namespaces_from_engine(
-                    engine, false,
-                )
-            }),
+            Some(engine) if captures_namespaces && entered => {
+                match started_namespaces.and_then(|()| {
+                    crate::compilation_session::CompilationSession::take_namespaces_from_cached(
+                        engine,
+                        false,
+                        host.engine.work_cache.take_namespaces_handle(false),
+                    )
+                }) {
+                    Ok(entries) => {
+                        host.engine.work_cache.namespace_pool_mode.set(Some(false));
+                        if !entries.is_empty() {
+                            host.engine.work_cache.encode_peak_clean.set(false);
+                        }
+                        Ok(entries)
+                    }
+                    Err(error) => {
+                        host.engine.work_cache.namespace_pool_mode.set(None);
+                        host.engine.work_cache.encode_peak_clean.set(false);
+                        Err(error)
+                    }
+                }
+            }
             _ => Ok(Vec::new()),
         };
         let mut recorded = recorded;

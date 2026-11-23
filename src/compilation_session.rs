@@ -118,6 +118,8 @@ pub(crate) struct UnitCharges {
     events: Vec<crate::macro_host::UnitEvent>,
     macro_depth: usize,
     analysis_depth: usize,
+    /// Maximum nested unit demand depth recorded during a top-level overlay pass.
+    unit_depth: usize,
     /// The unit's expansion and generated-node limits.
     limits: (usize, usize),
     /// The stack depth at which a demand for the unit fails
@@ -136,6 +138,9 @@ pub(crate) struct UnitCharges {
     /// artifacts are captured, which the coordinator adds to its own where
     /// it charges the unit, as a serial build adds it (light-cljs-1004).
     namespaces: Vec<crate::namespace_artifact::RegistryEntry>,
+    /// Shared catalog unit IDs emitted on demand during this recorded analysis,
+    /// applied to `Unit::emitted` when charged in canonical order.
+    emitted: Vec<usize>,
     /// What a worker's `--stats-file` trace recorded of the unit and the
     /// units it demanded, which the coordinator records where it charges
     /// the unit (light-cljs-369, [`crate::compile_trace::replay`]).
@@ -154,12 +159,14 @@ impl UnitCharges {
             events: recorded.events,
             macro_depth: host.engine.work.macro_depth.get(),
             analysis_depth: host.engine.work.analysis_depth.get(),
+            unit_depth: host.engine.work.unit_depth.get(),
             limits: (host.limits.expansions, host.limits.generated_nodes),
             depth_limit: host.limits.expansion_depth.min(64),
             location: name.to_owned(),
             observations: recorded.observations,
             gensyms,
             namespaces,
+            emitted: recorded.emitted,
             trace,
         }
     }
@@ -182,6 +189,9 @@ impl UnitCharges {
         use crate::macro_host::WorkMarks;
         if let Some(depth) = depth {
             WorkMarks::note(&binding.work.unit_depth, depth + 1);
+        }
+        if self.unit_depth > 0 {
+            WorkMarks::note(&binding.work.unit_depth, self.unit_depth);
         }
         WorkMarks::note(&binding.work.macro_depth, self.macro_depth);
         WorkMarks::note(&binding.work.analysis_depth, self.analysis_depth);
@@ -2713,8 +2723,13 @@ pub(crate) struct CapturedExpansion {
 }
 #[derive(Default)]
 struct UnitCapture {
-    /// The globals of the unit's definition snapshot.
+    /// The canonical globals count at the unit's definition snapshot, used by
+    /// `artifact_capture::Converter::view`.
     view_globals: usize,
+    /// The unit's own `snapshot.resolution_program.globals.len()`, which may
+    /// differ from `view_globals` for overlay units whose `WaveSnapshot` was
+    /// taken before earlier siblings published.
+    fragment_globals: usize,
     extension_frontier: usize,
     /// The program's globals the unit's own analysis added.
     added: Vec<usize>,
@@ -2923,12 +2938,40 @@ impl CompilationSession {
     /// (light-cljs-347, `compile_cache::declaration_view`). The units in
     /// `skip`, declaration bundles', are left out: their products are
     /// the top-level pass's globals, and their fragments are released.
+    ///
+    /// When `merged_program` is `Some`, the units have already merged at
+    /// `merge_front`, so their added globals are read directly from the
+    /// captured `added` global indices on `merged_program`. Otherwise (at a
+    /// miss->hit barrier before merge), `macro_free` units are skipped because
+    /// they cannot define globals, and non-`macro_free` settled fragments are
+    /// read beyond `fragment_globals`.
     pub(crate) fn unit_global_names(
         &self,
         units: std::ops::Range<usize>,
         namespace: &str,
         skip: &[usize],
+        merged_program: Option<&Program>,
     ) -> Option<Vec<String>> {
+        if let Some(program) = merged_program {
+            let capture = self.capture.borrow();
+            let capture = capture.as_ref()?;
+            let mut names = Vec::new();
+            for unit in units {
+                if skip.contains(&unit) {
+                    continue;
+                }
+                let entry = unit
+                    .checked_sub(capture.first_unit)
+                    .and_then(|index| capture.units.get(index))?;
+                for &global_id in &entry.added {
+                    let global = &program.globals[global_id];
+                    if global.namespace == namespace {
+                        names.push(global.name.clone());
+                    }
+                }
+            }
+            return Some(names);
+        }
         let views: Vec<usize> = {
             let capture = self.capture.borrow();
             let capture = capture.as_ref()?;
@@ -2937,7 +2980,7 @@ impl CompilationSession {
                 .map(|unit| {
                     unit.checked_sub(capture.first_unit)
                         .and_then(|index| capture.units.get(index))
-                        .map(|entry| entry.view_globals)
+                        .map(|entry| entry.fragment_globals)
                 })
                 .collect::<Option<_>>()?
         };
@@ -2947,7 +2990,11 @@ impl CompilationSession {
             if skip.contains(&unit) {
                 continue;
             }
-            let program = match &c.units.get(unit)?.state {
+            let entry = c.units.get(unit)?;
+            if entry.macro_free {
+                continue;
+            }
+            let program = match &entry.state {
                 AnalysisState::Analyzed(program, ..) => program.clone(),
                 AnalysisState::Prepared(program, ..) => program.upgrade()?,
                 _ => return None,
@@ -3479,11 +3526,6 @@ impl CompilationSession {
             .map_err(|e| e.to_string())?;
         engine.release(value).map_err(|e| e.to_string())
     }
-    pub(crate) fn take_gensyms_from_engine(
-        engine: &dyn MacroEvaluator,
-    ) -> Result<(u64, Vec<Vec<u16>>), String> {
-        Self::take_gensyms_from(engine)
-    }
     fn take_gensyms_from(engine: &dyn MacroEvaluator) -> Result<(u64, Vec<Vec<u16>>), String> {
         let value = engine
             .evaluate_unit("rt => rt.compilerForms.takeGensyms()")
@@ -3710,15 +3752,6 @@ impl CompilationSession {
         source.push_str("]) ?? null");
         let value = engine.evaluate_unit(&source).map_err(|e| e.to_string())?;
         engine.release(value).map_err(|e| e.to_string())
-    }
-    /// What the registry gained, logged as `r` and the name for a namespace
-    /// a registration added, `c` and the name for any other; then the log
-    /// starts again, of a unit a pool may place with `pooled` (build.rs).
-    pub(crate) fn take_namespaces_from_engine(
-        engine: &dyn MacroEvaluator,
-        pooled: bool,
-    ) -> Result<Vec<crate::namespace_artifact::RegistryEntry>, String> {
-        Self::take_namespaces_from(engine, pooled)
     }
     /// Like [`Self::take_namespaces_from`], caching the per-isolate JS wrapper
     /// in `cached` so repeated unit drains call the handle directly without
@@ -4206,6 +4239,15 @@ impl CompilationSession {
             snapshot,
             environment,
         } = *inputs;
+        // A `:test` unit analyzed inline inside an overlay (`warning_mode`)
+        // embeds `LOCAL_UNIT_BASE` inside its prepared JS and fragment IR;
+        // fall back cleanly to the coordinator so canonical unit IDs exist
+        // before analysis.
+        if snapshot.definition_test_unit.is_some()
+            && let Some(overlay) = self.local_overlay.borrow_mut().as_mut()
+        {
+            overlay.reflected_in_engine = true;
+        }
         let mut host = MacroHost::from_parts(environment, worker_frame.frame()).macro_analysis_frame();
         if host.engine.bootstrap.is_none() {
             host.engine.bootstrap = self.bootstrap();
@@ -4313,6 +4355,7 @@ impl CompilationSession {
     /// in canonical order under a single catalog lock, relocating all local unit
     /// IDs (`>= LOCAL_UNIT_BASE`) to canonical IDs `base .. base + units.len()`.
     /// Returns `(base_unit_id, pooled_pairs)` ready for pool submission.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn publish_overlay(
         &self,
         output: NamespaceOverlayOutput,
@@ -4320,6 +4363,8 @@ impl CompilationSession {
         dispatched_local_ids: &[usize],
         forced_lanes: bool,
         can_pool: bool,
+        snap_globals_len: usize,
+        canonical_globals_len: usize,
     ) -> Result<(usize, Vec<(usize, bool)>), String> {
         let relocate = |id: usize, base: usize| -> usize {
             if id >= LOCAL_UNIT_BASE {
@@ -4356,8 +4401,10 @@ impl CompilationSession {
                     }
                 }
                 if let Some(capture) = capture_units.as_mut() {
+                    let own_globals = local.view_globals.saturating_sub(snap_globals_len);
                     capture.units.push(UnitCapture {
-                        view_globals: local.view_globals,
+                        view_globals: canonical_globals_len + own_globals,
+                        fragment_globals: local.view_globals,
                         extension_frontier: canonical_frontier,
                         added: Vec::new(),
                     });
@@ -4461,7 +4508,11 @@ impl CompilationSession {
         if !output.captured_macros.is_empty()
             && let Some(capture) = self.capture.borrow_mut().as_mut()
         {
-            capture.macros.extend(output.captured_macros);
+            for mut captured in output.captured_macros {
+                let own_globals = captured.view_globals.saturating_sub(snap_globals_len);
+                captured.view_globals = canonical_globals_len + own_globals;
+                capture.macros.push(captured);
+            }
         }
         if needs_sync {
             self.sync_catalog(None)?;
@@ -5172,8 +5223,10 @@ impl CompilationSession {
             let id = form.map(|form| {
                 let id = c.units.len();
                 if let Some(capture) = self.capture.borrow_mut().as_mut() {
+                    let view_globals = snapshot.resolution_program.globals.len();
                     capture.units.push(UnitCapture {
-                        view_globals: snapshot.resolution_program.globals.len(),
+                        view_globals,
+                        fragment_globals: view_globals,
                         extension_frontier: snapshot.extension_frontier,
                         added: Vec::new(),
                     });
@@ -5727,8 +5780,12 @@ impl CompilationSession {
             observations,
             gensyms,
             namespaces,
+            emitted,
             ..
         } = charges;
+        for emitted_id in emitted {
+            self.shared.set_emitted(emitted_id);
+        }
         if let (Some(observations), Some(log)) =
             (observations, binding.dependency_log.borrow_mut().as_mut())
         {
@@ -5738,15 +5795,8 @@ impl CompilationSession {
             span: 0..0,
             kind: crate::analyzer::AnalysisErrorKind::MacroExpansion(error),
         })?;
-        if !namespaces.is_empty() {
-            self.absorb_namespaces(
-                namespaces,
-                crate::namespace_artifact::UnitDispatch::Coordinator,
-            )
-            .map_err(|error| crate::AnalysisError {
-                span: 0..0,
-                kind: crate::analyzer::AnalysisErrorKind::MacroExpansion(error),
-            })?;
+        if !namespaces.is_empty() && self.namespaces_logged.get() {
+            self.note_namespaces(namespaces, None);
         }
         self.shared
             .raise_charged(binding.expansions.get(), binding.generated_nodes.get());
@@ -5978,7 +6028,8 @@ impl CompilationSession {
                     && let Some(observations) = self.shared.take_observations(id)
                     && let Some(log) = binding.dependency_log.borrow_mut().as_mut()
                 {
-                    log.absorb(*observations);
+                    let observer = self.shared.unit_source(id).unwrap_or(log.window);
+                    log.absorb_for(observer, *observations);
                 }
                 return analysis;
             }
@@ -6105,8 +6156,12 @@ impl CompilationSession {
             gensyms,
             namespaces,
             events,
+            emitted,
             ..
         } = *charges;
+        for emitted_id in emitted {
+            self.shared.set_emitted(emitted_id);
+        }
         // What the drain point charged, for its namespace's artifact,
         // whose installation charges it there again.
         if take == Take::Drain {
@@ -6115,7 +6170,8 @@ impl CompilationSession {
         if let (Some(observations), Some(log)) =
             (observations, binding.dependency_log.borrow_mut().as_mut())
         {
-            log.absorb(*observations);
+            let observer = self.shared.unit_source(id).unwrap_or(log.window);
+            log.absorb_for(observer, *observations);
         }
         if let Err(error) = self.absorb_gensyms(gensyms) {
             self.shared.fail(id, error.clone(), None);
@@ -6439,12 +6495,14 @@ fn analyze_unit(
                 events,
                 macro_depth: host.engine.work.macro_depth.get(),
                 analysis_depth: host.engine.work.analysis_depth.get(),
+                unit_depth: 0,
                 limits: (host.limits.expansions, host.limits.generated_nodes),
                 depth_limit: host.limits.expansion_depth.min(64),
                 location,
                 observations: recorded.observations,
                 gensyms,
                 namespaces,
+                emitted: recorded.emitted,
                 trace: None,
             };
             (analysis, Some((charges, started.elapsed())))
@@ -6732,9 +6790,14 @@ fn compile_unit_in(
         crate::reader_registration::register(active, tables).map_err(|e| e.to_string())
     };
     // JavaScript is running: a macro's reader view may be active.
+    let mark_emitted = || {
+        if !crate::macro_host::record_emitted(id) {
+            shared.set_emitted(id);
+        }
+    };
     crate::reader_registration::in_callback(active, || {
         if let Some(prepared) = prepared {
-            shared.set_emitted(id);
+            mark_emitted();
             register(prepared.tables())?;
             return Ok(prepared.code().to_owned());
         }
@@ -6754,7 +6817,7 @@ fn compile_unit_in(
                     #[cfg(not(feature = "bbp-macros"))]
                     crate::emitter::emit_deferred_unit(&program)
                 };
-                shared.set_emitted(id);
+                mark_emitted();
                 register(&crate::reader_registration::ReaderTables::of(&program))?;
                 Ok(code)
             }
@@ -6762,7 +6825,7 @@ fn compile_unit_in(
             // program after this one looked; its JavaScript is prepared.
             Err(error) => match shared.prepared(id)? {
                 Some(prepared) => {
-                    shared.set_emitted(id);
+                    mark_emitted();
                     register(prepared.tables())?;
                     Ok(prepared.code().to_owned())
                 }
@@ -8375,7 +8438,7 @@ pub(crate) fn install_catalog_services(
                 if crate::macro_host::MacroFreeUnit::active() && log.borrow().is_some() {
                     let own = log.borrow().as_ref().map(|log| {
                         crate::dependency_manifest::ObservationLog {
-                            window: log.window,
+                            window: analysis.first().copied().unwrap_or(log.window),
                             ..Default::default()
                         }
                     });

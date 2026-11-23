@@ -71,6 +71,8 @@ pub(super) struct ReadyNamespace {
     pub(super) publication: NamespacePublication,
     pub(super) metadata: NamespaceMetadata,
     pub(super) overlay: NamespaceOverlayOutput,
+    pub(super) resolution: crate::analyzer::NamespaceResolution,
+    pub(super) snap_globals_len: usize,
 }
 
 struct CompletedNamespace {
@@ -322,6 +324,7 @@ impl ParallelTopLevel {
         build: &BuildGuard,
         options: AnalysisOptions,
         recording_cfg: UnitRecording,
+        skip_speculation: impl Fn(&str) -> bool,
     ) {
         self.reap_completed(current_index);
         if self.in_flight >= self.max_in_flight {
@@ -362,6 +365,11 @@ impl ParallelTopLevel {
                 continue;
             }
             let file = &ordered[j];
+            // Do not speculatively analyze warm cache candidates; they go
+            // through cache lookup when canonical `index` reaches them.
+            if skip_speculation(&file.name) {
+                continue;
+            }
             let class = if self.force_engine[j] {
                 TopLevelClass::Engine
             } else if let Some((v, r, cached)) = self.needs_engine_cache[j]
@@ -490,7 +498,7 @@ impl ParallelTopLevel {
                         prefix_bundles,
                         prefix_env_bundles,
                         pool_policy,
-                        false,
+                        recording_cfg.capture,
                         overlay_synced,
                     );
                     frame.session = Some(ns_session.clone());
@@ -511,6 +519,7 @@ impl ParallelTopLevel {
                                 aliases: &file_clone.aliases,
                                 requires: &file_clone.requires,
                             };
+                            let captured_resolution = resolution.clone();
                             job.analyze_overlay(
                                 &input,
                                 resolution,
@@ -519,6 +528,7 @@ impl ParallelTopLevel {
                                 options,
                                 recording_cfg,
                             )
+                            .map(|publication| (publication, captured_resolution))
                         });
 
                     let entered_engine = worker_host.engine.entered_engine.get();
@@ -534,7 +544,7 @@ impl ParallelTopLevel {
                         TopLevelOutcome::NeedCoordinator { retry: false }
                     } else {
                         match outcome_res {
-                            Ok(publication) => {
+                            Ok((publication, resolution)) => {
                                 if data_readers_after != snap_data_readers {
                                     TopLevelOutcome::NeedCoordinator { retry: false }
                                 } else {
@@ -548,6 +558,8 @@ impl ParallelTopLevel {
                                                 publication,
                                                 metadata,
                                                 overlay,
+                                                resolution,
+                                                snap_globals_len,
                                             },
                                             snap_index: current_index,
                                             snap_globals_len,

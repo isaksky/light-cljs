@@ -736,3 +736,349 @@ fn warning_mode_reserves_coordinator_work_in_plain_and_engine_waves() {
         "[3 4 5 6 7 8 9 10 11 12]\n"
     );
 }
+
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) {
+    std::fs::create_dir_all(dst).unwrap();
+    for entry in std::fs::read_dir(src).unwrap() {
+        let entry = entry.unwrap();
+        let target = dst.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_dir_recursive(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+fn build_cached(
+    sources: &Sources,
+    entry: &str,
+    slots: usize,
+    warning_mode: bool,
+    cache_dir: &std::path::Path,
+) -> (
+    crate::macro_free_units::Built,
+    light_cljs::compile_stats::CacheCounts,
+) {
+    use light_cljs::analyzer::AnalysisOptions;
+    use light_cljs::compile_cache::{CacheOptions, CompileCache};
+    let mut host = isolate_per_slot();
+    let options = AnalysisOptions {
+        warning_mode,
+        ..Default::default()
+    };
+    let mut cache = CompileCache::open(
+        &CacheOptions {
+            dir: cache_dir.to_path_buf(),
+            ..Default::default()
+        },
+        &host,
+        options,
+        entry,
+    );
+    let mut warnings = Vec::new();
+    let mut stats = light_cljs::CompileStats::new();
+    let analyzed = light_cljs::compiler::analyze_namespace_entry_recorded(
+        entry,
+        std::slice::from_ref(sources.root()),
+        &mut host,
+        options,
+        &mut warnings,
+        light_cljs::compiler::EntryRecorders {
+            stats: Some(&mut stats),
+            cache: Some(&mut cache),
+            slots: light_cljs::scheduler::Slots::new(slots).unwrap(),
+            ..Default::default()
+        },
+    );
+    if analyzed.is_ok() {
+        cache.finish();
+    }
+    let counts = cache.take_counts();
+    let program = analyzed.as_ref().ok().map(|(program, _)| program);
+    let built = crate::macro_free_units::Built {
+        spans: program.map_or_else(Vec::new, |program| {
+            program
+                .exprs
+                .iter()
+                .map(|e| (e.source_index, e.span.clone()))
+                .collect()
+        }),
+        mapped: program.map_or_else(Vec::new, |program| {
+            [
+                light_cljs::application::OptimizationLevel::None,
+                light_cljs::application::OptimizationLevel::Prepare,
+            ]
+            .map(|optimize| {
+                let options = light_cljs::application::ApplicationOptions {
+                    optimize,
+                    ..Default::default()
+                };
+                light_cljs::prepare_application(program, options).emit_js_mapped()
+            })
+            .into()
+        }),
+        output: analyzed
+            .map(|(program, _)| light_cljs::emit_js(&program))
+            .map_err(|error| error.to_string()),
+        warnings: warnings
+            .into_iter()
+            .map(|w| (w.kind.to_owned(), w.message, w.source_index, w.span))
+            .collect(),
+        stats,
+    };
+    (built, counts)
+}
+
+fn build_cache_fixture() -> Sources {
+    let sources = Sources::new();
+    sources
+        .write("data/token.txt", "alpha")
+        .write(
+            "app/macros.cljc",
+            r#"(ns app.macros (:require [light.build :as b]))
+(defn helper [x] (list '+ x 1))
+(defmacro add-two [x] (helper (helper x)))
+(defmacro named-add [x] (let [s (gensym "tmp")] `(let [~s ~x] (+ ~s 5))))
+(defmacro read-token [] (b/resource "data/token.txt"))"#,
+        )
+        .write(
+            "app/proto.cljs",
+            r#"(ns app.proto)
+(defprotocol Metric (score [x]))
+(extend-type number Metric (score [n] (* n 2)))
+(defmulti dispatch :kind)
+(defmethod dispatch :default [_] 0)"#,
+        )
+        .write(
+            "app/mid_plain.cljs",
+            r#"(ns app.mid-plain)
+(defn make-val [x]
+  (def hidden-shadow (+ x 1))
+  (+ x 10))
+(def base-v (make-val 3))"#,
+        )
+        .write(
+            "app/mid_macro.cljs",
+            r#"(ns app.mid-macro)
+(defmacro scale [x] `(* ~x 3))"#,
+        );
+
+    let mut requires = String::from(
+        "[app.macros :as m] [app.proto :as p] [app.mid-plain :as mp] [app.mid-macro :as mm] ",
+    );
+    let mut exprs = String::from("mp/base-v (mm/scale 2) ");
+
+    // Wide sibling layer so ParallelTopLevel runs overlays during cold cache-fill,
+    // mixing plain namespaces, macro users, protocols/records/multimethods,
+    // defonce, :test metadata, and light.build/resource.
+    for i in 0..10 {
+        let ns_name = format!("app.s{i}");
+        let body = match i % 3 {
+            0 => format!(
+                r#"(ns {ns_name} (:require [app.macros :refer [add-two named-add]] [app.proto :as p] [app.mid-plain :as mp]))
+(defprotocol LocalP{i} (local-v{i} [x]))
+(defrecord Rec{i} [v]
+  p/Metric (score [_] (+ v {i}))
+  LocalP{i} (local-v{i} [_] (* v 3)))
+(extend-protocol p/Metric
+  string (score [s] (+ (count s) {i})))
+(defmethod p/dispatch :k{i} [m] (+ (:v m) {i}))
+(defonce stable-{i} (add-two {i}))
+(def top-{i} (named-add mp/base-v))
+(defn compute-{i} {{:test (fn [] true)}} [x]
+  (+ (p/score (->Rec{i} x)) (local-v{i} (->Rec{i} x)) (p/dispatch {{:kind :k{i} :v x}}) stable-{i} top-{i}))"#
+            ),
+            1 => format!(
+                r#"(ns {ns_name} (:require [app.proto :as p] [app.mid-macro :refer [scale]]))
+(defn pure-{i} [x] (+ (scale x) {i} (p/score x)))
+(def val-{i} (pure-{i} {i}))"#
+            ),
+            _ => format!(
+                r#"(ns {ns_name} (:require [app.macros :refer [read-token add-two]]))
+(def tok-{i} (read-token))
+(defn compute-{i} [x] (str tok-{i} "-" (add-two (+ x {i}))))"#
+            ),
+        };
+        sources.write(&format!("app/s{i}.cljs"), &body);
+        requires.push_str(&format!("[{ns_name} :as s{i}] "));
+        match i % 3 {
+            0 => exprs.push_str(&format!("(s{i}/compute-{i} {i}) ")),
+            1 => exprs.push_str(&format!("s{i}/val-{i} ")),
+            _ => exprs.push_str(&format!("(s{i}/compute-{i} {i}) ")),
+        }
+    }
+
+    // Late namespaces after the siblings that hit on warm rebuilds when only
+    // an independent mid-graph branch is edited.
+    for i in 0..4 {
+        let ns_name = format!("app.late{i}");
+        sources.write(
+            &format!("app/late{i}.cljs"),
+            &format!(
+                r#"(ns {ns_name} (:require [app.proto :as p]))
+(defn late-fn-{i} [x] (+ (p/score x) {i}))
+(def late-v-{i} (late-fn-{i} 4))"#
+            ),
+        );
+        requires.push_str(&format!("[{ns_name} :as l{i}] "));
+        exprs.push_str(&format!("l{i}/late-v-{i} "));
+    }
+
+    sources.write(
+        "app/main.cljs",
+        &format!("(ns app.main (:require {requires}))\n(js/console.log (pr-str [{exprs}]))"),
+    );
+    sources
+}
+
+#[test]
+fn parallel_top_level_cache_cross_jobs_reuse_and_byte_identity() {
+    let sources = build_cache_fixture();
+    // 20 namespaces total: light.build, macros, proto, mid_plain, mid_macro, 10 siblings, 4 late, main.
+    let expected_namespaces = 20usize;
+
+    for warning_mode in [false, true] {
+        let oracle = build_with(&sources, "app.main", 1, warning_mode, isolate_per_slot());
+        let expected_run = execute(oracle.output.as_ref().unwrap());
+
+        // Populate with `--jobs 8`, then warm rebuild with `--jobs 1`.
+        let cache_8_to_1 = crate::temp_dir::TempDir::new("cljs-ptl-cache-8to1");
+        let (cold_8, cold_8_counts) =
+            build_cached(&sources, "app.main", 8, warning_mode, cache_8_to_1.path());
+        assert_eq!(cold_8.output, oracle.output, "cold j=8 warning_mode={warning_mode}");
+        assert_eq!(cold_8.warnings, oracle.warnings, "cold j=8 warnings");
+        assert_eq!(cold_8_counts.hits, 0);
+        assert_eq!(cold_8_counts.published, expected_namespaces);
+        assert_eq!(execute(cold_8.output.as_ref().unwrap()), expected_run);
+        if !crate::macro_free_units::PANTS_BUILD {
+            assert!(
+                cold_8.stats.deferred_units.pool.started > 0,
+                "cold j=8 should use worker pool (warning_mode={warning_mode})"
+            );
+        }
+
+        let (warm_1, warm_1_counts) =
+            build_cached(&sources, "app.main", 1, warning_mode, cache_8_to_1.path());
+        assert_eq!(warm_1_counts.misses, Vec::new(), "j=8->j=1 misses (warning_mode={warning_mode})");
+        assert_eq!(warm_1_counts.hits, expected_namespaces);
+        assert_eq!(warm_1.output, oracle.output, "j=8->j=1 output");
+        assert_eq!(warm_1.warnings, oracle.warnings, "j=8->j=1 warnings");
+
+        // Populate with `--jobs 1`, then warm rebuild with `--jobs 8`.
+        let cache_1_to_8 = crate::temp_dir::TempDir::new("cljs-ptl-cache-1to8");
+        let (cold_1, cold_1_counts) =
+            build_cached(&sources, "app.main", 1, warning_mode, cache_1_to_8.path());
+        assert_eq!(cold_1.output, oracle.output, "cold j=1 warning_mode={warning_mode}");
+        assert_eq!(cold_1_counts.hits, 0);
+        assert_eq!(cold_1_counts.published, expected_namespaces);
+
+        let (warm_8, warm_8_counts) =
+            build_cached(&sources, "app.main", 8, warning_mode, cache_1_to_8.path());
+        assert_eq!(warm_8_counts.misses, Vec::new(), "j=1->j=8 misses (warning_mode={warning_mode})");
+        assert_eq!(warm_8_counts.hits, expected_namespaces);
+        assert_eq!(warm_8.output, oracle.output, "j=1->j=8 output");
+        assert_eq!(warm_8.warnings, oracle.warnings, "j=1->j=8 warnings");
+    }
+}
+
+#[test]
+fn parallel_top_level_mixed_miss_hit_barrier_and_error_precedence() {
+    let sources = build_cache_fixture();
+    let base_cache = crate::temp_dir::TempDir::new("cljs-ptl-mixed-base");
+    let (cold, cold_counts) = build_cached(&sources, "app.main", 8, false, base_cache.path());
+    assert_eq!(cold_counts.published, 20);
+    let _ = execute(cold.output.as_ref().unwrap());
+
+    let assert_mixed_matches = |label: &str, sources: &Sources| {
+        let cache_1 = crate::temp_dir::TempDir::new("cljs-ptl-mixed-j1");
+        let cache_8 = crate::temp_dir::TempDir::new("cljs-ptl-mixed-j8");
+        copy_dir_recursive(base_cache.path(), cache_1.path());
+        copy_dir_recursive(base_cache.path(), cache_8.path());
+
+        let oracle = build_with(sources, "app.main", 1, false, isolate_per_slot());
+        let (warm_1, counts_1) = build_cached(sources, "app.main", 1, false, cache_1.path());
+        let (warm_8, counts_8) = build_cached(sources, "app.main", 8, false, cache_8.path());
+
+        assert_eq!(warm_1.output, oracle.output, "{label}: j=1 cached vs uncached");
+        assert_eq!(warm_8.output, oracle.output, "{label}: j=8 cached vs uncached");
+        assert_eq!(warm_8.output, warm_1.output, "{label}: j=8 vs j=1 output");
+        assert_eq!(counts_8.hits, counts_1.hits, "{label}: hit count mismatch");
+        assert_eq!(counts_8.misses, counts_1.misses, "{label}: miss set mismatch");
+        assert_eq!(counts_8.bypasses, counts_1.bypasses, "{label}: bypass set mismatch");
+        assert!(counts_8.hits > 0 && !counts_8.misses.is_empty(), "{label}: expected mixed hits+misses");
+
+        // Second rebuild on the updated cache must be 100% hits at both j=1 and j=8.
+        let (after_8, after_8_counts) = build_cached(sources, "app.main", 8, false, cache_8.path());
+        assert_eq!(after_8_counts.misses, Vec::new(), "{label}: post-edit warm j=8 misses");
+        assert_eq!(after_8.output, oracle.output, "{label}: post-edit warm j=8 output");
+    };
+
+    // 1. Edit mid-graph non-macro provider (including deferred `def` shadowing a core name).
+    sources.write(
+        "app/mid_plain.cljs",
+        r#"(ns app.mid-plain)
+(defn make-val [x]
+  (def count (+ x 2))
+  (+ x 20))
+(def base-v (make-val 3))"#,
+    );
+    assert_mixed_matches("mid-graph non-macro provider edit", &sources);
+
+    // 2. Edit mid-graph macro provider.
+    sources.write(
+        "app/mid_macro.cljs",
+        r#"(ns app.mid-macro)
+(defmacro scale [x] `(* ~x 7))"#,
+    );
+    assert_mixed_matches("mid-graph macro provider edit", &sources);
+
+    // 3. Edit light.build/resource read by macro-expanding siblings.
+    sources.write("data/token.txt", "beta");
+    assert_mixed_matches("light.build resource edit", &sources);
+
+    // 4. Unit failure in an edited earlier namespace before a cached later namespace
+    // must report the exact earliest failing namespace identically to `--jobs 1`.
+    sources.write(
+        "app/mid_plain.cljs",
+        r#"(ns app.mid-plain)
+(defn broken [] (quote))
+(def base-v 1)"#,
+    );
+    let cache_err_1 = crate::temp_dir::TempDir::new("cljs-ptl-err-j1");
+    let cache_err_8 = crate::temp_dir::TempDir::new("cljs-ptl-err-j8");
+    copy_dir_recursive(base_cache.path(), cache_err_1.path());
+    copy_dir_recursive(base_cache.path(), cache_err_8.path());
+    let (err_1, _) = build_cached(&sources, "app.main", 1, false, cache_err_1.path());
+    let (err_8, _) = build_cached(&sources, "app.main", 8, false, cache_err_8.path());
+    assert!(err_1.output.is_err());
+    assert_eq!(err_8.output, err_1.output, "mixed miss->hit failure error mismatch");
+}
+
+#[test]
+fn manifest_only_deferred_observations_match_serial() {
+    let sources = build_cache_fixture();
+    let build_manifest = |slots: usize| {
+        let mut host = isolate_per_slot();
+        let mut warnings = Vec::new();
+        let mut manifest = light_cljs::dependency_manifest::DependencyManifest::default();
+        let (program, _) = light_cljs::compiler::analyze_namespace_entry_recorded(
+            "app.main",
+            std::slice::from_ref(sources.root()),
+            &mut host,
+            light_cljs::analyzer::AnalysisOptions::default(),
+            &mut warnings,
+            light_cljs::compiler::EntryRecorders {
+                manifest: Some(&mut manifest),
+                slots: light_cljs::scheduler::Slots::new(slots).unwrap(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        (light_cljs::emit_js(&program), manifest)
+    };
+    let (js_1, manifest_1) = build_manifest(1);
+    let (js_8, manifest_8) = build_manifest(8);
+    assert_eq!(js_8, js_1);
+    assert_eq!(manifest_8, manifest_1);
+}

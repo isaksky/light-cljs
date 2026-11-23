@@ -786,6 +786,10 @@ impl ObservationLog {
     /// An observation of `namespace` by the source being analyzed.
     pub fn named(&mut self, namespace: &str, kinds: EdgeKinds) {
         let observer = self.window;
+        self.named_for(observer, namespace, kinds);
+    }
+    /// An observation of `namespace` attributed to `observer`.
+    pub fn named_for(&mut self, observer: u32, namespace: &str, kinds: EdgeKinds) {
         if self.named.last().is_none_or(|(last, name, last_kinds)| {
             *last != observer || name != namespace || *last_kinds != kinds
         }) {
@@ -806,19 +810,98 @@ impl ObservationLog {
     /// (docs/compiler-concurrency.md, "As built (light-cljs-374)"). Its
     /// observations by the source being analyzed are this log's window's.
     pub(crate) fn absorb(&mut self, other: ObservationLog) {
-        for (observer, position) in other.loaded {
-            self.loaded(observer as usize, position as usize);
+        let observer = self.window;
+        self.absorb_for(observer, other);
+    }
+    /// Like [`Self::absorb`], attributing `other.named` to `observer` instead
+    /// of `self.window` (used when draining deferred units after `self.window`
+    /// has advanced to a later namespace).
+    pub(crate) fn absorb_for(&mut self, observer: u32, other: ObservationLog) {
+        for (loaded_observer, position) in other.loaded {
+            self.loaded(loaded_observer as usize, position as usize);
         }
         for (_, namespace, kinds) in other.named {
-            self.named(&namespace, kinds);
+            self.named_for(observer, &namespace, kinds);
         }
-        for (observer, namespace) in other.absent {
-            self.absent(observer as usize, &namespace);
+        for (absent_observer, namespace) in other.absent {
+            self.absent(absent_observer as usize, &namespace);
         }
         for source in other.executes {
             self.executes(source as usize);
         }
         self.inputs.extend(other.inputs);
+    }
+    /// Extract all observations attributed to `observer` while leaving entries
+    /// for other in-flight namespaces in `self`, preserving relative order.
+    pub(crate) fn take_observations_for(&mut self, observer: u32) -> ObservationLog {
+        let mut taken = ObservationLog {
+            window: observer,
+            configuration: self.configuration,
+            ..Default::default()
+        };
+        let mut keep_loaded = Vec::with_capacity(self.loaded.len());
+        for entry in self.loaded.drain(..) {
+            if entry.0 == observer {
+                taken.loaded.push(entry);
+            } else {
+                keep_loaded.push(entry);
+            }
+        }
+        self.loaded = keep_loaded;
+
+        let mut keep_named = Vec::with_capacity(self.named.len());
+        for entry in self.named.drain(..) {
+            if entry.0 == observer {
+                taken.named.push(entry);
+            } else {
+                keep_named.push(entry);
+            }
+        }
+        self.named = keep_named;
+
+        let mut keep_absent = Vec::with_capacity(self.absent.len());
+        for entry in self.absent.drain(..) {
+            if entry.0 == observer {
+                taken.absent.push(entry);
+            } else {
+                keep_absent.push(entry);
+            }
+        }
+        self.absent = keep_absent;
+
+        let mut keep_executes = Vec::with_capacity(self.executes.len());
+        for source in self.executes.drain(..) {
+            if source == observer {
+                taken.executes.push(source);
+            } else {
+                keep_executes.push(source);
+            }
+        }
+        self.executes = keep_executes;
+
+        let mut keep_inputs = Vec::with_capacity(self.inputs.len());
+        for record in self.inputs.drain(..) {
+            if record.own == observer {
+                taken.inputs.push(record);
+            } else {
+                keep_inputs.push(record);
+            }
+        }
+        self.inputs = keep_inputs;
+
+        taken
+    }
+    /// Append another log's already-attributed entries preserving each entry's
+    /// recorded observer and order.
+    pub(crate) fn append_attributed(&mut self, other: ObservationLog) {
+        self.loaded.extend(other.loaded);
+        self.named.extend(other.named);
+        self.absent.extend(other.absent);
+        self.executes.extend(other.executes);
+        self.inputs.extend(other.inputs);
+        if self.configuration.is_none() {
+            self.configuration = other.configuration;
+        }
     }
 }
 

@@ -165,6 +165,16 @@ impl CompileCache {
         self.snapshot.reservation()
     }
 
+    /// Whether this compilation's snapshot holds any candidate artifact for
+    /// `namespace` (excluding cache blockers).
+    pub(crate) fn has_candidates(&self, namespace: &str) -> bool {
+        !self.blockers.iter().any(|blocker| blocker == namespace)
+            && self
+                .snapshot
+                .candidates(namespace)
+                .is_ok_and(|candidates| !candidates.is_empty())
+    }
+
     /// What the cache did so far.
     pub fn counts(&self) -> &CacheCounts {
         &self.counts
@@ -1700,7 +1710,15 @@ pub(crate) struct DeclarationSource<'a> {
     pub source_name: &'a str,
     pub text: &'a str,
     /// Its top-level forms' byte ranges, in source order.
-    pub forms: Vec<std::ops::Range<usize>>,
+    pub forms: &'a [std::ops::Range<usize>],
+    /// End marks captured immediately after this namespace's top-level pass,
+    /// before later namespaces run during deferred keying.
+    pub units_end: usize,
+    pub registrations_end: usize,
+    pub globals_end: usize,
+    /// Whether this namespace's deferred units have already merged into
+    /// `program` (`merge_front`).
+    pub merged: bool,
 }
 
 /// What a source macro of a later namespace can see of the namespace
@@ -1715,9 +1733,9 @@ pub(crate) struct DeclarationSource<'a> {
 /// existed before it: a redefinition, or the definition of a `declare`d
 /// Var, which code before the end may call. The Vars its units' bodies
 /// define (a `def` in a function) count too, read from their settled
-/// fragments, since they reach the program only at its drain point; when a
-/// fragment cannot be read, or there is no session, the view is `None`,
-/// unknown, and later views cover its whole key.
+/// fragments (or merged unit records once drained); when a fragment cannot
+/// be read, or there is no session, the view is `None`, unknown, and later
+/// views cover its whole key.
 pub(crate) fn declaration_view(
     program: &crate::analyzer::Program,
     start: &crate::artifact_capture::CaptureStart,
@@ -1729,11 +1747,11 @@ pub(crate) fn declaration_view(
     use crate::sha256::Fingerprint;
     let namespace = source.namespace;
     let session = session?;
-    let (units, end, _) = session.capture_marks();
-    let registrations = session.captured_registrations(start.registrations()..end);
+    let registrations =
+        session.captured_registrations(start.registrations()..source.registrations_end);
     // The globals its units' bodies add (a `def` in a function) reach the
-    // program, and a later macro's reader tables, only when they merge,
-    // after this namespace is keyed: read them from the settled fragments.
+    // program, and a later macro's reader tables, only when they merge: read
+    // them from settled fragments before merge, or merged records after merge.
     let bundle_units: Vec<usize> = registrations
         .iter()
         .filter_map(|registration| match registration {
@@ -1741,7 +1759,12 @@ pub(crate) fn declaration_view(
             RegistrationRecord::Root { .. } => None,
         })
         .collect();
-    let deferred = session.unit_global_names(start.units()..units, namespace, &bundle_units)?;
+    let deferred = session.unit_global_names(
+        start.units()..source.units_end,
+        namespace,
+        &bundle_units,
+        source.merged.then_some(program),
+    )?;
     let mut interface = Fingerprint::new("light-cljs declaration interface");
     match program.reader_contexts.get(namespace) {
         None => interface.absent(),
@@ -1766,8 +1789,7 @@ pub(crate) fn declaration_view(
             // it only when it is a core name or a refer.
             let mut shadowing: Vec<&str> = program
                 .globals
-                .iter()
-                .skip(start.globals())
+                .range(start.globals()..source.globals_end)
                 .filter(|global| global.namespace == namespace)
                 .map(|global| global.name.as_str())
                 .chain(deferred.iter().map(String::as_str))
@@ -1836,8 +1858,7 @@ pub(crate) fn declaration_view(
             let local = local.split_once(' ').map_or(local, |(var, _)| var);
             let global = program
                 .globals
-                .iter()
-                .skip(start.globals())
+                .range(start.globals()..source.globals_end)
                 .find(|global| global.namespace == namespace && global.name == local)?;
             if global.source_index != source.source_index || global.span.start < end {
                 return None;

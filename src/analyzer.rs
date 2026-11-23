@@ -3438,6 +3438,10 @@ struct DeferredUnit {
     /// every `--jobs` value so that the coordinator's engine starts at the
     /// same point at every one ([`Analyzer::dispatch_deferred`]).
     may_enter_engine: bool,
+    /// Whether this unit was dispatched as macro-free (`macro_free_form` /
+    /// `macro_free_bundle` with `unit_slots > 1`): cannot record observations
+    /// or define globals, so observation/key settling skips waiting for it.
+    macro_free: bool,
 }
 
 #[cfg(test)]
@@ -4696,24 +4700,32 @@ impl NamespaceAnalysis {
             .any(|unit| pooled.next_if_eq(&unit.unit).is_none() && session.unit_failed(unit.unit))
     }
 
-    /// Take the outcomes of the units of the namespace just analyzed, in
-    /// unit order, waiting for the pool's, and add what they observed to
-    /// the dependency log now, before the next namespace's top-level pass:
-    /// in a build that records what analysis observes, whose namespace is
-    /// keyed by it before the next one is looked up. Their drain point
-    /// still charges, publishes and merges them after the lag, as in a
-    /// build that records nothing (light-cljs-394). `Err` at the first
-    /// that failed, which its drain point reports; the pool starts no later
-    /// unit, so no later namespace settles.
-    pub(crate) fn settle_last(&self, macro_host: &MacroHost) -> Result<(), ()> {
-        let (Some(Pending::Analyzed(drained)), Some(session)) =
-            (self.pending.back(), macro_host.session_handle())
-        else {
+    /// Take the observations of the non-`macro_free` units of the pending
+    /// namespace `source_index`, in unit order, waiting for the pool's, and
+    /// add what they observed to the dependency log now (used at a miss->hit
+    /// cache barrier before looking up a later namespace with candidates).
+    /// `macro_free` units cannot record observations or execute `def`, so they
+    /// are skipped here and finish at their normal `DRAIN_LAG` drain point.
+    /// `Err` at the first unit that failed, which its drain point reports.
+    pub(crate) fn settle_pending(
+        &self,
+        source_index: usize,
+        macro_host: &MacroHost,
+    ) -> Result<(), ()> {
+        let Some(session) = macro_host.session_handle() else {
+            return Ok(());
+        };
+        let Some(Pending::Analyzed(drained)) = self.pending.iter().find(|pending| {
+            matches!(pending, Pending::Analyzed(d) if d.source_index == source_index)
+        }) else {
             return Ok(());
         };
         let mut pooled = drained.pooled.iter().copied().peekable();
         for unit in &drained.dispatched {
             let queued = pooled.next_if_eq(&unit.unit).is_some();
+            if unit.macro_free {
+                continue;
+            }
             session.observe_pooled(unit.unit, queued).map_err(drop)?;
         }
         Ok(())
@@ -9155,6 +9167,7 @@ impl Analyzer<'_> {
                     shared,
                     warnings_at: None,
                     may_enter_engine: !judged,
+                    macro_free,
                 });
                 placeholder
             }))
@@ -10323,6 +10336,7 @@ impl Analyzer<'_> {
             shared,
             warnings_at: None,
             may_enter_engine: true,
+            macro_free,
         });
         Ok(expr)
     }
