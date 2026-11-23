@@ -29,12 +29,14 @@
 
 use crate::artifact_codec::{self, DecodeLimits, ManifestFields};
 use crate::artifact_store::{
-    Inputs, MAX_OUTPUT_BYTES, Publish, Retention, Snapshot, StageAttempt, StagedArtifact, Store,
+    CommitCpu, EncodedArtifact, Inputs, MAX_OUTPUT_BYTES, Publish, Retention, Snapshot,
+    StageAttempt, StagedArtifact, Store,
 };
 use crate::cache_key::{
     Digest, FrontEndKey, KeyEnvironment, Mismatch, NamespaceKeys, RevalidateInputs,
 };
 use crate::cache_policy::{Bypass, NamespaceMetadata};
+use crate::compilation_session::PoolTaskSubmitter;
 use crate::compile_stats::{CacheCounts, OutputCounts};
 use crate::dependency_manifest::{BroadView, EdgeKinds, ExternalInput, LoaderRecord, NamespaceId};
 use crate::macro_host::MacroHost;
@@ -84,6 +86,15 @@ enum Pending {
     Miss(&'static str, String),
 }
 
+/// Kind of cache-publishing CPU work observed by test hooks.
+#[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CacheCpuKind {
+    ArtifactEncodeHash,
+    IndexEncodeHash,
+}
+
 /// One compilation's use of a cache directory.
 pub struct CompileCache {
     store: Store,
@@ -112,9 +123,10 @@ pub struct CompileCache {
     /// CPU slots available to this compilation, detected from the session's
     /// unit pool policy when `--jobs > 1`.
     slots: Slots,
-    /// Active compilation session whose unit pool supplies the CPU slots for
-    /// cache staging (revalidation, encoding, hashing) when `--jobs > 1`.
-    session: Option<std::rc::Weak<crate::compilation_session::CompilationSession>>,
+    /// `Send + Sync` submitter into the active compilation session's unit pool,
+    /// keeping cache staging and index encoding/hashing within `--jobs` while
+    /// preserving `CompileCache: Send`.
+    pool: Option<PoolTaskSubmitter>,
     /// Staged artifacts awaiting a batched commit on the inline (`Slots::ONE`)
     /// path, flushed every `PUBLISH_BATCH_SIZE` namespaces and on flush/finish.
     inline_batch: Vec<(NamespaceId, String, StagedArtifact)>,
@@ -124,6 +136,8 @@ pub struct CompileCache {
     /// True if spawning the background commit thread failed, so later publishes
     /// stay inline instead of retrying thread creation.
     pipeline_failed: bool,
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+    cpu_work_hook: Option<Arc<dyn Fn(CacheCpuKind) + Send + Sync>>,
 }
 
 impl CompileCache {
@@ -157,11 +171,28 @@ impl CompileCache {
             retention: options.retention,
             declaring: 0,
             slots: Slots::ONE,
-            session: None,
+            pool: None,
             inline_batch: Vec::new(),
             pipeline: None,
             pipeline_failed: false,
+            #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+            cpu_work_hook: None,
         }
+    }
+
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+    #[doc(hidden)]
+    pub fn set_cpu_work_hook(&mut self, hook: Option<Arc<dyn Fn(CacheCpuKind) + Send + Sync>>) {
+        self.cpu_work_hook = hook;
+    }
+
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+    #[doc(hidden)]
+    pub fn set_write_temporary_hook(
+        &self,
+        hook: Option<crate::artifact_store::WriteTemporaryHook>,
+    ) {
+        self.store.set_write_temporary_hook(hook);
     }
 
     /// The generated names of every candidate this compilation may install.
@@ -490,8 +521,8 @@ impl CompileCache {
             {
                 self.slots = slots;
             }
-            if self.session.is_none() {
-                self.session = Some(std::rc::Rc::downgrade(&session));
+            if self.pool.is_none() {
+                self.pool = session.pool_task_submitter();
             }
         }
         let index = self.prefix.len();
@@ -553,7 +584,13 @@ impl CompileCache {
         let started = Instant::now();
         let Publication { name, id, key } = publication;
         if self.slots.get() > 1 && self.pipeline.is_none() && !self.pipeline_failed {
-            match PublishPipeline::start(self.store.clone(), self.slots) {
+            match PublishPipeline::start(
+                self.store.clone(),
+                self.slots,
+                self.pool.clone(),
+                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+                self.cpu_work_hook.clone(),
+            ) {
                 Ok(pipeline) => self.pipeline = Some(pipeline),
                 Err(_) => self.pipeline_failed = true,
             }
@@ -609,17 +646,8 @@ impl CompileCache {
                         None
                     }
                 };
-                let session = self.session.as_ref().and_then(std::rc::Weak::upgrade);
                 if let Some(pipeline) = &mut self.pipeline {
-                    pipeline.enqueue(
-                        session.as_deref(),
-                        id,
-                        name,
-                        estimated_bytes,
-                        artifact,
-                        fields,
-                        revalidate,
-                    );
+                    pipeline.enqueue(id, name, estimated_bytes, artifact, fields, revalidate);
                 }
                 self.counts.write_time += started.elapsed();
                 return;
@@ -880,6 +908,10 @@ const PUBLISH_BATCH_SIZE: usize = 64;
 /// Tag added to staging job sequence numbers when dispatched on `UnitPool` so
 /// scheduling-stress keys stay distinct from parallel top-level namespace keys.
 const STAGE_JOB_INDEX_TAG: usize = 1usize << 30;
+/// Tag added to commit-side CPU task sequence numbers when dispatched on
+/// `UnitPool` so scheduling-stress keys stay distinct from top-level and
+/// artifact staging keys.
+const COMMIT_CPU_INDEX_TAG: usize = 1usize << 29;
 /// Upper bound on in-flight publish jobs awaiting staging.
 const PUBLISH_MAX_INFLIGHT_JOBS: usize = 16;
 /// Upper bound on estimated bytes held by in-flight publish jobs (32 MiB).
@@ -1030,10 +1062,13 @@ struct StageJob {
 }
 
 enum StageOutcome {
+    Encoded(EncodedArtifact, usize),
+    #[cfg(test)]
     Staged(StagedArtifact, usize),
     Refused(Mismatch),
     Unencodable(String),
     CaptureFailed(String),
+    #[cfg(test)]
     Io(std::io::Error),
     Unwritable,
 }
@@ -1052,6 +1087,9 @@ struct FinishedPublish {
 }
 
 struct StageQueue {
+    /// Priority queue for commit-side CPU work (index decode/encode/hash) so
+    /// the I/O committer does not hold `v1/lock` longer than needed.
+    commit_cpu_jobs: VecDeque<Box<dyn FnOnce() + Send>>,
     jobs: VecDeque<StageJob>,
     inflight_jobs: usize,
     inflight_bytes: usize,
@@ -1064,6 +1102,10 @@ struct CommitQueue {
     pending: BTreeMap<usize, (NamespaceId, String, StageOutcome)>,
     staged_count: usize,
     staged_bytes: usize,
+    /// Number of commit-side CPU tasks currently queued for execution by a
+    /// pool worker or the coordinator. Updated under `commit_mu` before
+    /// notifying `done_cv` so coordinator waits never miss a commit CPU task.
+    pending_cpu: usize,
     finished: Vec<FinishedPublish>,
     completed: usize,
     flush_requested: bool,
@@ -1074,6 +1116,7 @@ struct CommitQueue {
 
 struct PublishShared {
     store: Store,
+    pool: Option<PoolTaskSubmitter>,
     max_inflight_jobs: usize,
     max_inflight_bytes: usize,
     max_pending_commit_jobs: usize,
@@ -1083,6 +1126,8 @@ struct PublishShared {
     commit_mu: Mutex<CommitQueue>,
     commit_cv: Condvar,
     done_cv: Condvar,
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+    cpu_work_hook: Option<Arc<dyn Fn(CacheCpuKind) + Send + Sync>>,
 }
 
 impl PublishShared {
@@ -1092,16 +1137,20 @@ impl PublishShared {
             .map(|s| (*s).to_owned())
             .or_else(|| payload.downcast_ref::<String>().cloned())
             .unwrap_or_else(|| "panic".to_owned());
-        {
+        let dropped_cpu = {
             let mut stage = self.stage_mu.lock().unwrap_or_else(|e| e.into_inner());
             stage.cancelled = true;
             stage.jobs.clear();
+            let dropped: Vec<_> = stage.commit_cpu_jobs.drain(..).collect();
             self.stage_space_cv.notify_all();
-        }
+            dropped
+        };
+        drop(dropped_cpu);
         {
             let mut commit = self.commit_mu.lock().unwrap_or_else(|e| e.into_inner());
             commit.cancelled = true;
             commit.pending.clear();
+            commit.pending_cpu = 0;
             if commit.panic.is_none() {
                 commit.panic = Some(message);
             }
@@ -1118,31 +1167,48 @@ struct PublishPipeline {
 }
 
 impl PublishPipeline {
-    fn start(store: Store, slots: Slots) -> std::io::Result<Self> {
+    fn start(
+        store: Store,
+        slots: Slots,
+        pool: Option<PoolTaskSubmitter>,
+        #[cfg(any(debug_assertions, feature = "scheduling-stress"))] cpu_work_hook: Option<
+            Arc<dyn Fn(CacheCpuKind) + Send + Sync>,
+        >,
+    ) -> std::io::Result<Self> {
+        let max_inflight_jobs = (slots.get() * 2).min(PUBLISH_MAX_INFLIGHT_JOBS);
         Self::start_with_limits(
             store,
-            slots,
+            pool,
+            max_inflight_jobs,
             PUBLISH_MAX_INFLIGHT_BYTES,
             PUBLISH_MAX_PENDING_COMMIT_JOBS,
             PUBLISH_MAX_PENDING_COMMIT_BYTES,
+            #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+            cpu_work_hook,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn start_with_limits(
         store: Store,
-        slots: Slots,
+        pool: Option<PoolTaskSubmitter>,
+        max_inflight_jobs: usize,
         max_inflight_bytes: usize,
         max_pending_commit_jobs: usize,
         max_pending_commit_bytes: usize,
+        #[cfg(any(debug_assertions, feature = "scheduling-stress"))] cpu_work_hook: Option<
+            Arc<dyn Fn(CacheCpuKind) + Send + Sync>,
+        >,
     ) -> std::io::Result<Self> {
-        let max_inflight_jobs = (slots.get() * 2).min(PUBLISH_MAX_INFLIGHT_JOBS);
         let shared = Arc::new(PublishShared {
             store,
-            max_inflight_jobs,
-            max_inflight_bytes,
+            pool,
+            max_inflight_jobs: max_inflight_jobs.max(1),
+            max_inflight_bytes: max_inflight_bytes.max(1),
             max_pending_commit_jobs: max_pending_commit_jobs.max(1),
             max_pending_commit_bytes: max_pending_commit_bytes.max(1),
             stage_mu: Mutex::new(StageQueue {
+                commit_cpu_jobs: VecDeque::new(),
                 jobs: VecDeque::new(),
                 inflight_jobs: 0,
                 inflight_bytes: 0,
@@ -1155,6 +1221,7 @@ impl PublishPipeline {
                 pending: BTreeMap::new(),
                 staged_count: 0,
                 staged_bytes: 0,
+                pending_cpu: 0,
                 finished: Vec::new(),
                 completed: 0,
                 flush_requested: false,
@@ -1164,12 +1231,16 @@ impl PublishPipeline {
             }),
             commit_cv: Condvar::new(),
             done_cv: Condvar::new(),
+            #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+            cpu_work_hook,
         });
 
-        // CPU-bound revalidation, encoding and artifact hashing run on the
-        // build's existing `UnitPool` worker slots (or inline on the
-        // coordinator under backpressure / flush), keeping CPU work within
-        // `--jobs N`. Only the I/O committer runs on its own thread.
+        // CPU-bound revalidation, artifact encoding/hashing, and commit-side
+        // index decoding/encoding/hashing all run on the build's existing
+        // `UnitPool` worker slots (or inline on the coordinator under
+        // backpressure / flush), keeping CPU work within `--jobs N`. Only
+        // blocking file I/O (temp writes, lock, renames) runs on the single
+        // I/O committer thread.
         let shared_clone = Arc::clone(&shared);
         let committer = thread::Builder::new()
             .name("light-cljs-cache-commit".into())
@@ -1181,10 +1252,8 @@ impl PublishPipeline {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn enqueue(
         &mut self,
-        session: Option<&crate::compilation_session::CompilationSession>,
         id: NamespaceId,
         name: String,
         estimated_bytes: usize,
@@ -1209,6 +1278,16 @@ impl PublishPipeline {
                 && needs_commit_backpressure(&commit, self.submitted, &self.shared)
             {
                 self.shared.commit_cv.notify_one();
+                if commit.pending_cpu > 0 {
+                    drop(commit);
+                    pump_one_commit_cpu_job(&self.shared);
+                    commit = self
+                        .shared
+                        .commit_mu
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    continue;
+                }
                 // Drain an unstarted staging job inline on the coordinator's
                 // CPU slot before blocking on `done_cv`, so an unstarted job
                 // holding `commit.next_seq` cannot deadlock if the pool worker
@@ -1229,8 +1308,9 @@ impl PublishPipeline {
                     .unwrap_or_else(|e| e.into_inner());
                 if commit.cancelled
                     || !needs_commit_backpressure(&commit, self.submitted, &self.shared)
+                    || commit.pending_cpu > 0
                 {
-                    break;
+                    continue;
                 }
                 self.shared.commit_cv.notify_one();
                 commit = self
@@ -1276,9 +1356,16 @@ impl PublishPipeline {
                 });
                 break;
             }
-            // Run the oldest unstarted job inline on the coordinator's CPU
-            // slot so staging backpressure never deadlocks against a pool
-            // worker waiting on the coordinator.
+            // Service pending commit-side CPU work first (committer may hold
+            // `v1/lock`), then the oldest unstarted staging job inline on the
+            // coordinator's CPU slot so backpressure never deadlocks against a
+            // pool worker waiting on the coordinator.
+            if let Some(cpu_job) = stage.commit_cpu_jobs.pop_front() {
+                drop(stage);
+                decrement_pending_cpu(&self.shared);
+                cpu_job();
+                continue;
+            }
             if let Some(job) = stage.jobs.pop_front() {
                 drop(stage);
                 execute_stage_job(&self.shared, job);
@@ -1293,19 +1380,17 @@ impl PublishPipeline {
                 .wait(stage)
                 .unwrap_or_else(|e| e.into_inner());
         }
-        let dispatched = session.is_some_and(|session| {
+        let dispatched = self.shared.pool.as_ref().is_some_and(|pool| {
             let shared = Arc::clone(&self.shared);
-            session.submit_namespace(
+            pool.submit_plain(
                 STAGE_JOB_INDEX_TAG | seq,
-                false,
-                Box::new(move |_| {
-                    pump_one_stage_job(&shared);
-                    false
+                Box::new(move || {
+                    pump_one_cpu_job(&shared);
                 }),
             )
         });
         if !dispatched {
-            pump_one_stage_job(&self.shared);
+            pump_one_cpu_job(&self.shared);
         }
     }
 
@@ -1338,12 +1423,7 @@ impl PublishPipeline {
         }
     }
 
-    fn flush(&mut self) -> Vec<FinishedPublish> {
-        // Drain any unstarted jobs inline so flushing never stalls if the
-        // unit pool has already finished, was cancelled, or has a worker
-        // waiting on the coordinator.
-        while pump_one_stage_job(&self.shared) {}
-        let target = self.submitted;
+    fn wait_for_completed(&mut self, target: usize) {
         let mut commit = self
             .shared
             .commit_mu
@@ -1354,6 +1434,33 @@ impl PublishPipeline {
             commit.flush_requested = true;
             self.shared.commit_cv.notify_one();
             while commit.completed < target && !commit.cancelled {
+                if commit.pending_cpu > 0 {
+                    drop(commit);
+                    pump_one_commit_cpu_job(&self.shared);
+                    commit = self
+                        .shared
+                        .commit_mu
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    continue;
+                }
+                drop(commit);
+                if pump_one_stage_job(&self.shared) {
+                    commit = self
+                        .shared
+                        .commit_mu
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    continue;
+                }
+                commit = self
+                    .shared
+                    .commit_mu
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                if commit.completed >= target || commit.cancelled || commit.pending_cpu > 0 {
+                    continue;
+                }
                 commit = self
                     .shared
                     .done_cv
@@ -1361,6 +1468,16 @@ impl PublishPipeline {
                     .unwrap_or_else(|e| e.into_inner());
             }
         }
+    }
+
+    fn flush(&mut self) -> Vec<FinishedPublish> {
+        let target = self.submitted;
+        self.wait_for_completed(target);
+        let mut commit = self
+            .shared
+            .commit_mu
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let panic = commit.panic.take();
         let mut finished = std::mem::take(&mut commit.finished);
         drop(commit);
@@ -1376,20 +1493,25 @@ impl Drop for PublishPipeline {
     fn drop(&mut self) {
         let cancelling = thread::panicking();
         if !cancelling {
-            while pump_one_stage_job(&self.shared) {}
+            self.wait_for_completed(self.submitted);
         }
-        {
+        let dropped_cpu = {
             let mut stage = self
                 .shared
                 .stage_mu
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            if cancelling {
+            let dropped = if cancelling {
                 stage.cancelled = true;
                 stage.jobs.clear();
-            }
+                stage.commit_cpu_jobs.drain(..).collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
             self.shared.stage_space_cv.notify_all();
-        }
+            dropped
+        };
+        drop(dropped_cpu);
         {
             let mut commit = self
                 .shared
@@ -1400,6 +1522,7 @@ impl Drop for PublishPipeline {
             if cancelling {
                 commit.cancelled = true;
                 commit.pending.clear();
+                commit.pending_cpu = 0;
             } else {
                 commit.shutdown = true;
             }
@@ -1422,6 +1545,27 @@ fn needs_commit_backpressure(
         || (commit.staged_count > 0 && commit.staged_bytes >= shared.max_pending_commit_bytes)
 }
 
+fn decrement_pending_cpu(shared: &PublishShared) {
+    let mut commit = shared.commit_mu.lock().unwrap_or_else(|e| e.into_inner());
+    commit.pending_cpu = commit.pending_cpu.saturating_sub(1);
+}
+
+fn pump_one_commit_cpu_job(shared: &Arc<PublishShared>) -> bool {
+    let job = {
+        let mut stage = shared.stage_mu.lock().unwrap_or_else(|e| e.into_inner());
+        if stage.cancelled {
+            return false;
+        }
+        stage.commit_cpu_jobs.pop_front()
+    };
+    let Some(job) = job else {
+        return false;
+    };
+    decrement_pending_cpu(shared);
+    job();
+    true
+}
+
 fn pump_one_stage_job(shared: &Arc<PublishShared>) -> bool {
     let job = {
         let mut stage = shared.stage_mu.lock().unwrap_or_else(|e| e.into_inner());
@@ -1437,6 +1581,136 @@ fn pump_one_stage_job(shared: &Arc<PublishShared>) -> bool {
     true
 }
 
+/// Execute one queued CPU job, prioritizing commit-side CPU tasks (which may
+/// unblock the I/O committer holding `v1/lock`) ahead of artifact staging.
+fn pump_one_cpu_job(shared: &Arc<PublishShared>) -> bool {
+    if pump_one_commit_cpu_job(shared) {
+        return true;
+    }
+    pump_one_stage_job(shared)
+}
+
+struct CpuReplySlot<R> {
+    state: Mutex<CpuReplyState<R>>,
+    cv: Condvar,
+}
+
+enum CpuReplyState<R> {
+    Pending,
+    Ready(Result<R, Box<dyn std::any::Any + Send>>),
+    Cancelled,
+}
+
+/// Ensures the waiting committer thread is always woken if a queued commit-CPU
+/// closure is dropped without running (for example on panic/cancellation).
+struct CpuReplySender<R> {
+    slot: Arc<CpuReplySlot<R>>,
+    sent: bool,
+}
+
+impl<R> CpuReplySender<R> {
+    fn complete(mut self, result: Result<R, Box<dyn std::any::Any + Send>>) {
+        self.sent = true;
+        let mut state = self.slot.state.lock().unwrap_or_else(|e| e.into_inner());
+        *state = CpuReplyState::Ready(result);
+        drop(state);
+        self.slot.cv.notify_one();
+    }
+}
+
+impl<R> Drop for CpuReplySender<R> {
+    fn drop(&mut self) {
+        if !self.sent {
+            let mut state = self.slot.state.lock().unwrap_or_else(|e| e.into_inner());
+            if matches!(*state, CpuReplyState::Pending) {
+                *state = CpuReplyState::Cancelled;
+            }
+            drop(state);
+            self.slot.cv.notify_one();
+        }
+    }
+}
+
+struct CommitCpuRunner<'a> {
+    shared: &'a Arc<PublishShared>,
+    next_key: usize,
+}
+
+impl CommitCpu for CommitCpuRunner<'_> {
+    fn run<R: Send + 'static>(&mut self, work: impl FnOnce() -> R + Send + 'static) -> Option<R> {
+        let slot = Arc::new(CpuReplySlot {
+            state: Mutex::new(CpuReplyState::Pending),
+            cv: Condvar::new(),
+        });
+        let sender = CpuReplySender {
+            slot: Arc::clone(&slot),
+            sent: false,
+        };
+        #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+        let hook = self.shared.cpu_work_hook.clone();
+        let task: Box<dyn FnOnce() + Send> = Box::new(move || {
+            let result = panic::catch_unwind(AssertUnwindSafe(move || {
+                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+                if let Some(hook) = hook {
+                    hook(CacheCpuKind::IndexEncodeHash);
+                }
+                work()
+            }));
+            sender.complete(result);
+        });
+        {
+            let mut stage = self
+                .shared
+                .stage_mu
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if stage.cancelled {
+                drop(stage);
+                drop(task);
+                return None;
+            }
+            stage.commit_cpu_jobs.push_back(task);
+            self.shared.stage_space_cv.notify_all();
+        }
+        {
+            let mut commit = self
+                .shared
+                .commit_mu
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if commit.cancelled {
+                return None;
+            }
+            commit.pending_cpu += 1;
+            self.shared.done_cv.notify_all();
+        }
+        if let Some(pool) = &self.shared.pool {
+            let key = COMMIT_CPU_INDEX_TAG | self.next_key;
+            self.next_key = self.next_key.wrapping_add(1) & (COMMIT_CPU_INDEX_TAG - 1);
+            let shared = Arc::clone(self.shared);
+            let _ = pool.submit_plain(
+                key,
+                Box::new(move || {
+                    pump_one_cpu_job(&shared);
+                }),
+            );
+        }
+        let mut state = slot.state.lock().unwrap_or_else(|e| e.into_inner());
+        while matches!(*state, CpuReplyState::Pending) {
+            state = slot.cv.wait(state).unwrap_or_else(|e| e.into_inner());
+        }
+        match std::mem::replace(&mut *state, CpuReplyState::Cancelled) {
+            CpuReplyState::Ready(Ok(value)) => Some(value),
+            CpuReplyState::Ready(Err(payload)) => {
+                drop(state);
+                self.shared.record_panic(payload);
+                None
+            }
+            CpuReplyState::Cancelled | CpuReplyState::Pending => None,
+        }
+    }
+}
+
 fn execute_stage_job(shared: &Arc<PublishShared>, job: StageJob) {
     let StageJob {
         seq,
@@ -1449,7 +1723,7 @@ fn execute_stage_job(shared: &Arc<PublishShared>, job: StageJob) {
     } = job;
 
     let staged = panic::catch_unwind(AssertUnwindSafe(|| {
-        run_stage(&shared.store, &name, artifact, fields, revalidate)
+        run_stage(shared, &name, artifact, fields, revalidate)
     }));
 
     {
@@ -1472,9 +1746,17 @@ fn execute_stage_job(shared: &Arc<PublishShared>, job: StageJob) {
         drop(outcome);
         return;
     }
-    if let StageOutcome::Staged(_, staged_bytes) = &outcome {
-        commit.staged_count += 1;
-        commit.staged_bytes = commit.staged_bytes.saturating_add(*staged_bytes);
+    match &outcome {
+        StageOutcome::Encoded(_, bytes) => {
+            commit.staged_count += 1;
+            commit.staged_bytes = commit.staged_bytes.saturating_add(*bytes);
+        }
+        #[cfg(test)]
+        StageOutcome::Staged(_, bytes) => {
+            commit.staged_count += 1;
+            commit.staged_bytes = commit.staged_bytes.saturating_add(*bytes);
+        }
+        _ => {}
     }
     let pressure = commit.staged_count >= shared.max_pending_commit_jobs
         || commit.staged_bytes >= shared.max_pending_commit_bytes;
@@ -1485,7 +1767,7 @@ fn execute_stage_job(shared: &Arc<PublishShared>, job: StageJob) {
 }
 
 fn run_stage(
-    store: &Store,
+    shared: &PublishShared,
     name: &str,
     mut artifact: NamespaceArtifact,
     fields: ManifestFields,
@@ -1495,7 +1777,7 @@ fn run_stage(
         Arc<dyn SourceProvider + Send + Sync>,
     )>,
 ) -> StageOutcome {
-    if store.write_failure().is_some() {
+    if shared.store.write_failure().is_some() {
         drop(revalidate);
         drop(artifact);
         drop(fields);
@@ -1512,6 +1794,10 @@ fn run_stage(
             return StageOutcome::Refused(mismatch);
         }
     }
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+    if let Some(hook) = &shared.cpu_work_hook {
+        hook(CacheCpuKind::ArtifactEncodeHash);
+    }
     let encoded = artifact_codec::encode(&artifact, &fields);
     let names = std::mem::take(&mut artifact.names);
     drop(artifact);
@@ -1521,21 +1807,87 @@ fn run_stage(
         Ok(bytes) => bytes,
         Err(reason) => return StageOutcome::Unencodable(reason),
     };
-    match store.stage_encoded(name.to_owned(), key, names, bytes) {
-        Ok(staged) => {
-            let staged_bytes = staged.approximate_bytes();
-            StageOutcome::Staged(staged, staged_bytes)
-        }
-        Err(error) => StageOutcome::Io(error),
+    // Only CPU work (encoding + SHA-256 digest) runs on the pool worker; the
+    // temporary-file write runs on the I/O committer thread so slow cache I/O
+    // never occupies a deferred-analysis worker slot.
+    let prepared = Store::prepare_encoded(name.to_owned(), key, names, bytes);
+    let encoded_bytes = prepared.approximate_bytes();
+    StageOutcome::Encoded(prepared, encoded_bytes)
+}
+
+type CommitBatchItem = (usize, NamespaceId, String, StagedArtifact, usize);
+
+fn commit_batch_and_record(
+    shared: &Arc<PublishShared>,
+    cpu: &mut CommitCpuRunner<'_>,
+    to_commit: Vec<CommitBatchItem>,
+) {
+    if to_commit.is_empty() {
+        return;
     }
+    let mut meta = Vec::with_capacity(to_commit.len());
+    let mut artifacts = Vec::with_capacity(to_commit.len());
+    let mut batch_staged_bytes = 0usize;
+    for (seq, id, name, staged, staged_bytes) in to_commit {
+        meta.push((seq, id, name));
+        artifacts.push(staged);
+        batch_staged_bytes = batch_staged_bytes.saturating_add(staged_bytes);
+    }
+    let batch_len = artifacts.len();
+    let results = shared.store.commit_batch_with_cpu(artifacts, cpu);
+
+    let mut commit = shared.commit_mu.lock().unwrap_or_else(|e| e.into_inner());
+    commit.staged_count = commit.staged_count.saturating_sub(batch_len);
+    commit.staged_bytes = commit.staged_bytes.saturating_sub(batch_staged_bytes);
+    for ((seq, id, name), published) in meta.into_iter().zip(results) {
+        let result = match published {
+            Publish::Published(entry) => FinishedResult::Published {
+                artifact: entry.artifact,
+                bytes: entry.bytes,
+            },
+            Publish::Refused(mismatch) => FinishedResult::Unpublished(format!(
+                "its inputs changed while it compiled: {mismatch}"
+            )),
+            Publish::Unencodable(reason) => FinishedResult::Unpublished(reason),
+            Publish::Unwritable => FinishedResult::Unwritable,
+        };
+        commit.finished.push(FinishedPublish {
+            seq,
+            id,
+            name,
+            result,
+        });
+        commit.completed += 1;
+    }
+    if commit.flush_requested && commit.completed == commit.submitted {
+        commit.flush_requested = false;
+    }
+    shared.done_cv.notify_all();
+}
+
+struct WriteEncodedItem {
+    seq: usize,
+    id: NamespaceId,
+    name: String,
+    encoded: EncodedArtifact,
+    encoded_bytes: usize,
+}
+
+enum CommitAction {
+    WriteEncoded(Box<WriteEncodedItem>),
+    CommitBatch(Vec<CommitBatchItem>),
+    Exit,
 }
 
 fn commit_worker_loop(shared: Arc<PublishShared>) {
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
-        let mut batch: Vec<(usize, NamespaceId, String, StagedArtifact, usize)> =
-            Vec::with_capacity(PUBLISH_BATCH_SIZE);
+        let mut batch: Vec<CommitBatchItem> = Vec::with_capacity(PUBLISH_BATCH_SIZE);
+        let mut cpu = CommitCpuRunner {
+            shared: &shared,
+            next_key: 0,
+        };
         loop {
-            let to_commit = {
+            let action = {
                 let mut commit = shared.commit_mu.lock().unwrap_or_else(|e| e.into_inner());
                 loop {
                     if commit.cancelled {
@@ -1543,21 +1895,22 @@ fn commit_worker_loop(shared: Arc<PublishShared>) {
                         commit.pending.clear();
                         commit.staged_count = 0;
                         commit.staged_bytes = 0;
+                        commit.pending_cpu = 0;
                         shared.done_cv.notify_all();
                         return;
                     }
                     // Drain contiguous completed staging outcomes in submission order.
                     let mut barrier = false;
                     let mut completed_any = false;
+                    let mut write_encoded = None;
                     while let Some(entry) = commit.pending.get(&commit.next_seq) {
-                        if !batch.is_empty()
-                            && matches!(
-                                entry.2,
-                                StageOutcome::Io(_)
-                                    | StageOutcome::Refused(_)
-                                    | StageOutcome::Unencodable(_)
-                            )
-                        {
+                        let is_barrier = match &entry.2 {
+                            StageOutcome::Refused(_) | StageOutcome::Unencodable(_) => true,
+                            #[cfg(test)]
+                            StageOutcome::Io(_) => true,
+                            _ => false,
+                        };
+                        if !batch.is_empty() && is_barrier {
                             // Commit earlier valid staged items before deciding
                             // store-failure precedence for this outcome.
                             barrier = true;
@@ -1567,6 +1920,26 @@ fn commit_worker_loop(shared: Arc<PublishShared>) {
                         let (id, name, outcome) = commit.pending.remove(&seq).unwrap();
                         commit.next_seq += 1;
                         match outcome {
+                            StageOutcome::Encoded(encoded, encoded_bytes) => {
+                                if shared.store.write_failure().is_some() {
+                                    drop(encoded);
+                                    commit.staged_count = commit.staged_count.saturating_sub(1);
+                                    commit.staged_bytes =
+                                        commit.staged_bytes.saturating_sub(encoded_bytes);
+                                    commit.finished.push(FinishedPublish {
+                                        seq,
+                                        id,
+                                        name,
+                                        result: FinishedResult::Unwritable,
+                                    });
+                                    commit.completed += 1;
+                                    completed_any = true;
+                                } else {
+                                    write_encoded = Some((seq, id, name, encoded, encoded_bytes));
+                                    break;
+                                }
+                            }
+                            #[cfg(test)]
                             StageOutcome::Staged(staged, staged_bytes) => {
                                 if shared.store.write_failure().is_some() {
                                     drop(staged);
@@ -1630,6 +2003,7 @@ fn commit_worker_loop(shared: Arc<PublishShared>) {
                                 commit.completed += 1;
                                 completed_any = true;
                             }
+                            #[cfg(test)]
                             StageOutcome::Io(error) => {
                                 shared.store.fail(&error);
                                 commit.finished.push(FinishedPublish {
@@ -1654,6 +2028,19 @@ fn commit_worker_loop(shared: Arc<PublishShared>) {
                         }
                     }
 
+                    if completed_any {
+                        shared.done_cv.notify_all();
+                    }
+                    if let Some((seq, id, name, encoded, encoded_bytes)) = write_encoded {
+                        break CommitAction::WriteEncoded(Box::new(WriteEncodedItem {
+                            seq,
+                            id,
+                            name,
+                            encoded,
+                            encoded_bytes,
+                        }));
+                    }
+
                     let flush_ready = (commit.flush_requested || commit.shutdown)
                         && commit.next_seq == commit.submitted;
                     let pressure_commit = commit.staged_count >= shared.max_pending_commit_jobs
@@ -1661,10 +2048,7 @@ fn commit_worker_loop(shared: Arc<PublishShared>) {
                     if batch.len() >= PUBLISH_BATCH_SIZE
                         || (!batch.is_empty() && (flush_ready || barrier || pressure_commit))
                     {
-                        break std::mem::take(&mut batch);
-                    }
-                    if completed_any {
-                        shared.done_cv.notify_all();
+                        break CommitAction::CommitBatch(std::mem::take(&mut batch));
                     }
                     if commit.flush_requested && commit.completed == commit.submitted {
                         commit.flush_requested = false;
@@ -1672,7 +2056,7 @@ fn commit_worker_loop(shared: Arc<PublishShared>) {
                     }
                     if commit.shutdown && commit.next_seq == commit.submitted {
                         shared.done_cv.notify_all();
-                        return;
+                        break CommitAction::Exit;
                     }
                     commit = shared
                         .commit_cv
@@ -1681,44 +2065,81 @@ fn commit_worker_loop(shared: Arc<PublishShared>) {
                 }
             };
 
-            let mut meta = Vec::with_capacity(to_commit.len());
-            let mut artifacts = Vec::with_capacity(to_commit.len());
-            let mut batch_staged_bytes = 0usize;
-            for (seq, id, name, staged, staged_bytes) in to_commit {
-                meta.push((seq, id, name));
-                artifacts.push(staged);
-                batch_staged_bytes = batch_staged_bytes.saturating_add(staged_bytes);
+            match action {
+                CommitAction::WriteEncoded(item) => {
+                    let WriteEncodedItem {
+                        seq,
+                        id,
+                        name,
+                        encoded,
+                        encoded_bytes,
+                    } = *item;
+                    match shared.store.write_staged(encoded) {
+                        Ok(staged) => {
+                            let staged_bytes = staged.approximate_bytes();
+                            {
+                                let mut commit =
+                                    shared.commit_mu.lock().unwrap_or_else(|e| e.into_inner());
+                                commit.staged_bytes = commit
+                                    .staged_bytes
+                                    .saturating_sub(encoded_bytes)
+                                    .saturating_add(staged_bytes);
+                                if commit.cancelled {
+                                    drop(staged);
+                                    drop(batch);
+                                    commit.pending.clear();
+                                    commit.staged_count = 0;
+                                    commit.staged_bytes = 0;
+                                    commit.pending_cpu = 0;
+                                    shared.done_cv.notify_all();
+                                    return;
+                                }
+                                shared.done_cv.notify_all();
+                            }
+                            batch.push((seq, id, name, staged, staged_bytes));
+                            if batch.len() >= PUBLISH_BATCH_SIZE {
+                                commit_batch_and_record(
+                                    &shared,
+                                    &mut cpu,
+                                    std::mem::take(&mut batch),
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            if !batch.is_empty() {
+                                commit_batch_and_record(
+                                    &shared,
+                                    &mut cpu,
+                                    std::mem::take(&mut batch),
+                                );
+                            }
+                            shared.store.fail(&error);
+                            let mut commit =
+                                shared.commit_mu.lock().unwrap_or_else(|e| e.into_inner());
+                            commit.staged_count = commit.staged_count.saturating_sub(1);
+                            commit.staged_bytes = commit.staged_bytes.saturating_sub(encoded_bytes);
+                            commit.finished.push(FinishedPublish {
+                                seq,
+                                id,
+                                name,
+                                result: FinishedResult::Unwritable,
+                            });
+                            commit.completed += 1;
+                            if commit.flush_requested
+                                && commit.completed == commit.submitted
+                                && batch.is_empty()
+                            {
+                                commit.flush_requested = false;
+                            }
+                            shared.done_cv.notify_all();
+                        }
+                    }
+                }
+                CommitAction::CommitBatch(to_commit) => {
+                    commit_batch_and_record(&shared, &mut cpu, to_commit);
+                }
+                CommitAction::Exit => return,
             }
-            let batch_len = artifacts.len();
-            let results = shared.store.commit_batch(artifacts);
-
-            let mut commit = shared.commit_mu.lock().unwrap_or_else(|e| e.into_inner());
-            commit.staged_count = commit.staged_count.saturating_sub(batch_len);
-            commit.staged_bytes = commit.staged_bytes.saturating_sub(batch_staged_bytes);
-            for ((seq, id, name), published) in meta.into_iter().zip(results) {
-                let result = match published {
-                    Publish::Published(entry) => FinishedResult::Published {
-                        artifact: entry.artifact,
-                        bytes: entry.bytes,
-                    },
-                    Publish::Refused(mismatch) => FinishedResult::Unpublished(format!(
-                        "its inputs changed while it compiled: {mismatch}"
-                    )),
-                    Publish::Unencodable(reason) => FinishedResult::Unpublished(reason),
-                    Publish::Unwritable => FinishedResult::Unwritable,
-                };
-                commit.finished.push(FinishedPublish {
-                    seq,
-                    id,
-                    name,
-                    result,
-                });
-                commit.completed += 1;
-            }
-            if commit.flush_requested && commit.completed == commit.submitted && batch.is_empty() {
-                commit.flush_requested = false;
-            }
-            shared.done_cv.notify_all();
         }
     }));
     if let Err(payload) = result {
@@ -2036,7 +2457,14 @@ mod tests {
             std::process::id()
         ));
         let store = Store::open(&dir);
-        let mut pipeline = PublishPipeline::start(store.clone(), Slots::new(4).unwrap()).unwrap();
+        let mut pipeline = PublishPipeline::start(
+            store.clone(),
+            Slots::new(4).unwrap(),
+            None,
+            #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+            None,
+        )
+        .unwrap();
 
         // Stage two valid artifacts directly and inject them out-of-order
         // alongside an Io error at seq 2 and a third staged artifact at seq 3
@@ -2218,10 +2646,13 @@ mod tests {
         let store = Store::open(&dir);
         let mut pipeline = PublishPipeline::start_with_limits(
             store.clone(),
-            Slots::new(4).unwrap(),
+            None,
+            8,
             1 << 20,
             3,
             1 << 20,
+            #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+            None,
         )
         .unwrap();
         let submitted = Arc::new(AtomicUsize::new(0));
@@ -2231,7 +2662,6 @@ mod tests {
                 let mut artifact = minimal_artifact(&format!("app.bp{i}"));
                 artifact.header.source_length = i as u32;
                 pipeline.enqueue(
-                    None,
                     NamespaceId(i as u32),
                     format!("app.bp{i}"),
                     1024,
@@ -2328,6 +2758,197 @@ mod tests {
         assert_eq!(store.candidates("app.a").len(), 1);
         assert!(cache.store.write_failure().is_some());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn compile_cache_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<CompileCache>();
+    }
+
+    #[test]
+    fn publish_pipeline_drains_staging_while_pool_worker_is_blocked() {
+        use crate::compilation_session::{CompilationSession, PoolEngines};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::Duration;
+
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let host = MacroHost::new();
+        let session = CompilationSession::new();
+        session
+            .start_pool(
+                Slots::new(2).unwrap(),
+                PoolEngines::None,
+                1,
+                host.environment(),
+                None,
+                Default::default(),
+            )
+            .unwrap();
+        let pool = session.pool_task_submitter().unwrap();
+
+        // Occupy the sole `--jobs 2` pool worker with a gated job so every
+        // queued staging and commit-CPU task must be drained inline by the
+        // coordinator without deadlocking.
+        let gate = Arc::new((Mutex::new((false, false)), Condvar::new()));
+        let worker_gate = Arc::clone(&gate);
+        assert!(pool.submit_plain(
+            1,
+            Box::new(move || {
+                let (mu, cv) = &*worker_gate;
+                let mut st = mu.lock().unwrap();
+                st.0 = true;
+                cv.notify_all();
+                while !st.1 {
+                    st = cv.wait(st).unwrap();
+                }
+            }),
+        ));
+        {
+            let (mu, cv) = &*gate;
+            let mut st = mu.lock().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !st.0 && Instant::now() < deadline {
+                let (next, _) = cv.wait_timeout(st, Duration::from_millis(20)).unwrap();
+                st = next;
+            }
+            assert!(st.0, "sole pool worker did not reach gate");
+        }
+
+        let caller = thread::current().id();
+        let ran_on_coordinator = Arc::new(AtomicBool::new(false));
+        let hook_flag = Arc::clone(&ran_on_coordinator);
+        let hook: Arc<dyn Fn(CacheCpuKind) + Send + Sync> = Arc::new(move |kind| {
+            if kind == CacheCpuKind::ArtifactEncodeHash && thread::current().id() == caller {
+                hook_flag.store(true, Ordering::SeqCst);
+            }
+        });
+
+        // Case 1: staging backpressure (max_inflight_jobs = 2) drains the
+        // oldest queued job inline on the coordinator and finishes in order
+        // while the sole pool worker remains blocked.
+        let dir_stage = std::env::temp_dir().join(format!(
+            "light-cljs-stage-pressure-{}-{nanos}",
+            std::process::id()
+        ));
+        let store_stage = Store::open(&dir_stage);
+        let mut stage_pipe = PublishPipeline::start_with_limits(
+            store_stage.clone(),
+            Some(pool.clone()),
+            2,
+            1 << 20,
+            64,
+            1 << 20,
+            Some(Arc::clone(&hook)),
+        )
+        .unwrap();
+        for i in 0..5usize {
+            let mut artifact = minimal_artifact(&format!("app.sp{i}"));
+            artifact.header.source_length = i as u32;
+            stage_pipe.enqueue(
+                NamespaceId(i as u32),
+                format!("app.sp{i}"),
+                1024,
+                artifact,
+                ManifestFields::default(),
+                None,
+            );
+        }
+        assert!(
+            ran_on_coordinator.load(Ordering::SeqCst),
+            "expected coordinator to drain oldest queued stage job under staging pressure"
+        );
+        let finished_stage = stage_pipe.flush();
+        assert_eq!(finished_stage.len(), 5);
+        assert_eq!(
+            finished_stage
+                .iter()
+                .map(|f| (f.seq, f.name.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (0, "app.sp0"),
+                (1, "app.sp1"),
+                (2, "app.sp2"),
+                (3, "app.sp3"),
+                (4, "app.sp4"),
+            ]
+        );
+        assert!(
+            finished_stage
+                .iter()
+                .all(|f| matches!(f.result, FinishedResult::Published { .. }))
+        );
+        drop(stage_pipe);
+        let _ = std::fs::remove_dir_all(&dir_stage);
+
+        // Case 2: commit backpressure (max_pending_commit_jobs = 2, plenty of
+        // staging slots) drains queued stage jobs and commit-side CPU work
+        // inline on the coordinator while the sole pool worker remains blocked.
+        ran_on_coordinator.store(false, Ordering::SeqCst);
+        let dir_commit = std::env::temp_dir().join(format!(
+            "light-cljs-commit-pressure-{}-{nanos}",
+            std::process::id()
+        ));
+        let store_commit = Store::open(&dir_commit);
+        let mut commit_pipe = PublishPipeline::start_with_limits(
+            store_commit.clone(),
+            Some(pool),
+            16,
+            1 << 20,
+            2,
+            1 << 20,
+            Some(hook),
+        )
+        .unwrap();
+        for i in 0..5usize {
+            let mut artifact = minimal_artifact(&format!("app.cp{i}"));
+            artifact.header.source_length = i as u32;
+            commit_pipe.enqueue(
+                NamespaceId(i as u32),
+                format!("app.cp{i}"),
+                1024,
+                artifact,
+                ManifestFields::default(),
+                None,
+            );
+        }
+        assert!(
+            ran_on_coordinator.load(Ordering::SeqCst),
+            "expected coordinator to drain queued stage job under commit pressure"
+        );
+        let finished_commit = commit_pipe.flush();
+        assert_eq!(finished_commit.len(), 5);
+        assert_eq!(
+            finished_commit
+                .iter()
+                .map(|f| (f.seq, f.name.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (0, "app.cp0"),
+                (1, "app.cp1"),
+                (2, "app.cp2"),
+                (3, "app.cp3"),
+                (4, "app.cp4"),
+            ]
+        );
+        assert!(
+            finished_commit
+                .iter()
+                .all(|f| matches!(f.result, FinishedResult::Published { .. }))
+        );
+        drop(commit_pipe);
+        let _ = std::fs::remove_dir_all(&dir_commit);
+
+        // Release the blocked pool worker only after both pipelines finished.
+        {
+            let (mu, cv) = &*gate;
+            let mut st = mu.lock().unwrap();
+            st.1 = true;
+            cv.notify_all();
+        }
+        session.finish_pool();
     }
 
     fn minimal_artifact(namespace: &str) -> NamespaceArtifact {

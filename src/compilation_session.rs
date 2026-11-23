@@ -5411,6 +5411,15 @@ impl CompilationSession {
             engine_workers: pool.engine_workers,
         })
     }
+    /// A `Send + Sync` handle for submitting pure-Rust CPU tasks onto the
+    /// active build's [`UnitPool`], keeping background CPU work within `--jobs`.
+    pub(crate) fn pool_task_submitter(&self) -> Option<PoolTaskSubmitter> {
+        self.pool.borrow().as_ref().map(|pool| PoolTaskSubmitter {
+            inbox: pool.inbox.clone(),
+            submitter: pool.submitter.clone(),
+            mixed: pool.mixed,
+        })
+    }
     /// Whether the build's unit pool takes a unit: with `macro_free`, one
     /// found macro-free; with `test`, one of a definition with `:test`
     /// metadata, analyzed with its definition through this session. Its
@@ -7310,6 +7319,49 @@ pub(crate) enum PoolEngines {
     /// of persistent ones (`LIGHT_CLJS_FRESH_UNIT_ISOLATES=1`).
     Fresh,
 }
+/// A `Send + Sync` handle for submitting pure-Rust CPU tasks (such as cache
+/// artifact/index encoding and hashing) onto the active build's [`UnitPool`]
+/// without spawning extra CPU threads outside `--jobs`.
+#[derive(Clone)]
+pub(crate) struct PoolTaskSubmitter {
+    inbox: Arc<Inbox>,
+    submitter: crate::scheduler::Submitter<UnitJob, ()>,
+    mixed: bool,
+}
+
+impl PoolTaskSubmitter {
+    /// Submit a pure-Rust CPU task onto the unit pool. Returns `false` if the
+    /// pool has already closed or been cancelled.
+    pub(crate) fn submit_plain(&self, key_index: usize, run: Box<dyn FnOnce() + Send>) -> bool {
+        let mut state = self.inbox.lock();
+        if state.closed || state.cancelled {
+            return false;
+        }
+        let phase = if self.mixed {
+            TOP_PLAIN_PHASE
+        } else {
+            UNMIXED_TOP_PHASE
+        };
+        #[cfg(not(any(debug_assertions, feature = "scheduling-stress")))]
+        let _ = key_index;
+        self.submitter
+            .submit_batch(std::iter::once(UnitJob::Namespace {
+                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+                source_index: key_index,
+                phase,
+                needs_engine: false,
+                run: Box::new(move |_| {
+                    run();
+                    false
+                }),
+            }));
+        state.submissions += 1;
+        drop(state);
+        self.inbox.ready.notify_one();
+        true
+    }
+}
+
 /// The pool that analyzes a build's deferred units with `--jobs N`, kept
 /// for the whole build: N-1 worker threads, the first ones each owning one
 /// compile-time engine made on it (after the V8 platform), and destroyed on

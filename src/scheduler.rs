@@ -1024,6 +1024,11 @@ pub struct HelpHandle<J: Job, O> {
 /// as the continuation of a task another thread's completion woke. A job
 /// queued once the pool shut down is dropped.
 pub struct Submitter<J: Job, O>(Arc<Shared<J, O>>);
+impl<J: Job, O> Clone for Submitter<J, O> {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
 impl<J: Job, O> Submitter<J, O> {
     pub fn push_urgent(&self, job: J) {
         self.0.submit_urgent(job);

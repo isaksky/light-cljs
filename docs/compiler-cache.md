@@ -1536,23 +1536,27 @@ build is a supported debugging and comparison path.
   full flush per file, two per namespace.
 
   *As built (light-cljs-1104, light-cljs-1107):* publication splits into
-  lock-free staging (`Store::stage` / `Store::stage_encoded`) and batched
-  locking commits (`Store::commit_batch`, 64 staged artifacts per lock
-  acquisition and on flush, deduplicating object renames, coalescing index
-  rewrites per namespace, and preparing each index temporary file before
-  renaming that namespace's objects so index write failures leave no new
-  orphans). When `--jobs > 1`, `CompileCache` dispatches CPU-bound staging
+  lock-free staging (`Store::stage` / `Store::prepare_encoded` +
+  `Store::write_staged`) and batched locking commits (`Store::commit_batch` /
+  `Store::commit_batch_with_cpu`, 64 staged artifacts per lock acquisition and
+  on flush, deduplicating object renames, coalescing index rewrites per
+  namespace, and preparing each index temporary file before renaming that
+  namespace's objects so index write failures leave no new orphans). When
+  `--jobs > 1`, `CompileCache` dispatches all CPU-bound publish work
   (revalidation for `FileSourceProvider` via
-  `SourceProvider::owned_concurrent`, artifact encoding, and SHA-256 hashing)
-  onto the compilation session's existing `UnitPool` worker slots (or inline on
-  the coordinator slot under backpressure or flush), behind a bounded queue
-  (`(slots * 2).min(16)` in-flight jobs, 32 MiB conservative staging
-  working-set cap including deferred `bodies`, plus bounded pending-commit
-  count and bytes; oversized artifacts drain background work and stage inline),
-  keeping CPU work within `--jobs N` while a single background I/O committer
-  thread orders outcomes by submission sequence; `flush_publishes` drains
-  before `finish`, `take_counts`, and `into_output`, and `Slots::ONE` stages
-  inline with batched commits and no background threads. In `cache_key::revalidate`, required-namespace lookups use
+  `SourceProvider::owned_concurrent`, artifact encoding/SHA-256 hashing, and
+  commit-side index decoding/encoding/hashing) onto the compilation session's
+  existing `UnitPool` worker slots (or inline on the coordinator slot under
+  backpressure or flush) via a `Send + Sync` `PoolTaskSubmitter`, keeping CPU
+  work within `--jobs N` while preserving `CompileCache: Send`. Blocking
+  temporary-file writes, store locking, and renames stay on the single
+  background I/O committer thread behind bounded queues (`(slots * 2).min(16)`
+  in-flight jobs, 32 MiB conservative staging working-set cap including
+  deferred `bodies`, plus bounded pending-commit count and bytes; oversized
+  artifacts drain background work and stage inline), ordering outcomes by
+  submission sequence; `flush_publishes` drains before `finish`, `take_counts`,
+  and `into_output`, and `Slots::ONE` stages inline with batched commits and no
+  background threads. In `cache_key::revalidate`, required-namespace lookups use
   metadata-only `SourceProvider::revalidate_locate_traced` backed by
   `FileSourceProvider`'s verified read stamp (falling back to a UTF-8 read if
   metadata changed or was unverified), `src/sha256.rs::compress` uses a safe

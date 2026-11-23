@@ -2036,6 +2036,8 @@ fn parallel_publish_revalidates_only_owned_concurrent_providers_off_thread() {
 fn cache_publishing_respects_two_cpu_slots() {
     use light_cljs::MacroHost;
     use light_cljs::analyzer::AnalysisOptions;
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+    use light_cljs::compile_cache::CacheCpuKind;
     use light_cljs::compile_cache::{CacheOptions, CompileCache};
     use light_cljs::compile_stats::CompileStats;
     use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded_with_provider};
@@ -2052,7 +2054,10 @@ fn cache_publishing_respects_two_cpu_slots() {
     use std::thread::ThreadId;
     use std::time::Duration;
 
-    const NS_COUNT: usize = 16;
+    // More than `PUBLISH_BATCH_SIZE` (64) + `DRAIN_LAG` (6) so at least one
+    // full batch commits (index decode/encode/SHA-256) mid-build before
+    // analysis finishes.
+    const NS_COUNT: usize = 76;
 
     #[derive(Clone)]
     struct SlotInstrumentedProvider {
@@ -2095,12 +2100,8 @@ fn cache_publishing_respects_two_cpu_slots() {
                             .lock()
                             .unwrap()
                             .push(deferred_before);
-                        if stage_idx < 4 {
-                            // Hold staging briefly while deferred units are in
-                            // flight: if staging ran on a separate thread from
-                            // the single `--jobs 2` pool worker, the pool
-                            // worker would start deferred units concurrently.
-                            std::thread::sleep(Duration::from_millis(15));
+                        if stage_idx < 3 {
+                            std::thread::sleep(Duration::from_millis(12));
                         }
                         let log_after = self.pool_log.lock().unwrap().len();
                         self.concurrent_pool_starts
@@ -2143,7 +2144,7 @@ fn cache_publishing_respects_two_cpu_slots() {
                 i - 1
             )
         };
-        for f in 0..8 {
+        for f in 0..4 {
             if i > 0 && f == 0 {
                 src.push_str(&format!("(defn f{f} [x] (m/bump (+ x {i} (* x 2))))\n"));
             } else {
@@ -2153,7 +2154,7 @@ fn cache_publishing_respects_two_cpu_slots() {
         if i == 0 {
             src.push_str("(def v (f0 1))\n");
         } else {
-            src.push_str("(def v (+ (prev/f0 prev/v) (f7 2)))\n");
+            src.push_str("(def v (+ (prev/f0 prev/v) (f3 2)))\n");
         }
         sources.push((format!("app.n{i}"), src));
     }
@@ -2161,6 +2162,7 @@ fn cache_publishing_respects_two_cpu_slots() {
     let slots = Slots::new(2).unwrap();
     let dir = TempDir::new("cache-two-cpu-slots");
     let cache_dir = dir.join("cache");
+    let caller = std::thread::current().id();
 
     #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
     let perturbation = Perturbation {
@@ -2176,7 +2178,7 @@ fn cache_publishing_respects_two_cpu_slots() {
 
     let provider = SlotInstrumentedProvider {
         sources: Arc::new(sources),
-        caller: std::thread::current().id(),
+        caller,
         from_owned_concurrent: false,
         off_thread_ids: Arc::new(Mutex::new(HashSet::new())),
         off_thread_names: Arc::new(Mutex::new(Vec::new())),
@@ -2192,7 +2194,7 @@ fn cache_publishing_respects_two_cpu_slots() {
     let mut host = MacroHost::new();
     // Leave room for the single `--jobs 2` worker to hold a compile-time
     // engine isolate so the test exercises both macro-expanding deferred units
-    // and engine-less cache staging sharing that one worker slot.
+    // and engine-less cache CPU work sharing that one worker slot.
     host.evaluator_options.memory_limit = 256 << 20;
     let options = AnalysisOptions::default();
     let cache_opts = CacheOptions {
@@ -2200,6 +2202,80 @@ fn cache_publishing_respects_two_cpu_slots() {
         ..CacheOptions::default()
     };
     let mut cache = CompileCache::open(&cache_opts, &host, options, &entry);
+
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+    let (
+        artifact_cpu_count,
+        index_cpu_count,
+        cpu_worker_ids,
+        cpu_thread_names,
+        cpu_concurrent_starts,
+        index_deferred_before,
+        artifact_deferred_before,
+    ) = {
+        let artifact_cpu_count = Arc::new(AtomicUsize::new(0));
+        let index_cpu_count = Arc::new(AtomicUsize::new(0));
+        let cpu_worker_ids = Arc::new(Mutex::new(HashSet::new()));
+        let cpu_thread_names = Arc::new(Mutex::new(Vec::new()));
+        let cpu_concurrent_starts = Arc::new(AtomicUsize::new(0));
+        let index_deferred_before = Arc::new(Mutex::new(Vec::new()));
+        let artifact_deferred_before = Arc::new(Mutex::new(Vec::new()));
+
+        let a_cnt = Arc::clone(&artifact_cpu_count);
+        let i_cnt = Arc::clone(&index_cpu_count);
+        let w_ids = Arc::clone(&cpu_worker_ids);
+        let t_names = Arc::clone(&cpu_thread_names);
+        let conc = Arc::clone(&cpu_concurrent_starts);
+        let idx_def = Arc::clone(&index_deferred_before);
+        let art_def = Arc::clone(&artifact_deferred_before);
+        let log = Arc::clone(&pool_log);
+
+        cache.set_cpu_work_hook(Some(Arc::new(move |kind| {
+            let tid = std::thread::current().id();
+            let name = std::thread::current()
+                .name()
+                .unwrap_or("<unnamed>")
+                .to_owned();
+            t_names.lock().unwrap().push((kind, name));
+            let count = match kind {
+                CacheCpuKind::ArtifactEncodeHash => a_cnt.fetch_add(1, Ordering::SeqCst),
+                CacheCpuKind::IndexEncodeHash => i_cnt.fetch_add(1, Ordering::SeqCst),
+            };
+            let (log_before, deferred_before) = {
+                let guard = log.lock().unwrap();
+                let deferred = guard.iter().filter(|(_, k)| *k < (1u64 << 60)).count();
+                (guard.len(), deferred)
+            };
+            match kind {
+                CacheCpuKind::ArtifactEncodeHash => art_def
+                    .lock()
+                    .unwrap()
+                    .push((tid != caller, deferred_before)),
+                CacheCpuKind::IndexEncodeHash => idx_def
+                    .lock()
+                    .unwrap()
+                    .push((tid != caller, deferred_before)),
+            }
+            if tid != caller {
+                w_ids.lock().unwrap().insert(tid);
+                if count < 3 {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                let log_after = log.lock().unwrap().len();
+                conc.fetch_add(log_after.saturating_sub(log_before), Ordering::SeqCst);
+            }
+        })));
+        (
+            artifact_cpu_count,
+            index_cpu_count,
+            cpu_worker_ids,
+            cpu_thread_names,
+            cpu_concurrent_starts,
+            index_deferred_before,
+            artifact_deferred_before,
+        )
+    };
+
     let mut stats = CompileStats::default();
     analyze_namespace_entry_recorded_with_provider(
         &entry,
@@ -2236,25 +2312,72 @@ fn cache_publishing_respects_two_cpu_slots() {
         let concurrent = provider.concurrent_pool_starts.load(Ordering::SeqCst);
         assert_eq!(
             concurrent, 0,
-            "deferred analysis jobs started concurrently ({concurrent}) while cache staging held a worker slot under --jobs 2"
+            "deferred analysis jobs started concurrently ({concurrent}) while cache revalidation held a worker slot under --jobs 2"
         );
+        let cpu_concurrent = cpu_concurrent_starts.load(Ordering::SeqCst);
+        assert_eq!(
+            cpu_concurrent, 0,
+            "deferred analysis jobs started concurrently ({cpu_concurrent}) while cache artifact/index encode+hash held a worker slot under --jobs 2"
+        );
+        assert_eq!(
+            artifact_cpu_count.load(Ordering::SeqCst),
+            NS_COUNT,
+            "expected every namespace's artifact encode+hash to be observed"
+        );
+        assert!(
+            index_cpu_count.load(Ordering::SeqCst) >= 64,
+            "expected commit-side index encode+hash work to be observed"
+        );
+        {
+            let names = cpu_thread_names.lock().unwrap();
+            assert!(
+                names
+                    .iter()
+                    .all(|(_, name)| name != "light-cljs-cache-commit"),
+                "commit-side or artifact CPU work ran on the I/O committer thread: {:?}",
+                names
+                    .iter()
+                    .filter(|(_, n)| n == "light-cljs-cache-commit")
+                    .collect::<Vec<_>>()
+            );
+            let worker_ids = cpu_worker_ids.lock().unwrap();
+            assert_eq!(
+                worker_ids.len(),
+                1,
+                "at --jobs 2, at most one worker thread may run cache CPU work, got {}",
+                worker_ids.len()
+            );
+            let stage_ids = provider.off_thread_ids.lock().unwrap();
+            assert_eq!(
+                *worker_ids, *stage_ids,
+                "artifact/index CPU work and revalidation must share the same single pool worker"
+            );
+        }
         let log = pool_log.lock().unwrap();
         let total_deferred = log.iter().filter(|(_, k)| *k < (1u64 << 60)).count();
-        let total_stage_jobs = log.iter().filter(|(_, k)| *k >= (1u64 << 60)).count();
+        let total_cache_pool_jobs = log.iter().filter(|(_, k)| *k >= (1u64 << 60)).count();
         assert!(total_deferred > 0, "expected deferred jobs in pool log");
         assert!(
-            total_stage_jobs > 0,
-            "expected cache staging jobs in pool log"
+            total_cache_pool_jobs > 0,
+            "expected cache staging/commit CPU jobs in pool log"
         );
         assert!(
             log.iter().all(|(worker, _)| *worker == 0),
             "expected all pool jobs on the single --jobs 2 worker"
         );
-        let snapshots = provider.deferred_at_stage_start.lock().unwrap();
-        let min_before = *snapshots.iter().min().unwrap();
+        let art_snaps = artifact_deferred_before.lock().unwrap();
         assert!(
-            min_before > 0 && min_before < total_deferred,
-            "expected staging and deferred analysis to overlap mid-build (min_before={min_before}, total_deferred={total_deferred}, snapshots={snapshots:?})"
+            art_snaps
+                .iter()
+                .any(|&(off_thread, before)| off_thread && before > 0 && before < total_deferred),
+            "expected off-thread artifact encode+hash to overlap with deferred analysis (total_deferred={total_deferred})"
+        );
+        let idx_snaps = index_deferred_before.lock().unwrap();
+        assert!(
+            idx_snaps
+                .iter()
+                .any(|&(_, before)| before > 0 && before < total_deferred),
+            "expected a commit batch (index encode+hash) to run before deferred analysis ended (total_deferred={total_deferred})"
         );
     }
 
@@ -2297,4 +2420,169 @@ fn cache_publishing_respects_two_cpu_slots() {
     assert_eq!(warm.hits, NS_COUNT);
     assert!(warm.misses.is_empty(), "{:?}", warm.misses);
     assert_eq!(warm.published, 0);
+}
+
+#[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+#[test]
+fn cache_staging_io_does_not_block_deferred_analysis() {
+    use light_cljs::MacroHost;
+    use light_cljs::analyzer::AnalysisOptions;
+    use light_cljs::compile_cache::{CacheOptions, CompileCache};
+    use light_cljs::compile_stats::CompileStats;
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded_with_provider};
+    use light_cljs::dependency_manifest::Candidate;
+    use light_cljs::scheduler::Slots;
+    use light_cljs::source_provider::{LoadError, LoadRequest, SourceInput, SourceProvider};
+    use std::sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
+    use std::time::{Duration, Instant};
+
+    const NS_COUNT: usize = 12;
+
+    #[derive(Clone)]
+    struct MemProvider {
+        sources: Arc<Vec<(String, String)>>,
+    }
+
+    impl SourceProvider for MemProvider {
+        fn load(&self, request: &LoadRequest) -> Result<Option<SourceInput>, LoadError> {
+            let name = String::from_utf16_lossy(request.namespace.name());
+            Ok(self
+                .sources
+                .iter()
+                .find(|(n, _)| n == &name)
+                .map(|(n, s)| SourceInput::new(format!("{n}.cljs"), s.clone())))
+        }
+        fn load_traced(
+            &self,
+            request: &LoadRequest,
+            _tried: &mut Vec<Candidate>,
+        ) -> Result<Option<SourceInput>, LoadError> {
+            self.load(request)
+        }
+        fn concurrent(&self) -> Option<&(dyn SourceProvider + Send + Sync)> {
+            Some(self)
+        }
+        fn owned_concurrent(&self) -> Option<Arc<dyn SourceProvider + Send + Sync>> {
+            Some(Arc::new(self.clone()))
+        }
+    }
+
+    let mut sources = Vec::with_capacity(NS_COUNT);
+    for i in 0..NS_COUNT {
+        let mut src = if i == 0 {
+            "(ns app.io0)\n(defmacro bump [x] (list '+ x 1))\n".to_owned()
+        } else {
+            format!(
+                "(ns app.io{i} (:require [app.io0 :as m] [app.io{} :as prev]))\n",
+                i - 1
+            )
+        };
+        for f in 0..6 {
+            if i > 0 && f == 0 {
+                src.push_str(&format!("(defn f{f} [x] (m/bump (+ x {i} (* x 2))))\n"));
+            } else {
+                src.push_str(&format!("(defn f{f} [x] (+ x {i} {f} (* x 2)))\n"));
+            }
+        }
+        if i == 0 {
+            src.push_str("(def v (f0 1))\n");
+        } else {
+            src.push_str("(def v (+ (prev/f0 prev/v) (f5 2)))\n");
+        }
+        sources.push((format!("app.io{i}"), src));
+    }
+    let entry = format!("app.io{}", NS_COUNT - 1);
+    let provider = MemProvider {
+        sources: Arc::new(sources),
+    };
+    let dir = TempDir::new("cache-staging-io-nonblocking");
+    let cache_dir = dir.join("cache");
+
+    let mut host = MacroHost::new();
+    host.evaluator_options.memory_limit = 256 << 20;
+    let options = AnalysisOptions::default();
+    let cache_opts = CacheOptions {
+        dir: cache_dir,
+        ..CacheOptions::default()
+    };
+    let mut cache = CompileCache::open(&cache_opts, &host, options, &entry);
+
+    // Gate the very first temporary object file write and verify it runs on
+    // the I/O committer thread, never blocking the sole `--jobs 2` pool worker
+    // from finishing all later macro-expanding deferred units.
+    let gate = Arc::new((Mutex::new((false, false)), Condvar::new()));
+    let hooked_once = Arc::new(AtomicBool::new(false));
+    let write_on_committer = Arc::new(AtomicBool::new(false));
+    let hook_gate = Arc::clone(&gate);
+    let hook_once = Arc::clone(&hooked_once);
+    let hook_committer = Arc::clone(&write_on_committer);
+    cache.set_write_temporary_hook(Some(Arc::new(move |dir| {
+        if dir.file_name().and_then(|n| n.to_str()) == Some("objects")
+            && !hook_once.swap(true, Ordering::SeqCst)
+        {
+            hook_committer.store(
+                std::thread::current().name() == Some("light-cljs-cache-commit"),
+                Ordering::SeqCst,
+            );
+            let (mu, cv) = &*hook_gate;
+            let mut st = mu.lock().unwrap();
+            st.0 = true;
+            cv.notify_all();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !st.1 && Instant::now() < deadline {
+                let (next, _) = cv.wait_timeout(st, Duration::from_millis(50)).unwrap();
+                st = next;
+            }
+        }
+    })));
+
+    let mut stats = CompileStats::default();
+    analyze_namespace_entry_recorded_with_provider(
+        &entry,
+        &provider,
+        &mut host,
+        options,
+        &mut Vec::new(),
+        EntryRecorders {
+            stats: Some(&mut stats),
+            cache: Some(&mut cache),
+            slots: Slots::new(2).unwrap(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    // All deferred units (including later macro-expanding units on the sole
+    // `--jobs 2` pool worker) finished while the first staged temp-file write
+    // is still gated on the I/O committer thread.
+    assert!(
+        stats.deferred_units.pooled > 0,
+        "expected pooled deferred units to finish while staging I/O was gated"
+    );
+    {
+        let (mu, cv) = &*gate;
+        let mut st = mu.lock().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !st.0 && Instant::now() < deadline {
+            let (next, _) = cv.wait_timeout(st, Duration::from_millis(20)).unwrap();
+            st = next;
+        }
+        assert!(st.0, "expected first staged object write to enter gate");
+        assert!(
+            write_on_committer.load(Ordering::SeqCst),
+            "staged object write must run on light-cljs-cache-commit, not on a pool worker"
+        );
+        // Release the gated write now that analysis and all pooled deferred
+        // units have already completed.
+        st.1 = true;
+        cv.notify_all();
+    }
+
+    cache.finish();
+    let counts = cache.take_counts();
+    assert_eq!(counts.published, NS_COUNT);
+    assert!(counts.unpublished.is_empty(), "{:?}", counts.unpublished);
 }

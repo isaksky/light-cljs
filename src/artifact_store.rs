@@ -163,6 +163,45 @@ pub enum Publish {
     Unwritable,
 }
 
+/// An encoded and hashed artifact ready to be written to a temporary file in
+/// `objects/` on an I/O thread ([`Store::write_staged`]).
+pub(crate) struct EncodedArtifact {
+    namespace: String,
+    key: Digest,
+    artifact: Digest,
+    names: GeneratedNames,
+    bytes: Vec<u8>,
+}
+
+impl EncodedArtifact {
+    pub(crate) fn approximate_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.namespace.len()
+            + self.bytes.len()
+            + self
+                .names
+                .gensyms
+                .iter()
+                .map(|g| std::mem::size_of::<Vec<u16>>() + g.len() * 2)
+                .sum::<usize>()
+    }
+}
+
+/// Executes CPU-bound commit work (index hashing, decoding, encoding, and
+/// rename-fallback hashing) within the caller's configured CPU-slot budget.
+/// Returning `None` signals cancellation and aborts the remaining batch.
+pub(crate) trait CommitCpu {
+    fn run<R: Send + 'static>(&mut self, work: impl FnOnce() -> R + Send + 'static) -> Option<R>;
+}
+
+struct InlineCommitCpu;
+
+impl CommitCpu for InlineCommitCpu {
+    fn run<R: Send + 'static>(&mut self, work: impl FnOnce() -> R + Send + 'static) -> Option<R> {
+        Some(work())
+    }
+}
+
 /// An encoded artifact written to a temporary file in `objects/`, ready to be
 /// committed under the store lock with [`Store::commit_batch`]. Dropping it
 /// without committing removes its temporary file.
@@ -351,6 +390,10 @@ pub struct Store {
     inner: Arc<StoreInner>,
 }
 
+#[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+#[doc(hidden)]
+pub type WriteTemporaryHook = Arc<dyn Fn(&Path) + Send + Sync>;
+
 struct StoreInner {
     dir: PathBuf,
     root: PathBuf,
@@ -360,6 +403,8 @@ struct StoreInner {
     /// Shared advisory staging lease reused by live staged files of this store,
     /// bounding open descriptors to one lease handle regardless of batch size.
     lease: Mutex<Option<Weak<StagingLease>>>,
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+    write_temporary_hook: Mutex<Option<WriteTemporaryHook>>,
 }
 
 /// The candidates a compilation may look up, read once before its first
@@ -430,8 +475,20 @@ impl Store {
                 failure: OnceLock::new(),
                 prepared: OnceLock::new(),
                 lease: Mutex::new(None),
+                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+                write_temporary_hook: Mutex::new(None),
             }),
         }
+    }
+
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+    #[doc(hidden)]
+    pub fn set_write_temporary_hook(&self, hook: Option<WriteTemporaryHook>) {
+        *self
+            .inner
+            .write_temporary_hook
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = hook;
     }
 
     /// The directory of this layout version.
@@ -706,17 +763,35 @@ impl Store {
         }
     }
 
-    /// Hash `bytes` and write them to a temporary file in `objects/` without
-    /// taking the store lock, dropping `bytes` before returning.
-    pub(crate) fn stage_encoded(
-        &self,
+    /// Compute the content digest of encoded artifact `bytes` without touching
+    /// the filesystem.
+    pub(crate) fn prepare_encoded(
         namespace: String,
         key: Digest,
         names: GeneratedNames,
         bytes: Vec<u8>,
-    ) -> io::Result<StagedArtifact> {
-        self.prepare()?;
+    ) -> EncodedArtifact {
         let artifact = digest(&bytes);
+        EncodedArtifact {
+            namespace,
+            key,
+            artifact,
+            names,
+            bytes,
+        }
+    }
+
+    /// Write an [`EncodedArtifact`] to a temporary file in `objects/` without
+    /// taking the store lock, dropping its encoded bytes before returning.
+    pub(crate) fn write_staged(&self, encoded: EncodedArtifact) -> io::Result<StagedArtifact> {
+        self.prepare()?;
+        let EncodedArtifact {
+            namespace,
+            key,
+            artifact,
+            names,
+            bytes,
+        } = encoded;
         let temporary = self.write_temporary(&self.objects(), &bytes)?;
         let length = bytes.len() as u64;
         drop(bytes);
@@ -730,6 +805,18 @@ impl Store {
         })
     }
 
+    /// Hash `bytes` and write them to a temporary file in `objects/` without
+    /// taking the store lock, dropping `bytes` before returning.
+    pub(crate) fn stage_encoded(
+        &self,
+        namespace: String,
+        key: Digest,
+        names: GeneratedNames,
+        bytes: Vec<u8>,
+    ) -> io::Result<StagedArtifact> {
+        self.write_staged(Self::prepare_encoded(namespace, key, names, bytes))
+    }
+
     /// Commit a batch of [`StagedArtifact`]s under a single store lock
     /// acquisition: coalesce updates per namespace, prepare each index update
     /// before renaming that namespace's objects (rolling back newly introduced
@@ -737,6 +824,17 @@ impl Store {
     /// index once. Any staged artifact that cannot be committed has its
     /// temporary file removed on drop and returns [`Publish::Unwritable`].
     pub fn commit_batch(&self, staged: Vec<StagedArtifact>) -> Vec<Publish> {
+        self.commit_batch_with_cpu(staged, &mut InlineCommitCpu)
+    }
+
+    /// Like [`Store::commit_batch`], routing index/digest CPU work through
+    /// `cpu` while holding the store lock and doing filesystem I/O on the
+    /// calling thread.
+    pub(crate) fn commit_batch_with_cpu(
+        &self,
+        staged: Vec<StagedArtifact>,
+        cpu: &mut impl CommitCpu,
+    ) -> Vec<Publish> {
         let count = staged.len();
         if count == 0 {
             return Vec::new();
@@ -767,11 +865,24 @@ impl Store {
         let mut last_ts = 0u64;
         for namespace in ns_order {
             let items = by_namespace.remove(&namespace).unwrap_or_default();
+            let ns_for_hash = namespace.clone();
+            let Some(ns_digest) = cpu.run(move || digest(ns_for_hash.as_bytes())) else {
+                break;
+            };
+            let index_path = self.indexes().join(hex(&ns_digest));
             // Read and prepare the updated index before renaming any objects of
             // this namespace, so an unwritable index directory fails before
             // introducing unindexed object orphans.
-            let mut index = match self.read_index(&namespace) {
-                Ok(index) => index,
+            let mut index = match read_index_bytes(&index_path) {
+                Ok(raw) => {
+                    let Some(decoded) = cpu.run(move || decode_index(&raw)) else {
+                        break;
+                    };
+                    decoded.unwrap_or_else(|| Index {
+                        namespace: namespace.clone(),
+                        entries: Vec::new(),
+                    })
+                }
                 Err(IndexError::Io(error)) => {
                     self.fail(&io::Error::other(error));
                     break;
@@ -798,7 +909,9 @@ impl Store {
                 index.entries.insert(0, entry.clone());
                 prepared.push((idx, entry, item.temporary));
             }
-            let index_bytes = encode_index(&index);
+            let Some(index_bytes) = cpu.run(move || encode_index(&index)) else {
+                break;
+            };
             let index_temp = match self.write_temporary(&self.indexes(), &index_bytes) {
                 Ok(temp) => temp,
                 Err(error) => {
@@ -816,9 +929,11 @@ impl Store {
                     // Always written, so that a damaged file of the same name is
                     // replaced. The rename and index update hold the lock, so under
                     // it every artifact is indexed, or is an orphan to remove.
-                    if let Err(error) =
-                        temporary.publish(&path, |existing| digest(existing) == entry.artifact)
-                    {
+                    let expected = entry.artifact;
+                    if let Err(error) = temporary.publish(&path, |existing| {
+                        cpu.run(move || digest(&existing) == expected)
+                            .unwrap_or(false)
+                    }) {
                         published_objects.remove(&entry.artifact);
                         object_error = Some(error);
                         break;
@@ -841,7 +956,6 @@ impl Store {
                 self.fail(&error);
                 break;
             }
-            let index_path = self.index_path(&index.namespace);
             match index_temp.publish(&index_path, |existing| existing == index_bytes) {
                 Ok(()) => {
                     for (idx, entry) in entries_out {
@@ -927,6 +1041,18 @@ impl Store {
     }
 
     fn write_temporary(&self, dir: &Path, bytes: &[u8]) -> io::Result<Temporary> {
+        #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+        {
+            let hook = self
+                .inner
+                .write_temporary_hook
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            if let Some(hook) = hook {
+                hook(dir);
+            }
+        }
         let lease = self.staging_lease()?;
         Temporary::write_with_lease(dir, bytes, lease)
     }
@@ -1255,7 +1381,7 @@ impl Temporary {
     /// Rename it to `target` and release its hold on the staging lease. Where
     /// the rename fails because `target` is open (Windows), a `target` that
     /// already holds what `holds` accepts counts as written.
-    fn publish(mut self, target: &Path, holds: impl Fn(&[u8]) -> bool) -> io::Result<()> {
+    fn publish(mut self, target: &Path, holds: impl FnOnce(Vec<u8>) -> bool) -> io::Result<()> {
         let Some(inner) = self.0.as_ref() else {
             return Ok(());
         };
@@ -1265,7 +1391,7 @@ impl Temporary {
                 drop(self.0.take());
                 Ok(())
             }
-            Err(_) if fs::read(target).is_ok_and(|existing| holds(&existing)) => Ok(()),
+            Err(_) if fs::read(target).is_ok_and(holds) => Ok(()),
             Err(error) => Err(error),
         }
     }
@@ -1411,7 +1537,7 @@ fn encode_index(index: &Index) -> Vec<u8> {
     out
 }
 
-fn read_index_file(path: &Path) -> Result<Index, IndexError> {
+fn read_index_bytes(path: &Path) -> Result<Vec<u8>, IndexError> {
     let io = |error: io::Error| match error.kind() {
         io::ErrorKind::NotFound => IndexError::Missing,
         _ => IndexError::Io(error.to_string()),
@@ -1423,6 +1549,11 @@ fn read_index_file(path: &Path) -> Result<Index, IndexError> {
     let mut bytes = Vec::new();
     io::Read::read_to_end(&mut io::Read::take(file, MAX_INDEX_BYTES + 1), &mut bytes)
         .map_err(io)?;
+    Ok(bytes)
+}
+
+fn read_index_file(path: &Path) -> Result<Index, IndexError> {
+    let bytes = read_index_bytes(path)?;
     decode_index(&bytes).ok_or(IndexError::Damaged)
 }
 
