@@ -1806,3 +1806,71 @@ earlier pre-rebase `5065738dd` comparison of `-14.0%` at `--jobs 2`.)
   1,318.8–1,321.1 MiB re-frame) at all four required `--jobs 1` and `--jobs 8`
   configurations (`885.8` / `1,082.2 MiB` plain; `1,140.2` / `1,262.8 MiB`
   re-frame), and within -0.9% to +1.3% of `c405fe2e0`.
+
+## Parallelize `call_shapes`, RTA post-walk, arena unfreeze, and compaction (light-cljs-1101, November 23, 2026)
+
+V8 build (`target/release/light-cljs`), parent `6f50f0b09` (`light-cljs-1099` on
+top of `light-cljs-1100` and `light-cljs-1098`, immutable copy) against the
+`light-cljs-1101` candidate (`720d0768f`), clean `:advanced` builds (`release
+bench --optimize advanced --no-cache --stats`), three alternating before/after
+rounds per `(project, --jobs)` on an unreserved Apple M3 Ultra VM (24 vCPUs,
+32 GiB; 1-minute `uptime` load 4.28–12.78 across all 48 runs while a peer
+worker ran concurrently). Medians (min–max range); peak memory from
+`/usr/bin/time -l` in MiB.
+
+| Project | `--jobs` | Binary | `prepare-application` (ms) | Wall (s) | Peak memory (MiB) | Raw / gzip bytes |
+| --- | ---: | --- | --- | --- | --- | --- |
+| `workload-200k-seed42` | 1 | base `6f50f0b09` | 711.9 (701.7–775.4) | 5.06 (5.01–5.76) | 895.3 (879.4–901.9) | 3,386,878 / 834,297 |
+| `workload-200k-seed42` | 1 | candidate | 658.3 (657.9–661.0) (-7.5%) | 5.00 (4.96–5.01) (-1.2%) | 884.7 (859.7–886.6) (-10.5 MiB, -1.2%) | 3,386,878 / 834,297 |
+| `workload-200k-seed42` | 2 | base `6f50f0b09` | 604.0 (601.4–623.5) | 3.58 (3.58–3.66) | 903.3 (897.0–917.0) | 3,386,856 / 834,297 |
+| `workload-200k-seed42` | 2 | candidate | 507.1 (489.5–525.2) (-16.0%) | 3.48 (3.33–3.50) (-2.8%) | 897.2 (881.3–900.4) (-6.2 MiB, -0.7%) | 3,386,856 / 834,297 |
+| `workload-200k-seed42` | 4 | base `6f50f0b09` | 658.0 (493.3–658.2) | 2.67 (2.31–2.76) | 1,052.4 (1,026.6–1,058.1) | 3,386,840 / 834,306 |
+| `workload-200k-seed42` | 4 | candidate | 431.8 (405.9–483.3) (-34.4%) | 2.40 (2.27–2.49) (-10.1%) | 1,040.1 (1,029.2–1,053.4) (-12.3 MiB, -1.2%) | 3,386,840 / 834,306 |
+| `workload-200k-seed42` | 8 | base `6f50f0b09` | 609.4 (474.4–826.0) | 2.22 (2.03–2.85) | 1,079.8 (1,060.4–1,125.4) | 3,386,824 / 834,686 |
+| `workload-200k-seed42` | 8 | candidate | 394.0 (357.1–953.1\*) (-35.3%) | 1.98 (1.88–6.97\*) (-10.8%) | 1,060.0 (979.5–1,065.9) (-19.8 MiB, -1.8%) | 3,386,824 / 834,686 |
+| `re-frame-200k-seed42` | 1 | base `6f50f0b09` | 1,289.7 (1,124.9–1,315.4) | 6.47 (6.27–6.99) | 1,146.6 (1,146.2–1,150.7) | 5,565,520 / 1,051,451 |
+| `re-frame-200k-seed42` | 1 | candidate | 1,183.8 (1,068.2–1,189.5) (-8.2%) | 6.58 (6.19–6.90) (+1.7%) | 1,127.3 (1,113.3–1,135.7) (-19.3 MiB, -1.7%) | 5,565,520 / 1,051,451 |
+| `re-frame-200k-seed42` | 2 | base `6f50f0b09` | 986.9 (981.7–1,064.3) | 4.69 (4.59–5.35) | 1,074.4 (1,071.3–1,080.3) | 5,565,506 / 1,051,455 |
+| `re-frame-200k-seed42` | 2 | candidate | 867.1 (866.3–867.7) (-12.1%) | 4.61 (4.53–4.98) (-1.7%) | 1,060.6 (1,017.0–1,068.2) (-13.8 MiB, -1.3%) | 5,565,506 / 1,051,455 |
+| `re-frame-200k-seed42` | 4 | base `6f50f0b09` | 879.6 (841.1–882.1) | 3.87 (3.83–4.00) | 1,206.9 (1,189.8–1,245.5) | 5,565,506 / 1,051,480 |
+| `re-frame-200k-seed42` | 4 | candidate | 670.6 (656.0–680.9) (-23.8%) | 3.73 (3.69–3.73) (-3.6%) | 1,213.5 (1,196.3–1,244.1) (+6.6 MiB, +0.5%) | 5,565,506 / 1,051,480 |
+| `re-frame-200k-seed42` | 8 | base `6f50f0b09` | 780.5 (779.8–798.5) | 3.30 (3.29–3.49) | 1,289.5 (1,287.2–1,314.0) | 5,565,482 / 1,051,473 |
+| `re-frame-200k-seed42` | 8 | candidate | 589.0 (579.3–609.5) (-24.5%) | 3.10 (3.08–3.42) (-6.1%) | 1,301.5 (1,282.5–1,313.6) (+12.0 MiB, +0.9%) | 5,565,482 / 1,051,473 |
+
+(\*`workload-200k-seed42` `--jobs 8` round 3 coincided with a host load jump
+from 5.35 to 7.25; rounds 1–2 ran `357.1` / `394.0 ms` vs `474.4` / `609.4 ms`.)
+
+- *Parity.* All eight `(project, --jobs)` combinations produce byte-identical
+  `out/light/workload.main.js` output to `6f50f0b09` and `5065738dd` (SHA-256
+  prefixes `94a7f9e2e894ea06`, `69100c19fccd2ba8`, `96a58875c34ef6aa`,
+  `4a4f9189a1885298`, `4946b32bc6bdf41b`, `40678a8a763cb89d`,
+  `a9a7aa5af7bcca55`, `e934a4528dc7d18b`), match `bb oracle.bb 42 3` via
+  `node run-light.mjs 42 3` (`484264` plain; `714878 117718` re-frame), and pass
+  `bb check-waste.bb --strict`. Gzip size matches `--jobs 1` within +0.047%
+  (plain) and +0.002% (re-frame), identical to `6f50f0b09`. Exact
+  `PreparedApplication::stats()` parity
+  (`call_shapes::generated_200k_call_shapes_and_rta_stats_match_across_jobs`,
+  release) holds across `--jobs 1` and `--jobs 8`: `workload-200k-seed42`
+  `direct_calls=14,686`, `dispatchers_removed=87`, `dropped_methods=7,328`,
+  `devirtualized_calls=219`, `uninstantiated_types=798`, `hoisted_methods=0`,
+  `typed_parameters=8,626`; `re-frame-200k-seed42` `direct_calls=35,116`,
+  `dispatchers_removed=61`, `dropped_methods=2,854`, `devirtualized_calls=125`,
+  `uninstantiated_types=315`, `hoisted_methods=0`, `typed_parameters=3,789`.
+- *Speed and peak memory.* Skipping final-only `call_shapes` work during
+  simplify rounds, pre-filtering UTF-16 string literals before
+  `String::from_utf16_lossy`, fusing the seven RTA post-walk scans, and making
+  `runtime_slice::member_unit` O(1) cut `--jobs 1` `prepare-application` by
+  7.5–8.2% on top of `6f50f0b09`. Parallelizing `call_shapes::Scan::new`,
+  `closed_functions`, the fused RTA post-walk scan (plus overlapping one-time
+  `RuntimeManifest::embedded()` init), `Program::unfreeze_with_slots`, and
+  `compact_expressions_with_slots` on `scheduler::map` cuts
+  `prepare-application` by 23.8–34.4% at `--jobs 4` and **24.5–35.3% at
+  `--jobs 8`** (bringing `workload-200k-seed42` clean `:advanced`
+  `prepare-application` to 394.0 ms and wall time to 1.98 s, and
+  `re-frame-200k-seed42` to 589.0 ms and 3.10 s). Compacting `call_shapes::Scan`
+  tables to `u32` indices keeps peak memory strictly lower than
+  `light-cljs-1098` (`5065738dd`: 902.4–919.4 / 1,085.4–1,098.1 MiB plain,
+  1,177.2–1,180.2 / 1,318.8–1,321.1 MiB re-frame) at all four required
+  `--jobs 1` and `--jobs 8` configurations (`884.7` / `1,060.0 MiB` plain;
+  `1,127.3` / `1,301.5 MiB` re-frame), and lower than `6f50f0b09` on 6 of 8
+  configurations (-19.8 to +12.0 MiB).
