@@ -1752,17 +1752,23 @@ pub(crate) fn declaration_view(
     // The globals its units' bodies add (a `def` in a function) reach the
     // program, and a later macro's reader tables, only when they merge: read
     // them from settled fragments before merge, or merged records after merge.
-    let bundle_units: Vec<usize> = registrations
+    // Bundle units belong to the declaration prefix, and `:test` units append
+    // their IR into their owning definition's fragment and release their own
+    // `Arc<Program>` immediately (`release_definition_test`).
+    let skip_units: Vec<usize> = registrations
         .iter()
         .filter_map(|registration| match registration {
             RegistrationRecord::Bundle(bundle) => Some(bundle.unit),
-            RegistrationRecord::Root { .. } => None,
+            RegistrationRecord::Root {
+                test: Some(test), ..
+            } => Some(*test),
+            RegistrationRecord::Root { test: None, .. } => None,
         })
         .collect();
     let deferred = session.unit_global_names(
         start.units()..source.units_end,
         namespace,
-        &bundle_units,
+        &skip_units,
         source.merged.then_some(program),
     )?;
     let mut interface = Fingerprint::new("light-cljs declaration interface");

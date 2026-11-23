@@ -556,6 +556,18 @@ pub(crate) fn enter_reader_definition(key: &str, unit: &str) -> ScopeGuard {
     enter_namespace(namespace_discriminator(key, unit))
 }
 
+/// Enter the scope in which a namespace's `ns` metadata is lowered before its
+/// body scope begins (`compiler::prepare_source`): its prefix hashes `@<name>`
+/// and `text`, distinct from both the namespace body scope and reader scopes,
+/// so serial and parallel overlay compilation produce the same generated names
+/// without allocating from process-wide counters.
+pub(crate) fn enter_namespace_metadata(name: &str, text: &str) -> ScopeGuard {
+    let mut key = String::with_capacity(name.len() + 1);
+    key.push('@');
+    key.push_str(name);
+    enter_namespace(namespace_discriminator(&key, text))
+}
+
 /// The prefix of a unit registered now in the innermost scope, numbered by
 /// that scope's count, or `None` outside every scope.
 pub(crate) fn child() -> Option<Arc<str>> {

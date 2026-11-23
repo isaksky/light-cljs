@@ -170,6 +170,11 @@ impl UnitCharges {
             trace,
         }
     }
+    pub(crate) fn absent_namespaces(&self) -> impl Iterator<Item = &str> + '_ {
+        self.observations
+            .iter()
+            .flat_map(|log| log.absent.iter().map(|(_, ns)| ns.as_str()))
+    }
     /// Add the charges to `binding`'s counters and marks, and spend the
     /// unit's polls from `control`, the execution control its analysis on
     /// the charging thread would have polled; the unit was analyzed at
@@ -4207,8 +4212,15 @@ impl CompilationSession {
     ) -> Result<(Arc<Program>, Vec<AnalysisWarning>), String> {
         let local_idx = id - LOCAL_UNIT_BASE;
         let inputs = {
+            let shared_depth = self.shared.lock().threads[self.thread].stack.len();
             let mut overlay_ref = self.local_overlay.borrow_mut();
             let overlay = overlay_ref.as_mut().expect("namespace overlay");
+            let local_depth = overlay
+                .units
+                .iter()
+                .filter(|u| matches!(u.state, AnalysisState::Analyzing(_)))
+                .count();
+            let depth = shared_depth + local_depth;
             let unit = &mut overlay.units[local_idx];
             match &unit.state {
                 AnalysisState::Analyzed(program, warnings, _) => {
@@ -4228,9 +4240,15 @@ impl CompilationSession {
                     ));
                 }
                 AnalysisState::Unstarted => {
+                    let inputs = unit.inputs.take().expect("unstarted local unit inputs");
+                    crate::macro_host::WorkMarks::note(&worker_frame.work.unit_depth, depth + 1);
+                    if depth >= inputs.environment.limits().expansion_depth.min(64) {
+                        unit.state = AnalysisState::Failed(DEPTH_LIMIT.to_owned(), None);
+                        return Err(DEPTH_LIMIT.to_owned());
+                    }
                     unit.state = AnalysisState::Analyzing(self.thread);
                     unit.analyses += 1;
-                    unit.inputs.take().expect("unstarted local unit inputs")
+                    inputs
                 }
             }
         };

@@ -2645,7 +2645,7 @@ fn merge_namespace(
         record,
         sources,
         control,
-        cache,
+        mut cache,
         settled_observations,
         sink,
         counts,
@@ -2700,6 +2700,25 @@ fn merge_namespace(
         return Ok(Some(point));
     };
     let file = &ordered[capture.index];
+    // Key deferred captures BEFORE `finish_bodies` consumes `captured_units`'s
+    // `added` global lists so `declaration_view` sees every deferred `def`
+    // identically to the pre-hit barrier.
+    if let (Some(cache_ref), Some(record)) = (cache.as_deref_mut(), record)
+        && matches!(capture.publication, PendingPublication::Unkeyed(_))
+    {
+        let key_started = compile_stats::start(timed);
+        let PendingPublication::Unkeyed(deferred) =
+            std::mem::replace(&mut capture.publication, PendingPublication::None)
+        else {
+            unreachable!()
+        };
+        let publication = key_pending_capture(
+            &capture, deferred, true, analysis, ordered, record, sources, macros, control,
+            cache_ref,
+        )?;
+        capture.publication = PendingPublication::Keyed(publication.map(Box::new));
+        compile_stats::add(cache_time, key_started);
+    }
     let started = compile_stats::start(timed);
     if let Ok(artifact) = &mut capture.artifact
         && let Err(reason) = analysis.finish_bodies(
@@ -2732,17 +2751,6 @@ fn merge_namespace(
         (Some(cache), PendingPublication::Keyed(publication)) => {
             if let Some(publication) = publication {
                 cache.publish(*publication, &file.source, sources, capture.artifact);
-            }
-        }
-        (Some(cache), PendingPublication::Unkeyed(deferred)) => {
-            if let Some(record) = record {
-                let publication = key_pending_capture(
-                    &capture, deferred, true, analysis, ordered, record, sources, macros, control,
-                    cache,
-                )?;
-                if let Some(publication) = publication {
-                    cache.publish(publication, &file.source, sources, capture.artifact);
-                }
             }
         }
         _ => {
@@ -3983,6 +3991,8 @@ fn prepare_source(
                 }
         )
     }) {
+        let _metadata_scope =
+            crate::generated_names::enter_namespace_metadata(&file.name, &file.source);
         let aliases = macros.reader_aliases(&file.name, &file.aliases, &file.requires);
         let source = crate::compiler_data::Source::new(file.path.to_string_lossy(), &*file.source);
         let c = crate::compiler_data::DataBuilder;

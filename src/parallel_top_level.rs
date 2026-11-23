@@ -241,13 +241,24 @@ impl ParallelTopLevel {
                 );
             }
             // Also depend on any earlier namespace directly named by a
-            // qualified symbol `ns/sym` in the file, even without an explicit
-            // `:require` (allowed in ClojureScript when loaded earlier).
+            // qualified symbol `ns/sym` or dotted symbol `ns.sym` in the file,
+            // even without an explicit `:require` (allowed in ClojureScript
+            // when loaded earlier).
             for node in &file.syntax.nodes {
                 if matches!(node.kind, NodeKind::Symbol) {
                     let text = &file.source[node.span.clone()];
                     if let Some((prefix, _)) = text.split_once('/')
                         && !prefix.is_empty()
+                    {
+                        add_dep(
+                            prefix,
+                            &self.ns_index,
+                            &mut self.dependents,
+                            &mut self.unmet_deps,
+                        );
+                    } else if let Some((prefix, member)) = text.rsplit_once('.')
+                        && !prefix.is_empty()
+                        && !member.is_empty()
                     {
                         add_dep(
                             prefix,
@@ -656,6 +667,7 @@ impl ParallelTopLevel {
                     done.snap_foreign_epoch,
                     done.entered_engine,
                     &done.reflected_namespaces,
+                    &done.ready.publication,
                     analysis,
                     macros,
                     &session,
@@ -681,6 +693,7 @@ impl ParallelTopLevel {
         snap_foreign_epoch: u64,
         entered_engine: bool,
         reflected_namespaces: &[String],
+        publication: &NamespacePublication,
         analysis: &NamespaceAnalysis,
         macros: &MacroHost,
         session: &CompilationSession,
@@ -697,10 +710,21 @@ impl ParallelTopLevel {
         if analysis.has_global_in_namespace_since(snap_globals_len, namespace) {
             return false;
         }
-        if !reflected_namespaces.is_empty() && snap_index < index {
+        if analysis.has_any_global_key_since(
+            snap_globals_len,
+            publication.added_global_keys(snap_globals_len),
+        ) {
+            return false;
+        }
+        if snap_index < index {
             let published_since = &self.published_names[snap_index..index];
             for reflected in reflected_namespaces {
                 if reflected == "*" || published_since.iter().any(|p| p == reflected) {
+                    return false;
+                }
+            }
+            for absent in publication.absent_namespaces() {
+                if published_since.iter().any(|p| p == absent) {
                     return false;
                 }
             }

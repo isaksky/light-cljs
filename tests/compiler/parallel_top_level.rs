@@ -993,6 +993,10 @@ fn parallel_top_level_cache_cross_jobs_reuse_and_byte_identity() {
         assert_eq!(warm_8_counts.hits, expected_namespaces);
         assert_eq!(warm_8.output, oracle.output, "j=1->j=8 output");
         assert_eq!(warm_8.warnings, oracle.warnings, "j=1->j=8 warnings");
+        assert_eq!(
+            warm_8.stats.deferred_units.pool.peak_admitted, 0,
+            "all-hit warm j=8 must not speculatively admit top-level jobs (warning_mode={warning_mode})"
+        );
     }
 }
 
@@ -1120,4 +1124,322 @@ fn manifest_only_deferred_observations_match_serial() {
     let (js_8, manifest_8) = build_manifest(8);
     assert_eq!(js_8, js_1);
     assert_eq!(manifest_8, manifest_1);
+}
+
+#[test]
+fn cached_dotted_symbol_uses_canonical_namespace() {
+    let sources = Sources::new();
+    sources
+        .write(
+            "app/macro_helper.cljc",
+            r#"(ns app.macro-helper)
+(defmacro emit-provider-x [] (symbol "app.provider.x"))"#,
+        )
+        .write(
+            "app/provider.cljs",
+            r#"(ns app.provider)
+(def x 42)"#,
+        )
+        .write(
+            "app/consumer_literal.cljs",
+            r#"(ns app.consumer-literal)
+(defn read-literal [] app.provider.x)"#,
+        )
+        .write(
+            "app/consumer_macro.cljs",
+            r#"(ns app.consumer-macro (:require [app.macro-helper :as mh]))
+(defn read-macro [] (mh/emit-provider-x))"#,
+        )
+        .write(
+            "app/main.cljs",
+            r#"(ns app.main
+  (:require [app.provider]
+            [app.consumer-literal :as cl]
+            [app.consumer-macro :as cm]))
+(js/console.log (pr-str [(cl/read-literal) (cm/read-macro)]))"#,
+        );
+
+    let oracle = build_with(&sources, "app.main", 1, false, isolate_per_slot());
+    let expected_run = execute(oracle.output.as_ref().unwrap());
+    assert_eq!(expected_run.trim(), "[42 42]");
+
+    let cache = crate::temp_dir::TempDir::new("cljs-ptl-dotted-ns");
+    let (cold_8, cold_8_counts) = build_cached(&sources, "app.main", 8, false, cache.path());
+    assert_eq!(cold_8.output, oracle.output, "cold j=8 vs uncached j=1");
+    assert_eq!(execute(cold_8.output.as_ref().unwrap()), expected_run);
+    assert_eq!(cold_8_counts.hits, 0);
+    assert_eq!(cold_8_counts.published, 5);
+
+    let (warm_1, warm_1_counts) = build_cached(&sources, "app.main", 1, false, cache.path());
+    assert_eq!(warm_1_counts.misses, Vec::new(), "warm j=1 misses");
+    assert_eq!(warm_1_counts.hits, 5);
+    assert_eq!(warm_1.output, oracle.output, "warm j=1 vs uncached j=1");
+    assert_eq!(execute(warm_1.output.as_ref().unwrap()), expected_run);
+}
+
+#[test]
+fn drain_and_barrier_key_the_same_deferred_shadowing() {
+    let sources = Sources::new();
+    sources
+        .write(
+            "app/macros.cljc",
+            r#"(ns app.macros)
+(defmacro wrap [x] `(+ ~x 1))"#,
+        )
+        .write(
+            "app/provider.cljs",
+            r#"(ns app.provider)
+(defn make-val [x]
+  (def count (+ x 1))
+  (+ x 10))
+(def base-v (make-val 3))"#,
+        )
+        .write(
+            "app/consumer.cljs",
+            r#"(ns app.consumer (:require [app.macros :as m]))
+(def v (m/wrap 7))"#,
+        )
+        .write(
+            "app/main.cljs",
+            r#"(ns app.main (:require [app.provider :as p] [app.consumer :as c]))
+(js/console.log (pr-str [p/base-v c/v]))"#,
+        );
+
+    let cache = crate::temp_dir::TempDir::new("cljs-ptl-deferred-shadow");
+    let (cold, cold_counts) = build_cached(&sources, "app.main", 8, false, cache.path());
+    assert_eq!(cold_counts.published, 4);
+    assert_eq!(execute(cold.output.as_ref().unwrap()).trim(), "[13 8]");
+
+    // Comment-only edit in provider changes its source key without changing its
+    // declaration view (including the deferred `def count` inside `make-val`).
+    sources.write(
+        "app/provider.cljs",
+        r#"(ns app.provider)
+;; comment-only edit
+(defn make-val [x]
+  (def count (+ x 1))
+  (+ x 10))
+(def base-v (make-val 3))"#,
+    );
+
+    let (warm_8, warm_8_counts) = build_cached(&sources, "app.main", 8, false, cache.path());
+    assert_eq!(execute(warm_8.output.as_ref().unwrap()).trim(), "[13 8]");
+    assert!(
+        !warm_8_counts
+            .misses
+            .iter()
+            .any(|(ns, _, _)| ns == "app.consumer"),
+        "comment-only provider edit must preserve app.consumer's cache hit, got misses: {:?}",
+        warm_8_counts.misses
+    );
+}
+
+#[test]
+fn cached_overlay_handles_duplicate_foreign_reservations() {
+    let sources = Sources::new();
+    sources.write("app/provider.cljs", "(ns app.provider)\n(def present 1)");
+    let mut requires = String::from("[app.provider :as p] ");
+    let mut exprs = String::from("p/present ");
+    for i in 0..8 {
+        let ns_name = format!("app.dup{i}");
+        sources.write(
+            &format!("app/dup{i}.cljs"),
+            &format!(
+                r#"(ns {ns_name} (:require [app.provider :as p]))
+(def has-missing (exists? p/missing))
+(def value {i})"#
+            ),
+        );
+        requires.push_str(&format!("[{ns_name} :as d{i}] "));
+        exprs.push_str(&format!("d{i}/value "));
+    }
+    sources.write(
+        "app/main.cljs",
+        &format!("(ns app.main (:require {requires}))\n(js/console.log (pr-str [{exprs}]))"),
+    );
+
+    let oracle = build_with(&sources, "app.main", 1, false, isolate_per_slot());
+    let expected_run = execute(oracle.output.as_ref().unwrap());
+
+    let cache = crate::temp_dir::TempDir::new("cljs-ptl-dup-foreign");
+    let (cold_8, cold_8_counts) = build_cached(&sources, "app.main", 8, false, cache.path());
+    assert_eq!(cold_8.output, oracle.output);
+    assert_eq!(execute(cold_8.output.as_ref().unwrap()), expected_run);
+    assert_eq!(cold_8_counts.published, 10);
+
+    let (warm_1, warm_1_counts) = build_cached(&sources, "app.main", 1, false, cache.path());
+    assert_eq!(warm_1_counts.misses, Vec::new(), "warm j=1 misses");
+    assert_eq!(warm_1_counts.hits, 10);
+    assert_eq!(warm_1.output, oracle.output);
+}
+
+#[test]
+fn cached_warning_overlay_enforces_unit_depth() {
+    let sources = Sources::new();
+    let mut requires = String::new();
+    let mut exprs = String::new();
+    for i in 0..6 {
+        let ns_name = format!("app.depth{i}");
+        sources.write(
+            &format!("app/depth{i}.cljs"),
+            &format!("(ns {ns_name})\n(def x {i})"),
+        );
+        requires.push_str(&format!("[{ns_name} :as d{i}] "));
+        exprs.push_str(&format!("d{i}/x "));
+    }
+    sources.write(
+        "app/main.cljs",
+        &format!("(ns app.main (:require {requires}))\n[{exprs}]"),
+    );
+
+    let run = |slots: usize| {
+        let cache_dir = crate::temp_dir::TempDir::new("cljs-ptl-depth-limit");
+        let mut host = isolate_per_slot();
+        host.limits.expansion_depth = 0;
+        let analysis_options = light_cljs::analyzer::AnalysisOptions {
+            warning_mode: true,
+            ..Default::default()
+        };
+        let mut cache = light_cljs::compile_cache::CompileCache::open(
+            &light_cljs::compile_cache::CacheOptions {
+                dir: cache_dir.path().to_path_buf(),
+                blockers: Vec::new(),
+                retention: Default::default(),
+            },
+            &host,
+            analysis_options,
+            "app.main",
+        );
+        let mut warnings = Vec::new();
+        light_cljs::compiler::analyze_namespace_entry_recorded(
+            "app.main",
+            std::slice::from_ref(sources.root()),
+            &mut host,
+            analysis_options,
+            &mut warnings,
+            light_cljs::compiler::EntryRecorders {
+                cache: Some(&mut cache),
+                slots: light_cljs::scheduler::Slots::new(slots).unwrap(),
+                ..Default::default()
+            },
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    };
+
+    let err_1 = run(1).expect_err("j=1 must reject deferred unit at expansion_depth=0");
+    let err_8 = run(8).expect_err("j=8 must reject deferred unit at expansion_depth=0");
+    assert_eq!(err_8, err_1, "j=8 diagnostic must match j=1");
+}
+
+#[test]
+fn cached_overlay_scopes_namespace_metadata_names() {
+    let sources = Sources::new();
+    let mut requires = String::new();
+    let mut exprs = String::new();
+    for i in 0..6 {
+        let ns_name = format!("app.meta{i}");
+        sources.write(
+            &format!("app/meta{i}.cljs"),
+            &format!("(ns ^{{:sample `tmp# :fn #(+ % {i})}} {ns_name})\n(def v {i})"),
+        );
+        requires.push_str(&format!("[{ns_name} :as m{i}] "));
+        exprs.push_str(&format!("m{i}/v "));
+    }
+    sources.write(
+        "app/main.cljs",
+        &format!("(ns app.main (:require {requires}))\n(js/console.log (pr-str [{exprs}]))"),
+    );
+
+    let capture_at = |slots: usize| {
+        let mut host = isolate_per_slot();
+        let mut warnings = Vec::new();
+        let mut captured = Vec::new();
+        let mut sink = |item: light_cljs::namespace_artifact::NamespaceCapture| {
+            captured.push((item.namespace, item.artifact.expect("captured artifact")));
+        };
+        light_cljs::compiler::analyze_namespace_entry_recorded(
+            "app.main",
+            std::slice::from_ref(sources.root()),
+            &mut host,
+            light_cljs::analyzer::AnalysisOptions::default(),
+            &mut warnings,
+            light_cljs::compiler::EntryRecorders {
+                capture: Some(&mut sink),
+                slots: light_cljs::scheduler::Slots::new(slots).unwrap(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        captured
+    };
+
+    let cap_1 = capture_at(1);
+    let cap_8 = capture_at(8);
+    assert_eq!(cap_1.len(), cap_8.len());
+    for ((ns_1, art_1), (ns_8, art_8)) in cap_1.iter().zip(cap_8.iter()) {
+        assert_eq!(ns_1, ns_8);
+        assert_eq!(
+            art_8.declarations.namespace_symbol, art_1.declarations.namespace_symbol,
+            "namespace metadata symbol mismatch for {ns_1}"
+        );
+        // Because metadata lowering runs inside a deterministic scope, it must
+        // not allocate from process-wide syntax-quote or anonymous counters.
+        assert_eq!(
+            art_1.names.from, art_1.names.to,
+            "j=1 metadata leaked process-wide counter for {ns_1}"
+        );
+        assert_eq!(
+            art_8.names.from, art_8.names.to,
+            "j=8 metadata leaked process-wide counter for {ns_1}"
+        );
+    }
+}
+
+#[test]
+fn candidate_lookup_keys_all_queued_predecessors() {
+    let sources = build_cache_fixture();
+    let base_cache = crate::temp_dir::TempDir::new("cljs-ptl-multi-unkeyed-base");
+    let (_, cold_counts) = build_cached(&sources, "app.main", 8, false, base_cache.path());
+    assert_eq!(cold_counts.published, 20);
+
+    // Remove the snapshot indexes for two consecutive mid-graph namespaces so
+    // both stay unkeyed in `captures` until the next candidate lookup runs.
+    let remove_index = |cache_root: &std::path::Path, ns: &str| {
+        let digest = light_cljs::sha256::digest(ns.as_bytes());
+        let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+        let index_path = cache_root.join("v1").join("index").join(hex);
+        assert!(index_path.exists(), "expected index file for {ns}");
+        std::fs::remove_file(index_path).unwrap();
+    };
+
+    let cache_1 = crate::temp_dir::TempDir::new("cljs-ptl-multi-unkeyed-j1");
+    let cache_8 = crate::temp_dir::TempDir::new("cljs-ptl-multi-unkeyed-j8");
+    copy_dir_recursive(base_cache.path(), cache_1.path());
+    copy_dir_recursive(base_cache.path(), cache_8.path());
+    for cache_root in [cache_1.path(), cache_8.path()] {
+        remove_index(cache_root, "app.s0");
+        remove_index(cache_root, "app.s1");
+    }
+
+    let oracle = build_with(&sources, "app.main", 1, false, isolate_per_slot());
+    let (warm_1, counts_1) = build_cached(&sources, "app.main", 1, false, cache_1.path());
+    let (warm_8, counts_8) = build_cached(&sources, "app.main", 8, false, cache_8.path());
+
+    assert_eq!(warm_1.output, oracle.output);
+    assert_eq!(warm_8.output, oracle.output);
+    assert_eq!(counts_8.hits, counts_1.hits);
+    assert_eq!(counts_8.misses, counts_1.misses);
+    assert_eq!(counts_8.bypasses, counts_1.bypasses);
+    assert!(
+        counts_8.misses.iter().any(|(ns, _, _)| ns == "app.s0")
+            && counts_8.misses.iter().any(|(ns, _, _)| ns == "app.s1"),
+        "expected both removed siblings to miss, got {:?}",
+        counts_8.misses
+    );
+    assert_eq!(
+        counts_8.hits, 18,
+        "unexpected hits (misses={:?})",
+        counts_8.misses
+    );
 }

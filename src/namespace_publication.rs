@@ -382,6 +382,18 @@ impl NamespacePublication {
     pub(crate) fn mutated_foreign_ns(&self) -> bool {
         self.mutated_foreign_ns
     }
+    pub(crate) fn absent_namespaces(&self) -> impl Iterator<Item = &str> + '_ {
+        self.charges.iter().flat_map(|c| c.absent_namespaces())
+    }
+    pub(crate) fn added_global_keys(
+        &self,
+        since: usize,
+    ) -> impl Iterator<Item = (&str, &str)> + '_ {
+        self.program
+            .globals
+            .range(since..self.program.globals.len())
+            .map(|g| (g.namespace.as_str(), g.name.as_str()))
+    }
 }
 
 impl DrainedNamespace {

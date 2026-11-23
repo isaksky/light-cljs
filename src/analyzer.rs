@@ -4576,6 +4576,28 @@ impl NamespaceAnalysis {
             .any(|g| g.namespace == namespace)
     }
 
+    /// Whether any `(namespace, name)` key already exists in the canonical
+    /// global table at index `>= since` (used to reject speculative overlays
+    /// whose added-global suffix would coalesce with an earlier sibling's
+    /// publication and shift `UnitCapture::view_globals`).
+    pub(crate) fn has_any_global_key_since<'a>(
+        &self,
+        since: usize,
+        keys: impl IntoIterator<Item = (&'a str, &'a str)>,
+    ) -> bool {
+        if self.program.globals.len() <= since {
+            return false;
+        }
+        for (namespace, name) in keys {
+            if let Some(id) = self.globals.get(&(namespace.to_owned(), name.to_owned()))
+                && id.0 >= since
+            {
+                return true;
+            }
+        }
+        false
+    }
+
     pub(crate) fn new(macro_host: &mut MacroHost) -> Self {
         macro_host.begin_compilation();
         Self::in_compilation()
