@@ -1867,16 +1867,18 @@ fn parallel_publish_revalidates_only_owned_concurrent_providers_off_thread() {
     struct TrackedConcurrent {
         sources: Arc<Vec<(String, String)>>,
         caller: ThreadId,
+        from_owned_concurrent: bool,
         off_thread_revalidations: Arc<Mutex<Vec<String>>>,
     }
 
     impl SourceProvider for TrackedConcurrent {
         fn load(&self, request: &LoadRequest) -> Result<Option<SourceInput>, LoadError> {
             let name = String::from_utf16_lossy(request.namespace.name());
-            if std::thread::current().id() != self.caller
+            if self.from_owned_concurrent
+                && std::thread::current().id() != self.caller
                 && std::thread::current()
                     .name()
-                    .is_some_and(|n| n.starts_with("light-cljs-cache-stage-"))
+                    .is_some_and(|n| n.starts_with("light-cljs-worker-"))
             {
                 self.off_thread_revalidations
                     .lock()
@@ -1900,7 +1902,9 @@ fn parallel_publish_revalidates_only_owned_concurrent_providers_off_thread() {
             Some(self)
         }
         fn owned_concurrent(&self) -> Option<Arc<dyn SourceProvider + Send + Sync>> {
-            Some(Arc::new(self.clone()))
+            let mut owned = self.clone();
+            owned.from_owned_concurrent = true;
+            Some(Arc::new(owned))
         }
     }
 
@@ -1953,6 +1957,7 @@ fn parallel_publish_revalidates_only_owned_concurrent_providers_off_thread() {
     let concurrent = TrackedConcurrent {
         sources: Arc::new(sources.clone()),
         caller,
+        from_owned_concurrent: false,
         off_thread_revalidations: Arc::new(Mutex::new(Vec::new())),
     };
     let mut host = MacroHost::new();
@@ -2025,4 +2030,271 @@ fn parallel_publish_revalidates_only_owned_concurrent_providers_off_thread() {
         "{:?}",
         counts.unpublished
     );
+}
+
+#[test]
+fn cache_publishing_respects_two_cpu_slots() {
+    use light_cljs::MacroHost;
+    use light_cljs::analyzer::AnalysisOptions;
+    use light_cljs::compile_cache::{CacheOptions, CompileCache};
+    use light_cljs::compile_stats::CompileStats;
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded_with_provider};
+    use light_cljs::dependency_manifest::Candidate;
+    use light_cljs::scheduler::Slots;
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+    use light_cljs::scheduler::{Limits, Perturbation};
+    use light_cljs::source_provider::{LoadError, LoadRequest, SourceInput, SourceProvider};
+    use std::collections::HashSet;
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use std::thread::ThreadId;
+    use std::time::Duration;
+
+    const NS_COUNT: usize = 16;
+
+    #[derive(Clone)]
+    struct SlotInstrumentedProvider {
+        sources: Arc<Vec<(String, String)>>,
+        caller: ThreadId,
+        from_owned_concurrent: bool,
+        off_thread_ids: Arc<Mutex<HashSet<ThreadId>>>,
+        off_thread_names: Arc<Mutex<Vec<String>>>,
+        off_thread_stages: Arc<AtomicUsize>,
+        #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+        pool_log: Arc<Mutex<Vec<(usize, u64)>>>,
+        #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+        concurrent_pool_starts: Arc<AtomicUsize>,
+        #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+        deferred_at_stage_start: Arc<Mutex<Vec<usize>>>,
+    }
+
+    impl SourceProvider for SlotInstrumentedProvider {
+        fn load(&self, request: &LoadRequest) -> Result<Option<SourceInput>, LoadError> {
+            let name = String::from_utf16_lossy(request.namespace.name());
+            if self.from_owned_concurrent {
+                let tid = std::thread::current().id();
+                if tid != self.caller {
+                    let stage_idx = self.off_thread_stages.fetch_add(1, Ordering::SeqCst);
+                    self.off_thread_ids.lock().unwrap().insert(tid);
+                    self.off_thread_names.lock().unwrap().push(
+                        std::thread::current()
+                            .name()
+                            .unwrap_or("<unnamed>")
+                            .to_owned(),
+                    );
+                    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+                    {
+                        let (log_before, deferred_before) = {
+                            let log = self.pool_log.lock().unwrap();
+                            let deferred = log.iter().filter(|(_, k)| *k < (1u64 << 60)).count();
+                            (log.len(), deferred)
+                        };
+                        self.deferred_at_stage_start
+                            .lock()
+                            .unwrap()
+                            .push(deferred_before);
+                        if stage_idx < 4 {
+                            // Hold staging briefly while deferred units are in
+                            // flight: if staging ran on a separate thread from
+                            // the single `--jobs 2` pool worker, the pool
+                            // worker would start deferred units concurrently.
+                            std::thread::sleep(Duration::from_millis(15));
+                        }
+                        let log_after = self.pool_log.lock().unwrap().len();
+                        self.concurrent_pool_starts
+                            .fetch_add(log_after.saturating_sub(log_before), Ordering::SeqCst);
+                    }
+                    #[cfg(not(any(debug_assertions, feature = "scheduling-stress")))]
+                    let _ = stage_idx;
+                }
+            }
+            Ok(self
+                .sources
+                .iter()
+                .find(|(n, _)| n == &name)
+                .map(|(n, s)| SourceInput::new(format!("{n}.cljs"), s.clone())))
+        }
+        fn load_traced(
+            &self,
+            request: &LoadRequest,
+            _tried: &mut Vec<Candidate>,
+        ) -> Result<Option<SourceInput>, LoadError> {
+            self.load(request)
+        }
+        fn concurrent(&self) -> Option<&(dyn SourceProvider + Send + Sync)> {
+            Some(self)
+        }
+        fn owned_concurrent(&self) -> Option<Arc<dyn SourceProvider + Send + Sync>> {
+            let mut owned = self.clone();
+            owned.from_owned_concurrent = true;
+            Some(Arc::new(owned))
+        }
+    }
+
+    let mut sources = Vec::with_capacity(NS_COUNT);
+    for i in 0..NS_COUNT {
+        let mut src = if i == 0 {
+            "(ns app.n0)\n(defmacro bump [x] (list '+ x 1))\n".to_owned()
+        } else {
+            format!(
+                "(ns app.n{i} (:require [app.n0 :as m] [app.n{} :as prev]))\n",
+                i - 1
+            )
+        };
+        for f in 0..8 {
+            if i > 0 && f == 0 {
+                src.push_str(&format!("(defn f{f} [x] (m/bump (+ x {i} (* x 2))))\n"));
+            } else {
+                src.push_str(&format!("(defn f{f} [x] (+ x {i} {f} (* x 2)))\n"));
+            }
+        }
+        if i == 0 {
+            src.push_str("(def v (f0 1))\n");
+        } else {
+            src.push_str("(def v (+ (prev/f0 prev/v) (f7 2)))\n");
+        }
+        sources.push((format!("app.n{i}"), src));
+    }
+    let entry = format!("app.n{}", NS_COUNT - 1);
+    let slots = Slots::new(2).unwrap();
+    let dir = TempDir::new("cache-two-cpu-slots");
+    let cache_dir = dir.join("cache");
+
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+    let perturbation = Perturbation {
+        seed: 1,
+        limits: Some(Limits {
+            phase_quantum: 2,
+            ..Limits::default()
+        }),
+        ..Default::default()
+    };
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+    let pool_log = Arc::clone(&perturbation.log);
+
+    let provider = SlotInstrumentedProvider {
+        sources: Arc::new(sources),
+        caller: std::thread::current().id(),
+        from_owned_concurrent: false,
+        off_thread_ids: Arc::new(Mutex::new(HashSet::new())),
+        off_thread_names: Arc::new(Mutex::new(Vec::new())),
+        off_thread_stages: Arc::new(AtomicUsize::new(0)),
+        #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+        pool_log: Arc::clone(&pool_log),
+        #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+        concurrent_pool_starts: Arc::new(AtomicUsize::new(0)),
+        #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+        deferred_at_stage_start: Arc::new(Mutex::new(Vec::new())),
+    };
+
+    let mut host = MacroHost::new();
+    // Leave room for the single `--jobs 2` worker to hold a compile-time
+    // engine isolate so the test exercises both macro-expanding deferred units
+    // and engine-less cache staging sharing that one worker slot.
+    host.evaluator_options.memory_limit = 256 << 20;
+    let options = AnalysisOptions::default();
+    let cache_opts = CacheOptions {
+        dir: cache_dir.clone(),
+        ..CacheOptions::default()
+    };
+    let mut cache = CompileCache::open(&cache_opts, &host, options, &entry);
+    let mut stats = CompileStats::default();
+    analyze_namespace_entry_recorded_with_provider(
+        &entry,
+        &provider,
+        &mut host,
+        options,
+        &mut Vec::new(),
+        EntryRecorders {
+            stats: Some(&mut stats),
+            cache: Some(&mut cache),
+            slots,
+            #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+            perturbation: Some(perturbation),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    cache.finish();
+    let counts = cache.take_counts();
+    assert_eq!(counts.published, NS_COUNT);
+    assert!(counts.unpublished.is_empty(), "{:?}", counts.unpublished);
+    assert!(
+        stats.deferred_units.pooled > 0,
+        "expected deferred units to run on the pool"
+    );
+
+    let off_thread_stages = provider.off_thread_stages.load(Ordering::SeqCst);
+    assert!(
+        off_thread_stages > 0,
+        "expected cache staging to execute on the pool worker thread"
+    );
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+    {
+        let concurrent = provider.concurrent_pool_starts.load(Ordering::SeqCst);
+        assert_eq!(
+            concurrent, 0,
+            "deferred analysis jobs started concurrently ({concurrent}) while cache staging held a worker slot under --jobs 2"
+        );
+        let log = pool_log.lock().unwrap();
+        let total_deferred = log.iter().filter(|(_, k)| *k < (1u64 << 60)).count();
+        let total_stage_jobs = log.iter().filter(|(_, k)| *k >= (1u64 << 60)).count();
+        assert!(total_deferred > 0, "expected deferred jobs in pool log");
+        assert!(
+            total_stage_jobs > 0,
+            "expected cache staging jobs in pool log"
+        );
+        assert!(
+            log.iter().all(|(worker, _)| *worker == 0),
+            "expected all pool jobs on the single --jobs 2 worker"
+        );
+        let snapshots = provider.deferred_at_stage_start.lock().unwrap();
+        let min_before = *snapshots.iter().min().unwrap();
+        assert!(
+            min_before > 0 && min_before < total_deferred,
+            "expected staging and deferred analysis to overlap mid-build (min_before={min_before}, total_deferred={total_deferred}, snapshots={snapshots:?})"
+        );
+    }
+
+    {
+        let off_thread_ids = provider.off_thread_ids.lock().unwrap();
+        assert_eq!(
+            off_thread_ids.len(),
+            1,
+            "at --jobs 2, at most one worker thread may run cache staging, got {} threads",
+            off_thread_ids.len()
+        );
+        let off_thread_names = provider.off_thread_names.lock().unwrap();
+        assert!(
+            off_thread_names
+                .iter()
+                .all(|name| name.starts_with("light-cljs-worker-")),
+            "expected cache staging to run on the scheduler worker thread, got: {off_thread_names:?}"
+        );
+    }
+
+    // Warm rebuild hits every published namespace.
+    let mut host2 = MacroHost::new();
+    host2.evaluator_options.memory_limit = 256 << 20;
+    let mut cache2 = CompileCache::open(&cache_opts, &host2, options, &entry);
+    analyze_namespace_entry_recorded_with_provider(
+        &entry,
+        &provider,
+        &mut host2,
+        options,
+        &mut Vec::new(),
+        EntryRecorders {
+            cache: Some(&mut cache2),
+            slots,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    cache2.finish();
+    let warm = cache2.take_counts();
+    assert_eq!(warm.hits, NS_COUNT);
+    assert!(warm.misses.is_empty(), "{:?}", warm.misses);
+    assert_eq!(warm.published, 0);
 }

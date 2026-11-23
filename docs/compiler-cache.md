@@ -1535,22 +1535,24 @@ build is a supported debugging and comparison path.
   hash, a miss that the next publish replaces, and on macOS a sync is a
   full flush per file, two per namespace.
 
-  *As built (light-cljs-1104):* publication splits into lock-free staging
-  (`Store::stage` / `Store::stage_encoded`) and batched locking commits
-  (`Store::commit_batch`, 64 staged artifacts per lock acquisition and on
-  flush, deduplicating object renames, coalescing index rewrites per
-  namespace, and preparing each index temporary file before renaming that
-  namespace's objects so index write failures leave no new orphans). When
-  `--jobs > 1`, `CompileCache` runs staging (including revalidation for
-  `FileSourceProvider` via `SourceProvider::owned_concurrent`) on up to 4
-  background worker threads behind a bounded queue (`(slots * 2).min(16)`
-  in-flight jobs, 32 MiB conservative staging working-set cap including
-  deferred `bodies`, plus bounded pending-commit count and bytes; oversized
-  artifacts drain background work and stage inline) feeding a single
-  background committer thread that orders outcomes by submission sequence;
-  `flush_publishes` drains before `finish`, `take_counts`, and `into_output`,
-  and `Slots::ONE` stages inline with batched commits and no background
-  threads. In `cache_key::revalidate`, required-namespace lookups use
+  *As built (light-cljs-1104, light-cljs-1107):* publication splits into
+  lock-free staging (`Store::stage` / `Store::stage_encoded`) and batched
+  locking commits (`Store::commit_batch`, 64 staged artifacts per lock
+  acquisition and on flush, deduplicating object renames, coalescing index
+  rewrites per namespace, and preparing each index temporary file before
+  renaming that namespace's objects so index write failures leave no new
+  orphans). When `--jobs > 1`, `CompileCache` dispatches CPU-bound staging
+  (revalidation for `FileSourceProvider` via
+  `SourceProvider::owned_concurrent`, artifact encoding, and SHA-256 hashing)
+  onto the compilation session's existing `UnitPool` worker slots (or inline on
+  the coordinator slot under backpressure or flush), behind a bounded queue
+  (`(slots * 2).min(16)` in-flight jobs, 32 MiB conservative staging
+  working-set cap including deferred `bodies`, plus bounded pending-commit
+  count and bytes; oversized artifacts drain background work and stage inline),
+  keeping CPU work within `--jobs N` while a single background I/O committer
+  thread orders outcomes by submission sequence; `flush_publishes` drains
+  before `finish`, `take_counts`, and `into_output`, and `Slots::ONE` stages
+  inline with batched commits and no background threads. In `cache_key::revalidate`, required-namespace lookups use
   metadata-only `SourceProvider::revalidate_locate_traced` backed by
   `FileSourceProvider`'s verified read stamp (falling back to a UTF-8 read if
   metadata changed or was unverified), `src/sha256.rs::compress` uses a safe
