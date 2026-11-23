@@ -563,10 +563,8 @@ mod tests {
                 w[at] = u32::from_be_bytes(bytes.try_into().unwrap());
             }
             for i in 16..64 {
-                let s0 =
-                    w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
-                let s1 =
-                    w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+                let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+                let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
                 w[i] = w[i - 16]
                     .wrapping_add(s0)
                     .wrapping_add(w[i - 7])
@@ -619,7 +617,9 @@ mod tests {
             let expected = reference_digest(slice);
             assert_eq!(digest(slice), expected, "one-shot mismatch at len {len}");
         }
-        for &len in &[0usize, 1, 55, 56, 57, 63, 64, 65, 119, 120, 127, 128, 129, 1024, 4096] {
+        for &len in &[
+            0usize, 1, 55, 56, 57, 63, 64, 65, 119, 120, 127, 128, 129, 1024, 4096,
+        ] {
             let slice = &buf[..len];
             let expected = reference_digest(slice);
             for &chunk_size in &[1usize, 7, 31, 55, 56, 63, 64, 65, 128] {

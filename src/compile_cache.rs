@@ -28,16 +28,25 @@
 //! leaves the build's output alone.
 
 use crate::artifact_codec::{self, DecodeLimits, ManifestFields};
-use crate::artifact_store::{Inputs, MAX_OUTPUT_BYTES, Publish, Retention, Snapshot, Store};
-use crate::cache_key::{Digest, FrontEndKey, KeyEnvironment, Mismatch, NamespaceKeys};
+use crate::artifact_store::{
+    Inputs, MAX_OUTPUT_BYTES, Publish, Retention, Snapshot, Stage, StagedArtifact, Store,
+};
+use crate::cache_key::{
+    Digest, FrontEndKey, KeyEnvironment, Mismatch, NamespaceKeys, RevalidateInputs,
+};
 use crate::cache_policy::{Bypass, NamespaceMetadata};
 use crate::compile_stats::{CacheCounts, OutputCounts};
 use crate::dependency_manifest::{BroadView, EdgeKinds, ExternalInput, LoaderRecord, NamespaceId};
 use crate::macro_host::MacroHost;
 use crate::manifest_prefix::{ManifestPrefix, NamespaceRecords};
 use crate::namespace_artifact::NamespaceArtifact;
+use crate::scheduler::Slots;
 use crate::source_provider::SourceProvider;
+use std::collections::{BTreeMap, VecDeque};
+use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
 /// Where `--compile --entry`, `--reloadable` and `--watch` keep the cache
@@ -100,6 +109,18 @@ pub struct CompileCache {
     /// How many namespaces so far a later coarse view covers by their
     /// declaration key or whole key ([`CacheCounts::view_declaring`]).
     declaring: u64,
+    /// CPU slots available to this compilation, detected from the session's
+    /// unit pool policy when `--jobs > 1`.
+    slots: Slots,
+    /// Staged artifacts awaiting a batched commit on the inline (`Slots::ONE`)
+    /// path, flushed every `PUBLISH_BATCH_SIZE` namespaces and on flush/finish.
+    inline_batch: Vec<(NamespaceId, String, StagedArtifact)>,
+    /// Background publish pipeline when `slots > 1`, started lazily on the
+    /// first publish so warm no-op builds spawn no threads.
+    pipeline: Option<PublishPipeline>,
+    /// True if spawning background publish workers failed, so later publishes
+    /// stay inline instead of retrying thread creation.
+    pipeline_failed: bool,
 }
 
 impl CompileCache {
@@ -132,6 +153,10 @@ impl CompileCache {
             counts,
             retention: options.retention,
             declaring: 0,
+            slots: Slots::ONE,
+            inline_batch: Vec::new(),
+            pipeline: None,
+            pipeline_failed: false,
         }
     }
 
@@ -146,7 +171,24 @@ impl CompileCache {
     }
 
     pub fn take_counts(&mut self) -> CacheCounts {
+        self.flush_publishes();
         std::mem::take(&mut self.counts)
+    }
+
+    /// Wait for any in-flight background publish work and commit any staged
+    /// artifacts, applying their outcomes in deterministic submission order.
+    pub fn flush_publishes(&mut self) {
+        if let Some(pipeline) = &mut self.pipeline {
+            let started = Instant::now();
+            let outcomes = pipeline.flush();
+            self.apply_finished(outcomes);
+            self.counts.write_time += started.elapsed();
+        }
+        if !self.inline_batch.is_empty() {
+            let started = Instant::now();
+            self.commit_inline_batch();
+            self.counts.write_time += started.elapsed();
+        }
     }
 
     /// The dependency manifest of the compilation, once it has ended, from
@@ -161,7 +203,8 @@ impl CompileCache {
 
     /// Bound the cache directory after the build succeeded, keeping what it
     /// used and published.
-    pub fn finish(&self) {
+    pub fn finish(&mut self) {
+        self.flush_publishes();
         if self.store.write_failure().is_some() {
             return;
         }
@@ -176,7 +219,9 @@ impl CompileCache {
     /// What reusing the output of this compilation needs, once it has
     /// ended: the store, and the digest of the assembled program when every
     /// namespace was installed from or published as an artifact.
-    pub fn into_output(self) -> OutputCache {
+    pub fn into_output(mut self) -> OutputCache {
+        self.flush_publishes();
+        self.pipeline = None;
         let complete =
             self.artifacts.len() == self.prefix.len() && self.keys.len() == self.prefix.len();
         let program = complete
@@ -194,8 +239,8 @@ impl CompileCache {
             })
             .flatten();
         OutputCache {
-            store: self.store,
-            environment: self.environment,
+            store: self.store.clone(),
+            environment: self.environment.clone(),
             program,
             retention: self.retention,
             counts: OutputCounts::default(),
@@ -424,6 +469,14 @@ impl CompileCache {
         program_namespaces: &crate::arena::Arena<String>,
         declarations: Option<crate::dependency_manifest::DeclarationView>,
     ) -> Option<Publication> {
+        if self.slots == Slots::ONE
+            && let Some(policy) = macros
+                .session_handle()
+                .and_then(|session| session.pool_policy())
+            && let Some(slots) = Slots::new(policy.workers + 1)
+        {
+            self.slots = slots;
+        }
         let index = self.prefix.len();
         let name = loader.sources[index].name.clone();
         let id = {
@@ -480,7 +533,69 @@ impl CompileCache {
         sources: &dyn SourceProvider,
         artifact: Result<NamespaceArtifact, String>,
     ) {
+        let started = Instant::now();
         let Publication { name, id, key } = publication;
+        if self.slots.get() > 1 && self.pipeline.is_none() && !self.pipeline_failed {
+            match PublishPipeline::start(self.store.clone(), self.slots) {
+                Ok(pipeline) => self.pipeline = Some(pipeline),
+                Err(_) => self.pipeline_failed = true,
+            }
+        }
+        if self.pipeline.is_some() {
+            let artifact = match artifact {
+                Ok(artifact) => artifact,
+                Err(reason) => {
+                    self.pipeline
+                        .as_mut()
+                        .unwrap()
+                        .submit_unpublished(id, name, reason);
+                    self.counts.write_time += started.elapsed();
+                    return;
+                }
+            };
+            if self.store.write_failure().is_some() {
+                drop(artifact);
+                self.pipeline.as_mut().unwrap().submit_unwritable(id, name);
+                self.counts.write_time += started.elapsed();
+                return;
+            }
+            let fields = self.manifest_fields(id, key);
+            let revalidate = match sources.owned_concurrent() {
+                Some(owned) => {
+                    let inputs =
+                        RevalidateInputs::from_manifest(&self.prefix, id, fields.inputs.clone());
+                    Some((inputs, text.to_owned(), owned))
+                }
+                None => {
+                    if let Err(mismatch) =
+                        crate::cache_key::revalidate(&self.prefix, id, text, sources)
+                    {
+                        drop(artifact);
+                        self.pipeline.as_mut().unwrap().submit_unpublished(
+                            id,
+                            name,
+                            format!("its inputs changed while it compiled: {mismatch}"),
+                        );
+                        self.counts.write_time += started.elapsed();
+                        return;
+                    }
+                    None
+                }
+            };
+            let estimated_bytes = artifact
+                .approximate_bytes()
+                .saturating_add(if revalidate.is_some() { text.len() } else { 0 });
+            self.pipeline.as_mut().unwrap().enqueue(
+                id,
+                name,
+                estimated_bytes,
+                artifact,
+                fields,
+                revalidate,
+            );
+            self.counts.write_time += started.elapsed();
+            return;
+        }
         let artifact = match artifact {
             Ok(artifact) => artifact,
             Err(reason) => {
@@ -488,8 +603,41 @@ impl CompileCache {
                 return;
             }
         };
+        let fields = self.manifest_fields(id, key);
+        let staged = self.store.stage(
+            &artifact,
+            &fields,
+            Inputs {
+                manifest: &self.prefix,
+                id,
+                text,
+                sources,
+            },
+        );
+        drop(artifact);
+        match staged {
+            Stage::Staged(staged) => {
+                self.inline_batch.push((id, name, staged));
+                if self.inline_batch.len() >= PUBLISH_BATCH_SIZE {
+                    self.commit_inline_batch();
+                }
+            }
+            Stage::Refused(mismatch) => self.counts.unpublished.push((
+                name,
+                format!("its inputs changed while it compiled: {mismatch}"),
+            )),
+            Stage::Unencodable(reason) => self.counts.unpublished.push((name, reason)),
+            Stage::Unwritable => self
+                .counts
+                .unpublished
+                .push((name, "the cache cannot be written".into())),
+        }
+        self.counts.write_time += started.elapsed();
+    }
+
+    fn manifest_fields(&self, id: NamespaceId, key: FrontEndKey) -> ManifestFields {
         let record = self.prefix.record(id);
-        let fields = ManifestFields {
+        ManifestFields {
             front_end_key: key,
             // One front-end artifact serves every emission mode, so it
             // records no emission key (docs/compiler-cache.md, "Conservative
@@ -512,36 +660,60 @@ impl CompileCache {
             absent: record.absent.clone(),
             no_cache: false,
             always: false,
-        };
-        let started = Instant::now();
-        let published = self.store.publish(
-            &artifact,
-            &fields,
-            Inputs {
-                manifest: &self.prefix,
-                id,
-                text,
-                sources,
-            },
-        );
-        drop(artifact);
-        self.counts.write_time += started.elapsed();
-        match published {
-            Publish::Published(entry) => {
-                self.counts.published += 1;
-                self.counts.bytes_written += entry.bytes;
-                self.in_use.push(entry.artifact);
-                self.artifacts[id.0 as usize] = Some(entry.artifact);
+        }
+    }
+
+    fn commit_inline_batch(&mut self) {
+        if self.inline_batch.is_empty() {
+            return;
+        }
+        let batch = std::mem::take(&mut self.inline_batch);
+        let mut meta = Vec::with_capacity(batch.len());
+        let mut artifacts = Vec::with_capacity(batch.len());
+        for (id, name, staged) in batch {
+            meta.push((id, name));
+            artifacts.push(staged);
+        }
+        let results = self.store.commit_batch(artifacts);
+        for ((id, name), published) in meta.into_iter().zip(results) {
+            match published {
+                Publish::Published(entry) => {
+                    self.counts.published += 1;
+                    self.counts.bytes_written += entry.bytes;
+                    self.in_use.push(entry.artifact);
+                    self.artifacts[id.0 as usize] = Some(entry.artifact);
+                }
+                Publish::Refused(mismatch) => self.counts.unpublished.push((
+                    name,
+                    format!("its inputs changed while it compiled: {mismatch}"),
+                )),
+                Publish::Unencodable(reason) => self.counts.unpublished.push((name, reason)),
+                Publish::Unwritable => self
+                    .counts
+                    .unpublished
+                    .push((name, "the cache cannot be written".into())),
             }
-            Publish::Refused(mismatch) => self.counts.unpublished.push((
-                name,
-                format!("its inputs changed while it compiled: {mismatch}"),
-            )),
-            Publish::Unencodable(reason) => self.counts.unpublished.push((name, reason)),
-            Publish::Unwritable => self
-                .counts
-                .unpublished
-                .push((name, "the cache cannot be written".into())),
+        }
+    }
+
+    fn apply_finished(&mut self, outcomes: Vec<FinishedPublish>) {
+        for item in outcomes {
+            match item.result {
+                FinishedResult::Published { artifact, bytes } => {
+                    self.counts.published += 1;
+                    self.counts.bytes_written += bytes;
+                    self.in_use.push(artifact);
+                    self.artifacts[item.id.0 as usize] = Some(artifact);
+                }
+                FinishedResult::Unpublished(reason) => {
+                    self.counts.unpublished.push((item.name, reason));
+                }
+                FinishedResult::Unwritable => {
+                    self.counts
+                        .unpublished
+                        .push((item.name, "the cache cannot be written".into()));
+                }
+            }
         }
     }
 
@@ -616,6 +788,622 @@ impl CompileCache {
             .map(|&id| self.prefix.record(NamespaceId(id)).name.as_str())
             .collect::<Vec<_>>()
             .join(" > ")
+    }
+}
+
+impl Drop for CompileCache {
+    fn drop(&mut self) {
+        if !thread::panicking() {
+            self.flush_publishes();
+        }
+    }
+}
+
+/// Number of staged artifacts committed per store lock acquisition.
+const PUBLISH_BATCH_SIZE: usize = 64;
+/// Upper bound on staging worker threads for parallel cache publishing.
+const PUBLISH_MAX_WORKERS: usize = 4;
+/// Upper bound on in-flight publish jobs awaiting staging.
+const PUBLISH_MAX_INFLIGHT_JOBS: usize = 16;
+/// Upper bound on estimated bytes held by in-flight publish jobs (32 MiB).
+const PUBLISH_MAX_INFLIGHT_BYTES: usize = 32 * 1024 * 1024;
+
+struct StageJob {
+    seq: usize,
+    id: NamespaceId,
+    name: String,
+    estimated_bytes: usize,
+    artifact: NamespaceArtifact,
+    fields: ManifestFields,
+    revalidate: Option<(
+        RevalidateInputs,
+        String,
+        Arc<dyn SourceProvider + Send + Sync>,
+    )>,
+}
+
+enum StageOutcome {
+    Staged(StagedArtifact),
+    Refused(Mismatch),
+    Unencodable(String),
+    PreUnpublished(String),
+    Io(std::io::Error),
+    Unwritable,
+}
+
+enum FinishedResult {
+    Published { artifact: Digest, bytes: u64 },
+    Unpublished(String),
+    Unwritable,
+}
+
+struct FinishedPublish {
+    seq: usize,
+    id: NamespaceId,
+    name: String,
+    result: FinishedResult,
+}
+
+struct StageQueue {
+    jobs: VecDeque<StageJob>,
+    inflight_jobs: usize,
+    inflight_bytes: usize,
+    shutdown: bool,
+    cancelled: bool,
+}
+
+struct CommitQueue {
+    next_seq: usize,
+    submitted: usize,
+    pending: BTreeMap<usize, (NamespaceId, String, StageOutcome)>,
+    finished: Vec<FinishedPublish>,
+    completed: usize,
+    flush_requested: bool,
+    shutdown: bool,
+    cancelled: bool,
+    panic: Option<String>,
+}
+
+struct PublishShared {
+    store: Store,
+    max_inflight_jobs: usize,
+    max_inflight_bytes: usize,
+    stage_mu: Mutex<StageQueue>,
+    stage_work_cv: Condvar,
+    stage_space_cv: Condvar,
+    commit_mu: Mutex<CommitQueue>,
+    commit_cv: Condvar,
+    done_cv: Condvar,
+}
+
+impl PublishShared {
+    fn record_panic(&self, payload: Box<dyn std::any::Any + Send>) {
+        let message = payload
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_owned())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "panic".to_owned());
+        {
+            let mut stage = self.stage_mu.lock().unwrap_or_else(|e| e.into_inner());
+            stage.cancelled = true;
+            stage.jobs.clear();
+            self.stage_work_cv.notify_all();
+            self.stage_space_cv.notify_all();
+        }
+        {
+            let mut commit = self.commit_mu.lock().unwrap_or_else(|e| e.into_inner());
+            commit.cancelled = true;
+            commit.pending.clear();
+            if commit.panic.is_none() {
+                commit.panic = Some(message);
+            }
+            self.commit_cv.notify_all();
+            self.done_cv.notify_all();
+        }
+    }
+}
+
+struct PublishPipeline {
+    shared: Arc<PublishShared>,
+    submitted: usize,
+    workers: Vec<JoinHandle<()>>,
+    committer: Option<JoinHandle<()>>,
+}
+
+impl PublishPipeline {
+    fn start(store: Store, slots: Slots) -> std::io::Result<Self> {
+        let worker_count = slots.workers().clamp(1, PUBLISH_MAX_WORKERS);
+        let max_inflight_jobs = (slots.get() * 2).min(PUBLISH_MAX_INFLIGHT_JOBS);
+        let shared = Arc::new(PublishShared {
+            store,
+            max_inflight_jobs,
+            max_inflight_bytes: PUBLISH_MAX_INFLIGHT_BYTES,
+            stage_mu: Mutex::new(StageQueue {
+                jobs: VecDeque::new(),
+                inflight_jobs: 0,
+                inflight_bytes: 0,
+                shutdown: false,
+                cancelled: false,
+            }),
+            stage_work_cv: Condvar::new(),
+            stage_space_cv: Condvar::new(),
+            commit_mu: Mutex::new(CommitQueue {
+                next_seq: 0,
+                submitted: 0,
+                pending: BTreeMap::new(),
+                finished: Vec::new(),
+                completed: 0,
+                flush_requested: false,
+                shutdown: false,
+                cancelled: false,
+                panic: None,
+            }),
+            commit_cv: Condvar::new(),
+            done_cv: Condvar::new(),
+        });
+
+        let mut workers = Vec::with_capacity(worker_count);
+        for idx in 0..worker_count {
+            let shared_clone = Arc::clone(&shared);
+            match thread::Builder::new()
+                .name(format!("light-cljs-cache-stage-{}", idx + 1))
+                .spawn(move || stage_worker_loop(shared_clone))
+            {
+                Ok(handle) => workers.push(handle),
+                Err(error) => {
+                    shutdown_on_spawn_error(&shared, workers, None);
+                    return Err(error);
+                }
+            }
+        }
+        let shared_clone = Arc::clone(&shared);
+        let committer = match thread::Builder::new()
+            .name("light-cljs-cache-commit".into())
+            .spawn(move || commit_worker_loop(shared_clone))
+        {
+            Ok(handle) => handle,
+            Err(error) => {
+                shutdown_on_spawn_error(&shared, workers, None);
+                return Err(error);
+            }
+        };
+        Ok(Self {
+            shared,
+            submitted: 0,
+            workers,
+            committer: Some(committer),
+        })
+    }
+
+    fn enqueue(
+        &mut self,
+        id: NamespaceId,
+        name: String,
+        estimated_bytes: usize,
+        artifact: NamespaceArtifact,
+        fields: ManifestFields,
+        revalidate: Option<(
+            RevalidateInputs,
+            String,
+            Arc<dyn SourceProvider + Send + Sync>,
+        )>,
+    ) {
+        let seq = self.submitted;
+        self.submitted += 1;
+        let mut stage = self
+            .shared
+            .stage_mu
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        while !stage.cancelled
+            && stage.inflight_jobs > 0
+            && (stage.inflight_jobs >= self.shared.max_inflight_jobs
+                || stage.inflight_bytes.saturating_add(estimated_bytes)
+                    > self.shared.max_inflight_bytes)
+        {
+            stage = self
+                .shared
+                .stage_space_cv
+                .wait(stage)
+                .unwrap_or_else(|e| e.into_inner());
+        }
+        if stage.cancelled {
+            drop(stage);
+            drop(artifact);
+            return;
+        }
+        stage.inflight_jobs += 1;
+        stage.inflight_bytes = stage.inflight_bytes.saturating_add(estimated_bytes);
+        stage.jobs.push_back(StageJob {
+            seq,
+            id,
+            name,
+            estimated_bytes,
+            artifact,
+            fields,
+            revalidate,
+        });
+        drop(stage);
+        self.shared.stage_work_cv.notify_one();
+    }
+
+    fn submit_unpublished(&mut self, id: NamespaceId, name: String, reason: String) {
+        let seq = self.submitted;
+        self.submitted += 1;
+        let mut commit = self
+            .shared
+            .commit_mu
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if commit.cancelled {
+            return;
+        }
+        commit
+            .pending
+            .insert(seq, (id, name, StageOutcome::PreUnpublished(reason)));
+        if seq == commit.next_seq {
+            self.shared.commit_cv.notify_one();
+        }
+    }
+
+    fn submit_unwritable(&mut self, id: NamespaceId, name: String) {
+        let seq = self.submitted;
+        self.submitted += 1;
+        let mut commit = self
+            .shared
+            .commit_mu
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if commit.cancelled {
+            return;
+        }
+        commit
+            .pending
+            .insert(seq, (id, name, StageOutcome::Unwritable));
+        if seq == commit.next_seq {
+            self.shared.commit_cv.notify_one();
+        }
+    }
+
+    fn flush(&mut self) -> Vec<FinishedPublish> {
+        let target = self.submitted;
+        let mut commit = self
+            .shared
+            .commit_mu
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if commit.completed < target && !commit.cancelled {
+            commit.submitted = target;
+            commit.flush_requested = true;
+            self.shared.commit_cv.notify_one();
+            while commit.completed < target && !commit.cancelled {
+                commit = self
+                    .shared
+                    .done_cv
+                    .wait(commit)
+                    .unwrap_or_else(|e| e.into_inner());
+            }
+        }
+        let panic = commit.panic.take();
+        let mut finished = std::mem::take(&mut commit.finished);
+        drop(commit);
+        if let Some(message) = panic {
+            panic!("cache publish worker panicked: {message}");
+        }
+        finished.sort_by_key(|item| item.seq);
+        finished
+    }
+}
+
+impl Drop for PublishPipeline {
+    fn drop(&mut self) {
+        let cancelling = thread::panicking();
+        {
+            let mut stage = self
+                .shared
+                .stage_mu
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if cancelling {
+                stage.cancelled = true;
+                stage.jobs.clear();
+            } else {
+                stage.shutdown = true;
+            }
+            self.shared.stage_work_cv.notify_all();
+            self.shared.stage_space_cv.notify_all();
+        }
+        {
+            let mut commit = self
+                .shared
+                .commit_mu
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            commit.submitted = self.submitted;
+            if cancelling {
+                commit.cancelled = true;
+                commit.pending.clear();
+            } else {
+                commit.shutdown = true;
+            }
+            self.shared.commit_cv.notify_all();
+            self.shared.done_cv.notify_all();
+        }
+        for handle in self.workers.drain(..) {
+            let _ = handle.join();
+        }
+        if let Some(handle) = self.committer.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn shutdown_on_spawn_error(
+    shared: &PublishShared,
+    workers: Vec<JoinHandle<()>>,
+    committer: Option<JoinHandle<()>>,
+) {
+    {
+        let mut stage = shared.stage_mu.lock().unwrap_or_else(|e| e.into_inner());
+        stage.cancelled = true;
+        stage.jobs.clear();
+        shared.stage_work_cv.notify_all();
+    }
+    {
+        let mut commit = shared.commit_mu.lock().unwrap_or_else(|e| e.into_inner());
+        commit.cancelled = true;
+        commit.pending.clear();
+        shared.commit_cv.notify_all();
+    }
+    for handle in workers {
+        let _ = handle.join();
+    }
+    if let Some(handle) = committer {
+        let _ = handle.join();
+    }
+}
+
+fn stage_worker_loop(shared: Arc<PublishShared>) {
+    loop {
+        let job = {
+            let mut stage = shared.stage_mu.lock().unwrap_or_else(|e| e.into_inner());
+            while stage.jobs.is_empty() && !stage.shutdown && !stage.cancelled {
+                stage = shared
+                    .stage_work_cv
+                    .wait(stage)
+                    .unwrap_or_else(|e| e.into_inner());
+            }
+            if stage.cancelled || (stage.shutdown && stage.jobs.is_empty()) {
+                return;
+            }
+            stage.jobs.pop_front().expect("non-empty stage queue")
+        };
+
+        let StageJob {
+            seq,
+            id,
+            name,
+            estimated_bytes,
+            artifact,
+            fields,
+            revalidate,
+        } = job;
+
+        let staged = panic::catch_unwind(AssertUnwindSafe(|| {
+            run_stage(&shared.store, &name, artifact, fields, revalidate)
+        }));
+
+        {
+            let mut stage = shared.stage_mu.lock().unwrap_or_else(|e| e.into_inner());
+            stage.inflight_jobs = stage.inflight_jobs.saturating_sub(1);
+            stage.inflight_bytes = stage.inflight_bytes.saturating_sub(estimated_bytes);
+            shared.stage_space_cv.notify_one();
+        }
+
+        let outcome = match staged {
+            Ok(outcome) => outcome,
+            Err(payload) => {
+                shared.record_panic(payload);
+                return;
+            }
+        };
+
+        let mut commit = shared.commit_mu.lock().unwrap_or_else(|e| e.into_inner());
+        if commit.cancelled {
+            drop(outcome);
+            return;
+        }
+        commit.pending.insert(seq, (id, name, outcome));
+        if seq == commit.next_seq {
+            shared.commit_cv.notify_one();
+        }
+    }
+}
+
+fn run_stage(
+    store: &Store,
+    name: &str,
+    mut artifact: NamespaceArtifact,
+    fields: ManifestFields,
+    revalidate: Option<(
+        RevalidateInputs,
+        String,
+        Arc<dyn SourceProvider + Send + Sync>,
+    )>,
+) -> StageOutcome {
+    if store.write_failure().is_some() {
+        drop(revalidate);
+        drop(artifact);
+        drop(fields);
+        return StageOutcome::Unwritable;
+    }
+    if let Some((inputs, text, sources)) = revalidate {
+        let check = crate::cache_key::revalidate_owned(&inputs, &text, &*sources);
+        drop(text);
+        drop(inputs);
+        drop(sources);
+        if let Err(mismatch) = check {
+            drop(artifact);
+            drop(fields);
+            return StageOutcome::Refused(mismatch);
+        }
+    }
+    let encoded = artifact_codec::encode(&artifact, &fields);
+    let names = std::mem::take(&mut artifact.names);
+    drop(artifact);
+    let key = fields.front_end_key.digest;
+    drop(fields);
+    let bytes = match encoded {
+        Ok(bytes) => bytes,
+        Err(reason) => return StageOutcome::Unencodable(reason),
+    };
+    match store.stage_encoded(name.to_owned(), key, names, bytes) {
+        Ok(staged) => StageOutcome::Staged(staged),
+        Err(error) => StageOutcome::Io(error),
+    }
+}
+
+fn commit_worker_loop(shared: Arc<PublishShared>) {
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        let mut batch: Vec<(usize, NamespaceId, String, StagedArtifact)> =
+            Vec::with_capacity(PUBLISH_BATCH_SIZE);
+        loop {
+            let to_commit = {
+                let mut commit = shared.commit_mu.lock().unwrap_or_else(|e| e.into_inner());
+                loop {
+                    if commit.cancelled {
+                        drop(batch);
+                        commit.pending.clear();
+                        shared.done_cv.notify_all();
+                        return;
+                    }
+                    // Drain contiguous completed staging outcomes in submission order.
+                    while let Some(entry) = commit.pending.get(&commit.next_seq) {
+                        if !batch.is_empty() && matches!(entry.2, StageOutcome::Io(_)) {
+                            // Commit earlier valid staged items before marking the store failed.
+                            break;
+                        }
+                        let seq = commit.next_seq;
+                        let (id, name, outcome) = commit.pending.remove(&seq).unwrap();
+                        commit.next_seq += 1;
+                        match outcome {
+                            StageOutcome::Staged(staged) => {
+                                if shared.store.write_failure().is_some() {
+                                    drop(staged);
+                                    commit.finished.push(FinishedPublish {
+                                        seq,
+                                        id,
+                                        name,
+                                        result: FinishedResult::Unwritable,
+                                    });
+                                    commit.completed += 1;
+                                } else {
+                                    batch.push((seq, id, name, staged));
+                                    if batch.len() >= PUBLISH_BATCH_SIZE {
+                                        break;
+                                    }
+                                }
+                            }
+                            StageOutcome::Refused(mismatch) => {
+                                commit.finished.push(FinishedPublish {
+                                    seq,
+                                    id,
+                                    name,
+                                    result: FinishedResult::Unpublished(format!(
+                                        "its inputs changed while it compiled: {mismatch}"
+                                    )),
+                                });
+                                commit.completed += 1;
+                            }
+                            StageOutcome::Unencodable(reason)
+                            | StageOutcome::PreUnpublished(reason) => {
+                                commit.finished.push(FinishedPublish {
+                                    seq,
+                                    id,
+                                    name,
+                                    result: FinishedResult::Unpublished(reason),
+                                });
+                                commit.completed += 1;
+                            }
+                            StageOutcome::Io(error) => {
+                                shared.store.fail(&error);
+                                commit.finished.push(FinishedPublish {
+                                    seq,
+                                    id,
+                                    name,
+                                    result: FinishedResult::Unwritable,
+                                });
+                                commit.completed += 1;
+                            }
+                            StageOutcome::Unwritable => {
+                                commit.finished.push(FinishedPublish {
+                                    seq,
+                                    id,
+                                    name,
+                                    result: FinishedResult::Unwritable,
+                                });
+                                commit.completed += 1;
+                            }
+                        }
+                    }
+
+                    let flush_ready = (commit.flush_requested || commit.shutdown)
+                        && commit.next_seq == commit.submitted;
+                    if batch.len() >= PUBLISH_BATCH_SIZE || (!batch.is_empty() && flush_ready) {
+                        break std::mem::take(&mut batch);
+                    }
+                    if commit.flush_requested && commit.completed == commit.submitted {
+                        commit.flush_requested = false;
+                        shared.done_cv.notify_all();
+                    }
+                    if commit.shutdown && commit.next_seq == commit.submitted {
+                        shared.done_cv.notify_all();
+                        return;
+                    }
+                    commit = shared
+                        .commit_cv
+                        .wait(commit)
+                        .unwrap_or_else(|e| e.into_inner());
+                }
+            };
+
+            let mut meta = Vec::with_capacity(to_commit.len());
+            let mut artifacts = Vec::with_capacity(to_commit.len());
+            for (seq, id, name, staged) in to_commit {
+                meta.push((seq, id, name));
+                artifacts.push(staged);
+            }
+            let results = shared.store.commit_batch(artifacts);
+
+            let mut commit = shared.commit_mu.lock().unwrap_or_else(|e| e.into_inner());
+            for ((seq, id, name), published) in meta.into_iter().zip(results) {
+                let result = match published {
+                    Publish::Published(entry) => FinishedResult::Published {
+                        artifact: entry.artifact,
+                        bytes: entry.bytes,
+                    },
+                    Publish::Refused(mismatch) => FinishedResult::Unpublished(format!(
+                        "its inputs changed while it compiled: {mismatch}"
+                    )),
+                    Publish::Unencodable(reason) => FinishedResult::Unpublished(reason),
+                    Publish::Unwritable => FinishedResult::Unwritable,
+                };
+                commit.finished.push(FinishedPublish {
+                    seq,
+                    id,
+                    name,
+                    result,
+                });
+                commit.completed += 1;
+            }
+            if commit.flush_requested && commit.completed == commit.submitted && batch.is_empty() {
+                commit.flush_requested = false;
+                shared.done_cv.notify_all();
+            }
+        }
+    }));
+    if let Err(payload) = result {
+        shared.record_panic(payload);
     }
 }
 

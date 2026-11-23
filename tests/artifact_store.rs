@@ -9,7 +9,9 @@
 use light_cljs::MacroHost;
 use light_cljs::analyzer::AnalysisOptions;
 use light_cljs::artifact_codec::{self, DecodeLimits, ManifestFields};
-use light_cljs::artifact_store::{Entry, IndexError, Inputs, Publish, ReadError, Retention, Store};
+use light_cljs::artifact_store::{
+    Entry, IndexError, Inputs, Publish, ReadError, Retention, Stage, Store,
+};
 use light_cljs::cache_key::{KeyEnvironment, NamespaceKeys};
 use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
 use light_cljs::dependency_manifest::DependencyManifest;
@@ -268,6 +270,76 @@ fn child() {
                 // round's artifacts record (light-cljs-332 made a
                 // namespace's own names the same in every round).
                 light_cljs::compile("`x#").unwrap();
+            }
+            if var("TRIM_AFTER") == "1" {
+                println!("trim {:?}", store.trim(&Retention::default(), &[]).is_ok());
+            }
+        }
+        "publish_batch" => {
+            let entry = var("ENTRY");
+            let roots: Vec<PathBuf> = var("ROOTS").split(';').map(PathBuf::from).collect();
+            let builds: Vec<Built> = roots.iter().map(|root| compile(root, &entry)).collect();
+            if let Some(ready) = env_path("READY") {
+                fs::write(ready, "").unwrap();
+            }
+            if let Some(go) = env_path("GO") {
+                wait_for(&go);
+            }
+            let mut staged = Vec::new();
+            let mut staged_names = Vec::new();
+            for built in &builds {
+                for capture in &built.captures {
+                    let artifact = capture.artifact.as_ref().expect("captured");
+                    let id = built
+                        .manifest
+                        .id(&capture.namespace)
+                        .expect("in the manifest");
+                    let fields = ManifestFields::of(
+                        &built.manifest,
+                        id,
+                        built.metadata[id.0 as usize],
+                        built.keys.key(id).clone(),
+                        [0; 32],
+                    );
+                    let namespace = &capture.namespace;
+                    match store.stage(
+                        artifact,
+                        &fields,
+                        Inputs {
+                            manifest: &built.manifest,
+                            id,
+                            text: &built.files[id.0 as usize].1,
+                            sources: &built.provider,
+                        },
+                    ) {
+                        Stage::Staged(item) => {
+                            staged.push(item);
+                            staged_names.push(namespace.clone());
+                        }
+                        Stage::Refused(mismatch) => println!("refused {namespace} {mismatch}"),
+                        Stage::Unencodable(reason) => println!("unencodable {namespace} {reason}"),
+                        Stage::Unwritable => println!("unwritable {namespace}"),
+                    }
+                }
+            }
+            if let Some(after_stage_ready) = env_path("AFTER_STAGE_READY") {
+                fs::write(after_stage_ready, "").unwrap();
+            }
+            if let Some(commit_go) = env_path("COMMIT_GO") {
+                wait_for(&commit_go);
+            }
+            let outcomes = store.commit_batch(staged);
+            for (namespace, outcome) in staged_names.into_iter().zip(outcomes) {
+                match outcome {
+                    Publish::Published(entry) => println!(
+                        "published {namespace} {} {}",
+                        hex(&entry.artifact),
+                        hex(&entry.key)
+                    ),
+                    Publish::Refused(mismatch) => println!("refused {namespace} {mismatch}"),
+                    Publish::Unencodable(reason) => println!("unencodable {namespace} {reason}"),
+                    Publish::Unwritable => println!("unwritable {namespace}"),
+                }
             }
             if var("TRIM_AFTER") == "1" {
                 println!("trim {:?}", store.trim(&Retention::default(), &[]).is_ok());
@@ -989,4 +1061,168 @@ fn reads_reject_damaged_truncated_over_budget_and_missing_artifacts() {
     for namespace in ["bad.n2", "bad.main"] {
         assert_eq!(check_candidates(&store, namespace), Ok(1), "{namespace}");
     }
+}
+
+#[test]
+fn commit_batch_concurrent_writers_and_reader_coalesce_and_leave_no_temporaries() {
+    let dir = TempDir::new("store-batch-writers");
+    let cache = dir.join("cache");
+    // Writer 0 commits variants 1 and 2 of `shared` in ONE batch (exercising
+    // duplicate-namespace coalescing within a batch); writer 1 concurrently
+    // commits variant 3 of `shared`; writer 2 commits `other`.
+    let shared_1 = source_root(&dir, "shared", 1, false);
+    let shared_2 = source_root(&dir, "shared", 2, false);
+    let shared_3 = source_root(&dir, "shared", 3, false);
+    let other_1 = source_root(&dir, "other", 1, false);
+    let go = dir.join("go");
+    let stop = dir.join("stop");
+    let reader = spawn(
+        "read",
+        &[
+            ("STORE", path(&cache)),
+            (
+                "NAMESPACES",
+                [namespaces("shared", false), namespaces("other", false)]
+                    .concat()
+                    .join(","),
+            ),
+            ("STOP", path(&stop)),
+        ],
+    );
+    let specs = [
+        (roots(&[&shared_1, &shared_2]), "shared"),
+        (path(&shared_3), "shared"),
+        (path(&other_1), "other"),
+    ];
+    let writers: Vec<(Child, PathBuf)> = specs
+        .into_iter()
+        .enumerate()
+        .map(|(at, (root_arg, prefix))| {
+            let ready = dir.join(format!("ready-{at}"));
+            let child = spawn(
+                "publish_batch",
+                &[
+                    ("STORE", path(&cache)),
+                    ("ROOTS", root_arg),
+                    ("ENTRY", format!("{prefix}.main")),
+                    ("READY", path(&ready)),
+                    ("GO", path(&go)),
+                ],
+            );
+            (child, ready)
+        })
+        .collect();
+    for (_, ready) in &writers {
+        wait_for(ready);
+    }
+    fs::write(&go, "").unwrap();
+    let outputs: Vec<String> = writers
+        .into_iter()
+        .map(|(child, _)| finish(child).0)
+        .collect();
+    fs::write(&stop, "").unwrap();
+    let (read, _) = finish(reader);
+
+    assert_eq!(lines(&outputs[0], "published").len(), 2 * (LEAVES + 1));
+    assert_eq!(lines(&outputs[1], "published").len(), LEAVES + 1);
+    assert_eq!(lines(&outputs[2], "published").len(), LEAVES + 1);
+    let summary = lines(&read, "passes")[0];
+    assert!(summary.ends_with(" failures 0"), "{read}");
+
+    let store = Store::open(&cache);
+    for namespace in namespaces("shared", false) {
+        let entries = store.read_candidates(&namespace).unwrap();
+        assert_eq!(entries.len(), 3, "{namespace} keeps all 3 variants");
+        assert_eq!(check_candidates(&store, &namespace), Ok(3));
+    }
+    for namespace in namespaces("other", false) {
+        assert_eq!(check_candidates(&store, &namespace), Ok(1), "{namespace}");
+    }
+    assert_eq!(object_count(&store), 4 * (LEAVES + 1));
+    assert!(temporaries(&store.root().join("objects")).is_empty());
+    assert!(temporaries(&store.root().join("index")).is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn commit_batch_read_only_store_warns_once_and_cleans_up_staged_temporaries() {
+    let dir = TempDir::new("store-batch-read-only");
+    let cache = dir.join("cache");
+    let first = source_root(&dir, "bro", 1, false);
+    let second = source_root(&dir, "bro", 2, false);
+    let third = source_root(&dir, "bro", 3, false);
+
+    // Seed the store first.
+    run(
+        "publish_batch",
+        &[
+            ("STORE", path(&cache)),
+            ("ROOTS", path(&first)),
+            ("ENTRY", "bro.main".into()),
+        ],
+    );
+    let store = Store::open(&cache);
+    let before = object_count(&store);
+
+    // Case 1: store is read-only before staging.
+    {
+        let _read_only = ReadOnly::new(vec![
+            store.root().to_path_buf(),
+            store.root().join("objects"),
+            store.root().join("index"),
+        ]);
+        let (stdout, stderr) = run(
+            "publish_batch",
+            &[
+                ("STORE", path(&cache)),
+                ("ROOTS", path(&second)),
+                ("ENTRY", "bro.main".into()),
+                ("TRIM_AFTER", "1".into()),
+            ],
+        );
+        assert_eq!(lines(&stdout, "unwritable").len(), LEAVES + 1, "{stdout}");
+        let warnings = lines(&stderr, "warning:");
+        assert_eq!(warnings.len(), 1, "one warning: {stderr}");
+    }
+    assert!(temporaries(&store.root().join("objects")).is_empty());
+    assert!(temporaries(&store.root().join("index")).is_empty());
+
+    // Case 2: staging succeeds (writing .tmp-* files in objects/), then
+    // `v1/lock` becomes read-only before commit_batch runs. `commit_batch`
+    // fails at lock acquisition with a single warning, leaves existing objects
+    // untouched, and drops all staged .tmp-* files cleanly.
+    let after_stage = dir.join("after-stage");
+    let commit_go = dir.join("commit-go");
+    let child = spawn(
+        "publish_batch",
+        &[
+            ("STORE", path(&cache)),
+            ("ROOTS", path(&third)),
+            ("ENTRY", "bro.main".into()),
+            ("AFTER_STAGE_READY", path(&after_stage)),
+            ("COMMIT_GO", path(&commit_go)),
+        ],
+    );
+    wait_for(&after_stage);
+    assert!(
+        !temporaries(&store.root().join("objects")).is_empty(),
+        "staging wrote temporary object files"
+    );
+    let (stdout, stderr) = {
+        let _read_only = ReadOnly::new(vec![store.root().join("lock"), store.root().join("index")]);
+        fs::write(&commit_go, "").unwrap();
+        finish(child)
+    };
+    assert_eq!(lines(&stdout, "unwritable").len(), LEAVES + 1, "{stdout}");
+    let warnings = lines(&stderr, "warning:");
+    assert_eq!(warnings.len(), 1, "one warning: {stderr}");
+    assert!(
+        temporaries(&store.root().join("objects")).is_empty(),
+        "staged temporaries cleaned up"
+    );
+    assert!(temporaries(&store.root().join("index")).is_empty());
+    for namespace in namespaces("bro", false) {
+        assert_eq!(check_candidates(&store, &namespace), Ok(1), "{namespace}");
+    }
+    assert_eq!(object_count(&store), before);
 }

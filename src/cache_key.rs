@@ -964,10 +964,12 @@ pub fn revalidate(
     revalidate_parts(
         record.source.origin,
         own,
-        record
-            .requires
-            .iter()
-            .flat_map(|require| require.lookups.iter().map(|&lookup| manifest.lookup(lookup))),
+        record.requires.iter().flat_map(|require| {
+            require
+                .lookups
+                .iter()
+                .map(|&lookup| manifest.lookup(lookup))
+        }),
         record
             .external_inputs
             .iter()

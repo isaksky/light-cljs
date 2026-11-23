@@ -84,8 +84,8 @@ use std::fmt;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// The layout's version, which names its directory. Bump it with any change
@@ -152,6 +152,31 @@ pub struct Inputs<'a> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Publish {
     Published(Entry),
+    /// Its inputs changed while it compiled, so nothing was written.
+    Refused(Mismatch),
+    /// It could not be encoded ([`artifact_codec::encode`]).
+    Unencodable(String),
+    /// The store cannot be written. The first failure printed a warning.
+    Unwritable,
+}
+
+/// An encoded artifact written to a temporary file in `objects/`, ready to be
+/// committed under the store lock with [`Store::commit_batch`]. Dropping it
+/// without committing removes its temporary file.
+#[derive(Debug)]
+pub struct StagedArtifact {
+    namespace: String,
+    key: Digest,
+    artifact: Digest,
+    bytes: u64,
+    names: GeneratedNames,
+    temporary: Temporary,
+}
+
+/// What [`Store::stage`] produced before committing under the store lock.
+#[derive(Debug)]
+pub enum Stage {
+    Staged(StagedArtifact),
     /// Its inputs changed while it compiled, so nothing was written.
     Refused(Mismatch),
     /// It could not be encoded ([`artifact_codec::encode`]).
@@ -289,8 +314,14 @@ pub struct Trimmed {
     pub orphans: usize,
 }
 
-/// A store under a cache directory.
+/// A store under a cache directory. Cheap to clone: clones share the store's
+/// unwritable flag and directory-preparation state across threads.
+#[derive(Clone)]
 pub struct Store {
+    inner: Arc<StoreInner>,
+}
+
+struct StoreInner {
     dir: PathBuf,
     root: PathBuf,
     /// Why writing was turned off, once a write failed.
@@ -360,29 +391,31 @@ impl Store {
         let dir = dir.into();
         let root = dir.join(format!("v{STORE_VERSION}"));
         Self {
-            dir,
-            root,
-            failure: OnceLock::new(),
-            prepared: OnceLock::new(),
+            inner: Arc::new(StoreInner {
+                dir,
+                root,
+                failure: OnceLock::new(),
+                prepared: OnceLock::new(),
+            }),
         }
     }
 
     /// The directory of this layout version.
     pub fn root(&self) -> &Path {
-        &self.root
+        &self.inner.root
     }
 
     /// Why writing is off, after a write failed.
     pub fn write_failure(&self) -> Option<&str> {
-        self.failure.get().map(String::as_str)
+        self.inner.failure.get().map(String::as_str)
     }
 
     fn objects(&self) -> PathBuf {
-        self.root.join("objects")
+        self.inner.root.join("objects")
     }
 
     fn indexes(&self) -> PathBuf {
-        self.root.join("index")
+        self.inner.root.join("index")
     }
 
     fn object_path(&self, artifact: &Digest) -> PathBuf {
@@ -394,7 +427,7 @@ impl Store {
     }
 
     fn outputs(&self) -> PathBuf {
-        self.root.join("outputs")
+        self.inner.root.join("outputs")
     }
 
     // -- Outputs ------------------------------------------------------------
@@ -433,7 +466,7 @@ impl Store {
         retention: &Retention,
         limit: u64,
     ) -> Option<u64> {
-        if self.failure.get().is_some() {
+        if self.inner.failure.get().is_some() {
             return None;
         }
         let bytes = encode_output(key, files);
@@ -583,6 +616,160 @@ impl Store {
 
     // -- Writing ------------------------------------------------------------
 
+    /// Validate, encode, hash, and write `artifact` to a temporary file in
+    /// `objects/` without taking the store lock. The encoded bytes are dropped
+    /// before this returns. Commit the staged artifact with
+    /// [`Store::commit_batch`].
+    pub fn stage(
+        &self,
+        artifact: &NamespaceArtifact,
+        fields: &ManifestFields,
+        inputs: Inputs<'_>,
+    ) -> Stage {
+        if self.inner.failure.get().is_some() {
+            return Stage::Unwritable;
+        }
+        if let Err(mismatch) =
+            crate::cache_key::revalidate(inputs.manifest, inputs.id, inputs.text, inputs.sources)
+        {
+            return Stage::Refused(mismatch);
+        }
+        let bytes = match artifact_codec::encode(artifact, fields) {
+            Ok(bytes) => bytes,
+            Err(reason) => return Stage::Unencodable(reason),
+        };
+        match self.stage_encoded(
+            artifact.header.namespace.clone(),
+            fields.front_end_key.digest,
+            artifact.names.clone(),
+            bytes,
+        ) {
+            Ok(staged) => Stage::Staged(staged),
+            Err(error) => {
+                self.fail(&error);
+                Stage::Unwritable
+            }
+        }
+    }
+
+    /// Hash `bytes` and write them to a temporary file in `objects/` without
+    /// taking the store lock, dropping `bytes` before returning.
+    pub(crate) fn stage_encoded(
+        &self,
+        namespace: String,
+        key: Digest,
+        names: GeneratedNames,
+        bytes: Vec<u8>,
+    ) -> io::Result<StagedArtifact> {
+        self.prepare()?;
+        let artifact = digest(&bytes);
+        let temporary = Temporary::write(&self.objects(), &bytes)?;
+        let length = bytes.len() as u64;
+        drop(bytes);
+        Ok(StagedArtifact {
+            namespace,
+            key,
+            artifact,
+            bytes: length,
+            names,
+            temporary,
+        })
+    }
+
+    /// Commit a batch of [`StagedArtifact`]s under a single store lock
+    /// acquisition: publish each staged object into `objects/<hex>`, coalesce
+    /// updates per namespace, and read-merge-write each touched index once.
+    /// Any staged artifact that cannot be committed has its temporary file
+    /// removed on drop and returns [`Publish::Unwritable`].
+    pub fn commit_batch(&self, staged: Vec<StagedArtifact>) -> Vec<Publish> {
+        let count = staged.len();
+        if count == 0 {
+            return Vec::new();
+        }
+        let mut results = vec![Publish::Unwritable; count];
+        if self.inner.failure.get().is_some() {
+            return results;
+        }
+        let _lock = match self.prepare().and_then(|()| self.lock()) {
+            Ok(lock) => lock,
+            Err(error) => {
+                self.fail(&error);
+                return results;
+            }
+        };
+        let mut published_objects: HashSet<Digest> = HashSet::with_capacity(count);
+        let mut by_namespace: HashMap<String, Vec<(usize, Entry)>> = HashMap::new();
+        let mut ns_order: Vec<String> = Vec::new();
+        let mut last_ts = 0u64;
+        for (idx, item) in staged.into_iter().enumerate() {
+            if published_objects.insert(item.artifact) {
+                let path = self.object_path(&item.artifact);
+                // Always written, so that a damaged file of the same name is
+                // replaced. The rename and index update hold the lock, so under
+                // it every artifact is indexed, or is an orphan to remove.
+                if let Err(error) = item
+                    .temporary
+                    .publish(&path, |existing| digest(existing) == item.artifact)
+                {
+                    self.fail(&error);
+                    break;
+                }
+            } else {
+                // Identical object already published under this lock hold.
+                drop(item.temporary);
+            }
+            let ts = now().max(last_ts);
+            last_ts = ts;
+            let entry = Entry {
+                key: item.key,
+                artifact: item.artifact,
+                bytes: item.bytes,
+                published: ts,
+                names: item.names,
+            };
+            if !by_namespace.contains_key(&item.namespace) {
+                ns_order.push(item.namespace.clone());
+            }
+            by_namespace
+                .entry(item.namespace)
+                .or_default()
+                .push((idx, entry));
+        }
+        for namespace in ns_order {
+            let items = by_namespace.remove(&namespace).unwrap_or_default();
+            // A damaged index is replaced; one that cannot be read is not.
+            let mut index = match self.read_index(&namespace) {
+                Ok(index) => index,
+                Err(IndexError::Io(error)) => {
+                    self.fail(&io::Error::other(error));
+                    break;
+                }
+                Err(IndexError::Missing | IndexError::Damaged) => Index {
+                    namespace: namespace.clone(),
+                    entries: Vec::new(),
+                },
+            };
+            for (_, entry) in &items {
+                index
+                    .entries
+                    .retain(|old| old.key != entry.key && old.artifact != entry.artifact);
+                index.entries.insert(0, entry.clone());
+            }
+            match self.write_index(&index) {
+                Ok(()) => {
+                    for (idx, entry) in items {
+                        results[idx] = Publish::Published(entry);
+                    }
+                }
+                Err(error) => {
+                    self.fail(&error);
+                    break;
+                }
+            }
+        }
+        results
+    }
+
     /// Publish `artifact` with `fields` in its manifest, unless its inputs
     /// changed while it compiled. The encoded bytes are written and dropped
     /// before this returns.
@@ -592,48 +779,34 @@ impl Store {
         fields: &ManifestFields,
         inputs: Inputs<'_>,
     ) -> Publish {
-        if self.failure.get().is_some() {
-            return Publish::Unwritable;
-        }
-        if let Err(mismatch) =
-            crate::cache_key::revalidate(inputs.manifest, inputs.id, inputs.text, inputs.sources)
-        {
-            return Publish::Refused(mismatch);
-        }
-        let bytes = match artifact_codec::encode(artifact, fields) {
-            Ok(bytes) => bytes,
-            Err(reason) => return Publish::Unencodable(reason),
-        };
-        match self.write(
-            &artifact.header.namespace,
-            fields.front_end_key.digest,
-            &artifact.names,
-            bytes,
-        ) {
-            Ok(entry) => Publish::Published(entry),
-            Err(error) => {
-                self.fail(&error);
-                Publish::Unwritable
-            }
+        match self.stage(artifact, fields, inputs) {
+            Stage::Staged(staged) => self
+                .commit_batch(vec![staged])
+                .into_iter()
+                .next()
+                .unwrap_or(Publish::Unwritable),
+            Stage::Refused(mismatch) => Publish::Refused(mismatch),
+            Stage::Unencodable(reason) => Publish::Unencodable(reason),
+            Stage::Unwritable => Publish::Unwritable,
         }
     }
 
     /// Turn writing off, with one warning.
-    fn fail(&self, error: &io::Error) {
+    pub(crate) fn fail(&self, error: &io::Error) {
         let reason = format!(
             "cannot write the compiler cache in {}: {error}; the build continues without writing to it",
-            self.dir.display()
+            self.inner.dir.display()
         );
-        if self.failure.set(reason.clone()).is_ok() {
+        if self.inner.failure.set(reason.clone()).is_ok() {
             eprintln!("warning: {reason}");
         }
     }
 
     fn prepare(&self) -> io::Result<()> {
-        if self.prepared.get().is_none() {
+        if self.inner.prepared.get().is_none() {
             fs::create_dir_all(self.objects())?;
             fs::create_dir_all(self.indexes())?;
-            let _ = self.prepared.set(());
+            let _ = self.inner.prepared.set(());
         }
         Ok(())
     }
@@ -643,51 +816,9 @@ impl Store {
             .create(true)
             .truncate(false)
             .write(true)
-            .open(self.root.join("lock"))?;
+            .open(self.inner.root.join("lock"))?;
         file.lock()?;
         Ok(file)
-    }
-
-    fn write(
-        &self,
-        namespace: &str,
-        key: Digest,
-        names: &GeneratedNames,
-        bytes: Vec<u8>,
-    ) -> io::Result<Entry> {
-        self.prepare()?;
-        let artifact = digest(&bytes);
-        let path = self.object_path(&artifact);
-        // Always written, so that a damaged file of the same name is
-        // replaced. The rename and the index update hold the lock, so that
-        // under it every artifact is indexed, or is an orphan to remove.
-        let temporary = Temporary::write(&self.objects(), &bytes)?;
-        let length = bytes.len() as u64;
-        drop(bytes);
-        let _lock = self.lock()?;
-        temporary.publish(&path, |existing| digest(existing) == artifact)?;
-        let entry = Entry {
-            key,
-            artifact,
-            bytes: length,
-            published: now(),
-            names: names.clone(),
-        };
-        // A damaged index is replaced; one that cannot be read is not.
-        let mut index = match self.read_index(namespace) {
-            Ok(index) => index,
-            Err(IndexError::Io(error)) => return Err(io::Error::other(error)),
-            Err(IndexError::Missing | IndexError::Damaged) => Index {
-                namespace: namespace.to_owned(),
-                entries: Vec::new(),
-            },
-        };
-        index
-            .entries
-            .retain(|old| old.key != key && old.artifact != artifact);
-        index.entries.insert(0, entry.clone());
-        self.write_index(&index)?;
-        Ok(entry)
     }
 
     fn write_index(&self, index: &Index) -> io::Result<()> {
@@ -702,7 +833,7 @@ impl Store {
     /// the artifacts `in_use`, the last to be evicted. Holds the store's
     /// lock, so publishes of other processes wait for it.
     pub fn trim(&self, retention: &Retention, in_use: &[Digest]) -> io::Result<Trimmed> {
-        if self.failure.get().is_some() || !self.root.exists() {
+        if self.inner.failure.get().is_some() || !self.inner.root.exists() {
             return Ok(Trimmed::default());
         }
         let result = self.trim_locked(retention, in_use);
@@ -855,6 +986,7 @@ fn now() -> u64 {
 }
 
 /// A complete temporary file, removed when dropped unless published.
+#[derive(Debug)]
 struct Temporary(PathBuf);
 
 impl Temporary {

@@ -1761,3 +1761,88 @@ fn damaged_index_and_removed_require_report_their_first_reason() {
     assert_eq!(removed.run(), "h1 9 84 h2\n");
     assert_eq!(removed.rows(), ["main miss source: source changed"]);
 }
+
+/// Parallel cache publishing (`--jobs 8`) populates the cache cleanly across
+/// enough namespaces to span multiple commit batches, produces an identical
+/// warm rebuild, leaves zero temporary files, and handles read-only cache
+/// directories with a single warning.
+#[test]
+fn parallel_cache_publishing_populates_warms_and_handles_read_only() {
+    let mut files: Vec<(String, String)> = Vec::new();
+    let mut requires = String::new();
+    let mut sum = String::from("(+");
+    // 80 leaf namespaces (> PUBLISH_BATCH_SIZE = 64) plus entry = 81 total.
+    for i in 0..80 {
+        let path = format!("leaf{i}.cljs");
+        let body = format!(
+            "(ns leaf{i})\n(defn f{i} [x] (+ x {i}))\n(def v{i} (f{i} {}))\n",
+            i * 3
+        );
+        files.push((path, body));
+        requires.push_str(&format!(" [leaf{i}]"));
+        sum.push_str(&format!(" leaf{i}/v{i}"));
+    }
+    sum.push(')');
+    files.push((
+        "main.cljs".into(),
+        format!("(ns main (:require{requires}))\n(js/console.log {sum})\n"),
+    ));
+    let refs: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(p, s)| (p.as_str(), s.as_str()))
+        .collect();
+    let project = Project::new(&refs);
+    let oracle = project.uncached("main");
+    let expected = oracle.run();
+
+    let cold = project.cached("main", &["--jobs", "8"]);
+    assert_eq!(cold.run(), expected);
+    assert_eq!(cold.stat("cache.hits"), 0, "{}", cold.stats);
+    assert_eq!(cold.stat("cache.published"), 81, "{}", cold.stats);
+    assert_eq!(cold.stat("cache.unpublished"), 0, "{}", cold.stats);
+    assert_eq!(project.objects().len(), 81);
+    for sub in ["v1/objects", "v1/index"] {
+        let temps: Vec<_> = fs::read_dir(project.cache().join(sub))
+            .unwrap()
+            .flatten()
+            .filter(|e| name_of(&e.path()).starts_with(".tmp-"))
+            .collect();
+        assert!(temps.is_empty(), "leaked temporaries in {sub}: {temps:?}");
+    }
+
+    // Warm rebuild hits every namespace and reuses whole output.
+    let warm = project.cached("main", &["--jobs", "8"]);
+    assert_eq!(warm.run(), expected);
+    assert_eq!(warm.stat("cache.hits"), 81, "{}", warm.stats);
+    assert_eq!(warm.stat("cache.published"), 0, "{}", warm.stats);
+    assert_eq!(warm.stat("cache.output.reused"), 1, "{}", warm.stats);
+
+    // Read-only cache directory under `--jobs 8`: succeeds with exactly one
+    // warning and zero leaked temporaries.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let ro_cache = project.dir.join("ro-cache");
+        fs::create_dir_all(&ro_cache).unwrap();
+        fs::set_permissions(&ro_cache, fs::Permissions::from_mode(0o555)).unwrap();
+        let output = project
+            .command(
+                "main",
+                &["--jobs", "8", "--cache-dir", ro_cache.to_str().unwrap()],
+                false,
+            )
+            .output()
+            .unwrap();
+        let _ = fs::set_permissions(&ro_cache, fs::Permissions::from_mode(0o755));
+        let build = Project::finish(output);
+        assert_eq!(build.run(), expected);
+        assert_eq!(build.stat("cache.published"), 0, "{}", build.stats);
+        assert_eq!(build.stat("cache.unpublished"), 81, "{}", build.stats);
+        let warnings: Vec<_> = build
+            .stats
+            .lines()
+            .filter(|line| line.starts_with("warning: cannot write the compiler cache"))
+            .collect();
+        assert_eq!(warnings.len(), 1, "expected 1 warning:\n{}", build.stats);
+    }
+}
