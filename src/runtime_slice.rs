@@ -142,21 +142,42 @@ pub const UPSTREAM_MEMBERS: &[&str] = &[
 /// (`when:`), or [`TYPE_STATICS_UNIT`] for `EMPTY`, which an empty literal
 /// reads too. `None` for any other name.
 pub fn member_unit(name: &str) -> Option<&'static str> {
-    static UNITS: std::sync::LazyLock<Vec<(&'static str, String)>> =
-        std::sync::LazyLock::new(|| {
-            UPSTREAM_MEMBERS
-                .iter()
-                .chain(TYPE_STATICS)
-                .map(|&name| (name, format!("member_{name}")))
-                .collect()
-        });
+    struct MemberUnits {
+        max_len: usize,
+        first_bytes: [u64; 4],
+        map: HashMap<&'static str, String>,
+    }
+    static UNITS: std::sync::LazyLock<MemberUnits> = std::sync::LazyLock::new(|| {
+        let mut map = HashMap::with_capacity(UPSTREAM_MEMBERS.len() + TYPE_STATICS.len());
+        let mut max_len = 0usize;
+        let mut first_bytes = [0u64; 4];
+        for &member in UPSTREAM_MEMBERS.iter().chain(TYPE_STATICS) {
+            if member == "EMPTY" {
+                continue;
+            }
+            max_len = max_len.max(member.len());
+            if let Some(&first) = member.as_bytes().first() {
+                first_bytes[(first >> 6) as usize] |= 1u64 << (first & 63);
+            }
+            map.insert(member, format!("member_{member}"));
+        }
+        MemberUnits {
+            max_len,
+            first_bytes,
+            map,
+        }
+    });
     if name == "EMPTY" {
         return Some(TYPE_STATICS_UNIT);
     }
-    UNITS
-        .iter()
-        .find(|(member, _)| *member == name)
-        .map(|(_, unit)| unit.as_str())
+    let first = *name.as_bytes().first()?;
+    let units = &*UNITS;
+    if name.len() > units.max_len
+        || (units.first_bytes[(first >> 6) as usize] & (1u64 << (first & 63))) == 0
+    {
+        return None;
+    }
+    units.map.get(name).map(String::as_str)
 }
 
 /// The statics of the runtime's types (`EMPTY` of the collection types,
@@ -1571,5 +1592,31 @@ mod tests {
         assert!(!roots.contains_direct("countProtocol"));
         assert_eq!(thousands(334_504), "334,504");
         assert_eq!(thousands(999), "999");
+    }
+
+    #[test]
+    fn member_unit_matches_every_upstream_member_and_type_static() {
+        assert_eq!(member_unit("EMPTY"), Some(TYPE_STATICS_UNIT));
+        for &name in UPSTREAM_MEMBERS {
+            assert_eq!(member_unit(name), Some(format!("member_{name}").as_str()));
+        }
+        for &name in TYPE_STATICS {
+            let expected = if name == "EMPTY" {
+                TYPE_STATICS_UNIT.to_owned()
+            } else {
+                format!("member_{name}")
+            };
+            assert_eq!(member_unit(name), Some(expected.as_str()));
+        }
+        for absent in [
+            "",
+            "empty",
+            "member_first",
+            "not_a_member_at_all_way_too_long",
+            "__proto__",
+            "αβγ",
+        ] {
+            assert_eq!(member_unit(absent), None, "unexpected match for {absent:?}");
+        }
     }
 }

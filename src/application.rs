@@ -706,12 +706,11 @@ pub fn prepare_owned_application_with_slots(
     mut options: ApplicationOptions,
     slots: crate::scheduler::Slots,
 ) -> PreparedApplication {
-    let _ = slots;
     #[cfg(test)]
     PREPARATIONS.with(|count| count.set(count.get() + 1));
     let level = options.optimize;
     if level.advanced() {
-        program.unfreeze();
+        program.unfreeze_with_slots(slots);
     } else {
         program.flatten_leaves();
     }
@@ -770,7 +769,9 @@ pub fn prepare_owned_application_with_slots(
         let mut growth = crate::inlining::growth_budget(prepared.program.exprs.len());
         // Discarded definitions leave their bodies in the arena. Remove those
         // before repeated whole-arena scans, keeping the original growth budget.
-        if let Some(origins) = crate::program_fragment::compact_expressions(&mut prepared.program) {
+        if let Some(origins) =
+            crate::program_fragment::compact_expressions_with_slots(&mut prepared.program, slots)
+        {
             let mut ids = vec![ExprId(usize::MAX); retained.candidates.len()];
             for (new, &old) in origins.iter().enumerate() {
                 ids[old] = ExprId(new);
@@ -833,7 +834,11 @@ pub fn prepare_owned_application_with_slots(
             } else {
                 #[cfg(test)]
                 SIMPLIFY_CALL_SHAPES.with(|count| count.set(count.get() + 1));
-                let shapes = crate::call_shapes::analyze(&prepared.program, None, &options.exports);
+                let shapes = crate::call_shapes::analyze_for_inlining_with_slots(
+                    &prepared.program,
+                    &options.exports,
+                    slots,
+                );
                 crate::inlining::inline_with_facts_checked_with_slots(
                     &mut prepared.program,
                     &shapes,
@@ -900,14 +905,23 @@ pub fn prepare_owned_application_with_slots(
         // decided here, before inference and over the program that rapid type
         // analysis then rewrites: its removals only drop calls, so the calls
         // found here include every call emission keeps.
-        let closed = crate::call_shapes::closed_functions(&prepared.program, &options.exports);
+        let closed = crate::call_shapes::closed_functions_with_slots(
+            &prepared.program,
+            &options.exports,
+            slots,
+        );
         let inference = Inference::new_with_slots(&prepared.program, facts, &closed, slots);
         prepared.stats.typed_parameters = inference.typed_parameters();
         // Rapid type analysis (Phase 2 step 4) drops the methods no instance
         // can run, the types nothing instantiates and the definitions only those
         // read, and devirtualizes calls on receivers of one program type.
-        let analysis =
-            crate::rta::analyze(&prepared.program, &inference, &candidates, &options.exports);
+        let analysis = crate::rta::analyze_with_slots(
+            &prepared.program,
+            &inference,
+            &candidates,
+            &options.exports,
+            slots,
+        );
         let rewrite = analysis.apply(&mut prepared.program, &mut prepared.globals, &candidates);
         prepared.direct_methods = analysis.direct_calls().clone();
         prepared.type_basis = analysis.names_basis();
@@ -925,8 +939,12 @@ pub fn prepare_owned_application_with_slots(
         // Call shapes (Phase 2 step 5) over the rewritten program: calls of
         // known functions name their method, and functions whose value never
         // escapes are defined without a dispatcher.
-        let shapes =
-            crate::call_shapes::analyze(&prepared.program, Some(&inference), &options.exports);
+        let shapes = crate::call_shapes::analyze_with_slots(
+            &prepared.program,
+            Some(&inference),
+            &options.exports,
+            slots,
+        );
         prepared.stats.direct_calls = shapes.direct_calls();
         prepared.stats.dispatchers_removed = (0..prepared.program.globals.len())
             .filter(|global| {

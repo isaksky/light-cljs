@@ -1386,7 +1386,21 @@ pub(crate) fn visit_children(kind: &ExprKind, mut visit: impl FnMut(ExprId)) {
 /// Return the old ID of each remaining expression, in arena order. All other
 /// tables retain their IDs; expression references in those tables are remapped.
 /// This is for owned application preparation, after analysis/linkage has ended.
+#[cfg(test)]
 pub(crate) fn compact_expressions(program: &mut Program) -> Option<Vec<usize>> {
+    compact_expressions_with_slots(program, crate::scheduler::Slots::ONE)
+}
+
+/// [`compact_expressions`] on `slots` CPU work slots (`--jobs N`), running
+/// expression remapping and dead-expression teardown in parallel across
+/// mutable slices via [`crate::scheduler::map`]. With
+/// [`crate::scheduler::Slots::ONE`] or small arenas, runs inline.
+pub(crate) fn compact_expressions_with_slots(
+    program: &mut Program,
+    slots: crate::scheduler::Slots,
+) -> Option<Vec<usize>> {
+    const PARALLEL_COMPACT_THRESHOLD: usize = 8_192;
+
     let mut pending = vec![program.root];
     pending.extend(program.globals.iter().filter_map(|global| global.metadata));
     pending.extend(program.namespace_entries.keys().copied());
@@ -1417,15 +1431,47 @@ pub(crate) fn compact_expressions(program: &mut Program) -> Option<Vec<usize>> {
     });
     // Compact the existing allocation rather than allocating another arena.
     let mut exprs = std::mem::take(&mut program.exprs).into_vec();
-    let mut old = 0;
-    exprs.retain_mut(|expr| {
-        let keep = live[old];
-        old += 1;
-        if keep {
-            remap.kind(&mut expr.kind);
-        }
-        keep
-    });
+    if slots == crate::scheduler::Slots::ONE || exprs.len() < PARALLEL_COMPACT_THRESHOLD {
+        let mut old = 0;
+        exprs.retain_mut(|expr| {
+            let keep = live[old];
+            old += 1;
+            if keep {
+                remap.kind(&mut expr.kind);
+            }
+            keep
+        });
+    } else {
+        let chunks = slots.get().saturating_mul(4).min(exprs.len()).max(1);
+        let chunk_size = exprs.len().div_ceil(chunks);
+        let jobs: Vec<(u64, (usize, &mut [Expr]))> = exprs
+            .chunks_mut(chunk_size)
+            .enumerate()
+            .map(|(index, chunk)| {
+                let start = index * chunk_size;
+                (chunk.len() as u64, (start, chunk))
+            })
+            .collect();
+        let remap_ref = &remap;
+        let live_slice = live.as_slice();
+        crate::scheduler::map(slots, jobs, |(start, chunk)| {
+            for (offset, expr) in chunk.iter_mut().enumerate() {
+                if live_slice[start + offset] {
+                    remap_ref.kind(&mut expr.kind);
+                } else {
+                    // Release dead inner heap allocations in parallel before
+                    // the serial in-place compaction pass shifts live entries.
+                    expr.kind = ExprKind::Nil;
+                }
+            }
+        });
+        let mut old = 0;
+        exprs.retain(|_| {
+            let keep = live[old];
+            old += 1;
+            keep
+        });
+    }
     program.exprs = exprs.into();
     remap.expr(&mut program.root);
     for global in &mut program.globals {
@@ -1897,6 +1943,48 @@ mod tests {
         let compacted = program.clone();
         assert_eq!(compact_expressions(&mut program), None);
         assert_eq!(program, compacted);
+    }
+
+    #[test]
+    fn parallel_compact_expressions_matches_serial_above_threshold() {
+        use crate::scheduler::Slots;
+
+        let mut source = String::new();
+        for i in 0..1_200 {
+            source.push_str(&format!(
+                "(def keep-{i} (+ {i} (inc {i}) (* 2 {i}))) (def drop-{i} (+ {i} 99 100 101))\n"
+            ));
+        }
+        source.push_str("(+ keep-0 keep-1199)\n");
+        let mut base = analyze(&source);
+        assert!(
+            base.exprs.len() >= 8_192,
+            "need >= 8192 exprs to exercise parallel compaction, got {}",
+            base.exprs.len()
+        );
+        // Drop every `drop-*` top-level form by replacing its `Def` expression
+        // with `Nil` so its initializer subtree becomes unreachable.
+        let mut dead_roots = 0;
+        for expr in base.exprs.iter_mut() {
+            if let ExprKind::Def { global, .. } = expr.kind
+                && base.globals[global.0].name.starts_with("drop-")
+            {
+                expr.kind = ExprKind::Nil;
+                dead_roots += 1;
+            }
+        }
+        assert!(dead_roots > 100);
+
+        let mut serial = base.clone();
+        let origins_serial = compact_expressions_with_slots(&mut serial, Slots::ONE).unwrap();
+        assert!(origins_serial.len() < base.exprs.len());
+
+        for slots in [Slots::new(4).unwrap(), Slots::new(1024).unwrap()] {
+            let mut parallel = base.clone();
+            let origins_parallel = compact_expressions_with_slots(&mut parallel, slots).unwrap();
+            assert_eq!(origins_parallel, origins_serial);
+            assert_eq!(parallel, serial);
+        }
     }
 
     #[test]

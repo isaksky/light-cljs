@@ -880,3 +880,259 @@ fn levels_below_advanced_keep_the_generic_shapes() {
         assert_eq!(prepared.stats().hoisted_methods, 0, "{level}");
     }
 }
+
+/// Above the parallel thresholds, `Program::unfreeze_with_slots`,
+/// `compact_expressions_with_slots`, `call_shapes::analyze_for_inlining_with_slots`,
+/// `call_shapes::closed_functions_with_slots`, `rta::analyze_with_slots`, and
+/// `call_shapes::analyze_with_slots` must produce identical `ApplicationStats`
+/// and identical emitted JavaScript at `--jobs 1` and `--jobs 8`.
+#[test]
+fn parallel_call_shapes_rta_and_arena_passes_match_serial_above_threshold() {
+    use light_cljs::prepare_owned_application_with_slots;
+    use light_cljs::scheduler::Slots;
+
+    let mut source = String::from(
+        "(defprotocol Metric (score [m x]) (unused-metric [m]))
+         (defrecord LiveMetric [k] Metric
+           (score [_ x] (+ k x))
+           (unused-metric [_] \"DEAD-METRIC\"))
+         (defrecord DeadMetric [k] Metric
+           (score [_ x] (* k x))
+           (unused-metric [_] \"DEAD-TYPE\"))
+         (defmulti kind-tag :tag)
+         (defmethod kind-tag :a [_] 10)
+         (defmethod kind-tag :b [_] 20)
+         (def counter (atom 0))
+         (defn multi-fn
+           ([] (js/Math.abs 0))
+           ([x] (multi-fn x 1))
+           ([x y] (+ x y)))
+         (def named-rec
+           (fn self ([n] (self n 0))
+                    ([n acc] (if (zero? n) acc (self (dec n) (+ acc n))))))
+         (defn cb-target [x] (+ x 3))\n",
+    );
+    for i in 0..350 {
+        source.push_str(&format!(
+            "(def worker-{i}
+               (fn*
+                 ([x] (worker-{i} x {i}))
+                 ([x y] (let* [loc (fn* ([] (+ x y)) ([z] (+ x y z)))]
+                          (+ (loc) (loc 1))))))
+             (def dead-{i} (+ {i} 1 2 3))\n"
+        ));
+    }
+    source.push_str(
+        r#"
+        (swap! counter + 5)
+        (def s-unicode "café-λ-🚀")
+        (def s-member "first")
+        (pr-str [(score (->LiveMetric 7) 5)
+                 (kind-tag {:tag :a})
+                 @counter
+                 (multi-fn 3)
+                 (named-rec 4)
+                 (mapv cb-target [1 2])
+                 (worker-0 2)
+                 (worker-349 3)
+                 (.-length s-unicode)
+                 s-member])
+        "#,
+    );
+    let mut base = program(&source);
+    assert!(
+        base.exprs.len() >= 8_192,
+        "expected >= 8192 exprs to exercise every parallel pass, got {}",
+        base.exprs.len()
+    );
+    // Freeze in chunks so `Program::unfreeze_with_slots` runs its parallel path.
+    base.freeze();
+    let options = ApplicationOptions::new(OptimizationLevel::Advanced);
+
+    let serial = prepare_owned_application_with_slots(base.clone(), options.clone(), Slots::ONE);
+    let serial_stats = serial.stats().clone();
+    let serial_js = serial.emit_js();
+
+    for slots in [Slots::new(8).unwrap(), Slots::new(1024).unwrap()] {
+        let parallel = prepare_owned_application_with_slots(base.clone(), options.clone(), slots);
+        assert_eq!(parallel.stats(), &serial_stats, "slots={slots:?}");
+        assert_eq!(parallel.emit_js(), serial_js, "slots={slots:?}");
+    }
+    assert!(serial_stats.direct_calls > 0);
+    assert!(serial_stats.dispatchers_removed > 0);
+    assert!(serial_stats.devirtualized_calls > 0);
+    assert!(serial_stats.dropped_methods > 0);
+    assert!(serial_stats.uninstantiated_types > 0);
+    assert_eq!(
+        execute(&format!("console.log({serial_js});")),
+        "[12 10 5 4 10 [4 5] 5 705 9 \"first\"]\n"
+    );
+}
+
+/// Shared subgraphs across top-level forms (or on the top-level `Do` spine)
+/// must fall back cleanly to serial `Scan::new` and produce identical call
+/// shapes and closed functions across `--jobs`.
+#[test]
+fn parallel_call_shapes_handles_shared_subgraphs_identically_to_serial() {
+    use light_cljs::analyzer::ExprKind;
+    use light_cljs::call_shapes::{analyze_with_slots, closed_functions_with_slots};
+    use light_cljs::scheduler::Slots;
+
+    let mut source = String::new();
+    for i in 0..450 {
+        source.push_str(&format!(
+            "(defn f-{i} ([x] (+ x {i})) ([x y] (+ x y {i})))\n"
+        ));
+    }
+    source.push_str("(def shared-fn (fn [x] (+ x 1)))\n");
+    source.push_str("(+ (f-0 1) (f-449 2) (shared-fn 3))\n");
+    let mut base = program(&source);
+    assert!(base.exprs.len() >= 4_096);
+
+    // Duplicate a top-level expression reference inside the root `Do` spine to
+    // trigger the shared-spine fallback, and also construct a cross-form shared
+    // subtree.
+    let mut shared_spine = base.clone();
+    if let ExprKind::Do(items) = &mut shared_spine.exprs[shared_spine.root.0].kind {
+        let first = items[0];
+        items.push(first);
+    }
+    let s1 = analyze_with_slots(&shared_spine, None, &[], Slots::ONE);
+    let s8 = analyze_with_slots(&shared_spine, None, &[], Slots::new(8).unwrap());
+    assert_eq!(s8.direct_calls(), s1.direct_calls());
+    let c1 = closed_functions_with_slots(&shared_spine, &[], Slots::ONE);
+    let c8 = closed_functions_with_slots(&shared_spine, &[], Slots::new(8).unwrap());
+    assert_eq!(c8.len(), c1.len());
+
+    // Cross-form shared child inside two distinct top-level forms.
+    let shared_fn_expr = base
+        .exprs
+        .iter()
+        .position(|e| matches!(e.kind, ExprKind::Fn { .. }))
+        .map(light_cljs::ExprId)
+        .unwrap();
+    if let ExprKind::Do(items) = &base.exprs[base.root.0].kind {
+        let last = *items.last().unwrap();
+        let copy = light_cljs::analyzer::Expr {
+            kind: ExprKind::Vector(vec![shared_fn_expr, shared_fn_expr]),
+            span: 0..0,
+            context: light_cljs::analyzer::ExprContext::Discard,
+            source_index: 0,
+        };
+        let copy_id = light_cljs::ExprId(base.exprs.len());
+        base.exprs.push(copy);
+        let new_root = light_cljs::analyzer::Expr {
+            kind: ExprKind::Do(vec![base.root, copy_id, last]),
+            span: 0..0,
+            context: light_cljs::analyzer::ExprContext::Return,
+            source_index: 0,
+        };
+        let new_root_id = light_cljs::ExprId(base.exprs.len());
+        base.exprs.push(new_root);
+        base.root = new_root_id;
+    }
+    let s1 = analyze_with_slots(&base, None, &[], Slots::ONE);
+    let s8 = analyze_with_slots(&base, None, &[], Slots::new(8).unwrap());
+    assert_eq!(s8.direct_calls(), s1.direct_calls());
+    let c1 = closed_functions_with_slots(&base, &[], Slots::ONE);
+    let c8 = closed_functions_with_slots(&base, &[], Slots::new(8).unwrap());
+    assert_eq!(c8.len(), c1.len());
+    assert!(!c8.closed(shared_fn_expr));
+}
+
+/// Exact `direct_calls`, `dispatchers_removed`, `dropped_methods`,
+/// `devirtualized_calls`, `uninstantiated_types`, and full `ApplicationStats`
+/// parity between `--jobs 1` and `--jobs 8` on both 200k generated projects.
+#[test]
+#[ignore]
+fn generated_200k_call_shapes_and_rta_stats_match_across_jobs() {
+    use light_cljs::prepare_owned_application_with_slots;
+    use light_cljs::scheduler::Slots;
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    let projects: &[(&str, &[&str], usize, usize, usize)] = &[
+        (
+            "workload-200k-seed42",
+            &["src", "macros"],
+            10_000_000,
+            1_000_000_000,
+            2_147_483_648,
+        ),
+        (
+            "re-frame-200k-seed42",
+            &[
+                "src",
+                "macros",
+                "lib/light/vendor",
+                "lib/light/compat",
+                "lib/light/re-frame",
+            ],
+            100_000_000,
+            4_000_000_000,
+            4_000_000_000,
+        ),
+    ];
+
+    for &(name, subdirs, expansions, nodes, mem_limit) in projects {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("research/shadow-credibility/projects")
+            .join(name);
+        assert!(root.exists(), "missing 200k project at {}", root.display());
+        let roots: Vec<PathBuf> = subdirs.iter().map(|s| root.join(s)).collect();
+        let mut host = MacroHost::new();
+        host.opaque_packages = true;
+        host.limits.expansions = expansions;
+        host.limits.generated_nodes = nodes;
+        host.evaluator_options.memory_limit = mem_limit;
+        host.evaluator_options.poll_budget = 1_000_000_000_000;
+        host.evaluator_options.timeout = Duration::from_secs(3600);
+        let mut warnings = Vec::new();
+        let base = analyze_namespace_entry(
+            "workload.main",
+            &roots,
+            &mut host,
+            AnalysisOptions::default(),
+            &mut warnings,
+        )
+        .expect("analyze 200k project");
+
+        let p1 = prepare_owned_application_with_slots(
+            base.clone(),
+            ApplicationOptions::new(OptimizationLevel::Advanced),
+            Slots::ONE,
+        );
+        let s1 = p1.stats().clone();
+        drop(p1);
+
+        let p8 = prepare_owned_application_with_slots(
+            base,
+            ApplicationOptions::new(OptimizationLevel::Advanced),
+            Slots::new(8).unwrap(),
+        );
+        let s8 = p8.stats().clone();
+        drop(p8);
+
+        eprintln!(
+            "200K_WAVE2C_STATS {name} | j=1: direct={} disp={} dropped={} devirt={} uninst={} hoisted={} typed={} | j=8: direct={} disp={} dropped={} devirt={} uninst={} hoisted={} typed={}",
+            s1.direct_calls,
+            s1.dispatchers_removed,
+            s1.dropped_methods,
+            s1.devirtualized_calls,
+            s1.uninstantiated_types,
+            s1.hoisted_methods,
+            s1.typed_parameters,
+            s8.direct_calls,
+            s8.dispatchers_removed,
+            s8.dropped_methods,
+            s8.devirtualized_calls,
+            s8.uninstantiated_types,
+            s8.hoisted_methods,
+            s8.typed_parameters,
+        );
+        assert_eq!(
+            s8, s1,
+            "{name}: ApplicationStats differ between j=1 and j=8"
+        );
+    }
+}

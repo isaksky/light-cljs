@@ -130,7 +130,44 @@ impl<T: Clone> Chunk<T> {
             }
         }
     }
+
+    fn write_entries(chunk: Arc<Self>, out: &mut [T]) {
+        debug_assert_eq!(chunk.len(), out.len());
+        match Arc::try_unwrap(chunk) {
+            Ok(Self::Leaf(leaf)) => {
+                for (dst, src) in out.iter_mut().zip(leaf) {
+                    *dst = src;
+                }
+            }
+            Ok(Self::Branch { left, right, .. }) => {
+                let (left_out, right_out) = out.split_at_mut(left.len());
+                Self::write_entries(left, left_out);
+                Self::write_entries(right, right_out);
+            }
+            Err(chunk) => chunk.copy_entries_into(out),
+        }
+    }
+
+    fn copy_entries_into(&self, out: &mut [T]) {
+        debug_assert_eq!(self.len(), out.len());
+        match self {
+            Self::Leaf(leaf) => {
+                for (dst, src) in out.iter_mut().zip(leaf) {
+                    dst.clone_from(src);
+                }
+            }
+            Self::Branch { left, right, .. } => {
+                let (left_out, right_out) = out.split_at_mut(left.len());
+                left.copy_entries_into(left_out);
+                right.copy_entries_into(right_out);
+            }
+        }
+    }
 }
+
+/// A balanced slice of frozen chunks detached from an [`Arena`] for parallel
+/// unfreezing into a pre-allocated destination slice.
+pub(crate) struct FrozenBucket<T>(Vec<Arc<Chunk<T>>>);
 
 pub struct Arena<T> {
     /// Frozen entries, shared with every table snapshotted from this one.
@@ -651,6 +688,84 @@ impl<T: Clone> Arena<T> {
         self.tail = entries;
     }
 
+    /// Detach all frozen chunks as balanced, order-preserving buckets targeting
+    /// roughly `parts` pieces. Callers must unfreeze every bucket with
+    /// [`Self::unfreeze_bucket`] and install the result with
+    /// [`Self::finish_unfreeze`].
+    pub(crate) fn take_frozen_buckets(&mut self, parts: usize) -> Vec<(usize, FrozenBucket<T>)> {
+        if self.chunks.is_empty() {
+            return Vec::new();
+        }
+        fn split_chunk<T>(chunk: Arc<Chunk<T>>, target: usize, out: &mut Vec<Arc<Chunk<T>>>) {
+            if chunk.len() <= target || matches!(&*chunk, Chunk::Leaf(_)) {
+                out.push(chunk);
+                return;
+            }
+            match Arc::try_unwrap(chunk) {
+                Ok(Chunk::Branch { left, right, .. }) => {
+                    split_chunk(left, target, out);
+                    split_chunk(right, target, out);
+                }
+                Ok(Chunk::Leaf(_)) => unreachable!(),
+                Err(shared) => {
+                    let Chunk::Branch { left, right, .. } = &*shared else {
+                        unreachable!()
+                    };
+                    let left = Arc::clone(left);
+                    let right = Arc::clone(right);
+                    drop(shared);
+                    split_chunk(left, target, out);
+                    split_chunk(right, target, out);
+                }
+            }
+        }
+        let target = self.frozen.div_ceil(parts.max(1)).max(LEAF_SIZE);
+        let mut pieces = Vec::new();
+        for chunk in self.chunks.drain(..) {
+            split_chunk(chunk, target, &mut pieces);
+        }
+        let mut buckets: Vec<(usize, FrozenBucket<T>)> = Vec::new();
+        for piece in pieces {
+            let len = piece.len();
+            if let Some((cur_len, cur_bucket)) = buckets.last_mut()
+                && *cur_len + len <= target
+            {
+                *cur_len += len;
+                cur_bucket.0.push(piece);
+            } else {
+                buckets.push((len, FrozenBucket(vec![piece])));
+            }
+        }
+        debug_assert_eq!(
+            buckets.iter().map(|(len, _)| *len).sum::<usize>(),
+            self.frozen
+        );
+        buckets
+    }
+
+    /// Unfreeze a bucket detached by [`Self::take_frozen_buckets`] directly into
+    /// `out`, moving unshared chunks and cloning shared ones.
+    pub(crate) fn unfreeze_bucket(bucket: FrozenBucket<T>, mut out: &mut [T]) {
+        for chunk in bucket.0 {
+            let len = chunk.len();
+            let (head, rest) = out.split_at_mut(len);
+            Chunk::write_entries(chunk, head);
+            out = rest;
+        }
+        debug_assert!(out.is_empty());
+    }
+
+    /// Complete an unfreeze begun by [`Self::take_frozen_buckets`] by
+    /// installing the unfrozen frozen-prefix `entries` ahead of any tail.
+    pub(crate) fn finish_unfreeze(&mut self, mut entries: Vec<T>) {
+        debug_assert_eq!(entries.len(), self.frozen);
+        entries.append(&mut self.tail);
+        self.starts.clear();
+        self.buckets.clear();
+        self.frozen = 0;
+        self.tail = entries;
+    }
+
     pub fn truncate(&mut self, len: usize) {
         if len < self.frozen {
             self.unfreeze();
@@ -1060,5 +1175,67 @@ mod tests {
         arena.freeze();
         assert!(!arena.is_flat());
         assert_eq!(arena[next - 1].0, next - 1);
+    }
+
+    #[test]
+    fn parallel_frozen_buckets_preserve_order_and_isolate_snapshots() {
+        let mut arena: Arena<String> = Arena::new();
+        let mut next = 0usize;
+        for count in [3_000, 1_500, 512, 65, 17, 1, 2_048, 300] {
+            for _ in 0..count {
+                arena.push(format!("v{next}"));
+                next += 1;
+            }
+            arena.freeze();
+        }
+        // Leave an unfrozen tail as well.
+        for _ in 0..73 {
+            arena.push(format!("v{next}"));
+            next += 1;
+        }
+        let expected: Vec<String> = (0..next).map(|i| format!("v{i}")).collect();
+
+        // Unshared path (moves out of Leaf Vecs via Arc::try_unwrap).
+        let mut unshared = arena.clone();
+        drop(arena);
+        let frozen = unshared.frozen();
+        let buckets = unshared.take_frozen_buckets(8);
+        assert!(buckets.len() >= 2);
+        let mut entries = vec![String::new(); frozen];
+        let mut rest = entries.as_mut_slice();
+        for (len, bucket) in buckets {
+            let (out, tail) = rest.split_at_mut(len);
+            rest = tail;
+            Arena::unfreeze_bucket(bucket, out);
+        }
+        assert!(rest.is_empty());
+        unshared.finish_unfreeze(entries);
+        assert_eq!(unshared.frozen(), 0);
+        assert_eq!(unshared.to_vec(), expected);
+
+        // Shared path (clones via copy_entries_into, leaving snapshot intact).
+        let mut shared: Arena<String> = Arena::new();
+        for chunk in 0..10 {
+            for i in 0..500 {
+                shared.push(format!("s{chunk}-{i}"));
+            }
+            shared.freeze();
+        }
+        shared.push("tail".to_owned());
+        let snapshot = shared.clone();
+        let frozen = shared.frozen();
+        let buckets = shared.take_frozen_buckets(6);
+        let mut entries = vec![String::new(); frozen];
+        let mut rest = entries.as_mut_slice();
+        for (len, bucket) in buckets {
+            let (out, tail) = rest.split_at_mut(len);
+            rest = tail;
+            Arena::unfreeze_bucket(bucket, out);
+        }
+        shared.finish_unfreeze(entries);
+        assert_eq!(shared.frozen(), 0);
+        assert_eq!(shared.to_vec(), snapshot.to_vec());
+        shared[42] = "mutated".to_owned();
+        assert_eq!(snapshot[42], "s0-42");
     }
 }

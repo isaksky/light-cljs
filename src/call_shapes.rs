@@ -215,6 +215,81 @@ use crate::analyzer::{
 use crate::core_operations::Type;
 use crate::inference::Inference;
 use crate::program_fragment::visit_children;
+use crate::scheduler::Slots;
+
+/// Compact bitset for per-slice reachability and escape tracking without
+/// per-worker `O(exprs)` byte vectors.
+struct BitSet {
+    words: Vec<u64>,
+}
+
+impl BitSet {
+    fn new(len: usize) -> Self {
+        Self {
+            words: vec![0; len.div_ceil(64)],
+        }
+    }
+
+    #[inline]
+    fn get(&self, index: usize) -> bool {
+        (self.words[index >> 6] & (1u64 << (index & 63))) != 0
+    }
+
+    /// Sets `index` and returns its previous value.
+    #[inline]
+    fn set(&mut self, index: usize) -> bool {
+        let word = &mut self.words[index >> 6];
+        let mask = 1u64 << (index & 63);
+        let prev = (*word & mask) != 0;
+        *word |= mask;
+        prev
+    }
+
+    #[inline]
+    fn intersects(&self, other: &Self) -> bool {
+        self.words
+            .iter()
+            .zip(&other.words)
+            .any(|(&a, &b)| (a & b) != 0)
+    }
+
+    #[inline]
+    fn union_with(&mut self, other: &Self) {
+        for (dst, &src) in self.words.iter_mut().zip(&other.words) {
+            *dst |= src;
+        }
+    }
+}
+
+/// Whether the UTF-16 slice `units` contains the pure-ASCII byte sequence
+/// `needle`. Equivalent to `String::from_utf16_lossy(units).contains(needle)`
+/// without allocating.
+#[inline]
+fn contains_utf16_ascii(units: &[u16], needle: &[u8]) -> bool {
+    let n = needle.len();
+    if n == 0 {
+        return true;
+    }
+    if units.len() < n {
+        return false;
+    }
+    let first = u16::from(needle[0]);
+    let rest = &needle[1..];
+    let limit = units.len() - n;
+    let mut i = 0;
+    while i <= limit {
+        if units[i] == first
+            && units[i + 1..i + n]
+                .iter()
+                .zip(rest)
+                .all(|(&u, &b)| u == u16::from(b))
+        {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
 
 /// How the definition and the calls of one global are emitted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -426,7 +501,19 @@ pub fn analyze(
     inference: Option<&Inference>,
     exports: &[GlobalId],
 ) -> CallShapes {
-    let scan = Scan::new(program, exports);
+    analyze_with_slots(program, inference, exports, Slots::ONE)
+}
+
+/// [`analyze`] on `slots` CPU work slots (`--jobs N`), parallelizing
+/// [`Scan::new_with_slots`] across balanced top-level form slices via
+/// [`crate::scheduler::map`].
+pub fn analyze_with_slots(
+    program: &Program,
+    inference: Option<&Inference>,
+    exports: &[GlobalId],
+    slots: Slots,
+) -> CallShapes {
+    let scan = Scan::new_with_slots(program, exports, ScanMode::Full, slots);
     let local = match inference {
         Some(_) => LocalFunctions::new(program, &scan),
         None => LocalFunctions::default(),
@@ -518,6 +605,57 @@ pub fn analyze(
             let direct = this.direct(program, function, 0, None);
             shapes.insert(call, direct);
         }
+    }
+    shapes
+}
+
+/// Lightweight [`analyze_with_slots`] for simplify-round inlining
+/// (`crate::inlining`), which only reads [`CallShapes::call`] (`function` and
+/// `method`) and [`CallShapes::closed`]. Bypasses `ReceiverCache` /
+/// `raw_javascript` body walks, `LocalFunctions`, `inferred_sites`, callbacks,
+/// and emission-only metadata.
+pub(crate) fn analyze_for_inlining_with_slots(
+    program: &Program,
+    exports: &[GlobalId],
+    slots: Slots,
+) -> CallShapes {
+    let scan = Scan::new_with_slots(program, exports, ScanMode::Inlining, slots);
+    let Scan {
+        functions,
+        closed,
+        resolved,
+        name_resolved,
+        ..
+    } = scan;
+    let count = program.exprs.len();
+    let mut shapes = CallShapes {
+        functions,
+        closed,
+        slots: vec![u32::MAX; count],
+        direct: Vec::with_capacity(resolved.len() + name_resolved.len()),
+        locals: Vec::new(),
+        local_functions: Vec::new(),
+        entry_offsets: Vec::new(),
+        selected: Vec::new(),
+        once: Vec::new(),
+    };
+    for (call, global, method) in resolved.into_iter().chain(name_resolved) {
+        let function = match shapes.functions[global.0] {
+            FunctionShape::Generic => continue,
+            FunctionShape::Single { function, .. } | FunctionShape::Entries { function, .. } => {
+                function
+            }
+        };
+        shapes.insert(
+            call,
+            DirectCall {
+                function,
+                method,
+                entry: None,
+                rest: None,
+                receiver: false,
+            },
+        );
     }
     shapes
 }
@@ -658,7 +796,21 @@ impl ClosedFunctions {
 /// protocol methods and the closed atoms, without inference. `exports`
 /// escape.
 pub fn closed_functions(program: &Program, exports: &[GlobalId]) -> ClosedFunctions {
-    let scan = Scan::new(program, exports);
+    closed_functions_with_slots(program, exports, Slots::ONE)
+}
+
+/// [`closed_functions`] on `slots` CPU work slots (`--jobs N`), fusing and
+/// parallelizing the protocol-method, closed-atom, and closed-function scans
+/// over [`Scan::order`] via [`crate::scheduler::map`], with UTF-16 ASCII
+/// pre-filtering so unrelated string literals skip heap allocation.
+pub fn closed_functions_with_slots(
+    program: &Program,
+    exports: &[GlobalId],
+    slots: Slots,
+) -> ClosedFunctions {
+    const PARALLEL_CLOSED_THRESHOLD: usize = 4_096;
+
+    let scan = Scan::new_with_slots(program, exports, ScanMode::Closed, slots);
     let count = program.exprs.len();
     let mut closed = ClosedFunctions {
         functions: vec![false; count],
@@ -672,71 +824,223 @@ pub fn closed_functions(program: &Program, exports: &[GlobalId]) -> ClosedFuncti
         atom_slots: vec![u32::MAX; count],
         atoms: 0,
     };
-    protocol_methods(program, &scan, exports, &mut closed);
-    closed_atoms(program, &scan, exports, &mut closed);
-    let local_calls = &scan.local_calls;
+
     let mut global_calls: Vec<Vec<ExprId>> = vec![Vec::new(); program.globals.len()];
     for &(call, global, _) in &scan.resolved {
         global_calls[global.0].push(call);
     }
-    for &function in &scan.order {
-        let ExprKind::Fn { name, methods } = &program.exprs[function.0].kind else {
-            continue;
-        };
-        if program.macro_functions.contains(&function) || !scan.name_closed(*name) {
-            continue;
-        }
-        let Some((user, value)) = scan.sole_use(program, function) else {
-            continue;
-        };
-        let (mut calls, callbacks) = match &program.exprs[user.0].kind {
-            ExprKind::Call { callee, .. } if *callee == value => (vec![user], Vec::new()),
-            ExprKind::Call { .. } => match scan.callback_site(program, value) {
-                Some(site) => (Vec::new(), vec![site]),
-                None => continue,
-            },
-            ExprKind::Let { bindings, .. } | ExprKind::LetFn { bindings, .. } => {
-                match bindings.iter().find(|(_, init)| *init == value) {
-                    Some((local, _)) if !scan.local_values_escape[local.0] => (
-                        local_calls[local.0].clone(),
-                        scan.local_callbacks[local.0].clone(),
-                    ),
-                    _ => continue,
-                }
-            }
-            ExprKind::Def {
-                global,
-                init: Some(init),
-                ..
-            } if *init == value
-                && scan.typed[global.0]
-                && scan.functions[global.0].function() == Some(function) =>
-            {
-                (
-                    global_calls[global.0].clone(),
-                    scan.global_callbacks[global.0].clone(),
-                )
-            }
-            _ => continue,
-        };
-        for (call, index) in callbacks {
-            closed.callbacks.push((call, index, function));
-        }
-        if let Some(name) = name {
-            calls.extend(&local_calls[name.0]);
-        }
-        closed.functions[function.0] = true;
-        for call in calls {
-            let ExprKind::Call { args, .. } = &program.exprs[call.0].kind else {
-                continue;
-            };
-            if let Some(method) = dispatched_method(methods, args.len()) {
-                closed.slots[call.0] =
-                    u32::try_from(closed.calls.len()).expect("fewer than 2^32 calls");
-                closed.calls.push((call, function, method));
-            }
-        }
+
+    struct ClosedChunk {
+        def_protocols: Vec<ExprId>,
+        has_atom_prototypes: bool,
+        has_proto_inherits: bool,
+        proto_arity_candidates: Vec<ExprId>,
+        proto_owners: Vec<ExprId>,
+        atom_local_escapes: BitSet,
+        atom_global_escapes: BitSet,
+        atom_calls: Vec<ExprId>,
+        closed_fns: Vec<ExprId>,
+        closed_calls: Vec<(ExprId, ExprId, usize)>,
+        closed_callbacks: Vec<(ExprId, usize, ExprId)>,
     }
+
+    let order = scan.order.as_slice();
+    let scan_ref = &scan;
+    let global_calls_ref = &global_calls;
+    let scan_chunk = |range: std::ops::Range<usize>| -> ClosedChunk {
+        let mut chunk = ClosedChunk {
+            def_protocols: Vec::new(),
+            has_atom_prototypes: false,
+            has_proto_inherits: false,
+            proto_arity_candidates: Vec::new(),
+            proto_owners: Vec::new(),
+            atom_local_escapes: BitSet::new(program.locals.len()),
+            atom_global_escapes: BitSet::new(program.globals.len()),
+            atom_calls: Vec::new(),
+            closed_fns: Vec::new(),
+            closed_calls: Vec::new(),
+            closed_callbacks: Vec::new(),
+        };
+        let used_as_atom = |read: ExprId| {
+            scan_ref
+                .parent_of(read)
+                .is_some_and(|call| atom_use(program, call, read))
+        };
+        for &id in &order[range] {
+            let kind = &program.exprs[id.0].kind;
+            let (atom_proto, proto_inherits, has_arity) = scan_closed_texts(program, kind);
+            chunk.has_atom_prototypes |= atom_proto;
+            chunk.has_proto_inherits |= proto_inherits;
+            if has_arity {
+                chunk.proto_arity_candidates.push(id);
+            }
+            match kind {
+                ExprKind::DefProtocol { .. } => chunk.def_protocols.push(id),
+                ExprKind::DefType { .. } => chunk.proto_owners.push(id),
+                ExprKind::Reify { captures, .. } => {
+                    chunk.proto_owners.push(id);
+                    for local in captures {
+                        chunk.atom_local_escapes.set(local.0);
+                    }
+                }
+                ExprKind::ExtendType {
+                    instance,
+                    return_target,
+                    ..
+                } => {
+                    if (*instance && *return_target)
+                        || discarded(program, id, &|id| scan_ref.parent_of(id))
+                    {
+                        chunk.proto_owners.push(id);
+                    }
+                }
+                ExprKind::Local(local) => {
+                    if !used_as_atom(id) {
+                        chunk.atom_local_escapes.set(local.0);
+                    }
+                }
+                ExprKind::Global(global) => {
+                    if !used_as_atom(id) {
+                        chunk.atom_global_escapes.set(global.0);
+                    }
+                }
+                ExprKind::Call { callee, args } => {
+                    if args.len() == 1
+                        && matches!(
+                            program.exprs[callee.0].kind,
+                            ExprKind::CoreFn(CoreFnId::Atom)
+                        )
+                    {
+                        chunk.atom_calls.push(id);
+                    }
+                }
+                ExprKind::Fn { name, methods } => {
+                    if program.macro_functions.contains(&id) || !scan_ref.name_closed(*name) {
+                        continue;
+                    }
+                    let Some((user, value)) = scan_ref.sole_use(program, id) else {
+                        continue;
+                    };
+                    let (mut calls, callbacks) = match &program.exprs[user.0].kind {
+                        ExprKind::Call { callee, .. } if *callee == value => {
+                            (vec![user], Vec::new())
+                        }
+                        ExprKind::Call { .. } => match scan_ref.callback_site(program, value) {
+                            Some(site) => (Vec::new(), vec![site]),
+                            None => continue,
+                        },
+                        ExprKind::Let { bindings, .. } | ExprKind::LetFn { bindings, .. } => {
+                            match bindings.iter().find(|(_, init)| *init == value) {
+                                Some((local, _)) if !scan_ref.local_values_escape[local.0] => (
+                                    scan_ref.local_calls[local.0].clone(),
+                                    scan_ref.local_callbacks[local.0].clone(),
+                                ),
+                                _ => continue,
+                            }
+                        }
+                        ExprKind::Def {
+                            global,
+                            init: Some(init),
+                            ..
+                        } if *init == value
+                            && scan_ref.typed[global.0]
+                            && scan_ref.functions[global.0].function() == Some(id) =>
+                        {
+                            (
+                                global_calls_ref[global.0].clone(),
+                                scan_ref.global_callbacks[global.0].clone(),
+                            )
+                        }
+                        _ => continue,
+                    };
+                    for (call, index) in callbacks {
+                        chunk.closed_callbacks.push((call, index, id));
+                    }
+                    if let Some(name) = name {
+                        calls.extend(&scan_ref.local_calls[name.0]);
+                    }
+                    chunk.closed_fns.push(id);
+                    for call in calls {
+                        let ExprKind::Call { args, .. } = &program.exprs[call.0].kind else {
+                            continue;
+                        };
+                        if let Some(method) = dispatched_method(methods, args.len()) {
+                            chunk.closed_calls.push((call, id, method));
+                        }
+                    }
+                }
+                _ => (),
+            }
+        }
+        chunk
+    };
+
+    let chunks = if slots == Slots::ONE || order.len() < PARALLEL_CLOSED_THRESHOLD {
+        vec![scan_chunk(0..order.len())]
+    } else {
+        let num_chunks = slots.get().saturating_mul(2).min(order.len()).max(1);
+        let chunk_size = order.len().div_ceil(num_chunks);
+        let jobs: Vec<(u64, std::ops::Range<usize>)> = (0..order.len())
+            .step_by(chunk_size)
+            .map(|start| {
+                let end = (start + chunk_size).min(order.len());
+                ((end - start) as u64, start..end)
+            })
+            .collect();
+        crate::scheduler::map(slots, jobs, scan_chunk)
+    };
+
+    let mut def_protocols = Vec::new();
+    let mut has_atom_prototypes = false;
+    let mut has_proto_inherits = false;
+    let mut proto_arity_candidates = Vec::new();
+    let mut proto_owners = Vec::new();
+    let mut atom_local_escapes = BitSet::new(program.locals.len());
+    let mut atom_global_escapes = BitSet::new(program.globals.len());
+    let mut atom_calls = Vec::new();
+
+    for chunk in chunks {
+        def_protocols.extend(chunk.def_protocols);
+        has_atom_prototypes |= chunk.has_atom_prototypes;
+        has_proto_inherits |= chunk.has_proto_inherits;
+        proto_arity_candidates.extend(chunk.proto_arity_candidates);
+        proto_owners.extend(chunk.proto_owners);
+        atom_local_escapes.union_with(&chunk.atom_local_escapes);
+        atom_global_escapes.union_with(&chunk.atom_global_escapes);
+        atom_calls.extend(chunk.atom_calls);
+        for function in chunk.closed_fns {
+            closed.functions[function.0] = true;
+        }
+        for (call, function, method) in chunk.closed_calls {
+            closed.slots[call.0] =
+                u32::try_from(closed.calls.len()).expect("fewer than 2^32 calls");
+            closed.calls.push((call, function, method));
+        }
+        closed.callbacks.extend(chunk.closed_callbacks);
+    }
+
+    finish_protocol_methods(
+        program,
+        &scan,
+        exports,
+        &def_protocols,
+        has_proto_inherits,
+        &proto_arity_candidates,
+        &proto_owners,
+        &mut closed,
+    );
+    finish_closed_atoms(
+        program,
+        &scan,
+        exports,
+        has_atom_prototypes,
+        &atom_local_escapes,
+        &mut atom_global_escapes,
+        &atom_calls,
+        slots,
+        &mut closed,
+    );
+
     closed
         .callbacks
         .sort_unstable_by_key(|&(call, index, _)| (call.0, index));
@@ -760,75 +1064,95 @@ impl Implementation {
     }
 }
 
-/// Names that reach a prototype; a program with a text ([`texts`]) holding
-/// one has no closed atom (light-cljs-252).
-const PROTOTYPE_NAMES: [&str; 4] = ["prototype", "__proto__", "getPrototypeOf", "setPrototypeOf"];
+/// Inspect an expression's texts for prototype names (`PROTOTYPE_NAMES`,
+/// protocol inheritance names) and `"$arity$"`, pre-filtering UTF-16 string
+/// literals without allocating a `String`.
+#[inline]
+fn scan_closed_texts(program: &Program, kind: &ExprKind) -> (bool, bool, bool) {
+    let mut atom_proto = false;
+    let mut proto_inherits = false;
+    let mut has_arity = false;
+    let mut check_str = |s: &str| {
+        if s.contains("roto") {
+            let inh =
+                s.contains("prototype") || s.contains("__proto__") || s.contains("setPrototypeOf");
+            proto_inherits |= inh;
+            atom_proto |= inh || s.contains("getPrototypeOf");
+        }
+        if !has_arity && s.contains("$arity$") {
+            has_arity = true;
+        }
+    };
+    match kind {
+        ExprKind::Property { property: name, .. }
+        | ExprKind::MethodCall { method: name, .. }
+        | ExprKind::QualifiedMethod {
+            method: Some(name), ..
+        } => check_str(name),
+        ExprKind::JsGlobal(global) => {
+            for name in &program.js_globals[global.0].path {
+                check_str(name);
+            }
+        }
+        ExprKind::JsTemplate { segments, .. } => {
+            for segment in segments {
+                check_str(segment);
+            }
+        }
+        ExprKind::String(string) => {
+            let units = &program.strings[string.0];
+            if contains_utf16_ascii(units, b"roto") {
+                let inh = contains_utf16_ascii(units, b"prototype")
+                    || contains_utf16_ascii(units, b"__proto__")
+                    || contains_utf16_ascii(units, b"setPrototypeOf");
+                proto_inherits |= inh;
+                atom_proto |= inh || contains_utf16_ascii(units, b"getPrototypeOf");
+            }
+            if contains_utf16_ascii(units, b"$arity$") {
+                has_arity = true;
+            }
+        }
+        _ => (),
+    }
+    (atom_proto, proto_inherits, has_arity)
+}
 
-/// Find the closed atoms of `program`, their `(atom x)` calls and the reads
-/// of the locals and globals that hold them, into `closed`; see "Atoms" in
-/// the module documentation (light-cljs-252). `exports` escape.
-fn closed_atoms(
+/// Complete closed-atom discovery from the fused scan's results; see "Atoms"
+/// in the module documentation (light-cljs-252).
+#[allow(clippy::too_many_arguments)]
+fn finish_closed_atoms(
     program: &Program,
     scan: &Scan,
     exports: &[GlobalId],
+    prototypes: bool,
+    local_escapes: &BitSet,
+    global_escapes: &mut BitSet,
+    atom_calls: &[ExprId],
+    slots: Slots,
     closed: &mut ClosedFunctions,
 ) {
-    // Locals and globals read anywhere but as the atom of a use, and locals a
-    // `reify` holds as fields of its object.
-    let mut local_escapes = vec![false; program.locals.len()];
-    let mut global_escapes = vec![false; program.globals.len()];
-    let used = |read: ExprId| {
-        scan.parent_of(read)
-            .is_some_and(|call| atom_use(program, call, read))
-    };
-    let mut prototypes = false;
-    for &id in &scan.order {
-        let kind = &program.exprs[id.0].kind;
-        texts(program, kind, |text| {
-            prototypes |= PROTOTYPE_NAMES.iter().any(|name| text.contains(name));
-        });
-        match kind {
-            ExprKind::Reify { captures, .. } => {
-                for local in captures {
-                    local_escapes[local.0] = true;
-                }
-            }
-            ExprKind::Local(local) if !used(id) => local_escapes[local.0] = true,
-            ExprKind::Global(global) if !used(id) => global_escapes[global.0] = true,
-            _ => (),
-        }
-    }
+    const PARALLEL_ATOM_SLOTS_THRESHOLD: usize = 8_192;
+
     // A program that names a prototype may change what the runtime's atom
     // operations do.
     if prototypes {
         return;
     }
     for global in exports {
-        if let Some(escapes) = global_escapes.get_mut(global.0) {
-            *escapes = true;
+        if global.0 < program.globals.len() {
+            global_escapes.set(global.0);
         }
     }
     let mut local_atoms = vec![u32::MAX; program.locals.len()];
     let mut global_atoms = vec![u32::MAX; program.globals.len()];
-    for &id in &scan.order {
-        let ExprKind::Call { callee, args } = &program.exprs[id.0].kind else {
-            continue;
-        };
-        if args.len() != 1
-            || !matches!(
-                program.exprs[callee.0].kind,
-                ExprKind::CoreFn(CoreFnId::Atom)
-            )
-        {
-            continue;
-        }
+    for &id in atom_calls {
         let Some((user, value)) = scan.sole_use(program, id) else {
             continue;
         };
         let holder = match &program.exprs[user.0].kind {
             ExprKind::Let { bindings, .. } => {
                 match bindings.iter().find(|(_, init)| *init == value) {
-                    Some((local, _)) if !local_escapes[local.0] => &mut local_atoms[local.0],
+                    Some((local, _)) if !local_escapes.get(local.0) => &mut local_atoms[local.0],
                     _ => continue,
                 }
             }
@@ -838,7 +1162,7 @@ fn closed_atoms(
                 ..
             } if *init == value
                 && scan.sole_definitions[global.0] == Some(user)
-                && !global_escapes[global.0]
+                && !global_escapes.get(global.0)
                 && discarded(program, user, &|id| scan.parent_of(id)) =>
             {
                 &mut global_atoms[global.0]
@@ -850,13 +1174,52 @@ fn closed_atoms(
         closed.atom_slots[id.0] = atom;
         closed.atoms += 1;
     }
-    for &id in &scan.order {
-        let atom = match program.exprs[id.0].kind {
-            ExprKind::Local(local) => local_atoms[local.0],
-            ExprKind::Global(global) => global_atoms[global.0],
-            _ => continue,
-        };
-        closed.atom_slots[id.0] = atom;
+    if closed.atoms == 0 {
+        return;
+    }
+    if slots == Slots::ONE || scan.order.len() < PARALLEL_ATOM_SLOTS_THRESHOLD {
+        for &id in &scan.order {
+            let atom = match program.exprs[id.0].kind {
+                ExprKind::Local(local) => local_atoms[local.0],
+                ExprKind::Global(global) => global_atoms[global.0],
+                _ => continue,
+            };
+            if atom != u32::MAX {
+                closed.atom_slots[id.0] = atom;
+            }
+        }
+    } else {
+        let order = scan.order.as_slice();
+        let num_chunks = slots.get().saturating_mul(2).min(order.len()).max(1);
+        let chunk_size = order.len().div_ceil(num_chunks);
+        let jobs: Vec<(u64, std::ops::Range<usize>)> = (0..order.len())
+            .step_by(chunk_size)
+            .map(|start| {
+                let end = (start + chunk_size).min(order.len());
+                ((end - start) as u64, start..end)
+            })
+            .collect();
+        let local_atoms_ref = local_atoms.as_slice();
+        let global_atoms_ref = global_atoms.as_slice();
+        let updates = crate::scheduler::map(slots, jobs, |range| {
+            let mut found = Vec::new();
+            for &id in &order[range] {
+                let atom = match program.exprs[id.0].kind {
+                    ExprKind::Local(local) => local_atoms_ref[local.0],
+                    ExprKind::Global(global) => global_atoms_ref[global.0],
+                    _ => continue,
+                };
+                if atom != u32::MAX {
+                    found.push((id, atom));
+                }
+            }
+            found
+        });
+        for chunk in updates {
+            for (id, atom) in chunk {
+                closed.atom_slots[id.0] = atom;
+            }
+        }
     }
 }
 
@@ -881,27 +1244,35 @@ fn atom_use(program: &Program, call: ExprId, read: ExprId) -> bool {
         }
 }
 
-/// Find the closed protocol methods of `program`, their implementations and
-/// the implementations each of their calls may run, into `closed`; see
+/// Complete closed protocol-method discovery from the fused scan's results; see
 /// "Protocol methods" in the module documentation (light-cljs-253).
-/// `exports` escape.
-fn protocol_methods(
+#[allow(clippy::too_many_arguments)]
+fn finish_protocol_methods(
     program: &Program,
     scan: &Scan,
     exports: &[GlobalId],
+    def_protocols: &[ExprId],
+    has_proto_inherits: bool,
+    proto_arity_candidates: &[ExprId],
+    proto_owners: &[ExprId],
     closed: &mut ClosedFunctions,
 ) {
+    if def_protocols.is_empty() {
+        return;
+    }
     let globals = program.globals.len();
     // The methods the program's protocols declare, by global and by key. A
     // global or key declared twice is not closed.
     let mut declared: Vec<Option<&ProtocolMethod>> = vec![None; globals];
     let mut declarations = vec![0u32; globals];
     let mut keys: HashMap<&str, Option<GlobalId>> = HashMap::new();
-    for &id in &scan.order {
+    let mut any_declared = false;
+    for &id in def_protocols {
         let ExprKind::DefProtocol { methods, .. } = &program.exprs[id.0].kind else {
             continue;
         };
         for method in methods {
+            any_declared = true;
             declared[method.global.0] = Some(method);
             declarations[method.global.0] += 1;
             keys.entry(method.key.as_str())
@@ -909,9 +1280,10 @@ fn protocol_methods(
                 .or_insert(Some(method.global));
         }
     }
-    if declared.iter().all(Option::is_none) {
+    if !any_declared {
         return;
     }
+    closed.inherits = has_proto_inherits;
     // A method is open when its global is read other than as a callee or
     // exported, when it has a variadic signature, whose dispatcher repacks
     // the arguments, or when the program names one of its slots.
@@ -941,48 +1313,36 @@ fn protocol_methods(
         }
     }
     // Any text that names a slot opens its method, wherever the slot appears
-    // in it, and one that names a prototype may give a value the slots of a
-    // type it is not an instance of (`ClosedFunctions::inherits`).
-    let mut lengths: Vec<usize> = prefixes.keys().map(String::len).collect();
-    lengths.sort_unstable();
-    lengths.dedup();
-    const ARITY: &str = "$arity$";
-    for &id in &scan.order {
-        texts(program, &program.exprs[id.0].kind, |text| {
-            closed.inherits |= ["prototype", "__proto__", "setPrototypeOf"]
-                .iter()
-                .any(|name| text.contains(name));
-            for (position, _) in text.match_indices(ARITY) {
-                let end = position + ARITY.len();
-                for &length in &lengths {
-                    let named = end
-                        .checked_sub(length)
-                        .and_then(|start| text.get(start..end))
-                        .and_then(|slot| prefixes.get(slot));
-                    for global in named.into_iter().flatten() {
-                        open[global.0] = true;
+    // in it.
+    if !proto_arity_candidates.is_empty() {
+        let mut lengths: Vec<usize> = prefixes.keys().map(String::len).collect();
+        lengths.sort_unstable();
+        lengths.dedup();
+        const ARITY: &str = "$arity$";
+        for &id in proto_arity_candidates {
+            texts_with_arity(program, &program.exprs[id.0].kind, |text| {
+                for (position, _) in text.match_indices(ARITY) {
+                    let end = position + ARITY.len();
+                    for &length in &lengths {
+                        let named = end
+                            .checked_sub(length)
+                            .and_then(|start| text.get(start..end))
+                            .and_then(|slot| prefixes.get(slot));
+                        for global in named.into_iter().flatten() {
+                            open[global.0] = true;
+                        }
                     }
                 }
-            }
-        });
+            });
+        }
     }
-    // The implementations of closed methods. An `extend-type` returns its
-    // last method, which escapes where its value is used, and `specify!`
-    // returns its target or its last method.
+    // The implementations of closed methods.
     let mut implementations = Vec::new();
-    for &id in &scan.order {
+    for &id in proto_owners {
         let methods = match &program.exprs[id.0].kind {
-            ExprKind::DefType { methods, .. } | ExprKind::Reify { methods, .. } => methods,
-            ExprKind::ExtendType {
-                instance,
-                return_target,
-                methods,
-                ..
-            } if (*instance && *return_target)
-                || discarded(program, id, &|id| scan.parent_of(id)) =>
-            {
-                methods
-            }
+            ExprKind::DefType { methods, .. }
+            | ExprKind::Reify { methods, .. }
+            | ExprKind::ExtendType { methods, .. } => methods,
             _ => continue,
         };
         for (index, (dispatch, method)) in methods.iter().enumerate() {
@@ -1019,17 +1379,11 @@ fn protocol_methods(
     });
     // Each call runs an implementation of the arity its dispatcher selects.
     let mut dispatches = vec![(0u32, 0u32); program.exprs.len()];
-    for &id in &scan.order {
-        let ExprKind::Call { callee, args } = &program.exprs[id.0].kind else {
-            continue;
-        };
-        let ExprKind::Global(global) = program.exprs[callee.0].kind else {
-            continue;
-        };
+    for &(id, global, arguments) in &scan.call_sites {
         let Some(method) = declared[global.0].filter(|_| !open[global.0]) else {
             continue;
         };
-        let Some(arity) = dispatched_arity(&method.arities, args.len()) else {
+        let Some(arity) = dispatched_arity(&method.arities, arguments) else {
             continue;
         };
         let key =
@@ -1057,24 +1411,49 @@ fn dispatched_arity(arities: &[usize], arguments: usize) -> Option<usize> {
 }
 
 /// Call `text` with each text in which an expression of this kind may name a
-/// host property: the property it reads, the method it calls, the path of a
-/// JavaScript global, a string, and raw JavaScript. A name computed at run
-/// time does not count.
-fn texts(program: &Program, kind: &ExprKind, mut text: impl FnMut(&str)) {
+/// protocol slot containing `"$arity$"`, pre-filtering UTF-16 string literals
+/// before calling `String::from_utf16_lossy`.
+fn texts_with_arity(program: &Program, kind: &ExprKind, mut text: impl FnMut(&str)) {
     match kind {
         ExprKind::Property { property: name, .. }
         | ExprKind::MethodCall { method: name, .. }
         | ExprKind::QualifiedMethod {
             method: Some(name), ..
-        } => text(name),
-        ExprKind::JsGlobal(global) => program.js_globals[global.0]
-            .path
-            .iter()
-            .for_each(|name| text(name)),
-        ExprKind::JsTemplate { segments, .. } => segments.iter().for_each(|segment| text(segment)),
-        ExprKind::String(string) => text(&String::from_utf16_lossy(&program.strings[string.0])),
+        } => {
+            if name.contains("$arity$") {
+                text(name);
+            }
+        }
+        ExprKind::JsGlobal(global) => {
+            for name in &program.js_globals[global.0].path {
+                if name.contains("$arity$") {
+                    text(name);
+                }
+            }
+        }
+        ExprKind::JsTemplate { segments, .. } => {
+            for segment in segments {
+                if segment.contains("$arity$") {
+                    text(segment);
+                }
+            }
+        }
+        ExprKind::String(string) => {
+            let units = &program.strings[string.0];
+            if contains_utf16_ascii(units, b"$arity$") {
+                text(&String::from_utf16_lossy(units));
+            }
+        }
         _ => (),
     }
+}
+
+/// Which tables [`Scan::new_with_slots`] populates.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ScanMode {
+    Full,
+    Inlining,
+    Closed,
 }
 
 /// What [`analyze`] and [`closed_functions`] decide without inference: the
@@ -1101,6 +1480,9 @@ struct Scan {
     /// The calls through the name of a known function of
     /// [`FunctionShape::Entries`], with its global and the method.
     name_resolved: Vec<(ExprId, GlobalId, usize)>,
+    /// All calls whose callee is a global (populated in [`ScanMode::Closed`]
+    /// so protocol dispatch avoids re-scanning `order`).
+    call_sites: Vec<(ExprId, GlobalId, usize)>,
     /// The calls whose callee is a local or a `fn` literal.
     inferred_sites: Vec<ExprId>,
     /// By `LocalId`: an expression reads the local other than as the callee
@@ -1127,8 +1509,395 @@ struct Scan {
 }
 
 impl Scan {
-    fn new(program: &Program, exports: &[GlobalId]) -> Self {
+    fn new_with_slots(
+        program: &Program,
+        exports: &[GlobalId],
+        mode: ScanMode,
+        slots: Slots,
+    ) -> Self {
+        const PARALLEL_SCAN_THRESHOLD: usize = 4_096;
+
         let count = program.exprs.len();
+        if slots == Slots::ONE || count < PARALLEL_SCAN_THRESHOLD {
+            return Self::new_serial(program, exports, mode);
+        }
+
+        // Collect the top-level `Do` spine in exact DFS pop order. If the spine
+        // shares any node or has fewer than 2 top-level forms, fall back to the
+        // serial DFS.
+        let mut spine_dos: Vec<ExprId> = Vec::new();
+        let mut top_forms: Vec<ExprId> = Vec::new();
+        let mut spine_parent: HashMap<ExprId, ExprId> = HashMap::new();
+        let mut spine_seen = BitSet::new(count);
+        let mut top = vec![false; count];
+        spine_seen.set(program.root.0);
+        let mut stack = vec![program.root];
+        while let Some(id) = stack.pop() {
+            if let ExprKind::Do(items) = &program.exprs[id.0].kind {
+                spine_dos.push(id);
+                for &child in items {
+                    spine_parent.insert(child, id);
+                    if spine_seen.set(child.0) {
+                        return Self::new_serial(program, exports, mode);
+                    }
+                    stack.push(child);
+                }
+            } else {
+                top[id.0] = true;
+                top_forms.push(id);
+            }
+        }
+        if top_forms.len() < 2 {
+            return Self::new_serial(program, exports, mode);
+        }
+
+        let track_callbacks = mode == ScanMode::Closed;
+        let track_inferred = mode == ScanMode::Full;
+        let keep_order = mode != ScanMode::Inlining;
+
+        struct ScanSlice {
+            touched_spine: bool,
+            visited: BitSet,
+            /// `(expr_id, parent_id, multi_parent)` in exact DFS order.
+            nodes: Vec<(u32, u32, bool)>,
+            defs: Vec<(GlobalId, ExprId)>,
+            unfixed: Vec<GlobalId>,
+            global_escaped: Vec<GlobalId>,
+            global_callbacks: Vec<(GlobalId, ExprId, usize)>,
+            global_values_escape: Vec<GlobalId>,
+            local_calls: Vec<(LocalId, ExprId)>,
+            local_escapes: Vec<LocalId>,
+            object_captures: Vec<LocalId>,
+            local_callbacks: Vec<(LocalId, ExprId, usize)>,
+            local_values_escape: Vec<LocalId>,
+            sites: Vec<(ExprId, GlobalId, usize)>,
+            inferred_sites: Vec<ExprId>,
+        }
+
+        let num_slices = slots.get().saturating_mul(2).min(top_forms.len()).max(1);
+        let slice_len = top_forms.len().div_ceil(num_slices);
+        let jobs: Vec<(u64, std::ops::Range<usize>)> = (0..top_forms.len())
+            .step_by(slice_len)
+            .map(|start| {
+                let end = (start + slice_len).min(top_forms.len());
+                ((end - start) as u64, start..end)
+            })
+            .collect();
+
+        let top_forms_ref = top_forms.as_slice();
+        let spine_parent_ref = &spine_parent;
+        let spine_seen_ref = &spine_seen;
+
+        let slices = crate::scheduler::map(slots, jobs, |range| {
+            let mut visited = BitSet::new(count);
+            let mut multi_parent = BitSet::new(count);
+            let mut nodes: Vec<(u32, u32, bool)> = Vec::new();
+            let mut pending: Vec<(ExprId, ExprId)> = Vec::new();
+            let mut touched_spine = false;
+
+            for &form in &top_forms_ref[range] {
+                let par = spine_parent_ref[&form];
+                visited.set(form.0);
+                pending.push((form, par));
+                while let Some((id, id_par)) = pending.pop() {
+                    nodes.push((id.0 as u32, id_par.0 as u32, false));
+                    visit_children(&program.exprs[id.0].kind, |child| {
+                        if spine_seen_ref.get(child.0) {
+                            touched_spine = true;
+                            return;
+                        }
+                        if visited.set(child.0) {
+                            multi_parent.set(child.0);
+                        } else {
+                            pending.push((child, id));
+                        }
+                    });
+                    if touched_spine {
+                        break;
+                    }
+                }
+                if touched_spine {
+                    break;
+                }
+            }
+
+            let mut slice = ScanSlice {
+                touched_spine,
+                visited,
+                nodes,
+                defs: Vec::new(),
+                unfixed: Vec::new(),
+                global_escaped: Vec::new(),
+                global_callbacks: Vec::new(),
+                global_values_escape: Vec::new(),
+                local_calls: Vec::new(),
+                local_escapes: Vec::new(),
+                object_captures: Vec::new(),
+                local_callbacks: Vec::new(),
+                local_values_escape: Vec::new(),
+                sites: Vec::new(),
+                inferred_sites: Vec::new(),
+            };
+            if touched_spine {
+                return slice;
+            }
+            for node in &mut slice.nodes {
+                if multi_parent.get(node.0 as usize) {
+                    node.2 = true;
+                }
+            }
+            drop(multi_parent);
+
+            for &(id_raw, par_raw, is_multi) in &slice.nodes {
+                let id = ExprId(id_raw as usize);
+                let parent_of = (!is_multi).then_some(ExprId(par_raw as usize));
+                let callee_of = parent_of.filter(|call| {
+                    matches!(
+                        program.exprs[call.0].kind,
+                        ExprKind::Call { callee, .. } if callee == id
+                    )
+                });
+                let object_methods = match &program.exprs[id.0].kind {
+                    ExprKind::Reify {
+                        captures, methods, ..
+                    } => {
+                        for &local in captures {
+                            slice.local_escapes.push(local);
+                            if track_callbacks {
+                                slice.local_values_escape.push(local);
+                            }
+                        }
+                        methods.as_slice()
+                    }
+                    ExprKind::DefType { methods, .. } | ExprKind::ExtendType { methods, .. } => {
+                        methods.as_slice()
+                    }
+                    _ => &[],
+                };
+                for (_, method) in object_methods {
+                    slice.object_captures.extend_from_slice(&method.captures);
+                }
+                match &program.exprs[id.0].kind {
+                    ExprKind::Def {
+                        global,
+                        init,
+                        test,
+                        once,
+                    } => {
+                        if init.is_some() || *once {
+                            slice.defs.push((*global, id));
+                        }
+                        if *once || test.is_some() {
+                            slice.unfixed.push(*global);
+                        }
+                    }
+                    ExprKind::SetGlobal { target, .. } => {
+                        if let ExprKind::Global(global) = program.exprs[target.0].kind {
+                            slice.unfixed.push(global);
+                        }
+                    }
+                    ExprKind::Binding { bindings, .. } => {
+                        for (target, _) in bindings {
+                            if let ExprKind::Global(global) = program.exprs[target.0].kind {
+                                slice.unfixed.push(global);
+                            }
+                        }
+                    }
+                    ExprKind::JsTemplate { args, .. } => {
+                        for target in args {
+                            if let ExprKind::Global(global) = program.exprs[target.0].kind {
+                                slice.unfixed.push(global);
+                            }
+                        }
+                    }
+                    ExprKind::Global(global) => {
+                        if callee_of.is_none() {
+                            slice.global_escaped.push(*global);
+                            if track_callbacks {
+                                match parent_of.and_then(|call| {
+                                    callback_index(program, call, id).map(|index| (call, index))
+                                }) {
+                                    Some((call, index)) => {
+                                        slice.global_callbacks.push((*global, call, index));
+                                    }
+                                    None => slice.global_values_escape.push(*global),
+                                }
+                            }
+                        }
+                    }
+                    ExprKind::Local(local) => match callee_of {
+                        Some(call) => slice.local_calls.push((*local, call)),
+                        None => {
+                            slice.local_escapes.push(*local);
+                            if track_callbacks {
+                                match parent_of.and_then(|call| {
+                                    callback_index(program, call, id).map(|index| (call, index))
+                                }) {
+                                    Some((call, index)) => {
+                                        slice.local_callbacks.push((*local, call, index));
+                                    }
+                                    None => slice.local_values_escape.push(*local),
+                                }
+                            }
+                        }
+                    },
+                    ExprKind::Call { callee, args } => match program.exprs[callee.0].kind {
+                        ExprKind::Global(global) => slice.sites.push((id, global, args.len())),
+                        ExprKind::Local(_) | ExprKind::Fn { .. } if track_inferred => {
+                            slice.inferred_sites.push(id);
+                        }
+                        _ => (),
+                    },
+                    kind => {
+                        crate::application::visit_globals(kind, |global| {
+                            slice.unfixed.push(global);
+                        });
+                    }
+                }
+            }
+            slice
+        });
+
+        // Verify slices are completely disjoint from each other and from the spine.
+        let mut global_visited = BitSet::new(count);
+        for &id in &spine_dos {
+            global_visited.set(id.0);
+        }
+        for slice in &slices {
+            if slice.touched_spine || global_visited.intersects(&slice.visited) {
+                return Self::new_serial(program, exports, mode);
+            }
+            global_visited.union_with(&slice.visited);
+        }
+        drop(global_visited);
+
+        let globals = program.globals.len();
+        let locals = program.locals.len();
+        let mut parent: Vec<Option<ExprId>> = vec![None; count];
+        let mut parents = vec![0u8; count];
+        for (&child, &par) in &spine_parent {
+            parent[child.0] = Some(par);
+            parents[child.0] = 1;
+        }
+        let total_nodes: usize = slices.iter().map(|s| s.nodes.len()).sum();
+        let mut order = if keep_order {
+            let mut order = Vec::with_capacity(spine_dos.len() + total_nodes);
+            order.extend_from_slice(&spine_dos);
+            order
+        } else {
+            Vec::new()
+        };
+
+        let mut definitions = vec![0u32; globals];
+        let mut definition = vec![None; globals];
+        let mut fixed = vec![true; globals];
+        let mut escaped = vec![false; globals];
+        let mut sites = Vec::with_capacity(slices.iter().map(|s| s.sites.len()).sum());
+        let mut inferred_sites = if track_inferred {
+            Vec::with_capacity(slices.iter().map(|s| s.inferred_sites.len()).sum())
+        } else {
+            Vec::new()
+        };
+        let mut local_escapes = vec![false; locals];
+        let mut object_captures = vec![false; locals];
+        let mut local_calls = vec![Vec::new(); locals];
+        let mut values_escape = if track_callbacks {
+            vec![false; globals]
+        } else {
+            Vec::new()
+        };
+        let mut global_callbacks = if track_callbacks {
+            vec![Vec::new(); globals]
+        } else {
+            Vec::new()
+        };
+        let mut local_values_escape = if track_callbacks {
+            vec![false; locals]
+        } else {
+            Vec::new()
+        };
+        let mut local_callbacks = if track_callbacks {
+            vec![Vec::new(); locals]
+        } else {
+            Vec::new()
+        };
+
+        for slice in slices {
+            for (id_raw, par_raw, is_multi) in slice.nodes {
+                let id = id_raw as usize;
+                parent[id] = Some(ExprId(par_raw as usize));
+                parents[id] = if is_multi { 2 } else { 1 };
+                if keep_order {
+                    order.push(ExprId(id));
+                }
+            }
+            for (global, def_id) in slice.defs {
+                definitions[global.0] += 1;
+                definition[global.0] = Some(def_id);
+            }
+            for global in slice.unfixed {
+                fixed[global.0] = false;
+            }
+            for global in slice.global_escaped {
+                escaped[global.0] = true;
+            }
+            if track_callbacks {
+                for (global, call, index) in slice.global_callbacks {
+                    global_callbacks[global.0].push((call, index));
+                }
+                for global in slice.global_values_escape {
+                    values_escape[global.0] = true;
+                }
+                for (local, call, index) in slice.local_callbacks {
+                    local_callbacks[local.0].push((call, index));
+                }
+                for local in slice.local_values_escape {
+                    local_values_escape[local.0] = true;
+                }
+            }
+            for (local, call) in slice.local_calls {
+                local_calls[local.0].push(call);
+            }
+            for local in slice.local_escapes {
+                local_escapes[local.0] = true;
+            }
+            for local in slice.object_captures {
+                object_captures[local.0] = true;
+            }
+            sites.extend(slice.sites);
+            if track_inferred {
+                inferred_sites.extend(slice.inferred_sites);
+            }
+        }
+
+        Self::finish(
+            program,
+            exports,
+            mode,
+            parent,
+            parents,
+            order,
+            top,
+            definitions,
+            definition,
+            fixed,
+            escaped,
+            sites,
+            inferred_sites,
+            local_escapes,
+            object_captures,
+            local_calls,
+            values_escape,
+            global_callbacks,
+            local_values_escape,
+            local_callbacks,
+        )
+    }
+
+    fn new_serial(program: &Program, exports: &[GlobalId], mode: ScanMode) -> Self {
+        let count = program.exprs.len();
+        let track_callbacks = mode == ScanMode::Closed;
+        let track_inferred = mode == ScanMode::Full;
         // Every expression emission can reach, each with its parent; an
         // expression reached from two places has no single parent and counts as
         // read.
@@ -1165,19 +1934,36 @@ impl Scan {
         }
 
         let globals = program.globals.len();
+        let locals = program.locals.len();
         let mut definitions = vec![0u32; globals];
         let mut definition = vec![None; globals];
         let mut fixed = vec![true; globals];
         let mut escaped = vec![false; globals];
         let mut sites = Vec::new();
         let mut inferred_sites = Vec::new();
-        let mut local_escapes = vec![false; program.locals.len()];
-        let mut object_captures = vec![false; program.locals.len()];
-        let mut local_calls = vec![Vec::new(); program.locals.len()];
-        let mut values_escape = vec![false; globals];
-        let mut global_callbacks = vec![Vec::new(); globals];
-        let mut local_values_escape = vec![false; program.locals.len()];
-        let mut local_callbacks = vec![Vec::new(); program.locals.len()];
+        let mut local_escapes = vec![false; locals];
+        let mut object_captures = vec![false; locals];
+        let mut local_calls = vec![Vec::new(); locals];
+        let mut values_escape = if track_callbacks {
+            vec![false; globals]
+        } else {
+            Vec::new()
+        };
+        let mut global_callbacks = if track_callbacks {
+            vec![Vec::new(); globals]
+        } else {
+            Vec::new()
+        };
+        let mut local_values_escape = if track_callbacks {
+            vec![false; locals]
+        } else {
+            Vec::new()
+        };
+        let mut local_callbacks = if track_callbacks {
+            vec![Vec::new(); locals]
+        } else {
+            Vec::new()
+        };
         // A read that is a function argument with a callback shape of a core
         // operation call: the call and the argument's index.
         let callback_of = |id: ExprId| {
@@ -1200,7 +1986,9 @@ impl Scan {
                 } => {
                     for local in captures {
                         local_escapes[local.0] = true;
-                        local_values_escape[local.0] = true;
+                        if track_callbacks {
+                            local_values_escape[local.0] = true;
+                        }
                     }
                     methods.as_slice()
                 }
@@ -1238,9 +2026,11 @@ impl Scan {
                 ExprKind::Global(global) => {
                     if callee_of(id).is_none() {
                         escaped[global.0] = true;
-                        match callback_of(id) {
-                            Some(site) => global_callbacks[global.0].push(site),
-                            None => values_escape[global.0] = true,
+                        if track_callbacks {
+                            match callback_of(id) {
+                                Some(site) => global_callbacks[global.0].push(site),
+                                None => values_escape[global.0] = true,
+                            }
                         }
                     }
                 }
@@ -1249,15 +2039,19 @@ impl Scan {
                     Some(call) => local_calls[local.0].push(call),
                     None => {
                         local_escapes[local.0] = true;
-                        match callback_of(id) {
-                            Some(site) => local_callbacks[local.0].push(site),
-                            None => local_values_escape[local.0] = true,
+                        if track_callbacks {
+                            match callback_of(id) {
+                                Some(site) => local_callbacks[local.0].push(site),
+                                None => local_values_escape[local.0] = true,
+                            }
                         }
                     }
                 },
                 ExprKind::Call { callee, args } => match program.exprs[callee.0].kind {
                     ExprKind::Global(global) => sites.push((id, global, args.len())),
-                    ExprKind::Local(_) | ExprKind::Fn { .. } => inferred_sites.push(id),
+                    ExprKind::Local(_) | ExprKind::Fn { .. } if track_inferred => {
+                        inferred_sites.push(id);
+                    }
                     _ => (),
                 },
                 // Types and protocols define their globals some other way.
@@ -1268,18 +2062,79 @@ impl Scan {
                 }
             }
         }
+        if mode == ScanMode::Inlining {
+            order = Vec::new();
+        }
+        Self::finish(
+            program,
+            exports,
+            mode,
+            parent,
+            parents,
+            order,
+            top,
+            definitions,
+            definition,
+            fixed,
+            escaped,
+            sites,
+            inferred_sites,
+            local_escapes,
+            object_captures,
+            local_calls,
+            values_escape,
+            global_callbacks,
+            local_values_escape,
+            local_callbacks,
+        )
+    }
 
+    #[allow(clippy::too_many_arguments)]
+    fn finish(
+        program: &Program,
+        exports: &[GlobalId],
+        mode: ScanMode,
+        parent: Vec<Option<ExprId>>,
+        parents: Vec<u8>,
+        order: Vec<ExprId>,
+        top: Vec<bool>,
+        definitions: Vec<u32>,
+        definition: Vec<Option<ExprId>>,
+        fixed: Vec<bool>,
+        mut escaped: Vec<bool>,
+        sites: Vec<(ExprId, GlobalId, usize)>,
+        inferred_sites: Vec<ExprId>,
+        local_escapes: Vec<bool>,
+        object_captures: Vec<bool>,
+        local_calls: Vec<Vec<ExprId>>,
+        mut values_escape: Vec<bool>,
+        global_callbacks: Vec<Vec<(ExprId, usize)>>,
+        local_values_escape: Vec<bool>,
+        local_callbacks: Vec<Vec<(ExprId, usize)>>,
+    ) -> Self {
+        let globals = program.globals.len();
+        let track_callbacks = mode == ScanMode::Closed;
+        let global_reads = if mode == ScanMode::Closed {
+            escaped.clone()
+        } else {
+            Vec::new()
+        };
         let mut scan = Self {
-            global_reads: escaped.clone(),
+            global_reads,
             parent,
             parents,
             order,
             functions: vec![FunctionShape::Generic; globals],
             closed: vec![false; globals],
-            typed: vec![false; globals],
+            typed: if track_callbacks {
+                vec![false; globals]
+            } else {
+                Vec::new()
+            },
             global_callbacks,
             resolved: Vec::new(),
             name_resolved: Vec::new(),
+            call_sites: Vec::new(),
             inferred_sites,
             local_escapes,
             object_captures,
@@ -1297,11 +2152,13 @@ impl Scan {
                 .collect(),
             top_definitions: Vec::new(),
         };
-        scan.top_definitions = scan
-            .sole_definitions
-            .iter()
-            .map(|def| def.is_some_and(|def| top[def.0]))
-            .collect();
+        if mode == ScanMode::Full {
+            scan.top_definitions = scan
+                .sole_definitions
+                .iter()
+                .map(|def| def.is_some_and(|def| top[def.0]))
+                .collect();
+        }
         let mut known = vec![None; globals];
         for global in 0..globals {
             let Some(def) = scan.sole_definitions[global] else {
@@ -1354,17 +2211,21 @@ impl Scan {
             known[global] = Some(function);
             if !discarded(program, def, &|id| scan.parent_of(id)) {
                 escaped[global] = true;
-                values_escape[global] = true;
+                if track_callbacks {
+                    values_escape[global] = true;
+                }
             }
         }
         for global in exports {
             if let Some(escaped) = escaped.get_mut(global.0) {
                 *escaped = true;
-                values_escape[global.0] = true;
+                if track_callbacks {
+                    values_escape[global.0] = true;
+                }
             }
         }
         // Calls whose count selects no method go through the dispatcher.
-        for (call, global, arguments) in sites {
+        for &(call, global, arguments) in &sites {
             let Some(function) = known[global.0] else {
                 continue;
             };
@@ -1372,9 +2233,14 @@ impl Scan {
                 Some(method) => scan.resolved.push((call, global, method)),
                 None => {
                     escaped[global.0] = true;
-                    values_escape[global.0] = true;
+                    if track_callbacks {
+                        values_escape[global.0] = true;
+                    }
                 }
             }
+        }
+        if mode == ScanMode::Closed {
+            scan.call_sites = sites;
         }
         for global in 0..globals {
             let Some(function) = known[global] else {
@@ -1391,7 +2257,9 @@ impl Scan {
                     .is_some_and(|(user, _)| Some(user) == definition[global]);
             let closed = !escaped[global] && defined;
             scan.closed[global] = closed;
-            scan.typed[global] = !values_escape[global] && defined;
+            if track_callbacks {
+                scan.typed[global] = !values_escape[global] && defined;
+            }
             scan.functions[global] = if single(methods_of(program, function)) {
                 FunctionShape::Single { function, closed }
             } else {

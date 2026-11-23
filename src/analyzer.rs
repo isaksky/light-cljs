@@ -2743,6 +2743,136 @@ impl Program {
         self.named_literals.unfreeze();
     }
 
+    /// [`Program::unfreeze`] on `slots` CPU work slots (`--jobs N`), unfreezing
+    /// independent frozen tables and balanced chunks of `exprs` concurrently
+    /// via [`crate::scheduler::map`]. With [`crate::scheduler::Slots::ONE`] or
+    /// small tables, runs [`Program::unfreeze`] inline with no thread overhead.
+    pub fn unfreeze_with_slots(&mut self, slots: crate::scheduler::Slots) {
+        const PARALLEL_TOTAL_THRESHOLD: usize = 4_096;
+        const PARALLEL_EXPRS_THRESHOLD: usize = 8_192;
+
+        let total_frozen = self.namespaces.frozen()
+            + self.exprs.frozen()
+            + self.locals.frozen()
+            + self.recur_targets.frozen()
+            + self.globals.frozen()
+            + self.js_globals.frozen()
+            + self.strings.frozen()
+            + self.named_literals.frozen();
+        if slots == crate::scheduler::Slots::ONE || total_frozen < PARALLEL_TOTAL_THRESHOLD {
+            self.unfreeze();
+            return;
+        }
+
+        enum UnfreezeJob<'a> {
+            Namespaces(&'a mut crate::arena::Arena<String>),
+            Exprs(&'a mut crate::arena::Arena<Expr>),
+            ExprBucket {
+                bucket: crate::arena::FrozenBucket<Expr>,
+                out: &'a mut [Expr],
+            },
+            Locals(&'a mut crate::arena::Arena<LocalBinding>),
+            RecurTargets(&'a mut crate::arena::Arena<RecurTarget>),
+            Globals(&'a mut crate::arena::Arena<GlobalBinding>),
+            JsGlobals(&'a mut crate::arena::Arena<JsGlobal>),
+            Strings(&'a mut crate::arena::Arena<Vec<u16>>),
+            NamedLiterals(&'a mut crate::arena::Arena<NamedLiteral>),
+        }
+
+        let exprs_frozen = self.exprs.frozen();
+        let split_exprs = exprs_frozen >= PARALLEL_EXPRS_THRESHOLD;
+        let mut expr_entries = if split_exprs {
+            let mut entries = Vec::with_capacity(self.exprs.len());
+            entries.resize(
+                exprs_frozen,
+                Expr {
+                    kind: ExprKind::Nil,
+                    span: 0..0,
+                    context: ExprContext::Discard,
+                    source_index: 0,
+                },
+            );
+            Some(entries)
+        } else {
+            None
+        };
+
+        let mut jobs: Vec<(u64, UnfreezeJob<'_>)> = Vec::new();
+        if let Some(entries) = expr_entries.as_mut() {
+            let parts = slots.get().saturating_mul(2).min(exprs_frozen).max(1);
+            let buckets = self.exprs.take_frozen_buckets(parts);
+            let mut rest = entries.as_mut_slice();
+            for (len, bucket) in buckets {
+                let (out, tail) = rest.split_at_mut(len);
+                rest = tail;
+                jobs.push((len as u64, UnfreezeJob::ExprBucket { bucket, out }));
+            }
+            debug_assert!(rest.is_empty());
+        } else if exprs_frozen > 0 {
+            jobs.push((exprs_frozen as u64, UnfreezeJob::Exprs(&mut self.exprs)));
+        }
+        if self.namespaces.frozen() > 0 {
+            jobs.push((
+                self.namespaces.frozen() as u64,
+                UnfreezeJob::Namespaces(&mut self.namespaces),
+            ));
+        }
+        if self.locals.frozen() > 0 {
+            jobs.push((
+                self.locals.frozen() as u64,
+                UnfreezeJob::Locals(&mut self.locals),
+            ));
+        }
+        if self.recur_targets.frozen() > 0 {
+            jobs.push((
+                self.recur_targets.frozen() as u64,
+                UnfreezeJob::RecurTargets(&mut self.recur_targets),
+            ));
+        }
+        if self.globals.frozen() > 0 {
+            jobs.push((
+                self.globals.frozen() as u64,
+                UnfreezeJob::Globals(&mut self.globals),
+            ));
+        }
+        if self.js_globals.frozen() > 0 {
+            jobs.push((
+                self.js_globals.frozen() as u64,
+                UnfreezeJob::JsGlobals(&mut self.js_globals),
+            ));
+        }
+        if self.strings.frozen() > 0 {
+            jobs.push((
+                self.strings.frozen() as u64,
+                UnfreezeJob::Strings(&mut self.strings),
+            ));
+        }
+        if self.named_literals.frozen() > 0 {
+            jobs.push((
+                self.named_literals.frozen() as u64,
+                UnfreezeJob::NamedLiterals(&mut self.named_literals),
+            ));
+        }
+
+        crate::scheduler::map(slots, jobs, |job| match job {
+            UnfreezeJob::Namespaces(arena) => arena.unfreeze(),
+            UnfreezeJob::Exprs(arena) => arena.unfreeze(),
+            UnfreezeJob::ExprBucket { bucket, out } => {
+                crate::arena::Arena::unfreeze_bucket(bucket, out);
+            }
+            UnfreezeJob::Locals(arena) => arena.unfreeze(),
+            UnfreezeJob::RecurTargets(arena) => arena.unfreeze(),
+            UnfreezeJob::Globals(arena) => arena.unfreeze(),
+            UnfreezeJob::JsGlobals(arena) => arena.unfreeze(),
+            UnfreezeJob::Strings(arena) => arena.unfreeze(),
+            UnfreezeJob::NamedLiterals(arena) => arena.unfreeze(),
+        });
+
+        if let Some(entries) = expr_entries {
+            self.exprs.finish_unfreeze(entries);
+        }
+    }
+
     /// Flatten frozen chunk trees into a direct leaf directory without copying
     /// or moving entries; see [`crate::arena::Arena::flatten_leaves`].
     pub fn flatten_leaves(&mut self) {

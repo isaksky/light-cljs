@@ -83,10 +83,10 @@
 //! Multimethods keep their tables in the atoms they were built with only
 //! where the program could see them otherwise than through an operation that
 //! keeps them itself, fill one past eight methods or give a hierarchy
-//! ancestors ([`multi_tables`]); elsewhere `defmulti` gives them nil tables
-//! and hierarchy, `-add-method` calls `addMethodDirect`, and they are named
-//! by the text of their symbols where nothing but messages can read the
-//! names ([`multi_names`]).
+//! ancestors (see [`post_walk_scan`]); elsewhere `defmulti` gives them nil
+//! tables and hierarchy, `-add-method` calls `addMethodDirect`, and they are
+//! named by the text of their symbols where nothing but messages can read the
+//! names.
 //!
 //! # Devirtualization
 //!
@@ -110,11 +110,16 @@
 //! not host-facing ones, so host code that calls a slot the program does not
 //! name is outside the contract, as is raw JavaScript that builds instances
 //! from a prototype it was not given.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::{
+    LazyLock,
+    atomic::{AtomicBool, Ordering},
+};
 
 use crate::analyzer::{CoreFnId, ExprId, ExprKind, GlobalId, MethodDispatch, Program, StringId};
 use crate::core_operations::Type;
 use crate::inference::{Definition, Inference, Known, ProgramFacts};
+use crate::scheduler::Slots;
 
 /// The result of [`analyze`]: what [`TypeAnalysis::apply`] rewrites and
 /// emission reads.
@@ -137,7 +142,7 @@ pub(crate) struct TypeAnalysis {
     quiet: Vec<bool>,
     /// Expressions whose value emission discards, by `ExprId`.
     discarded: Vec<bool>,
-    /// Whether reachable code names `getBasis` (see [`names_property`]).
+    /// Whether reachable code names `getBasis` (see [`post_walk_scan`]).
     basis: bool,
     /// The first reachable expression that names `EMPTY`, a static of the
     /// runtime's types.
@@ -155,13 +160,13 @@ pub(crate) struct TypeAnalysis {
     /// each with the first expression naming one.
     loadable_members: Vec<(&'static str, ExprId)>,
     /// The first reachable expression that needs the tables of multimethods
-    /// (see [`multi_tables`]).
+    /// (see [`post_walk_scan`]).
     tables: Option<ExprId>,
     /// Whether reachable code builds multimethods whose tables are arrays,
-    /// where only they implement `IMultiFn` (see [`multi_tables`]).
+    /// where only they implement `IMultiFn` (see [`post_walk_scan`]).
     lean_multi: bool,
     /// Whether multimethods are named by the text of their symbols (see
-    /// [`multi_names`]).
+    /// [`post_walk_scan`]).
     names: bool,
 }
 
@@ -235,24 +240,46 @@ struct Walker<'p> {
     on_dispatched: Vec<Vec<Entry>>,
     on_observed: Vec<Vec<Entry>>,
     on_read: Vec<Vec<ExprId>>,
+
+    has_records: bool,
+    has_loadable: bool,
+    has_multifn: bool,
 }
 
 /// Run the analysis over `program` as prepared, with its inferred types.
 /// `candidates` marks the top-level definitions preparation would remove when
 /// nothing reads them (by `ExprId`); `exports` are read from outside.
+#[cfg(test)]
 pub(crate) fn analyze(
     program: &Program,
     inference: &Inference,
     candidates: &[bool],
     exports: &[GlobalId],
 ) -> TypeAnalysis {
+    analyze_with_slots(program, inference, candidates, exports, Slots::ONE)
+}
+
+/// [`analyze`] on `slots` CPU work slots (`--jobs N`), fusing the post-walk
+/// arena scans into a single parallel chunked pass via [`crate::scheduler::map`]
+/// and overlapping one-time `RuntimeManifest::embedded()` initialization with
+/// the reachability walk when parallel.
+pub(crate) fn analyze_with_slots(
+    program: &Program,
+    inference: &Inference,
+    candidates: &[bool],
+    exports: &[GlobalId],
+    slots: Slots,
+) -> TypeAnalysis {
+    const PARALLEL_RTA_THRESHOLD: usize = 4_096;
+    static MANIFEST_WARMED: AtomicBool = AtomicBool::new(false);
+
     let globals = program.globals.len();
     let mut method_ids: HashMap<&str, usize> = HashMap::new();
     let mut protocol_ids: HashMap<String, usize> = HashMap::new();
     let mut method_of = vec![None; globals];
     let mut protocol_of = vec![None; globals];
     let mut type_of = vec![None; globals];
-    let mut slots: HashMap<String, Vec<(Option<usize>, usize)>> = HashMap::new();
+    let mut slots_map: HashMap<String, Vec<(Option<usize>, usize)>> = HashMap::new();
     let mut raw_types = Vec::new();
     for expr in &program.exprs {
         match &expr.kind {
@@ -264,7 +291,7 @@ pub(crate) fn analyze(
                 let next = protocol_ids.len();
                 let protocol = *protocol_ids.entry(marker.clone()).or_insert(next);
                 protocol_of[global.0] = Some(protocol);
-                slots
+                slots_map
                     .entry(protocol_slot_stem(&marker, 0))
                     .or_default()
                     .push((None, protocol));
@@ -274,7 +301,10 @@ pub(crate) fn analyze(
                     method_of[method.global.0] = Some(id);
                     let mut prefix = protocol_slot_stem(&method.key, 1);
                     prefix.pop();
-                    slots.entry(prefix).or_default().push((Some(id), protocol));
+                    slots_map
+                        .entry(prefix)
+                        .or_default()
+                        .push((Some(id), protocol));
                 }
             }
             ExprKind::DefType { global, layout, .. } => {
@@ -293,7 +323,7 @@ pub(crate) fn analyze(
     }
     let methods = method_ids.len();
     let protocols = protocol_ids.len();
-    let mut slot_lengths: Vec<usize> = slots.keys().map(String::len).collect();
+    let mut slot_lengths: Vec<usize> = slots_map.keys().map(String::len).collect();
     slot_lengths.sort_unstable();
     slot_lengths.dedup();
     // Emission discards the value of every form of a `do` but the last
@@ -329,7 +359,7 @@ pub(crate) fn analyze(
         method_of,
         protocol_of,
         type_of,
-        slots,
+        slots: slots_map,
         slot_lengths,
         live: vec![false; program.exprs.len()],
         instantiated: vec![false; globals],
@@ -347,6 +377,9 @@ pub(crate) fn analyze(
         on_dispatched: vec![Vec::new(); methods],
         on_observed: vec![Vec::new(); protocols],
         on_read: vec![Vec::new(); globals],
+        has_records: false,
+        has_loadable: false,
+        has_multifn: false,
     };
     // A raw `deftype*` builds its type with code the analysis does not follow.
     for global in raw_types {
@@ -355,7 +388,36 @@ pub(crate) fn analyze(
     for global in exports {
         walker.read_global(*global, false);
     }
-    walker.run();
+    if slots != Slots::ONE
+        && program.exprs.len() >= PARALLEL_RTA_THRESHOLD
+        && !MANIFEST_WARMED.load(Ordering::Relaxed)
+    {
+        enum WalkOrInit<'p> {
+            Walk(Box<Walker<'p>>),
+            InitManifest,
+        }
+        let mut results = crate::scheduler::map(
+            slots,
+            vec![
+                (100, WalkOrInit::Walk(Box::new(walker))),
+                (50, WalkOrInit::InitManifest),
+            ],
+            |job| match job {
+                WalkOrInit::Walk(mut walker) => {
+                    walker.run();
+                    Some(walker)
+                }
+                WalkOrInit::InitManifest => {
+                    let _ = crate::runtime_manifest::RuntimeManifest::embedded();
+                    MANIFEST_WARMED.store(true, Ordering::Relaxed);
+                    None
+                }
+            },
+        );
+        walker = *results.remove(0).expect("walk job returns its walker");
+    } else {
+        walker.run();
+    }
     let Walker {
         live,
         instantiated,
@@ -366,26 +428,34 @@ pub(crate) fn analyze(
         direct,
         quiet,
         discarded,
+        has_records,
+        has_loadable,
+        has_multifn,
         ..
     } = walker;
     let dispatched = method_of
         .iter()
         .map(|method| method.is_some_and(|id| dispatched[id]))
         .collect();
-    let basis = program.exprs.iter().zip(&live).any(|(expr, live)| {
-        *live && names_property(program, &expr.kind, |name| name == "getBasis")
-    });
-    let (statics, member_units) = named_members(program, &live);
-    let record_methods = named_record_methods(program, &live);
-    let declarations = named_protocol_declarations(program, &live);
-    let loadable_members = named_loadable_members(program, &live);
-    let tables = multi_tables(program, &live, inference.facts());
-    let lean_multi =
-        tables.is_none()
-            && program.exprs.iter().zip(&live).any(|(expr, live)| {
-                *live && matches!(expr.kind, ExprKind::CoreFn(CoreFnId::MultiFn))
-            });
-    let names = tables.is_none() && multi_names(program, &live);
+    let PostWalkResult {
+        basis,
+        statics,
+        member_units,
+        record_methods,
+        declarations,
+        loadable_members,
+        tables,
+        lean_multi,
+        names,
+    } = post_walk_scan(
+        program,
+        &live,
+        inference.facts(),
+        has_records,
+        has_loadable,
+        has_multifn,
+        slots,
+    );
     TypeAnalysis {
         live,
         instantiated,
@@ -432,6 +502,16 @@ impl Walker<'_> {
         }
         if std::mem::replace(&mut self.live[id.0], true) {
             return;
+        }
+        match &expr.kind {
+            ExprKind::DefType {
+                record: true,
+                layout,
+                ..
+            } if layout.constructor.is_some() => self.has_records = true,
+            ExprKind::LoadableType => self.has_loadable = true,
+            ExprKind::CoreFn(CoreFnId::MultiFn) => self.has_multifn = true,
+            _ => (),
         }
         self.named_slots(&expr.kind);
         match &expr.kind {
@@ -649,7 +729,7 @@ impl Walker<'_> {
         }
     }
 
-    /// A protocol slot the program names anywhere in one of the [`texts`] of
+    /// A protocol slot the program names anywhere in one of the texts of
     /// an expression may be read on any instance: its method counts as
     /// called, and a marker's protocol as observed. Every key of `slots` ends
     /// in `$`, so each `$` of a text ends the keys the text holds there.
@@ -659,7 +739,7 @@ impl Walker<'_> {
         }
         let (slots, lengths) = (&self.slots, &self.slot_lengths);
         let mut named = Vec::new();
-        texts(self.program, kind, |text| {
+        texts_with_dollar(self.program, kind, |text| {
             for (position, _) in text.match_indices('$') {
                 let end = position + 1;
                 for &length in lengths.iter().take_while(|&&length| length <= end) {
@@ -840,13 +920,13 @@ impl TypeAnalysis {
     }
 
     /// The first reachable expression that needs multimethods to keep their
-    /// tables in their atoms (see [`multi_tables`]).
+    /// tables in their atoms (see [`post_walk_scan`]).
     pub(crate) fn needs_multi_tables(&self) -> Option<ExprId> {
         self.tables
     }
 
     /// Whether reachable code builds multimethods whose tables are arrays
-    /// (see [`multi_tables`]): then only multimethods implement `IMultiFn`,
+    /// (see [`post_walk_scan`]): then only multimethods implement `IMultiFn`,
     /// so that `-add-method` calls `addMethodDirect`.
     pub(crate) fn lean_multimethods(&self) -> bool {
         self.lean_multi
@@ -963,23 +1043,73 @@ impl TypeAnalysis {
     }
 }
 
-/// Call `text` with each text in which an expression of this kind may name a
-/// host property: the property it reads, the method it calls, each component
-/// of the path of a JavaScript global, a string, and raw JavaScript. A name
-/// computed at run time does not count.
-fn texts(program: &Program, kind: &ExprKind, mut text: impl FnMut(&str)) {
+/// Whether the UTF-16 slice `units` contains the pure-ASCII byte sequence
+/// `needle`. Because `String::from_utf16_lossy` maps `0x00..0x7F` 1-to-1 to
+/// ASCII bytes and maps surrogates / non-ASCII code points to multi-byte UTF-8
+/// sequences with all bytes >= 0x80, this matches `String::from_utf16_lossy(units)`
+/// containing `needle` exactly without allocating.
+#[inline]
+fn contains_utf16_ascii(units: &[u16], needle: &[u8]) -> bool {
+    let n = needle.len();
+    if n == 0 {
+        return true;
+    }
+    if units.len() < n {
+        return false;
+    }
+    let first = u16::from(needle[0]);
+    let rest = &needle[1..];
+    let limit = units.len() - n;
+    let mut i = 0;
+    while i <= limit {
+        if units[i] == first
+            && units[i + 1..i + n]
+                .iter()
+                .zip(rest)
+                .all(|(&u, &b)| u == u16::from(b))
+        {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Visits each text in which an expression may name a host property or slot,
+/// skipping string literals whose UTF-16 units contain no ASCII `$`, avoiding
+/// `String::from_utf16_lossy` allocations for unrelated literals when callers
+/// only match `$`-delimited slots.
+fn texts_with_dollar(program: &Program, kind: &ExprKind, mut text: impl FnMut(&str)) {
     match kind {
         ExprKind::Property { property: name, .. }
         | ExprKind::MethodCall { method: name, .. }
         | ExprKind::QualifiedMethod {
             method: Some(name), ..
-        } => text(name),
-        ExprKind::JsGlobal(global) => program.js_globals[global.0]
-            .path
-            .iter()
-            .for_each(|name| text(name)),
-        ExprKind::JsTemplate { segments, .. } => segments.iter().for_each(|segment| text(segment)),
-        ExprKind::String(string) => text(&String::from_utf16_lossy(&program.strings[string.0])),
+        } => {
+            if name.as_bytes().contains(&b'$') {
+                text(name);
+            }
+        }
+        ExprKind::JsGlobal(global) => {
+            for name in &program.js_globals[global.0].path {
+                if name.as_bytes().contains(&b'$') {
+                    text(name);
+                }
+            }
+        }
+        ExprKind::JsTemplate { segments, .. } => {
+            for segment in segments {
+                if segment.as_bytes().contains(&b'$') {
+                    text(segment);
+                }
+            }
+        }
+        ExprKind::String(string) => {
+            let units = &program.strings[string.0];
+            if units.contains(&u16::from(b'$')) {
+                text(&String::from_utf16_lossy(units));
+            }
+        }
         _ => (),
     }
 }
@@ -990,7 +1120,7 @@ fn texts(program: &Program, kind: &ExprKind, mut text: impl FnMut(&str)) {
 /// a line continuation (a backslash and LF, CR, CRLF, U+2028 or U+2029)
 /// contributes nothing (light-cljs-390); any other escaped character stands
 /// for itself. Text outside a string, such as a comment, is decoded too, so
-/// [`names_property`] scans the text as written as well, and decoding can
+/// [`post_walk_scan`] scans the text as written as well, and decoding can
 /// only find more names, which keeps more.
 fn unescaped(text: &str) -> std::borrow::Cow<'_, str> {
     if !text.contains('\\') {
@@ -1039,409 +1169,541 @@ fn unescaped(text: &str) -> std::borrow::Cow<'_, str> {
     std::borrow::Cow::Owned(out)
 }
 
-/// Whether an expression of this kind names a host property that `named`
-/// accepts, an identifier such as `getBasis`: one of its [`texts`] is the
-/// name, or raw JavaScript holds it as an identifier or a string.
-fn names_property(program: &Program, kind: &ExprKind, mut named: impl FnMut(&str) -> bool) -> bool {
-    match kind {
-        ExprKind::JsTemplate { segments, .. } => segments.iter().any(|segment| {
-            let mut words = |text: &str| {
-                text.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'))
-                    .any(&mut named)
-            };
-            // The segment as written as well as decoded: a continuation
-            // removed from a comment (`// a\` and a newline) would otherwise
-            // join its last word to a name on the next line (light-cljs-390).
-            words(segment)
-                || match unescaped(segment) {
-                    std::borrow::Cow::Owned(decoded) => words(&decoded),
-                    std::borrow::Cow::Borrowed(_) => false,
-                }
-        }),
-        _ => {
-            let mut found = false;
-            texts(program, kind, |text| found = found || named(text));
-            found
-        }
-    }
+struct PostWalkResult {
+    basis: bool,
+    statics: Option<ExprId>,
+    member_units: Vec<(&'static str, ExprId)>,
+    record_methods: Vec<(&'static str, ExprId)>,
+    declarations: Vec<(&'static str, ExprId)>,
+    loadable_members: Vec<(&'static str, ExprId)>,
+    tables: Option<ExprId>,
+    lean_multi: bool,
+    names: bool,
 }
 
-/// The first reachable expression naming `EMPTY`, and the flag unit of each
-/// upstream member of the runtime's types
-/// ([`crate::runtime_slice::UPSTREAM_MEMBERS`]) and other static
-/// ([`crate::runtime_slice::TYPE_STATICS`]) named, with the first expression
-/// naming it, in the order they are first named.
-fn named_members(
+struct PostWalkChunk {
+    basis: bool,
+    statics: Option<ExprId>,
+    member_units: Vec<(&'static str, ExprId)>,
+    record_methods: Vec<Option<ExprId>>,
+    declarations: Vec<Option<ExprId>>,
+    loadable_members: Vec<Option<ExprId>>,
+    blocks_multi_names: bool,
+    multi_direct_site: Option<ExprId>,
+    multi_core_candidates: Vec<(ExprId, CoreFnId)>,
+    allowed_exprs: Vec<ExprId>,
+}
+
+fn record_method_slots() -> &'static [(String, usize)] {
+    static SLOTS: LazyLock<Vec<(String, usize)>> = LazyLock::new(|| {
+        crate::runtime_slice::RECORD_METHODS
+            .iter()
+            .enumerate()
+            .flat_map(|(method, (key, arities, _))| {
+                arities
+                    .iter()
+                    .map(move |&arity| (protocol_slot_stem(key, arity), method))
+            })
+            .collect()
+    });
+    &SLOTS
+}
+
+fn protocol_root_markers() -> &'static [String] {
+    static MARKERS: LazyLock<Vec<String>> = LazyLock::new(|| {
+        crate::runtime_slice::PROTOCOL_ROOTS
+            .iter()
+            .map(|root| protocol_slot_stem(root, 0))
+            .collect()
+    });
+    &MARKERS
+}
+
+fn max_exact_property_len() -> usize {
+    static MAX_LEN: LazyLock<usize> = LazyLock::new(|| {
+        ["getBasis", "EMPTY", "__hash", "_hash", "name"]
+            .into_iter()
+            .chain(crate::runtime_slice::UPSTREAM_MEMBERS.iter().copied())
+            .chain(crate::runtime_slice::TYPE_STATICS.iter().copied())
+            .chain(crate::runtime_slice::MULTI_TABLES.iter().copied())
+            .map(str::len)
+            .max()
+            .unwrap_or(0)
+    });
+    *MAX_LEN
+}
+
+/// By `CoreFnId::table_row()`, whether the operation either takes a chosen
+/// cached hash (`chosen_hash`) or requires a unit that `MultiFn.tables` waits
+/// for (`keeps_tables`). Depends only on the static runtime manifest.
+fn multi_table_core_ops() -> &'static [bool] {
+    static OPS: LazyLock<Vec<bool>> = LazyLock::new(|| {
+        let manifest = crate::runtime_manifest::RuntimeManifest::embedded();
+        let conditions = manifest
+            .unit_named("MultiFn.tables")
+            .map_or(&[][..], |unit| manifest.conditions(unit));
+        let mut table = vec![false; CoreFnId::ALL.len()];
+        for op in CoreFnId::ALL {
+            let chosen_hash = matches!(op, CoreFnId::PersistentVector | CoreFnId::SubvecType)
+                || op.operation().runtime_units(manifest).iter().any(|&unit| {
+                    let requires = &manifest.unit(unit).requires;
+                    requires.contains(&"constructorSlots") || requires.contains(&"metaFields")
+                });
+            let keeps_tables = op.operation().runtime_units(manifest).iter().any(|&unit| {
+                conditions.contains(&unit)
+                    || manifest.unit(unit).requires.iter().any(|binding| {
+                        manifest
+                            .unit_of(binding)
+                            .is_some_and(|required| conditions.contains(&required))
+                    })
+            });
+            table[op.table_row()] = chosen_hash || keeps_tables;
+        }
+        table
+    });
+    &OPS
+}
+
+/// Fused post-walk scan replacing the seven separate full-arena passes
+/// (`basis`, `named_members`, `named_record_methods`,
+/// `named_protocol_declarations`, `named_loadable_members`, `multi_tables`,
+/// `lean_multi`, and `multi_names`). Chunks are merged in ascending chunk order
+/// so every earliest `ExprId` and first-appearance order matches serial `j=1`
+/// identically.
+fn post_walk_scan(
     program: &Program,
     live: &[bool],
-) -> (Option<ExprId>, Vec<(&'static str, ExprId)>) {
-    let mut statics = None;
-    let mut units: Vec<(&'static str, ExprId)> = Vec::new();
-    for (index, expr) in program.exprs.iter().enumerate() {
-        if !live[index] {
-            continue;
-        }
-        let site = ExprId(index);
-        names_property(program, &expr.kind, |name| {
-            if name == "EMPTY" {
-                statics.get_or_insert(site);
-            } else if let Some(unit) = crate::runtime_slice::member_unit(name)
-                && !units.iter().any(|(named, _)| *named == unit)
-            {
-                units.push((unit, site));
-            }
-            false
-        });
-    }
-    (statics, units)
-}
+    facts: &ProgramFacts,
+    has_records: bool,
+    has_loadable: bool,
+    has_multifn: bool,
+    slots: Slots,
+) -> PostWalkResult {
+    const PARALLEL_POST_WALK_THRESHOLD: usize = 4_096;
+    const MASK: &str = "cljs$lang$protocol_mask$partition";
 
-/// For a program with records, the [`crate::runtime_slice::RECORD_METHODS`]
-/// whose slots a reachable expression names anywhere in one of its [`texts`],
-/// as the unit to root and the first such expression, in table order.
-fn named_record_methods(program: &Program, live: &[bool]) -> Vec<(&'static str, ExprId)> {
-    let reached = || {
-        program
-            .exprs
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| live[*index])
+    let exprs = &program.exprs;
+    let record_methods_table = crate::runtime_slice::RECORD_METHODS;
+    let protocol_roots_table = crate::runtime_slice::PROTOCOL_ROOTS;
+    let loadable_members_table = crate::runtime_slice::LOADABLE_MEMBERS;
+    let record_slots = if has_records {
+        record_method_slots()
+    } else {
+        &[]
     };
-    let records = reached().any(|(_, expr)| {
-        matches!(
-            &expr.kind,
-            ExprKind::DefType {
-                record: true,
-                layout,
-                ..
-            } if layout.constructor.is_some()
-        )
-    });
-    if !records {
-        return Vec::new();
-    }
-    let methods = crate::runtime_slice::RECORD_METHODS;
-    let slots: Vec<(String, usize)> = methods
-        .iter()
-        .enumerate()
-        .flat_map(|(method, (key, arities, _))| {
-            arities
-                .iter()
-                .map(move |&arity| (protocol_slot_stem(key, arity), method))
-        })
-        .collect();
-    let mut first = vec![None; methods.len()];
-    for (index, expr) in reached() {
-        texts(program, &expr.kind, |text| {
-            if !text.contains('$') {
+    let markers = protocol_root_markers();
+    let max_prop_len = max_exact_property_len();
+    let multi_core_ops = if has_multifn {
+        multi_table_core_ops()
+    } else {
+        &[]
+    };
+
+    let scan_range = |range: std::ops::Range<usize>| -> PostWalkChunk {
+        let mut chunk = PostWalkChunk {
+            basis: false,
+            statics: None,
+            member_units: Vec::new(),
+            record_methods: if has_records {
+                vec![None; record_methods_table.len()]
+            } else {
+                Vec::new()
+            },
+            declarations: vec![None; protocol_roots_table.len() + 1],
+            loadable_members: if has_loadable {
+                vec![None; loadable_members_table.len()]
+            } else {
+                Vec::new()
+            },
+            blocks_multi_names: false,
+            multi_direct_site: None,
+            multi_core_candidates: Vec::new(),
+            allowed_exprs: Vec::new(),
+        };
+
+        let core = |id: ExprId, op: CoreFnId| {
+            matches!(exprs[id.0].kind, ExprKind::CoreFn(found) if found == op)
+                && !facts.replaced(op)
+        };
+        let fresh_atom = |id: ExprId, empty_map: bool| match &exprs[id.0].kind {
+            ExprKind::Call { callee, args } if core(*callee, CoreFnId::Atom) && args.len() == 1 => {
+                match &exprs[args[0].0].kind {
+                    ExprKind::Map(items) | ExprKind::LiteralMap(items) => {
+                        empty_map && items.is_empty()
+                    }
+                    ExprKind::Nil => !empty_map,
+                    _ => false,
+                }
+            }
+            _ => false,
+        };
+        let hierarchy = |id: ExprId| match &exprs[id.0].kind {
+            ExprKind::Call { callee, args }
+                if args.is_empty() && core(*callee, CoreFnId::GetGlobalHierarchy) =>
+            {
+                Some(*callee)
+            }
+            _ => None,
+        };
+        let own_methods = |methods: &[(MethodDispatch, crate::analyzer::FnMethod)]| {
+            methods.iter().any(|(dispatch, _)| {
+                matches!(dispatch, MethodDispatch::Builtin(key)
+                    if ["IEquiv/", "IHash/", "IMultiFn/"]
+                        .iter()
+                        .any(|protocol| key.starts_with(protocol)))
+            })
+        };
+
+        let check_prop = |chunk: &mut PostWalkChunk, name: &str, site: ExprId| {
+            if name == "getBasis" {
+                chunk.basis = true;
+            }
+            if name == "EMPTY" {
+                chunk.statics.get_or_insert(site);
+            } else if let Some(unit) = crate::runtime_slice::member_unit(name)
+                && !chunk.member_units.iter().any(|(named, _)| *named == unit)
+            {
+                chunk.member_units.push((unit, site));
+            }
+            if name == "name" {
+                chunk.blocks_multi_names = true;
+            }
+            if has_multifn
+                && chunk.multi_direct_site.is_none()
+                && (name == "__hash"
+                    || name == "_hash"
+                    || crate::runtime_slice::MULTI_TABLES.contains(&name))
+            {
+                chunk.multi_direct_site = Some(site);
+            }
+        };
+
+        let check_cljs_text = |chunk: &mut PostWalkChunk, text: &str, site: ExprId| {
+            if !text.contains("cljs$") {
                 return;
             }
-            for (slot, method) in &slots {
-                if text.contains(slot.as_str()) {
-                    first[*method].get_or_insert(ExprId(index));
+            let is_mask = text.contains(MASK);
+            if has_records && text.contains("$arity$") {
+                for (slot, method) in record_slots {
+                    if chunk.record_methods[*method].is_none() && text.contains(slot.as_str()) {
+                        chunk.record_methods[*method] = Some(site);
+                    }
                 }
             }
-        });
-    }
-    methods
-        .iter()
-        .zip(first)
-        .filter_map(|((_, _, unit), site)| Some((*unit, site?)))
-        .collect()
-}
-
-/// See [`TypeAnalysis::named_protocol_declarations`]: the units to root, in
-/// [`crate::runtime_slice::PROTOCOL_ROOTS`] order and then `installMethods`,
-/// each with the first reachable expression naming it anywhere in one of its
-/// [`texts`]: a mask, or the marker (`cljs$core$ISeqable$`) with which every
-/// slot of the protocol starts.
-fn named_protocol_declarations(program: &Program, live: &[bool]) -> Vec<(&'static str, ExprId)> {
-    const MASK: &str = "cljs$lang$protocol_mask$partition";
-    let roots = crate::runtime_slice::PROTOCOL_ROOTS;
-    let markers: Vec<String> = roots
-        .iter()
-        .map(|root| protocol_slot_stem(root, 0))
-        .collect();
-    let mut first = vec![None; roots.len() + 1];
-    for (index, expr) in program.exprs.iter().enumerate() {
-        if !live[index] {
-            continue;
-        }
-        texts(program, &expr.kind, |text| {
-            let mask = text.contains(MASK);
-            for (unit, site) in first.iter_mut().enumerate() {
-                let declares = markers
-                    .get(unit)
-                    .is_some_and(|marker| text.contains(marker.as_str()));
-                if mask || declares {
-                    site.get_or_insert(ExprId(index));
+            for (unit, first) in chunk.declarations.iter_mut().enumerate() {
+                if first.is_none()
+                    && (is_mask
+                        || markers
+                            .get(unit)
+                            .is_some_and(|marker| text.contains(marker.as_str())))
+                {
+                    *first = Some(site);
                 }
             }
-        });
-    }
-    roots
-        .iter()
-        .copied()
-        .chain(["installMethods"])
-        .zip(first)
-        .filter_map(|(unit, site)| Some((unit, site?)))
-        .collect()
-}
-
-/// See [`TypeAnalysis::named_loadable_members`]: for a program in which a
-/// reachable expression reads the runtime's `Loadable`
-/// ([`ExprKind::LoadableType`]), the units of the
-/// [`crate::runtime_slice::LOADABLE_MEMBERS`] whose names a reachable
-/// expression holds anywhere in one of its [`texts`], each with the first
-/// such expression, in table order.
-fn named_loadable_members(program: &Program, live: &[bool]) -> Vec<(&'static str, ExprId)> {
-    let reached = || {
-        program
-            .exprs
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| live[*index])
-    };
-    if !reached().any(|(_, expr)| matches!(expr.kind, ExprKind::LoadableType)) {
-        return Vec::new();
-    }
-    let members = crate::runtime_slice::LOADABLE_MEMBERS;
-    let mut first = vec![None; members.len()];
-    for (index, expr) in reached() {
-        texts(program, &expr.kind, |text| {
-            for ((names, _), site) in members.iter().zip(&mut first) {
-                if names.iter().any(|name| text.contains(name)) {
-                    site.get_or_insert(ExprId(index));
+            if has_loadable {
+                for ((names, _), first) in loadable_members_table
+                    .iter()
+                    .zip(&mut chunk.loadable_members)
+                {
+                    if first.is_none() && names.iter().any(|name| text.contains(name)) {
+                        *first = Some(site);
+                    }
                 }
             }
-        });
-    }
-    members
-        .iter()
-        .zip(first)
-        .filter_map(|((_, unit), site)| Some((*unit, site?)))
-        .collect()
-}
-
-/// The first expression among those `live` marks after which a multimethod
-/// must keep its tables in the atoms it was built with, where `methods` and
-/// `prefers` read them, rather than as the runtime's `leanTables` (see
-/// `multiHooks` in `src/js_runtime.js`): arrays of the entries their array
-/// maps would hold. The runtime keeps the tables itself where it keeps an
-/// operation that reads or writes them other than `-add-method` and
-/// `-get-method`; a program that reads `MultiFn` needs them where it could
-/// see them otherwise, or tell arrays from maps: where a method table would
-/// fill past eight methods and become a hash map, which orders its entries by
-/// hash, or where its own code would run in the maps' operations.
-///
-/// - where it names one of the fields holding them or the hierarchy
-///   ([`crate::runtime_slice::MULTI_TABLES`]);
-/// - where it reads `MultiFn` other than to test `instance?` or to build one
-///   as `defmulti` does: with fresh atoms of `{}` and `nil` as its tables,
-///   and `(get-global-hierarchy)` as its hierarchy;
-/// - where it can give a hierarchy ancestors, which the arrays' steps do not
-///   walk (`isaPlain`): where it reads `derive` or `underive`, or reads
-///   `get-global-hierarchy` other than in such a `MultiFn` form;
-/// - where it reads an operation whose unit `MultiFn.tables` waits for, or
-///   that requires one (`methods`, `remove-all-methods`, `->MultiFn`), which
-///   keeps the tables in atoms for itself;
-/// - where it adds methods other than in top-level calls of `-add-method`
-///   (`defmethod`), which run once, or in more than eight of them;
-/// - where it extends a core protocol to a value other than its own types
-///   ([`ProgramFacts::core_protocols_intact`]), whose implementations the
-///   operations on the tables and their entries would run, or implements
-///   `IEquiv` or `IHash`, which the cache's lookups run on dispatch values
-///   otherwise than an array's lookups, or `IMultiFn`, which `-add-method`
-///   and a multimethod's calls then dispatch ([`TypeAnalysis::lean_multimethods`]),
-///   or names a slot of `IMultiFn`, `IEquiv` or `IHash` or a protocol mask anywhere in its
-///   [`texts`], with which host code can give a value an implementation;
-/// - where it can build a value whose hash it chose, so that equal dispatch
-///   values could hash apart in a cache past eight entries, which a hash
-///   map holds: where it reads a runtime type's public constructor, which
-///   takes a cached hash (its unit requires `constructorSlots` or
-///   `metaFields`), other than to test `instance?`, or names the
-///   field `__hash` or `_hash`;
-/// - where it replaces `atom`, `get-global-hierarchy`, `MultiFn` or
-///   `-add-method`, whose calls the conditions above read.
-fn multi_tables(program: &Program, live: &[bool], facts: &ProgramFacts) -> Option<ExprId> {
-    let exprs = &program.exprs;
-    // Without a `MultiFn` there are no tables.
-    if !exprs
-        .iter()
-        .zip(live)
-        .any(|(expr, live)| *live && matches!(expr.kind, ExprKind::CoreFn(CoreFnId::MultiFn)))
-    {
-        return None;
-    }
-    let core = |id: ExprId, op: CoreFnId| {
-        matches!(exprs[id.0].kind, ExprKind::CoreFn(found) if found == op) && !facts.replaced(op)
-    };
-    let fresh_atom = |id: ExprId, empty_map: bool| match &exprs[id.0].kind {
-        ExprKind::Call { callee, args } if core(*callee, CoreFnId::Atom) && args.len() == 1 => {
-            match &exprs[args[0].0].kind {
-                ExprKind::Map(items) | ExprKind::LiteralMap(items) => empty_map && items.is_empty(),
-                ExprKind::Nil => !empty_map,
-                _ => false,
-            }
-        }
-        _ => false,
-    };
-    // The global hierarchy, the callee of whose call is allowed.
-    let hierarchy = |id: ExprId| match &exprs[id.0].kind {
-        ExprKind::Call { callee, args }
-            if args.is_empty() && core(*callee, CoreFnId::GetGlobalHierarchy) =>
-        {
-            Some(*callee)
-        }
-        _ => None,
-    };
-    // Implementations of `IEquiv`, `IHash` or `IMultiFn` (`Builtin` keys
-    // are `IEquiv/-equiv`).
-    let own_methods = |methods: &[(MethodDispatch, crate::analyzer::FnMethod)]| {
-        methods.iter().any(|(dispatch, _)| {
-            matches!(dispatch, MethodDispatch::Builtin(key)
-                if ["IEquiv/", "IHash/", "IMultiFn/"].iter().any(|protocol| key.starts_with(protocol)))
-        })
-    };
-    // A runtime type's public constructor, which takes a cached hash: one
-    // that gives it the value's own field (`metaFields`, light-cljs-1053), or
-    // a vector's or a subvector's, which keep it there too (light-cljs-1026).
-    let manifest = crate::runtime_manifest::RuntimeManifest::embedded();
-    let chosen_hash = |op: CoreFnId| {
-        matches!(op, CoreFnId::PersistentVector | CoreFnId::SubvecType)
-            || op.operation().runtime_units(manifest).iter().any(|&unit| {
-                let requires = &manifest.unit(unit).requires;
-                requires.contains(&"constructorSlots") || requires.contains(&"metaFields")
-            })
-    };
-    // An operation the runtime keeps the tables in atoms for itself: one of
-    // whose units `MultiFn.tables` waits for, or requires one (`methods`,
-    // `remove-all-methods`, `->MultiFn`, ...). Its program then needs them
-    // there too, where `defmulti` builds its tables and the arrays' steps
-    // would otherwise run.
-    let conditions = manifest
-        .unit_named("MultiFn.tables")
-        .map_or(&[][..], |unit| manifest.conditions(unit));
-    let keeps_tables = |op: CoreFnId| {
-        op.operation().runtime_units(manifest).iter().any(|&unit| {
-            conditions.contains(&unit)
-                || manifest.unit(unit).requires.iter().any(|binding| {
-                    manifest
-                        .unit_of(binding)
-                        .is_some_and(|required| conditions.contains(&required))
-                })
-        })
-    };
-    // The reads of `MultiFn` and `-add-method` allowed above, and the core
-    // classes of `instance?`.
-    let mut allowed = vec![false; exprs.len()];
-    let mut added = 0;
-    let mut top_level = vec![program.root];
-    while let Some(id) = top_level.pop() {
-        match &exprs[id.0].kind {
-            ExprKind::Do(items) => top_level.extend(items),
-            ExprKind::Call { callee, .. } if live[id.0] && core(*callee, CoreFnId::AddMethod) => {
-                allowed[callee.0] = true;
-                added += 1;
-            }
-            _ => {}
-        }
-    }
-    for (index, expr) in exprs.iter().enumerate() {
-        match &expr.kind {
-            ExprKind::Construct { callee, args }
-                if live[index]
-                    && core(*callee, CoreFnId::MultiFn)
-                    && args.len() == 8
-                    && hierarchy(args[3]).is_some()
-                    && args[4..7].iter().all(|arg| fresh_atom(*arg, true))
-                    && fresh_atom(args[7], false) =>
+            if has_multifn
+                && chunk.multi_direct_site.is_none()
+                && (is_mask
+                    || text.contains("cljs$core$IMultiFn$")
+                    || text.contains("cljs$core$IEquiv$")
+                    || text.contains("cljs$core$IHash$"))
             {
-                allowed[callee.0] = true;
-                allowed[hierarchy(args[3]).unwrap().0] = true;
+                chunk.multi_direct_site = Some(site);
             }
-            ExprKind::InstanceOf { class, .. }
-                if matches!(exprs[class.0].kind, ExprKind::CoreFn(_)) =>
+        };
+
+        let is_word_sep = |c: char| !(c.is_alphanumeric() || c == '_' || c == '$');
+
+        for index in range {
+            // `InstanceOf` marks its `CoreFn` class allowed even if the
+            // `InstanceOf` expression itself was not visited as live.
+            if has_multifn
+                && let ExprKind::InstanceOf { class, .. } = exprs[index].kind
+                && matches!(exprs[class.0].kind, ExprKind::CoreFn(_))
             {
-                allowed[class.0] = true;
+                chunk.allowed_exprs.push(class);
             }
-            _ => {}
-        }
-    }
-    let site = exprs
-        .iter()
-        .enumerate()
-        .position(|(index, expr)| {
-            live[index]
-                && match expr.kind {
-                    ExprKind::CoreFn(CoreFnId::MultiFn) => !allowed[index],
-                    ExprKind::CoreFn(CoreFnId::AddMethod) => !allowed[index] || added > 8,
-                    ExprKind::CoreFn(CoreFnId::Derive | CoreFnId::Underive) => true,
-                    ExprKind::CoreFn(CoreFnId::GetGlobalHierarchy) => !allowed[index],
-                    ExprKind::CoreFn(op) => {
-                        !allowed[index] && (chosen_hash(op) || keeps_tables(op))
+            if !live[index] {
+                continue;
+            }
+            let site = ExprId(index);
+            match &exprs[index].kind {
+                ExprKind::CoreFn(op) => {
+                    if matches!(
+                        op,
+                        CoreFnId::Name
+                            | CoreFnId::Namespace
+                            | CoreFnId::NameProtocol
+                            | CoreFnId::NamespaceProtocol
+                    ) {
+                        chunk.blocks_multi_names = true;
                     }
-                    ExprKind::ExtendType {
-                        target,
-                        ref methods,
-                        ..
-                    } => {
-                        matches!(exprs[target.0].kind, ExprKind::CoreFn(_)) || own_methods(methods)
-                    }
-                    ExprKind::DefType { ref methods, .. } | ExprKind::Reify { ref methods, .. } => {
-                        own_methods(methods)
-                    }
-                    _ => {
-                        names_property(program, &expr.kind, |name| {
-                            crate::runtime_slice::MULTI_TABLES.contains(&name)
-                                || name == "__hash"
-                                || name == "_hash"
-                        }) || {
-                            // A slot of `IMultiFn`, `IEquiv` or `IHash` or a protocol mask, with which
-                            // host code can give a value an implementation.
-                            let mut found = false;
-                            texts(program, &expr.kind, |text| {
-                                found = found
-                                    || text.contains("cljs$core$IMultiFn$")
-                                    || text.contains("cljs$core$IEquiv$")
-                                    || text.contains("cljs$core$IHash$")
-                                    || text.contains("cljs$lang$protocol_mask$partition");
-                            });
-                            found
+                    if has_multifn {
+                        match op {
+                            CoreFnId::Derive | CoreFnId::Underive => {
+                                chunk.multi_direct_site.get_or_insert(site);
+                            }
+                            CoreFnId::MultiFn
+                            | CoreFnId::AddMethod
+                            | CoreFnId::GetGlobalHierarchy => {
+                                chunk.multi_core_candidates.push((site, *op));
+                            }
+                            other if multi_core_ops[other.table_row()] => {
+                                chunk.multi_core_candidates.push((site, *other));
+                            }
+                            _ => (),
                         }
                     }
                 }
-        })
-        .map(ExprId);
-    site.or_else(|| (!facts.core_protocols_intact()).then_some(program.root))
-}
+                ExprKind::Construct { callee, args } => {
+                    if has_multifn
+                        && core(*callee, CoreFnId::MultiFn)
+                        && args.len() == 8
+                        && let Some(h) = hierarchy(args[3])
+                        && args[4..7].iter().all(|arg| fresh_atom(*arg, true))
+                        && fresh_atom(args[7], false)
+                    {
+                        chunk.allowed_exprs.push(*callee);
+                        chunk.allowed_exprs.push(h);
+                    }
+                }
+                ExprKind::ExtendType {
+                    target, methods, ..
+                } => {
+                    if has_multifn
+                        && chunk.multi_direct_site.is_none()
+                        && (matches!(exprs[target.0].kind, ExprKind::CoreFn(_))
+                            || own_methods(methods))
+                    {
+                        chunk.multi_direct_site = Some(site);
+                    }
+                }
+                ExprKind::DefType { methods, .. } | ExprKind::Reify { methods, .. } => {
+                    if has_multifn && chunk.multi_direct_site.is_none() && own_methods(methods) {
+                        chunk.multi_direct_site = Some(site);
+                    }
+                }
+                ExprKind::Property { property: name, .. }
+                | ExprKind::MethodCall { method: name, .. }
+                | ExprKind::QualifiedMethod {
+                    method: Some(name), ..
+                } => {
+                    check_prop(&mut chunk, name, site);
+                    check_cljs_text(&mut chunk, name, site);
+                }
+                ExprKind::JsGlobal(global) => {
+                    for name in &program.js_globals[global.0].path {
+                        check_prop(&mut chunk, name, site);
+                        check_cljs_text(&mut chunk, name, site);
+                    }
+                }
+                ExprKind::JsTemplate { segments, .. } => {
+                    for segment in segments {
+                        check_cljs_text(&mut chunk, segment, site);
+                        for word in segment.split(is_word_sep) {
+                            check_prop(&mut chunk, word, site);
+                        }
+                        if let std::borrow::Cow::Owned(decoded) = unescaped(segment) {
+                            for word in decoded.split(is_word_sep) {
+                                check_prop(&mut chunk, word, site);
+                            }
+                        }
+                    }
+                }
+                ExprKind::String(string) => {
+                    let units = &program.strings[string.0];
+                    if !units.is_empty() && units.len() <= max_prop_len {
+                        if units.len() <= 32 {
+                            let mut buf = [0u8; 32];
+                            let mut all_ascii = true;
+                            for (i, &u) in units.iter().enumerate() {
+                                if u >= 128 {
+                                    all_ascii = false;
+                                    break;
+                                }
+                                buf[i] = u as u8;
+                            }
+                            if all_ascii && let Ok(name) = std::str::from_utf8(&buf[..units.len()])
+                            {
+                                check_prop(&mut chunk, name, site);
+                            }
+                        } else if units.iter().all(|&u| u < 128) {
+                            let owned = String::from_utf16_lossy(units);
+                            check_prop(&mut chunk, &owned, site);
+                        }
+                    }
+                    if contains_utf16_ascii(units, b"cljs$") {
+                        let owned = String::from_utf16_lossy(units);
+                        check_cljs_text(&mut chunk, &owned, site);
+                    }
+                }
+                _ => (),
+            }
+        }
+        chunk
+    };
 
-/// Whether multimethods can be named by the text of their symbols rather than
-/// the symbols, which keep the symbol type. Where they keep their tables as
-/// arrays (see [`multi_tables`]) only `defmulti` builds them, with the quoted
-/// symbol of its name. Then only the messages read a name, which print the
-/// text of a symbol as they print the symbol (`printHooks.text`), unless
-/// reachable code can call `name`, `namespace`, `-name` or `-namespace`, or
-/// names the field `name` as a property, method or string or in `js*` text.
-/// No other runtime unit calls `name` or `namespace` on a value that may be
-/// a multimethod (`runtime_manifest` lists those that call them).
-fn multi_names(program: &Program, live: &[bool]) -> bool {
-    !program.exprs.iter().zip(live).any(|(expr, live)| {
-        *live
-            && (matches!(
-                expr.kind,
-                ExprKind::CoreFn(
-                    CoreFnId::Name
-                        | CoreFnId::Namespace
-                        | CoreFnId::NameProtocol
-                        | CoreFnId::NamespaceProtocol
-                )
-            ) || names_property(program, &expr.kind, |name| name == "name"))
-    })
+    let chunks = if slots == Slots::ONE || exprs.len() < PARALLEL_POST_WALK_THRESHOLD {
+        vec![scan_range(0..exprs.len())]
+    } else {
+        let num_chunks = slots.get().saturating_mul(4).min(exprs.len()).max(1);
+        let chunk_size = exprs.len().div_ceil(num_chunks);
+        let jobs: Vec<(u64, std::ops::Range<usize>)> = (0..exprs.len())
+            .step_by(chunk_size)
+            .map(|start| {
+                let end = (start + chunk_size).min(exprs.len());
+                ((end - start) as u64, start..end)
+            })
+            .collect();
+        crate::scheduler::map(slots, jobs, scan_range)
+    };
+
+    let mut basis = false;
+    let mut statics: Option<ExprId> = None;
+    let mut member_units: Vec<(&'static str, ExprId)> = Vec::new();
+    let mut record_first = if has_records {
+        vec![None; record_methods_table.len()]
+    } else {
+        Vec::new()
+    };
+    let mut decl_first = vec![None; protocol_roots_table.len() + 1];
+    let mut loadable_first = if has_loadable {
+        vec![None; loadable_members_table.len()]
+    } else {
+        Vec::new()
+    };
+    let mut blocks_multi_names = false;
+    let mut multi_direct_site: Option<ExprId> = None;
+    let mut allowed: HashSet<ExprId> = HashSet::new();
+    let mut multi_core_candidates: Vec<(ExprId, CoreFnId)> = Vec::new();
+
+    for chunk in chunks {
+        basis |= chunk.basis;
+        if statics.is_none() {
+            statics = chunk.statics;
+        }
+        for (unit, site) in chunk.member_units {
+            if !member_units.iter().any(|(named, _)| *named == unit) {
+                member_units.push((unit, site));
+            }
+        }
+        for (dst, src) in record_first.iter_mut().zip(chunk.record_methods) {
+            if dst.is_none() {
+                *dst = src;
+            }
+        }
+        for (dst, src) in decl_first.iter_mut().zip(chunk.declarations) {
+            if dst.is_none() {
+                *dst = src;
+            }
+        }
+        for (dst, src) in loadable_first.iter_mut().zip(chunk.loadable_members) {
+            if dst.is_none() {
+                *dst = src;
+            }
+        }
+        blocks_multi_names |= chunk.blocks_multi_names;
+        if multi_direct_site.is_none() {
+            multi_direct_site = chunk.multi_direct_site;
+        }
+        if has_multifn {
+            allowed.extend(chunk.allowed_exprs);
+            multi_core_candidates.extend(chunk.multi_core_candidates);
+        }
+    }
+
+    let record_methods = if has_records {
+        record_methods_table
+            .iter()
+            .zip(record_first)
+            .filter_map(|((_, _, unit), site)| Some((*unit, site?)))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let declarations = protocol_roots_table
+        .iter()
+        .copied()
+        .chain(["installMethods"])
+        .zip(decl_first)
+        .filter_map(|(unit, site)| Some((unit, site?)))
+        .collect();
+    let loadable_members = if has_loadable {
+        loadable_members_table
+            .iter()
+            .zip(loadable_first)
+            .filter_map(|((_, unit), site)| Some((*unit, site?)))
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let tables = if !has_multifn {
+        None
+    } else {
+        let mut added = 0usize;
+        let mut top_level = vec![program.root];
+        while let Some(id) = top_level.pop() {
+            match &exprs[id.0].kind {
+                ExprKind::Do(items) => top_level.extend(items),
+                ExprKind::Call { callee, .. }
+                    if live[id.0]
+                        && matches!(
+                            exprs[callee.0].kind,
+                            ExprKind::CoreFn(CoreFnId::AddMethod)
+                        )
+                        && !facts.replaced(CoreFnId::AddMethod) =>
+                {
+                    allowed.insert(*callee);
+                    added += 1;
+                }
+                _ => {}
+            }
+        }
+        let mut site = multi_direct_site;
+        let limit = site.map_or(usize::MAX, |s| s.0);
+        for (candidate, op) in multi_core_candidates {
+            if candidate.0 >= limit {
+                break;
+            }
+            let triggers = match op {
+                CoreFnId::AddMethod => !allowed.contains(&candidate) || added > 8,
+                _ => !allowed.contains(&candidate),
+            };
+            if triggers {
+                site = Some(candidate);
+                break;
+            }
+        }
+        site.or_else(|| (!facts.core_protocols_intact()).then_some(program.root))
+    };
+
+    let lean_multi = has_multifn && tables.is_none();
+    let names = tables.is_none() && !blocks_multi_names;
+    PostWalkResult {
+        basis,
+        statics,
+        member_units,
+        record_methods,
+        declarations,
+        loadable_members,
+        tables,
+        lean_multi,
+        names,
+    }
 }
 
 /// Give each multimethod that `live` code builds the text of its symbol as
-/// its name (see [`multi_names`]).
+/// its name (see [`post_walk_scan`]).
 fn name_multimethods(program: &mut Program, live: &[bool]) {
     let names: Vec<ExprId> = program
         .exprs
@@ -1477,7 +1739,7 @@ fn name_multimethods(program: &mut Program, live: &[bool]) {
 }
 
 /// Give each multimethod that `live` code builds `nil` as its hierarchy and
-/// its tables where they are arrays (see [`multi_tables`]), which no code
+/// its tables where they are arrays (see [`post_walk_scan`]), which no code
 /// then reads: `defmulti` builds it with fresh atoms and the global
 /// hierarchy, which no code can give ancestors, so that the runtime's steps
 /// on the arrays (`isaPlain`) read none.
@@ -1614,5 +1876,122 @@ mod tests {
             super::protocol_slot_stem("ISeq/-first", 1),
             "cljs$core$ISeq$_first$arity$1"
         );
+    }
+
+    #[test]
+    fn contains_utf16_ascii_handles_ascii_non_ascii_and_surrogates() {
+        use super::contains_utf16_ascii;
+        let encode = |s: &str| s.encode_utf16().collect::<Vec<u16>>();
+        assert!(contains_utf16_ascii(
+            &encode("cljs$core$ISeqable$"),
+            b"cljs$"
+        ));
+        assert!(contains_utf16_ascii(
+            &encode("prefix cljs$lang$type"),
+            b"cljs$"
+        ));
+        assert!(!contains_utf16_ascii(&encode("cljs"), b"cljs$"));
+        assert!(!contains_utf16_ascii(&encode("ordinary string"), b"cljs$"));
+        assert!(contains_utf16_ascii(&encode("abc"), b""));
+        // Lone surrogate immediately before ASCII needle still matches exact UTF-16.
+        let mut with_surrogate = vec![0xD800u16];
+        with_surrogate.extend(encode("cljs$core$"));
+        assert!(contains_utf16_ascii(&with_surrogate, b"cljs$"));
+        assert!(!contains_utf16_ascii(&[0xD800, 0xDC00, 0x00E9], b"cljs$"));
+    }
+
+    #[test]
+    fn fused_parallel_post_walk_matches_serial_rta_above_threshold() {
+        use crate::inference::{Inference, ProgramFacts};
+        use crate::scheduler::Slots;
+
+        let mut source = String::from(
+            "(defprotocol Shape (area [s]) (perimeter [s]))
+             (defrecord Box [w h] Shape (area [_] (* w h)) (perimeter [_] (+ w h)))
+             (defmulti dispatch-kind :kind)
+             (defmethod dispatch-kind :a [_] 1)
+             (defmethod dispatch-kind :b [_] 2)\n",
+        );
+        for i in 0..400 {
+            source.push_str(&format!(
+                "(defn helper-{i} [x] (+ x {i} (if (pos? x) {i} 0)))\n"
+            ));
+        }
+        // Exercise getBasis, EMPTY, ordered UPSTREAM_MEMBERS (both via strings,
+        // properties, and escaped js*), record method slot, protocol mask,
+        // and non-ASCII string literals.
+        source.push_str(
+            r#"
+            (def s1 "first")
+            (def s2 "cnt")
+            (def s3 "EMPTY")
+            (def s4 "getBasis")
+            (def s5 "cljs$core$ILookup$_lookup$arity$2")
+            (def s6 "cljs$lang$protocol_mask$partition0$")
+            (def s7 "café—unrelated—λ")
+            (def s8 (js* "'\\x6deta'"))
+            [(area (->Box 3 4)) (dispatch-kind {:kind :a}) (helper-0 1) (helper-399 2)
+             s1 s2 s3 s4 s5 s6 s7 s8]
+            "#,
+        );
+        let program = crate::analyze(&source, &crate::parse(&source).unwrap()).unwrap();
+        assert!(
+            program.exprs.len() >= 4_096,
+            "need >= 4096 exprs to exercise parallel RTA post-walk, got {}",
+            program.exprs.len()
+        );
+        let mut top = Vec::new();
+        fn flatten_ids(program: &crate::Program, id: crate::ExprId, out: &mut Vec<crate::ExprId>) {
+            if let crate::analyzer::ExprKind::Do(items) = &program.exprs[id.0].kind {
+                for &child in items {
+                    flatten_ids(program, child, out);
+                }
+            } else {
+                out.push(id);
+            }
+        }
+        flatten_ids(&program, program.root, &mut top);
+        let facts = ProgramFacts::new(&program, &top);
+        let closed = crate::call_shapes::closed_functions(&program, &[]);
+        let inference = Inference::new(&program, facts, &closed);
+        let candidates = vec![false; program.exprs.len()];
+
+        let serial = super::analyze(&program, &inference, &candidates, &[]);
+        let parallel = super::analyze_with_slots(
+            &program,
+            &inference,
+            &candidates,
+            &[],
+            Slots::new(8).unwrap(),
+        );
+        assert_eq!(parallel.names_basis(), serial.names_basis());
+        assert!(parallel.names_basis());
+        assert_eq!(parallel.names_type_static(), serial.names_type_static());
+        assert!(parallel.names_type_static().is_some());
+        assert_eq!(parallel.named_member_units(), serial.named_member_units());
+        assert!(
+            parallel
+                .named_member_units()
+                .iter()
+                .any(|(u, _)| *u == "member_meta")
+        );
+        assert_eq!(
+            parallel.named_record_methods(),
+            serial.named_record_methods()
+        );
+        assert!(!parallel.named_record_methods().is_empty());
+        assert_eq!(
+            parallel.named_protocol_declarations(),
+            serial.named_protocol_declarations()
+        );
+        assert!(!parallel.named_protocol_declarations().is_empty());
+        assert_eq!(
+            parallel.named_loadable_members(),
+            serial.named_loadable_members()
+        );
+        assert_eq!(parallel.needs_multi_tables(), serial.needs_multi_tables());
+        assert_eq!(parallel.lean_multimethods(), serial.lean_multimethods());
+        assert_eq!(parallel.direct_calls(), serial.direct_calls());
+        assert!(!parallel.direct_calls().is_empty());
     }
 }
