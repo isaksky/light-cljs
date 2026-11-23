@@ -1695,3 +1695,48 @@ Medians (min–max range); peak memory from `/usr/bin/time -l` in MiB.
   breaking after `fold`, while Round 2 `Folder::sweep` is skipped and
   `ProgramFacts` drops from 11 full scans to 4 lightweight + 1 full scan. Peak
   memory drops across all four cases (-0.2% to -1.9%).
+
+## Compact `Inference` lattice and parallel dirty-form fixed point (light-cljs-1100, November 22, 2026)
+
+V8 build (`target/release/light-cljs`), parent `5065738dd` (immutable copy)
+against the `light-cljs-1100` candidate (`22d468a9`), clean `:advanced` builds
+(`release bench --optimize advanced --no-cache --stats`), three alternating
+before/after rounds per `(project, --jobs)` on an unreserved Apple M3 Ultra VM
+(24 vCPUs, 32 GiB; 1-minute `uptime` load 3.57–5.33 across all rounds).
+Medians (min–max range); peak memory from `/usr/bin/time -l` in MiB.
+
+| Project | `--jobs` | Binary | `prepare-application` (ms) | Wall (s) | Peak memory (MiB) | Raw / gzip bytes |
+| --- | ---: | --- | --- | --- | --- | --- |
+| `workload-200k-seed42` | 1 | base `5065738dd` | 876.1 (768.0–882.9) | 5.36 (5.07–5.38) | 903.0 (901.7–915.3) | 3,386,878 / 834,297 |
+| `workload-200k-seed42` | 1 | candidate | 771.0 (751.3–858.4) (-12.0%) | 5.15 (5.07–5.49) (-4.0%) | 895.3 (880.2–896.4) (-7.8 MiB, -0.9%) | 3,386,878 / 834,297 |
+| `workload-200k-seed42` | 2 | base `5065738dd` | 856.5 (828.8–954.5) | 3.86 (3.82–4.14) | 911.1 (907.9–935.0) | 3,386,856 / 834,297 |
+| `workload-200k-seed42` | 2 | candidate | 739.0 (735.3–773.9) (-13.7%) | 3.92 (3.71–3.98) (+1.5%) | 882.0 (865.8–891.0) (-29.1 MiB, -3.2%) | 3,386,856 / 834,297 |
+| `workload-200k-seed42` | 4 | base `5065738dd` | 845.0 (817.2–861.1) | 2.84 (2.79–2.88) | 1,084.6 (1,075.9–1,098.5) | 3,386,840 / 834,306 |
+| `workload-200k-seed42` | 4 | candidate | 733.5 (732.7–798.1) (-13.2%) | 2.71 (2.65–2.73) (-4.6%) | 1,052.5 (1,051.0–1,057.0) (-32.1 MiB, -3.0%) | 3,386,840 / 834,306 |
+| `workload-200k-seed42` | 8 | base `5065738dd` | 859.6 (786.2–861.0) | 2.51 (2.29–2.54) | 1,112.1 (1,109.1–1,119.7) | 3,386,824 / 834,686 |
+| `workload-200k-seed42` | 8 | candidate | 692.9 (623.3–726.3) (-19.4%) | 2.20 (2.12–2.37) (-12.1%) | 1,073.4 (1,072.1–1,085.3) (-38.7 MiB, -3.5%) | 3,386,824 / 834,686 |
+| `re-frame-200k-seed42` | 1 | base `5065738dd` | 1,252.8 (1,239.5–1,260.3) | 5.60 (5.54–5.97) | 1,173.3 (1,159.9–1,209.7) | 5,565,520 / 1,051,451 |
+| `re-frame-200k-seed42` | 1 | candidate | 1,081.8 (1,072.1–1,120.3) (-13.6%) | 5.43 (5.38–5.44) (-3.1%) | 1,139.4 (1,125.8–1,152.9) (-33.9 MiB, -2.9%) | 5,565,520 / 1,051,451 |
+| `re-frame-200k-seed42` | 2 | base `5065738dd` | 1,225.5 (1,188.3–1,268.8) | 4.18 (4.10–4.28) | 1,080.9 (1,078.0–1,093.5) | 5,565,506 / 1,051,455 |
+| `re-frame-200k-seed42` | 2 | candidate | 1,007.6 (1,005.6–1,112.1) (-17.8%) | 4.03 (4.00–4.06) (-3.5%) | 1,038.5 (1,037.1–1,044.1) (-42.4 MiB, -3.9%) | 5,565,506 / 1,051,455 |
+| `re-frame-200k-seed42` | 4 | base `5065738dd` | 1,191.6 (1,174.5–1,216.1) | 3.71 (3.66–3.72) | 1,224.8 (1,219.7–1,235.9) | 5,565,506 / 1,051,480 |
+| `re-frame-200k-seed42` | 4 | candidate | 1,040.2 (1,001.5–1,061.9) (-12.7%) | 3.61 (3.53–3.64) (-2.5%) | 1,179.1 (1,175.2–1,192.8) (-45.7 MiB, -3.7%) | 5,565,506 / 1,051,480 |
+| `re-frame-200k-seed42` | 8 | base `5065738dd` | 1,176.0 (1,166.7–1,231.6) | 3.35 (3.31–3.39) | 1,325.2 (1,316.9–1,346.4) | 5,565,482 / 1,051,473 |
+| `re-frame-200k-seed42` | 8 | candidate | 997.9 (989.1–1,059.1) (-15.1%) | 3.19 (3.13–3.25) (-4.7%) | 1,276.4 (1,252.2–1,305.8) (-48.8 MiB, -3.7%) | 5,565,482 / 1,051,473 |
+
+- *Parity.* All eight `(project, --jobs)` combinations produce byte-identical
+  `out/light/workload.main.js` output to `5065738dd` (SHA-256 prefixes
+  `94a7f9e2e894ea06`, `69100c19fccd2ba8`, `96a58875c34ef6aa`,
+  `4a4f9189a1885298`, `4946b32bc6bdf41b`, `40678a8a763cb89d`,
+  `a9a7aa5af7bcca55`, `e934a4528dc7d18b`), match `bb oracle.bb 42 3` via
+  `node run-light.mjs 42 3` (`484264` plain; `714878 117718` re-frame), and pass
+  `bb check-waste.bb --strict`.
+- *Memory and speed.* Storing internal inference state in 16-byte
+  `CompactInferred` and deferring per-expression `values` allocation until
+  fixed-point convergence cuts peak memory by 29–39 MiB on `workload-200k` at
+  `j=2..8` (at `j=1`, analysis sets the high-water mark before
+  `prepare_application`, so peak memory drops 7.8 MiB) and 34–49 MiB on
+  `re-frame-200k` across all `--jobs`. Dirty-form fixed-point iteration with
+  inline argument/filter buffers and parallel BSP waves on `scheduler::map`
+  cuts `prepare-application` by 12.0–19.4% on `workload-200k` and 12.7–17.8% on
+  `re-frame-200k`.
