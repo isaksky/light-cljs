@@ -5769,3 +5769,47 @@ Both `record-kw-field` and `record-assoc` are well below shadow-cljs's medians i
 - `flow` (29 `defrecord`s): raw 1,218,298 to 1,238,079 (+19,781, +1.62%), gzip -9 284,449 to 287,683 (+3,234, +1.14%), brotli 228,561 to 230,592 (+2,031, +0.89%).
 
 `flow` grows +3,234 bytes gzip (+1.14%) because its `rewrite-clj` dependency defines 29 `defrecord` types (about 112 gzip bytes per record type for the per-type `ILookup/-lookup` and `IAssociative/-assoc` methods); `simple` and `todomvc` define no records and do not move. The size ratchet's note is in tests/support/ratchet_fixtures.rs (readable runtime +0 bytes; zero ratchet fixtures or `features` chunks move).
+
+## 2026-11-23: compare and sorted-map fast paths without per-value protocol probes (light-cljs-1086)
+
+The printing half of light-cljs-1086's problem statement (written on `ed53a283`) was already overtaken on master `96f4c97a`: in the baseline gate (`gate-recheck-96f4c97a`, load 2.9-4.1), `str-nested-map` was 868.9 against 2,225 ns (0.39x shadow-cljs) and `str-sorted-map-20` was 6,955 against 19,607 ns (0.35x). A `--pseudo-names str-nested-map` profile on `light-cljs-96f4c97a` (920.4 vs 2,369 ns) confirmed the earlier printer complaints no longer hold: `dispatch` is 1.5%, `builtin` 0.2%, and `ownMethod`/`keyMarker` do not appear in the top 25 frames, so the printer was left untouched.
+
+The remaining gap was `into-sorted-map-small`: 2,526 against 795.1 ns (3.18x) in the full gate, and 2,022 against 829.1 ns in `--pseudo-names`, where `compareKeys` (27.9%), `protocolHooks.builtin` (19.4%), `treePut` (18.0%), `keywordOf` (5.8%), `keySlot` (3.2%), `mapReduceSlot` (3.0%), `treeMapAssoc` (2.6%), and `ownProtocol` (0.9%) dominated. Now:
+
+- **`compareKeys` fast paths and `IComparable` escape tracking.** Numbers, strings (when `slotFirst.on && !(hostExt.p1 & 2048)`), keywords (`kind === 20`, `fqn !== undefined`), and symbols (`kind === 21`, `str !== undefined`) compare directly before probing `protocolHooks.builtin` for `IComparable`, checking `a.cljs$core$IComparable$_compare$arity$2$LKEY == null` on keywords and symbols so `extend-type`/`specify!` overrides still take `compareKeysSlow`. `cannotCompare` is hoisted out of `compareKeys` (avoiding a per-call closure) and `compareKeysSlow` replaces `["string", "boolean"].includes(...)` with plain `typeof` checks. In `src/emitter.rs`, escaping `IComparable` or `-compare` (`compareProtocol`) keeps `hostExtEscaped`, disabling the string fast path when host types are patched directly.
+- **Direct default comparator calls and zero-rest `(sorted-map)`.** `treePut`, `treeRemove`, and `treeEntryAt` invoke `compareKeys(key, ...)` directly when `comp === compareKeys` (letting V8 inline it) and fall back to `comp.call(null, ...)` for custom comparators; `sortedMap` returns `new TreeMapCell(compareKeys, null, 0)` when called with zero arguments without allocating a rest array.
+- **Direct `treeMapConjSlot`, hoisted `isVectorLike`, `editableTarget` fast false, and hoisted `sortBy` comparator.** `treeMapConjSlot` calls `treeMapAssoc(self, tail[0], tail[1])` directly when `slotFirst.on`, `item` is an unextended `MapEntry`/`TreeNodeCell` (`kind === 3`, `-nth === entryNthSlot`), and `self` is an unextended `TreeMapCell` (`kind === 30`, `-assoc === treeMapAssocSlot`), falling back to `mapConjSlot` otherwise. `mapConj` hoists `isVectorLike` and short-circuits unextended vector/subvec/entry kinds (`1 | 2 | 3`); `editableTarget` returns `false` directly for unextended non-editable runtime classes (`kind < 64`, `partition1` bit 4 clear, `cljs$core$IEditableCollection$$LKEY === undefined`) without calling `ownProtocol`; and `sortBy` hoists `fnComparator(fn)` out of its per-comparison lambda.
+
+**Binaries:** before `light-cljs-96f4c97a` (master `96f4c97a`, SHA-256 `2f249e3718d17c02...`), after `light-cljs-1086-wip` (this change's compiler and runtime, SHA-256 `c3d57181137abf65...`), V8 builds; shadow-cljs 3.5.3, Node v26.12.1. No run waited for the machine; all runs are unreserved.
+
+**Gate — touched operations** (`bb benchmarks/core-ops/run.bb --runs 5 --ops into-sorted-map-small,sorted-map-assoc-100,disj-sorted-set-100,sort-by-100,str-nested-map,str-sorted-map-20`, load 2.61-2.79 before, 5.14-5.39 after) and **full 80-op pass** (`--runs 5`, baseline `gate-recheck-96f4c97a` at load 2.9-4.1 vs after at load 3.73-12.91 while a peer worker's suite ran), light-cljs ns per operation, medians of 5 alternated runs with ranges:
+
+| op (touched selection) | light-cljs before | light-cljs after | change | shadow-cljs before, after | light/shadow before, after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| into-sorted-map-small | 1,978 (1,924-2,012) | 480.0 (463.4-490.0) | -76% | 731.1, 739.0 | 2.71, 0.65 |
+| sorted-map-assoc-100 | 121.0 (118.4-123.3) | 101.7 (101.4-108.0) | -16% | 194.4, 194.9 | 0.62, 0.52 |
+| disj-sorted-set-100 | 136.8 (130.5-139.0) | 125.2 (124.2-129.6) | -8% | 188.2, 192.8 | 0.73, 0.65 |
+| sort-by-100 | 4,331 (4,266-4,398) | 4,121 (4,005-4,165) | -5% | 3,210, 3,277 | 1.35, 1.26 |
+| str-nested-map | 858.1 (845.8-903.4) | 885.0 (871.4-907.0) | +3% | 2,212, 2,242 | 0.39, 0.39 |
+| str-sorted-map-20 | 6,956 (6,850-7,012) | 7,193 (6,987-7,324) | +3% | 20,403, 20,605 | 0.34, 0.35 |
+
+| op (full 80-op pass) | light-cljs before | light-cljs after | change | shadow-cljs before, after | light/shadow before, after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| into-sorted-map-small | 2,526 (2,467-2,566) | 786.4 (755.1-791.3) | -69% | 795.1, 830.6 | 3.18, 0.95 |
+| sorted-map-assoc-100 | 149.2 (144.6-151.8) | 137.1 (134.2-137.9) | -8% | 198.0, 209.7 | 0.75, 0.65 |
+| disj-sorted-set-100 | 193.2 (186.7-199.4) | 183.0 (171.6-188.1) | -5% | 216.2, 222.0 | 0.89, 0.82 |
+| sort-by-100 | 6,705 (6,652-6,815) | 6,660 (6,465-7,015) | -1% | 4,543, 4,722 | 1.48, 1.41 |
+| str-nested-map | 868.9 (837.6-872.0) | 913.4 (907.3-956.3) | +5% | 2,225, 2,350 | 0.39, 0.39 |
+| str-sorted-map-20 | 6,955 (6,915-7,152) | 7,342 (7,116-7,502) | +6% | 19,607, 20,496 | 0.35, 0.36 |
+| into-list-small | 180.1 (178.9-184.7) | 158.5 (151.7-160.3) | -12% | 118.4, 123.1 | 1.52, 1.29 |
+
+`into-sorted-map-small`, `str-nested-map`, and `str-sorted-map-20` are all below shadow-cljs's medians in both selections (`into-sorted-map-small` entire range 755.1-791.3 vs shadow-cljs 792.5-975.7 in the full pass, and 463.4-490.0 vs 730.5-775.3 in the touched selection), and `into-list-small` drops 12% from `editableTarget`'s fast false path. In the full pass, higher machine load (3.73-12.91 vs 2.9-4.1) shifted both compilers up ~4-9% (`bit-and` +9% with light/shadow 1.00 -> 0.98); the three operations whose light/shadow ratio moved most (`merge-small` +16%, `group-by-100` +13%, `transient-map-100` +10%) were re-measured back-to-back at matching load (12.43-13.26, `--ops merge-small,group-by-100,transient-map-100`): `merge-small` 1,453 to 1,430 ns (-2%, 2.05x -> 2.03x), `group-by-100` 4,405 to 4,369 ns (-1%, 1.02x -> 1.03x), and `transient-map-100` 4,139 to 4,085 ns (-1%, 1.12x -> 1.10x). Zero operations regressed beyond their ranges.
+
+**Workload 200k** (`compare.bb --runs 5 --runtime-only --runtime 1,40`, private copy rebuilt with each binary just before its run, every checksum equal to the oracle's; load 4.96-5.25 before, 4.67-4.98 after): 1 iteration wall 0.342 s (0.331-0.364) to 0.319 s (0.310-0.342), 40 iterations wall 1.488 s (1.457-1.562) to 1.476 s (1.431-1.531), steady state 29.4 to 29.7 ms per iteration (shadow-cljs 23.7 and 25.9 ms; light/shadow 1.24 before and 1.15 after), peak memory at 40 iterations 0.257 to 0.260 GB (light/shadow 0.95 to 0.93).
+
+**Sizes** (light-cljs `:advanced` output as written, without React, compiled with `--no-cache` from `research/shadow-credibility/{simple-port-973,todomvc-port-980,flow-port-980}`):
+- `simple`: raw 260,287 to 260,535 (+248), gzip -9 70,315 to 70,351 (+36, +0.05%), brotli 60,598 to 60,709 (+111).
+- `todomvc`: raw 375,700 to 377,167 (+1,467), gzip -9 100,125 to 100,477 (+352, +0.35%), brotli 85,960 to 86,285 (+325).
+- `flow`: raw 1,218,298 to 1,219,765 (+1,467), gzip -9 284,463 to 284,822 (+359, +0.13%), brotli 228,630 to 229,159 (+529).
+
+All three re-frame apps stay under the +0.5% gzip threshold (+0.05% to +0.35%). The size ratchet's note is in tests/support/ratchet_fixtures.rs (readable runtime +3,274 bytes; 33 of 36 `:advanced` fixtures unchanged, `mapv-count` +91, `features`/`features-direct` +1,356).

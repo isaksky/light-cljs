@@ -3589,8 +3589,8 @@
     if (!original) throw new Error("assoc not supported on this type");
     return kindHooks.assocVector(value, original, key, item, pairs);
   }
-  //@unit SubvecValue.assoc effect: SubvecValue when: assoc, assocOf, assocPath, assocSite requires: assoc,
-  //@ kindHooks, meta, outOfBounds, SubvecValue
+  //@unit SubvecValue.assoc effect: SubvecValue when: assoc, assocOf, assocPath, assocSite,
+  //@ treeMapConjSlot requires: assoc, kindHooks, meta, outOfBounds, SubvecValue
   // See `SubvecValue.conj`.
   kindHooks.assocSubvec = (value, key, item, pairs) => {
     const slots = value?.slots$LKEY;
@@ -4527,15 +4527,22 @@
     // A vector's `-nth` is `nth`'s own (see `protocolHooks`), which is
     // slot-first: where `-nth`'s dispatcher is, `entryNth` reads the slot
     // first as the dispatcher's lookup would.
-    const vectorLike = item => protocolHooks.satisfies?.(methodKeys[61], item) ?? holdsVector(item), nthOf = protocolHooks.nthProtocol ? entryNth : nth;
-    if (vectorLike(member)) return assoc(value, nthOf(member, 0), nthOf(member, 1));
+    const nthOf = protocolHooks.nthProtocol ? entryNth : nth;
+    if (isVectorLike(member)) return assoc(value, nthOf(member, 0), nthOf(member, 1));
     let result = value;
     for (let current = seq(member); current !== null; current = next(current)) {
       const pair = first(current);
-      if (!vectorLike(pair)) throw new Error("Map conj requires vector entries");
+      if (!isVectorLike(pair)) throw new Error("Map conj requires vector entries");
       result = assoc(result, nthOf(pair, 0), nthOf(pair, 1));
     }
     return result;
+  }
+  function isVectorLike(item) {
+    if (item != null && slotFirst.on) {
+      const kind = item.cljs$lang$kind$$LKEY;
+      if ((kind === 1 || kind === 2 || kind === 3) && item.cnt$LKEY !== undefined) return true;
+    }
+    return protocolHooks.satisfies?.(methodKeys[61], item) ?? holdsVector(item);
   }
   // `-nth` of an entry, as upstream's maps' `-conj` calls it
   // (light-cljs-1076): a runtime class's value (a vector, a map entry)
@@ -6098,8 +6105,8 @@
   // store of its own (one made by reflection) answers `noBranch`, and the
   // slot-first wrapper then takes the operation, which answers it as before.
   //@unit PersistentVectorValue.nth effect: PersistentVectorValue when: mapConj, nth, nthOf,
-  //@ nthSite, nthSite3, ownEntryItems requires: builtinSlot, missing, PersistentVectorValue,
-  //@ vectorNth
+  //@ nthSite, nthSite3, ownEntryItems, treeMapConjSlot requires: builtinSlot, missing,
+  //@ PersistentVectorValue, vectorNth
   PersistentVectorValue.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
     const store = self;
     return vectorNth(store, index, missing);
@@ -6127,9 +6134,9 @@
     const store = self;
     return conjMeta(self, makeVector(null, vectorConj(store, item)));
   });
-  //@unit PersistentVectorValue.assoc effect: PersistentVectorValue when: assoc, assocOf, assocSite
-  //@ requires: builtinSlot, conjMeta, makeVector, outOfBounds, PersistentVectorValue, vectorAssoc,
-  //@ vectorConj
+  //@unit PersistentVectorValue.assoc effect: PersistentVectorValue when: assoc, assocOf, assocSite,
+  //@ treeMapConjSlot requires: builtinSlot, conjMeta, makeVector, outOfBounds,
+  //@ PersistentVectorValue, vectorAssoc, vectorConj
   PersistentVectorValue.prototype.cljs$core$IAssociative$_assoc$arity$3$LKEY = builtinSlot(function (self, key, item) {
     let store = self;
     if (typeof key !== "number") throw new Error("Vector key must be a number");
@@ -6167,7 +6174,7 @@
   // is complete for a subvector: the compile-time runtime's protocol lookup
   // finds a slot and calls it.
   //@unit SubvecValue.nth effect: SubvecValue when: mapConj, nth, nthOf, nthSite, nthSite3,
-  //@ ownEntryItems requires: builtinSlot, missing, SubvecValue, vectorNth
+  //@ ownEntryItems, treeMapConjSlot requires: builtinSlot, missing, SubvecValue, vectorNth
   SubvecValue.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
     return vectorNth(self, index, missing);
   });
@@ -6203,8 +6210,9 @@
     if (slots && self.v$LKEY !== undefined) return SubvecValue(meta(self), self.v$LKEY, slots.start, slots.end - 1, null);
     return conjMeta(self, makeVector(null, vectorPop(self)));
   });
-  //@unit SubvecValue.assocSlot effect: SubvecValue when: assoc, assocOf, assocSite requires: builtinSlot,
-  //@ conjMeta, kindHooks, makeVector, outOfBounds, SubvecValue, vectorAssoc, vectorConj
+  //@unit SubvecValue.assocSlot effect: SubvecValue when: assoc, assocOf, assocSite, treeMapConjSlot
+  //@ requires: builtinSlot, conjMeta, kindHooks, makeVector, outOfBounds, SubvecValue, vectorAssoc,
+  //@ vectorConj
   SubvecValue.prototype.cljs$core$IAssociative$_assoc$arity$3$LKEY = builtinSlot(function (self, key, item) {
     if (self.slots$LKEY) return kindHooks.assocSubvec(self, key, item, []);
     if (typeof key !== "number") throw new Error("Vector key must be a number");
@@ -6235,7 +6243,7 @@
     return index === 0 || index === 1 ? tail[index] : outOfBounds();
   });
   //@unit MapEntryType.nth effect: MapEntryType when: mapConj, nth, nthOf, nthSite, nthSite3,
-  //@ ownEntryItems requires: builtinSlot, entryNthSlot, MapEntryType
+  //@ ownEntryItems, treeMapConjSlot requires: builtinSlot, entryNthSlot, MapEntryType
   MapEntryType.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = entryNthSlot;
   MapEntryType.prototype.cljs$core$IIndexed$_nth$arity$3$LKEY = builtinSlot(function (self, index, notFound) {
     const tail = self.tail$LKEY;
@@ -6278,8 +6286,9 @@
   //@unit MapEntryType.popSlot effect: MapEntryType when: pop, popOf requires: MapEntryType,
   //@ vectorPopSlot
   MapEntryType.prototype.cljs$core$IStack$_pop$arity$1$LKEY = vectorPopSlot;
-  //@unit MapEntryType.assocSlot effect: MapEntryType when: assoc, assocOf, assocSite requires: builtinSlot,
-  //@ conjMeta, makeVector, MapEntryType, outOfBounds, vectorAssoc, vectorConj
+  //@unit MapEntryType.assocSlot effect: MapEntryType when: assoc, assocOf, assocSite,
+  //@ treeMapConjSlot requires: builtinSlot, conjMeta, makeVector, MapEntryType, outOfBounds,
+  //@ vectorAssoc, vectorConj
   MapEntryType.prototype.cljs$core$IAssociative$_assoc$arity$3$LKEY = builtinSlot(function (self, key, item) {
     if (typeof key !== "number") throw new Error("Vector key must be a number");
     let store = self;
@@ -6304,8 +6313,8 @@
   // item for an index out of bounds. Each slot is complete for a transient
   // vector, as the compile-time runtime's protocol lookup finds and calls it.
   //@unit TransientVectorType.nth effect: TransientVectorType when: mapConj, nth, nthOf, nthSite,
-  //@ nthSite3, ownEntryItems requires: builtinSlot, missing, transientNth, TransientVectorType,
-  //@ vectorNth
+  //@ nthSite3, ownEntryItems, treeMapConjSlot requires: builtinSlot, missing, transientNth,
+  //@ TransientVectorType, vectorNth
   TransientVectorType.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
     const editable = self.editable$LKEY;
     if (editable === true) return vectorNth(self, index, missing);
@@ -6437,15 +6446,16 @@
   //@ countSlot requires: transientCountSlot, TransientHashSetType
   TransientHashSetType.prototype.cljs$core$ICounted$_count$arity$1$LKEY = transientCountSlot;
   //@unit TransientArrayMapType.nth effect: TransientArrayMapType when: mapConj, nth, nthOf,
-  //@ nthSite, nthSite3, ownEntryItems requires: TransientArrayMapType, transientNthSlots
+  //@ nthSite, nthSite3, ownEntryItems, treeMapConjSlot requires: TransientArrayMapType,
+  //@ transientNthSlots
   TransientArrayMapType.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = transientNthSlots[0];
   TransientArrayMapType.prototype.cljs$core$IIndexed$_nth$arity$3$LKEY = transientNthSlots[1];
   //@unit TransientHashMapType.nth effect: TransientHashMapType when: mapConj, nth, nthOf, nthSite,
-  //@ nthSite3, ownEntryItems requires: TransientHashMapType, transientNthSlots
+  //@ nthSite3, ownEntryItems, treeMapConjSlot requires: TransientHashMapType, transientNthSlots
   TransientHashMapType.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = transientNthSlots[0];
   TransientHashMapType.prototype.cljs$core$IIndexed$_nth$arity$3$LKEY = transientNthSlots[1];
   //@unit TransientHashSetType.nth effect: TransientHashSetType when: mapConj, nth, nthOf, nthSite,
-  //@ nthSite3, ownEntryItems requires: TransientHashSetType, transientNthSlots
+  //@ nthSite3, ownEntryItems, treeMapConjSlot requires: TransientHashSetType, transientNthSlots
   TransientHashSetType.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = transientNthSlots[0];
   TransientHashSetType.prototype.cljs$core$IIndexed$_nth$arity$3$LKEY = transientNthSlots[1];
   //@unit TransientArrayMapType.lookup effect: TransientArrayMapType when: arrayMapContains, get,
@@ -6660,17 +6670,24 @@
   //@ countSlot requires: builtinSlot, treeMapConstructor, treeMapCount
   treeMapConstructor.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) { return treeMapCount(self); });
   //@unit PersistentArrayMapValue.assocSlot effect: PersistentArrayMapValue when: assoc, assocOf,
-  //@ assocSite requires: arrayMapAssoc, builtinSlot, kindHooks, PersistentArrayMapValue
+  //@ assocSite, treeMapConjSlot requires: arrayMapAssoc, builtinSlot, kindHooks,
+  //@ PersistentArrayMapValue
   PersistentArrayMapValue.prototype.cljs$core$IAssociative$_assoc$arity$3$LKEY = builtinSlot(function (self, key, item) { return arrayMapAssoc(self, key, item); });
   // The operation's own path of an array map (`assoc`, light-cljs-1036).
   kindHooks.assocArrayMap = arrayMapAssoc;
   //@unit PersistentHashMapValue.assocSlot effect: PersistentHashMapValue when: assoc, assocOf,
-  //@ assocSite requires: builtinSlot, hashMapAssoc, kindHooks, PersistentHashMapValue
+  //@ assocSite, treeMapConjSlot requires: builtinSlot, hashMapAssoc, kindHooks,
+  //@ PersistentHashMapValue
   PersistentHashMapValue.prototype.cljs$core$IAssociative$_assoc$arity$3$LKEY = builtinSlot(function (self, key, item) { return hashMapAssoc(self, key, item); });
   kindHooks.assocHashMap = hashMapAssoc;
-  //@unit treeMapConstructor.assocSlot effect: treeMapConstructor when: assoc, assocOf, assocSite
-  //@ requires: builtinSlot, kindHooks, treeMapAssoc, treeMapConstructor
-  treeMapConstructor.prototype.cljs$core$IAssociative$_assoc$arity$3$LKEY = builtinSlot(function (self, key, item) { return treeMapAssoc(self, key, item); });
+  //@unit treeMapAssocSlot requires: builtinSlot, treeMapAssoc
+  // A sorted map's own `-assoc` slot, named so that its `-conj` slot
+  // (`treeMapConjSlot`) can call `treeMapAssoc` directly when neither the map
+  // nor the map entry has an overridden slot.
+  const treeMapAssocSlot = builtinSlot(function (self, key, item) { return treeMapAssoc(self, key, item); });
+  //@unit treeMapConstructor.assocSlot effect: treeMapConstructor when: assoc, assocOf, assocSite,
+  //@ treeMapConjSlot requires: kindHooks, treeMapAssoc, treeMapAssocSlot, treeMapConstructor
+  treeMapConstructor.prototype.cljs$core$IAssociative$_assoc$arity$3$LKEY = treeMapAssocSlot;
   kindHooks.assocTreeMap = treeMapAssoc;
   //@unit PersistentArrayMapValue.dissocSlot effect: PersistentArrayMapValue when: dissoc, dissocOf,
   //@ dissocSite requires: arrayMapDissoc, builtinSlot, kindHooks, PersistentArrayMapValue
@@ -6943,9 +6960,26 @@
   //@ conjOwn, conjSite, treeMapSeqConstructor requires: builtinSlot, mapConjSlot,
   //@ PersistentHashMapValue
   PersistentHashMapValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) { return mapConjSlot(self, item); });
+  //@unit treeMapConjSlot requires: entryNthSlot, mapConjSlot, slotFirst, treeMapAssoc,
+  //@ treeMapAssocSlot
+  // `conj` of a sorted map with a map entry whose `-nth` slot is the runtime's
+  // own (`entryNthSlot`), when the map's `-assoc` slot is its own
+  // (`treeMapAssocSlot`): insert directly into the tree without `mapConj`'s
+  // `IVector` check, `-nth` dispatches, `assoc` wrapper or duplicate metadata
+  // copy. Any other item or extended slot takes `mapConjSlot`.
+  function treeMapConjSlot(self, item) {
+    if (item != null && slotFirst.on && item.cljs$lang$kind$$LKEY === 3 && item.cnt$LKEY !== undefined
+      && item.cljs$core$IIndexed$_nth$arity$2$LKEY === entryNthSlot
+      && self.cljs$lang$kind$$LKEY === 30 && self.cnt$LKEY !== undefined
+      && self.cljs$core$IAssociative$_assoc$arity$3$LKEY === treeMapAssocSlot) {
+      const tail = item.tail$LKEY;
+      return treeMapAssoc(self, tail[0], tail[1]);
+    }
+    return mapConjSlot(self, item);
+  }
   //@unit treeMapConstructor.conjSlot effect: treeMapConstructor when: conj, conjOf, conjOwn,
-  //@ conjSite, treeMapSeqConstructor requires: builtinSlot, mapConjSlot, treeMapConstructor
-  treeMapConstructor.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) { return mapConjSlot(self, item); });
+  //@ conjSite, treeMapSeqConstructor requires: builtinSlot, treeMapConjSlot, treeMapConstructor
+  treeMapConstructor.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(treeMapConjSlot);
 
   // The seqs over an array or a string (`viewOf`) answer `first`, `rest`,
   // `next` and `seq`, and an indexed seq `count`, from slots of their
@@ -7422,7 +7456,7 @@
     return self.step$LKEY !== null ? self.first$LKEY : firstOf(self);
   });
   //@unit arrayChunk.nthSlot effect: arrayChunk when: mapConj, nth, nthOf, nthSite, nthSite3,
-  //@ ownEntryItems requires: arrayChunk, builtinSlot, chunkNth, missing
+  //@ ownEntryItems, treeMapConjSlot requires: arrayChunk, builtinSlot, chunkNth, missing
   arrayChunk.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
     return chunkNth(self, index, missing);
   });
@@ -7567,7 +7601,7 @@
     return self.count$LKEY;
   });
   //@unit IntegerRangeValue.nthSlot effect: IntegerRangeValue when: mapConj, nth, nthOf, nthSite,
-  //@ nthSite3, ownEntryItems requires: builtinSlot, IntegerRangeValue, outOfBounds
+  //@ nthSite3, ownEntryItems, treeMapConjSlot requires: builtinSlot, IntegerRangeValue, outOfBounds
   // Its item at an index below its count, computed, as upstream's Range's
   // `-nth` and as `nth` read its fields before light-cljs-1066.
   IntegerRangeValue.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
@@ -8090,7 +8124,8 @@
   function sortBy(key, fn, coll) {
     if (arguments.length === 2) { coll = fn; fn = compareKeys; }
     else if (arguments.length !== 3) return invalidArity(arguments.length);
-    return sort((x, y) => fnComparator(fn)(key.call(null, x), key.call(null, y)), coll);
+    const cmp = fnComparator(fn);
+    return sort((x, y) => cmp(key.call(null, x), key.call(null, y)), coll);
   }
   //@unit comparator requires: truth
   function comparator(predicate) {
@@ -10111,18 +10146,47 @@
     const start = seq(collection);
     return start === null ? emptyList : cycleNode(start, null, start);
   }
-  //@unit compareKeys requires: displayStr, holdsVector, keywordOf, methodKeys, namedOf,
-  //@ protocolHooks, uuids, vectorItems
+  //@unit compareKeys requires: displayStr, holdsVector, hostExt, keywordOf, methodKeys, namedOf,
+  //@ protocolHooks, slotFirst, uuids, vectorItems
   function compareKeys(a, b) {
     if (a === b) return 0;
     if (a == null) return -1;
     if (b == null) return 1;
-    const cannotCompare = () => { throw new Error("Cannot compare " + displayStr(a) + " to " + displayStr(b)); };
-    if (typeof a === "number") return typeof b === "number" ? (a < b ? -1 : a > b ? 1 : 0) : cannotCompare();
+    const ta = typeof a;
+    if (ta === "number") return typeof b === "number" ? (a < b ? -1 : a > b ? 1 : 0) : cannotCompare(a, b);
+    if (ta === "string") {
+      if (slotFirst.on && !(hostExt.p1 & 2048)) return typeof b === "string" ? (a < b ? -1 : 1) : cannotCompare(a, b);
+    } else if (ta === "object" && slotFirst.on) {
+      const ka = a.cljs$lang$kind$$LKEY;
+      if (ka === 20 && a.fqn$LKEY !== undefined && typeof b === "object" && b.cljs$lang$kind$$LKEY === 20 && b.fqn$LKEY !== undefined
+        && a.cljs$core$IComparable$_compare$arity$2$LKEY == null)
+        return compareNamed(a, b);
+      if (ka === 21 && a.str$LKEY !== undefined && typeof b === "object" && b.cljs$lang$kind$$LKEY === 21 && b.str$LKEY !== undefined
+        && a.cljs$core$IComparable$_compare$arity$2$LKEY == null)
+        return compareNamed(a, b);
+    }
+    return compareKeysSlow(a, b);
+  }
+  function cannotCompare(a, b) { throw new Error("Cannot compare " + displayStr(a) + " to " + displayStr(b)); }
+  function compareNamed(a, b) {
+    const an = a.ns$LKEY, bn = b.ns$LKEY, fastStr = !(hostExt.p1 & 2048);
+    if (an !== bn) {
+      if (an == null) return -1;
+      if (bn == null) return 1;
+      if (fastStr && typeof an === "string" && typeof bn === "string") return an < bn ? -1 : 1;
+      const c = compareKeys(an, bn);
+      if (c) return c;
+    }
+    const am = a.name$LKEY, bm = b.name$LKEY;
+    if (am === bm) return 0;
+    if (fastStr && typeof am === "string" && typeof bm === "string") return am < bm ? -1 : 1;
+    return compareKeys(am, bm);
+  }
+  function compareKeysSlow(a, b) {
     const method = protocolHooks.builtin?.(a, methodKeys[9], 2);
     if (method) return method.call(a, a, b);
-    if (uuids.has(a)) return uuids.has(b) ? compareKeys(uuids.get(a), uuids.get(b)) : cannotCompare();
-    if (a instanceof Date) return b instanceof Date ? compareKeys(a.valueOf(), b.valueOf()) : cannotCompare();
+    if (uuids.has(a)) return uuids.has(b) ? compareKeys(uuids.get(a), uuids.get(b)) : cannotCompare(a, b);
+    if (a instanceof Date) return b instanceof Date ? compareKeys(a.valueOf(), b.valueOf()) : cannotCompare(a, b);
     const left = namedOf(a), right = namedOf(b);
     if (left || right) {
       if (!left || !right || (keywordOf(a) === undefined) !== (keywordOf(b) === undefined)) throw new Error("Cannot compare different types");
@@ -10134,7 +10198,8 @@
       for (let i = 0; i < xs.length; i++) { const order = compareKeys(xs[i], ys[i]); if (order) return order; }
       return 0;
     }
-    if (!(Array.isArray(a) && Array.isArray(b)) && (typeof a !== typeof b || !["string", "boolean"].includes(typeof a))) return cannotCompare();
+    const ta = typeof a;
+    if (!(Array.isArray(a) && Array.isArray(b)) && (ta !== typeof b || ta !== "string" && ta !== "boolean")) return cannotCompare(a, b);
     return a < b ? -1 : a > b ? 1 : 0;
   }
   //@unit sequentialIndex requires: count, indexIn, nth
@@ -10232,7 +10297,7 @@
     }
     return new TreeNodeCell(tail, left, ins, false);
   }
-  //@unit treePut requires: equalPair, treeBalanceLeft, treeBalanceRight, TreeNodeCell
+  //@unit treePut requires: compareKeys, equalPair, treeBalanceLeft, treeBalanceRight, TreeNodeCell
   // `assoc` of `key` and `val` in a tree of the runtime's nodes, upstream's
   // `tree-map-add` and `tree-map-replace` in one walk, calling the
   // comparator as upstream's, the key first: the new tree, `tree` itself
@@ -10241,7 +10306,7 @@
   // replaced value keeps the key there.
   function treePut(comp, tree, key, val, state) {
     if (tree === null) { state.added = true; return new TreeNodeCell([key, val], null, null, true); }
-    const tail = tree.tail$LKEY, order = comp.call(null, key, tail[0]);
+    const tail = tree.tail$LKEY, order = comp === compareKeys ? compareKeys(key, tail[0]) : comp.call(null, key, tail[0]);
     if (order === 0) return equalPair(val, tail[1]) ? tree : new TreeNodeCell([tail[0], val], tree.left$LKEY, tree.right$LKEY, tree.red$LKEY);
     if (order < 0) {
       const left = tree.left$LKEY, ins = treePut(comp, left, key, val, state);
@@ -10250,13 +10315,13 @@
     const right = tree.right$LKEY, ins = treePut(comp, right, key, val, state);
     return ins === right ? tree : !state.added || tree.red$LKEY ? new TreeNodeCell(tail, tree.left$LKEY, ins, tree.red$LKEY) : treeBalanceRight(tail, tree.left$LKEY, ins);
   }
-  //@unit treeRemove requires: treeBalanceLeft, treeBalanceRight, treeBlacken, TreeNodeCell,
-  //@ treeRedden
+  //@unit treeRemove requires: compareKeys, treeBalanceLeft, treeBalanceRight, treeBlacken,
+  //@ TreeNodeCell, treeRedden
   // Upstream's `tree-map-remove`: the tree without `key`, or null; the
   // removed node in `found[0]`.
   function treeRemove(comp, tree, key, found) {
     if (tree === null) return null;
-    const tail = tree.tail$LKEY, order = comp.call(null, key, tail[0]);
+    const tail = tree.tail$LKEY, order = comp === compareKeys ? compareKeys(key, tail[0]) : comp.call(null, key, tail[0]);
     if (order === 0) { found[0] = tree; return treeAppend(tree.left$LKEY, tree.right$LKEY); }
     if (order < 0) {
       const left = tree.left$LKEY, del = treeRemove(comp, left, key, found);
@@ -10320,7 +10385,7 @@
     if (found[0] === null) return self;
     return preserveMeta(self, result === null ? new TreeMapCell(comp, null, 0) : new TreeMapCell(comp, treeBlacken(result), cnt - 1));
   }
-  //@unit treeEntryAt requires: treeKey, treeLeft, treeRight
+  //@unit treeEntryAt requires: compareKeys, treeKey, treeLeft, treeRight
   // The node of a sorted map that holds `key`, or null, upstream's
   // `entry-at`: a walk of its tree that calls the comparator once a level.
   function treeEntryAt(map, key) {
@@ -10328,14 +10393,14 @@
     let node = map.tree$LKEY;
     if (node != null && node.red$LKEY === undefined) {
       while (node != null) {
-        const order = comp.call(null, key, treeKey(node));
+        const order = comp === compareKeys ? compareKeys(key, treeKey(node)) : comp.call(null, key, treeKey(node));
         if (order === 0) return node;
         node = order < 0 ? treeLeft(node) : treeRight(node);
       }
       return null;
     }
     while (node != null) {
-      const order = comp.call(null, key, node.tail$LKEY[0]);
+      const order = comp === compareKeys ? compareKeys(key, node.tail$LKEY[0]) : comp.call(null, key, node.tail$LKEY[0]);
       if (order === 0) return node;
       node = order < 0 ? node.left$LKEY : node.right$LKEY;
     }
@@ -10541,8 +10606,8 @@
     }
     return new TreeMapCell(comparator, tree, cnt);
   }
-  //@unit sortedMap requires: buildSortedMap, compareKeys
-  function sortedMap(...pairs) { return buildSortedMap(compareKeys, pairs); }
+  //@unit sortedMap requires: buildSortedMap, compareKeys, TreeMapCell
+  function sortedMap() { return arguments.length === 0 ? new TreeMapCell(compareKeys, null, 0) : buildSortedMap(compareKeys, arguments); }
   //@unit sortedMapBy requires: buildSortedMap, fnComparator
   function sortedMapBy(comparator, ...pairs) {
     return buildSortedMap(fnComparator(comparator), pairs);
@@ -14309,7 +14374,14 @@
   // the bit and the `implements` hook answers first; any other value takes
   // the hook, else the native test.
   function editableTarget(to) {
-    if (to != null && slotFirst.on && to.cljs$lang$kind$$LKEY !== undefined && (to.cljs$lang$protocol_mask$partition1$$LKEY & 4) !== 0) return true;
+    if (to != null && slotFirst.on) {
+      const kind = to.cljs$lang$kind$$LKEY;
+      if (kind !== undefined) {
+        const mask = to.cljs$lang$protocol_mask$partition1$$LKEY;
+        if ((mask & 4) !== 0) return true;
+        if (kind < 64 && mask !== undefined && to.cljs$core$IEditableCollection$$LKEY === undefined) return false;
+      }
+    }
     return protocolHooks.implements?.(methodKeys[14], to) ?? editableValue(to);
   }
   function into2(to, from) {

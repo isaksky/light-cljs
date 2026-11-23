@@ -3784,8 +3784,11 @@ impl<'a, 's> Emitter<'a, 's> {
                         | "IList"
                         | "IRecord"
                         | "IPrintWithWriter"
+                        | "IComparable"
                         | "Fn"
-                ) {
+                )
+                || name.binding == "compareProtocol"
+            {
                 Some("hostExtEscaped")
             } else if matches!(
                 name.binding,

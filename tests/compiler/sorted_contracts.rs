@@ -217,3 +217,183 @@ mod phase_oracles {
         )]);
     }
 }
+
+/// light-cljs-1086: `compare` compares numbers, strings, keywords and symbols
+/// without probing `IComparable` on every call, while preserving custom
+/// `deftype`/`defrecord` implementations, `extend-type`, `specify!`, escaped
+/// `-compare` dispatchers, forged prototypes, and edge-case `Keyword.` fields.
+#[test]
+fn compare_fast_paths_preserve_protocol_extensions_and_edge_cases() {
+    let run = |source: &str| super::optimization::json_at_every_level(source);
+
+    // Core ordering across numbers, strings, keywords, symbols, un-interned
+    // keywords, undefined fqn, forged prototypes, and type mismatches.
+    assert_eq!(
+        run(r#"
+        (let [err (fn [f] (try (f) :ok (catch js/Error _ :err)))
+              k-undef (Keyword. nil "b" js/undefined nil)
+              k-dup (keyword "a")
+              forged-kw (js/Object.create (.-prototype Keyword))
+              forged-sym (js/Object.create (.-prototype Symbol))]
+          (pr-str
+            [(compare 1 2) (compare 2 1) (compare 1 1) (compare -0 0) (compare ##NaN ##NaN)
+             (compare "a" "b") (compare "b" "a") (compare "a" "a")
+             (compare :a :b) (compare :b :a) (compare :a :a) (compare :a k-dup)
+             (compare :a :ns/a) (compare :ns/a :a) (compare :a/z :b/a) (compare :a/a :a/b)
+             (compare :a k-undef) (compare k-undef :a) (compare k-undef :c)
+             (compare 'a 'b) (compare 'b 'a) (compare 'a 'a)
+             (compare 'a 'ns/a) (compare 'ns/a 'a) (compare 'a/z 'b/a) (compare 'a/a 'a/b)
+             (err #(compare 1 "1")) (err #(compare "1" 1))
+             (err #(compare :a 'a)) (err #(compare 'a :a))
+             (err #(compare :a "a")) (err #(compare :a 1))
+             (err #(compare :a forged-kw)) (err #(compare forged-kw :a))
+             (err #(compare 'a forged-sym)) (err #(compare forged-sym 'a))
+             (vec (keys (into (sorted-map) {:g 7 :b 2 :e 5 :a 1 :f 6 :c 3 :d 4})))]))"#),
+        "\"[-1 1 0 0 0 -1 1 0 -1 1 0 0 -1 1 -1 -1 -1 1 -1 -1 1 0 -1 1 -1 -1 :err :err :err :err :err :err :err :err :err :err [:a :b :c :d :e :f :g]]\"\n"
+    );
+
+    // Custom deftype / defrecord implementing IComparable, plus sort-by with
+    // default and custom comparators.
+    assert_eq!(
+        run(r#"
+        (deftype Box [v] IComparable (-compare [_ o] (compare (.-v o) v)))
+        (defrecord RBox [v] IComparable (-compare [_ o] (compare v (.-v o))))
+        (pr-str
+          [(compare (Box. 1) (Box. 2))
+           (mapv #(.-v %) (keys (sorted-map (Box. 1) :a (Box. 3) :c (Box. 2) :b)))
+           (mapv :v (keys (sorted-map (->RBox 3) :c (->RBox 1) :a (->RBox 2) :b)))
+           (vec (sort-by - [3 1 2]))
+           (vec (sort-by :k > [{:k 1} {:k 3} {:k 2}]))])"#),
+        "\"[1 [3 2 1] [1 2 3] [3 2 1] [{:k 3} {:k 2} {:k 1}]]\"\n"
+    );
+
+    // extend-type Keyword and Symbol IComparable override compare and sorted-map.
+    assert_eq!(
+        run(r#"
+        (extend-type Keyword IComparable (-compare [a b] (compare (name b) (name a))))
+        (extend-type Symbol IComparable (-compare [a b] (compare (name b) (name a))))
+        (pr-str
+          [(compare :a :b)
+           (vec (keys (into (sorted-map) {:a 1 :b 2 :c 3})))
+           (compare 'a 'b)
+           (vec (keys (sorted-map 'a 1 'b 2 'c 3)))])"#),
+        "\"[1 [:c :b :a] 1 [c b a]]\"\n"
+    );
+
+    // specify! on a keyword instance overrides compare for that instance.
+    assert_eq!(
+        run(r#"
+        (let [k (specify! (keyword "a") IComparable (-compare [_ _] 42))]
+          (pr-str [(compare k :z) (compare :a :z)]))"#),
+        "\"[42 -1]\"\n"
+    );
+
+    // extend-type string IComparable overrides compare on strings.
+    assert_eq!(
+        run(r#"
+        (extend-type string IComparable (-compare [a b] (compare (count a) (count b))))
+        (pr-str
+          [(compare "zzz" "aa")
+           (vec (keys (sorted-map "bbb" 1 "a" 2 "cc" 3)))])"#),
+        "\"[1 [\\\"a\\\" \\\"cc\\\" \\\"bbb\\\"]]\"\n"
+    );
+
+    // Escaped -compare dispatcher patched on "string" disables string fast path.
+    assert_eq!(
+        run(r#"
+        (aset -compare "string" (fn [a b] (compare (count b) (count a))))
+        (pr-str [(compare "a" "bb") (compare "ccc" "bb")])"#),
+        "\"[1 -1]\"\n"
+    );
+
+    // extend-type default IComparable applies to strings/host objects (and via
+    // recursive compareKeys on keyword/symbol names, matching None/Prepare/Advanced).
+    assert_eq!(
+        run(r#"
+        (extend-type default IComparable (-compare [_ _] 9))
+        (pr-str [(compare :a :b) (compare 'a 'b) (compare "a" "b") (compare #js {} #js {})])"#),
+        "\"[9 9 9 9]\"\n"
+    );
+}
+
+/// light-cljs-1086: `into` onto a sorted map and `conj` of map entries onto a
+/// sorted map preserve metadata and respect `extend-type`/`specify!` overrides
+/// on `MapEntry` (`IIndexed`), `PersistentTreeMap` (`IAssociative`,
+/// `IEditableCollection`), and re-entrant comparators.
+#[test]
+fn sorted_map_into_and_conj_respect_protocol_overrides() {
+    let run = |source: &str| super::optimization::json_at_every_level(source);
+
+    // Metadata preservation, duplicate keys, empty sorted-map, and re-entrant comparator.
+    assert_eq!(
+        run(r#"
+        (let [m0 (with-meta (sorted-map) {:tag :meta})
+              m1 (into m0 {:c 3 :a 1 :b 2})
+              m2 (into m1 [[:b 20] [:d 4]])
+              side (atom (sorted-map))
+              re-cmp (fn [a b] (swap! side assoc a b) (compare a b))
+              m3 (into (sorted-map-by re-cmp) {:b 2 :a 1 :c 3})]
+          (pr-str
+            [(vec (keys m1)) (vec (vals m1)) (meta m1)
+             (vec (keys m2)) (get m2 :b) (meta m2)
+             (vec (keys m3)) (count @side)]))"#),
+        "\"[[:a :b :c] [1 2 3] {:tag :meta} [:a :b :c :d] 20 {:tag :meta} [:a :b :c] 2]\"\n"
+    );
+
+    // extend-type MapEntry IIndexed is respected by (into (sorted-map) m).
+    assert_eq!(
+        run(r#"
+        (let [orig (.-cljs$core$IIndexed$_nth$arity$2 (.-prototype MapEntry))
+              seen (atom 0)]
+          (extend-type MapEntry
+            IIndexed
+            (-nth ([e i] (swap! seen inc) (if (zero? i) (.call orig e e 0) (+ 100 (.call orig e e 1))))
+                  ([e i nf] (if (or (= i 0) (= i 1)) (-nth e i) nf))))
+          (let [m (into (sorted-map) {:a 1 :b 2})]
+            (pr-str [@seen (get m :a) (get m :b)])))"#),
+        "\"[4 101 102]\"\n"
+    );
+
+    // extend-type PersistentTreeMap IAssociative is respected by (into (sorted-map) m).
+    assert_eq!(
+        run(r#"
+        (let [orig (.-cljs$core$IAssociative$_assoc$arity$3 (.-prototype PersistentTreeMap))
+              calls (atom 0)]
+          (extend-type PersistentTreeMap
+            IAssociative
+            (-assoc [m k v] (swap! calls inc) (.call orig m m k (+ v 10))))
+          (let [m (into (sorted-map) {:a 1 :b 2})]
+            (pr-str [@calls (get m :a) (get m :b)])))"#),
+        "\"[2 11 12]\"\n"
+    );
+
+    // specify! on a sorted-map instance's IAssociative is respected by conj.
+    assert_eq!(
+        run(r#"
+        (let [calls (atom 0)
+              m (specify! (sorted-map)
+                  IAssociative
+                  (-assoc [self k v] (swap! calls inc) [:custom k v]))
+              res (conj m (first {:a 1}))]
+          (pr-str [@calls res]))"#),
+        "\"[1 [:custom :a 1]]\"\n"
+    );
+
+    // extend-type PersistentTreeMap IEditableCollection is respected by into.
+    assert_eq!(
+        run(r#"
+        (let [used (atom false)]
+          (extend-type PersistentTreeMap
+            IEditableCollection
+            (-as-transient [m]
+              (reset! used true)
+              (let [state (atom m)]
+                (reify
+                  ITransientCollection
+                  (-conj! [this entry] (swap! state conj entry) this)
+                  (-persistent! [_] @state)))))
+          (let [m (into (sorted-map) {:b 2 :a 1})]
+            (pr-str [@used (vec (keys m))])))"#),
+        "\"[true [:a :b]]\"\n"
+    );
+}
