@@ -795,8 +795,11 @@ fn core_operations_call_their_site_entries() {
         js.contains("return __light0_rt$getSite(__light0_l14, __light0_k1);"),
         "{js}"
     );
+    // `R`'s own `-lookup` kit delegates extmap lookups to `rt$get` (light-cljs-1082);
+    // no user-level operation falls back to `rt$get`.
+    let without_record_extmap_get = js.replace("rt$get(this[\"__extmap\"]", "");
     for call in ["rt$count(", "rt$get(", "rt$nth(", "rt$first(", "rt$seq("] {
-        assert!(!js.contains(call), "{call}: {js}");
+        assert!(!without_record_extmap_get.contains(call), "{call}: {js}");
     }
     // A program that can give a host object a core protocol slot keeps the
     // operations' own calls, which read a value's keyed kind first:
@@ -1210,9 +1213,13 @@ fn parameters_with_unseen_or_mixed_callers_keep_the_runtime_operations() {
     for kept in ["rt$countSite(", "rt$equal(", "rt$nthSite(", "truth("] {
         assert!(js.contains(kept), "{kept}: {js}");
     }
-    // `P`'s own `-equiv` compares constructors with `===`, as the shared
-    // method does (light-cljs-388); no `=` is lowered to one.
-    let js = js.replace("this.constructor === a1.constructor", "");
+    // `P`'s own `-equiv`, `-lookup`, and `-assoc` kits compare constructors and
+    // field keywords with `===` (light-cljs-388, light-cljs-1082); no `=` is
+    // lowered to one.
+    let js = js
+        .replace("this.constructor === a1.constructor", "")
+        .replace("a1 === k0", "")
+        .replace("rt$keywordFqn(a1) === \"x\"", "");
     for lowered in [").length", "rt$vectorNth(", ")[\"x\"]", " === "] {
         assert!(!js.contains(lowered), "{lowered}: {js}");
     }

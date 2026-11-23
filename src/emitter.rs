@@ -1771,8 +1771,15 @@ fn record_direct_runtime_read(
 }
 
 /// Write a record type's constructor reference inside a `new ...(...)` call.
-fn write_record_ctor(program: &Program, out: &mut String, global: GlobalId) {
+/// For a sole top-level record (`sole`), the global is immutable and matches
+/// the defining `Type`; otherwise fall back to `this.cljs$lang$record$$LKEY`
+/// (the defining `Type` set by `decorateType`) so a `nil` rebind (e.g.
+/// `with-redefs [R nil]`) matches `Type.currentConstructor?.() ?? Type`.
+fn write_record_ctor(program: &Program, out: &mut String, global: GlobalId, sole: bool) {
     let name = &program.globals[global.0].name;
+    if !sole {
+        out.push('(');
+    }
     if name.contains('.') {
         let path = crate::analyzer::munge_js_path(name);
         out.push_str("(host(");
@@ -1785,12 +1792,17 @@ fn write_record_ctor(program: &Program, out: &mut String, global: GlobalId) {
     } else {
         write!(out, "g{}", global.0).unwrap();
     }
+    if !sole {
+        out.push_str(" ?? this.cljs$lang$record$$LKEY)");
+    }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_record_kit_into(
     program: &Program,
     out: &mut String,
     expr: ExprId,
+    sole: bool,
     kits: RecordKits,
     field_keywords: &HashMap<&str, usize>,
     runtime: &mut RuntimeRoots,
@@ -1934,60 +1946,73 @@ fn write_record_kit_into(
             .then(|| record_direct_runtime_read(runtime, "keywordFqn", Some(expr)));
         out.push_str("[\"cljs$core$IAssociative$_assoc$arity$3$LKEY\", 3, function(a0, a1, a2) { ");
         if fields.is_empty() {
-            out.push_str("return new ");
-            write_record_ctor(program, out, *global);
-            out.push_str("(this");
+            out.push_str("const m = this");
             write_member(out, "__meta");
-            out.push_str(", ");
+            out.push_str(", e = ");
             out.push_str(&assoc_fn);
             out.push_str("(this");
             write_member(out, "__extmap");
-            out.push_str(", a1, a2), null); }]");
+            out.push_str(", a1, a2); return new ");
+            write_record_ctor(program, out, *global, sole);
+            out.push_str("(m, e, null); }]");
+        } else if fields.len() == 1 {
+            let cid = field_keywords[fields[0].as_str()];
+            write!(
+                out,
+                "const h = a1 === k{cid} || {}(a1) === ",
+                kw_fqn.as_deref().unwrap()
+            )
+            .unwrap();
+            write_string(out, fields[0].encode_utf16(), true);
+            out.push_str("; let m, e; if (!h) { m = this");
+            write_member(out, "__meta");
+            out.push_str("; e = ");
+            out.push_str(&assoc_fn);
+            out.push_str("(this");
+            write_member(out, "__extmap");
+            out.push_str(", a1, a2); } return new ");
+            write_record_ctor(program, out, *global, sole);
+            out.push_str("(h ? a2 : this");
+            write_member(out, &members[0]);
+            out.push_str(", h ? this");
+            write_member(out, "__meta");
+            out.push_str(" : m, h ? this");
+            write_member(out, "__extmap");
+            out.push_str(" : e, null); }]");
         } else {
-            out.push_str("let ");
+            out.push_str("let i = -1; ");
+            for (index, field) in fields.iter().enumerate() {
+                let cid = field_keywords[field.as_str()];
+                if index > 0 {
+                    out.push_str("else ");
+                }
+                write!(out, "if (a1 === k{cid}) i = {index}; ").unwrap();
+            }
+            write!(out, "else switch ({}(a1)) {{ ", kw_fqn.as_deref().unwrap()).unwrap();
+            for (index, field) in fields.iter().enumerate() {
+                out.push_str("case ");
+                write_string(out, field.encode_utf16(), true);
+                write!(out, ": i = {index}; break; ").unwrap();
+            }
+            out.push_str("} let m, e; if (i < 0) { m = this");
+            write_member(out, "__meta");
+            out.push_str("; e = ");
+            out.push_str(&assoc_fn);
+            out.push_str("(this");
+            write_member(out, "__extmap");
+            out.push_str(", a1, a2); } return new ");
+            write_record_ctor(program, out, *global, sole);
+            out.push('(');
             for (index, member) in members.iter().enumerate() {
-                write!(out, "v{index} = this").unwrap();
+                write!(out, "i === {index} ? a2 : this").unwrap();
                 write_member(out, member);
                 out.push_str(", ");
             }
-            out.push_str("e = this");
-            write_member(out, "__extmap");
-            out.push_str("; ");
-            if fields.len() == 1 {
-                let cid = field_keywords[fields[0].as_str()];
-                write!(
-                    out,
-                    "if (a1 === k{cid} || {}(a1) === ",
-                    kw_fqn.as_deref().unwrap()
-                )
-                .unwrap();
-                write_string(out, fields[0].encode_utf16(), true);
-                write!(out, ") v0 = a2; else e = {assoc_fn}(e, a1, a2); ").unwrap();
-            } else {
-                for (index, field) in fields.iter().enumerate() {
-                    let cid = field_keywords[field.as_str()];
-                    if index > 0 {
-                        out.push_str("else ");
-                    }
-                    write!(out, "if (a1 === k{cid}) v{index} = a2; ").unwrap();
-                }
-                write!(out, "else switch ({}(a1)) {{ ", kw_fqn.as_deref().unwrap()).unwrap();
-                for (index, field) in fields.iter().enumerate() {
-                    out.push_str("case ");
-                    write_string(out, field.encode_utf16(), true);
-                    write!(out, ": v{index} = a2; break; ").unwrap();
-                }
-                write!(out, "default: e = {assoc_fn}(e, a1, a2); }} ").unwrap();
-            }
-            out.push_str("return new ");
-            write_record_ctor(program, out, *global);
-            out.push('(');
-            for index in 0..fields.len() {
-                write!(out, "v{index}, ").unwrap();
-            }
-            out.push_str("this");
+            out.push_str("i < 0 ? m : this");
             write_member(out, "__meta");
-            out.push_str(", e, null); }]");
+            out.push_str(", i < 0 ? e : this");
+            write_member(out, "__extmap");
+            out.push_str(", null); }]");
         }
     }
     out.push(']');
@@ -2022,6 +2047,7 @@ fn splice_record_kits_into(
             program,
             &mut spliced,
             site.expr,
+            site.sole,
             kits,
             field_keywords,
             runtime,
@@ -2964,6 +2990,9 @@ struct RecordKitSite {
     expr: ExprId,
     /// Prefix emitted before the kit: `""`, `", "`, or `", null, "`.
     prefix: &'static str,
+    /// Whether the record's global is a sole top-level definition (never
+    /// rebound), matching [`Emitter::sole_type`].
+    sole: bool,
 }
 
 /// Pre-scanned locals passed directly to `js*` templates
@@ -9102,6 +9131,7 @@ impl<'a, 's> Emitter<'a, 's> {
                         range: start..self.output.len(),
                         expr: id,
                         prefix: "",
+                        sole,
                     });
                     self.output.push_str(", true");
                 } else {
@@ -9110,6 +9140,7 @@ impl<'a, 's> Emitter<'a, 's> {
                         range: at..at,
                         expr: id,
                         prefix: if sole { ", null, " } else { ", " },
+                        sole,
                     });
                 }
             } else if markers {

@@ -1567,6 +1567,34 @@ mod tests {
                             mapped_final, final1,
                             "mapped text diverged from unmapped for {label} {level} pseudo={pseudo_names} mod={module}"
                         );
+                        if label == "records-lookup-assoc" && level.advanced() && pseudo_names {
+                            // Verify parallel emission splices per-type lookup (both arities) and
+                            // assoc kits into each defineType call, including the hoisted Nested record.
+                            for name in [
+                                "\"cljs.user/Box a b-c\"",
+                                "\"cljs.user/Empty\"",
+                                "\"cljs.user/Nested unmentioned\"",
+                            ] {
+                                let start = final1
+                                    .find(name)
+                                    .unwrap_or_else(|| panic!("missing {name} in {final1}"));
+                                let end = final1[start..]
+                                    .find('\n')
+                                    .map(|offset| start + offset)
+                                    .unwrap_or(final1.len());
+                                let def = &final1[start..end];
+                                for expected in [
+                                    "cljs$core$ILookup$_lookup$arity$2$",
+                                    "cljs$core$ILookup$_lookup$arity$3$",
+                                    "cljs$core$IAssociative$_assoc$arity$3$",
+                                ] {
+                                    assert!(
+                                        def.contains(expected),
+                                        "{name} missing {expected} ({level} mod={module}): {def}"
+                                    );
+                                }
+                            }
+                        }
                         if label == "records-and-hoisted" {
                             for needle in ["\"after-hoisted-record\"", "\"after-main-record\""] {
                                 let expected_byte = source.find(needle).unwrap();

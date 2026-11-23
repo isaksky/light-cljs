@@ -534,7 +534,10 @@ impl RuntimeRoots {
         };
         let [equiv, hash, lookup, assoc] = RECORD_KIT_UNITS.map(kept);
         let lookup_used = RECORD_LOOKUP_USES.iter().any(|name| kept(name))
-            || self.names.iter().any(|(name, ..)| name.binding == "get");
+            || self
+                .names
+                .iter()
+                .any(|(name, ..)| matches!(name.binding, "get" | "getOf"));
         RecordKits {
             equiv: equiv && RECORD_EQUIV_USES.iter().any(|name| kept(name)),
             hash,

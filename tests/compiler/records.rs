@@ -793,3 +793,100 @@ fn advanced_records_lookup_and_assoc_with_their_own_methods() {
         "{definitions}"
     );
 }
+
+#[test]
+fn record_assoc_falls_back_when_constructor_is_rebound_to_nil() {
+    assert_eq!(
+        run("(defrecord E [])
+             (defrecord R [x])
+             (defrecord M [x y])
+             (let [e @(atom (->E))
+                   r @(atom (->R 1))
+                   m @(atom (->M 1 2))]
+               (with-redefs [E nil R nil M nil]
+                 (let [e2 (assoc e :z 9)
+                       r2 (assoc r :x 2)
+                       r3 (assoc r :ext 3)
+                       m2 (assoc m :x 10)
+                       m3 (assoc m :ext 20)]
+                   (array (:z e2) (.-x r2) (:x r2) (.-x r3) (:ext r3)
+                          (.-x m2) (.-y m2) (.-x m3) (.-y m3) (:ext m3)))))"),
+        "[9,2,2,1,3,10,2,1,2,20]\n"
+    );
+}
+
+#[test]
+fn record_assoc_preserves_field_read_order() {
+    assert_eq!(
+        run("(defrecord E [])
+             (defrecord One [x])
+             (defrecord Pair [x y])
+             (let [events (array)
+                   install-throwing (fn [r prop]
+                                      (js/Object.defineProperty r prop
+                                        (js-obj \"get\" (fn [] (throw (js/Error. (str \"read-\" prop)))))))
+                   o (install-throwing (->One 1) \"x\")
+                   p (install-throwing (->Pair 1 2) \"x\")
+                   o-hit (assoc o :x 42)
+                   p-hit (assoc p :x 99)
+                   mut-ext (fn [r target]
+                             (specify! (js-obj)
+                               IAssociative
+                               (-assoc [_ k v]
+                                 (.push events \"ext\")
+                                 (when target (aset r target 22))
+                                 (aset r \"__meta\" {:after true})
+                                 (hash-map k v))))
+                   e0 (with-meta (->E) {:before true})
+                   _ (aset e0 \"__extmap\" (mut-ext e0 nil))
+                   o0 (with-meta (->One 1) {:before true})
+                   _ (aset o0 \"__extmap\" (mut-ext o0 \"x\"))
+                   p0 (with-meta (->Pair 1 2) {:before true})
+                   _ (aset p0 \"__extmap\" (mut-ext p0 \"x\"))
+                   e-miss (assoc e0 :extra 7)
+                   o-miss (assoc o0 :extra 8)
+                   p-miss (assoc p0 :extra 9)
+                   ;; On a zero-field record miss, constructor resolution runs after extmap -assoc.
+                   ctor-events (array)
+                   e-rebind (with-meta (->E) {:rebind true})
+                   _ (aset e-rebind \"__extmap\"
+                       (specify! (js-obj)
+                         IAssociative
+                         (-assoc [_ k v]
+                           (.push ctor-events \"ext-before-ctor\")
+                           (set! E (fn [m ext h]
+                                     (.push ctor-events \"rebound-ctor\")
+                                     (js-obj \"m\" m \"ext\" ext \"h\" h)))
+                           (hash-map k v))))
+                   e-rebound (assoc e-rebind :z 1)]
+               (array (.-x o-hit) (.-x p-hit) (.-y p-hit)
+                      (:extra e-miss) (:before (meta e-miss)) (:after (meta e-miss))
+                      (.-x o-miss) (:extra o-miss) (:before (meta o-miss))
+                      (.-x p-miss) (.-y p-miss) (:extra p-miss) (:before (meta p-miss))
+                      (.-length events)
+                      (aget ctor-events 0) (aget ctor-events 1)
+                      (:rebind (aget e-rebound \"m\")) (:z (aget e-rebound \"ext\"))))"),
+        "[42,99,2,7,true,null,22,8,true,22,2,9,true,3,\"ext-before-ctor\",\"rebound-ctor\",true,1]\n"
+    );
+}
+
+#[test]
+fn advanced_records_emit_lookup_kits_for_named_slots() {
+    let source = "(defrecord R [x])
+                  (let [r @(atom (->R 1))]
+                    (array (.cljs$core$ILookup$_lookup$arity$2 r r :x)
+                           (.cljs$core$ILookup$_lookup$arity$3 r r :missing \"nf\")))";
+    let program = light_cljs::analyze(source, &light_cljs::parse(source).unwrap()).unwrap();
+    let js = light_cljs::prepare_application(
+        &program,
+        super::optimization::readable(light_cljs::OptimizationLevel::Advanced),
+    )
+    .emit_js();
+    let definitions = &js[js.find("rt$defineType(function Type").unwrap()..];
+    assert!(
+        definitions.contains("cljs$core$ILookup$_lookup$arity$2$")
+            && definitions.contains("cljs$core$ILookup$_lookup$arity$3$"),
+        "{definitions}"
+    );
+    assert_eq!(run(source), "[1,\"nf\"]\n");
+}
