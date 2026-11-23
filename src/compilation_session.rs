@@ -8622,7 +8622,11 @@ mod retention_tests {
                 self.evaluations.set(self.evaluations.get() + 1);
                 Err(EvalError("native stub must not evaluate JS wrappers".into()))
             }
-            fn call(&self, _function: ValueId, _arguments: &[ValueId]) -> Result<ValueId, EvalError> {
+            fn call(
+                &self,
+                _function: ValueId,
+                _arguments: &[ValueId],
+            ) -> Result<ValueId, EvalError> {
                 self.calls.set(self.calls.get() + 1);
                 Err(EvalError("native stub must not call JS wrappers".into()))
             }
@@ -8689,8 +8693,20 @@ mod retention_tests {
             assert_eq!(stub.evaluations.get(), 0);
             assert_eq!(stub.calls.get(), 0);
             assert!(host.engine.work_cache.gensym_log_enabled.get());
-            assert!(host.engine.work_cache.take_namespaces_handle(true).get().is_none());
-            assert!(host.engine.work_cache.take_namespaces_handle(false).get().is_none());
+            assert!(
+                host.engine
+                    .work_cache
+                    .take_namespaces_handle(true)
+                    .get()
+                    .is_none()
+            );
+            assert!(
+                host.engine
+                    .work_cache
+                    .take_namespaces_handle(false)
+                    .get()
+                    .is_none()
+            );
         }
     }
 }

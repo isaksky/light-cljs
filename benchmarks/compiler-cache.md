@@ -983,14 +983,13 @@ memory is from `/usr/bin/time -l` (GB = 10^9 bytes, MiB in parentheses).
 | `re-frame-200k-seed42` | cold `--cache-dir --jobs 8` (median of 3) | base `c405fe2e` | 7,461.1 (7,345.6–7,523.7) | 4,275.8 (4,256.4–4,362.5) | 3,643 | 2,591.6 (2,580.7–2,645.1) | 98,498 | 1.371 GB (1.357–1.382) |
 | `re-frame-200k-seed42` | cold `--cache-dir --jobs 8` (median of 3) | candidate `8662934e` | 7,073.6 (6,982.6–7,182.5) (-5.2%) | 3,567.5 (3,542.7–3,582.8) (-16.6%) | 2,436 (-33.1%) | 1,729.8 (1,721.0–1,736.8) (-33.3%) | 96,318 (-2.2%) | 1.331 GB (1.315–1.354) |
 
-- *Parity.* Emitted `out/light/workload.main.js` is byte-identical between base
-  and candidate at each `--jobs` value and between `--no-cache` and cold
-  `--cache-dir` at the same `--jobs` (`workload-200k-seed42` `j=1` SHA-256
-  `94a7f9e2e894`, 3,386,878 bytes; `j=8` `4a4f9189a188`, 3,386,824 bytes;
-  `re-frame-200k-seed42` `j=1` `4946b32bc6bd`, 5,565,520 bytes; `j=8`
-  `e934a4528dc7`, 5,565,482 bytes). Every build matches `bb oracle.bb 42 3`
-  via `node run-light.mjs 42 3` (`484264` plain; `714878 117718` re-frame) and
-  passes `bb check-waste.bb --strict`.
+- *Parity (post-rebase verification at `1b98cb78` on `master` `6f50f0b0`, unreserved load 4.49).* Emitted `out/light/workload.main.js` is byte-identical between `--no-cache` and cold `--cache-dir` at each `--jobs` value (and matches pre-rebase base hashes at each `--jobs`), with equivalent `:advanced` gzip-9 sizes across `--jobs 1` and `--jobs 8` (under the group's cross-job symbol-numbering decision):
+  - `workload-200k-seed42` (oracle `bb oracle.bb 42 3` = `node run-light.mjs 42 3` = `484264`; `bb check-waste.bb --strict` passes on all 4 builds):
+    - `--no-cache --jobs 1` & cold `--cache-dir --jobs 1`: SHA-256 `94a7f9e2e894`, raw `3,386,878` B, gzip-9 `824,796` B (`trace.units.host` 2,580 vs 2,580; peak memory 0.916 GB vs 0.959 GB).
+    - `--no-cache --jobs 8` & cold `--cache-dir --jobs 8`: SHA-256 `4a4f9189a188`, raw `3,386,824` B, gzip-9 `825,152` B (+0.04% vs `j=1`; `time.worker-units-ms` 3,270.0 ms vs 3,666.7 ms; `trace.units.host` 2,498 vs 2,406; peak memory 1.147 GB vs 1.095 GB).
+  - `re-frame-200k-seed42` (oracle `bb oracle.bb 42 3` = `node run-light.mjs 42 3` = `714878 117718`; `bb check-waste.bb --strict` passes on all 4 builds):
+    - `--no-cache --jobs 1` & cold `--cache-dir --jobs 1`: SHA-256 `4946b32bc6bd`, raw `5,565,520` B, gzip-9 `1,039,448` B (`trace.units.host` 4,642 vs 4,642; peak memory 1.192 GB vs 1.225 GB).
+    - `--no-cache --jobs 8` & cold `--cache-dir --jobs 8`: SHA-256 `e934a4528dc7`, raw `5,565,482` B, gzip-9 `1,039,480` B (+0.003% vs `j=1`; `time.worker-units-ms` 3,403.0 ms vs 3,677.2 ms; `trace.units.host` 2,464 vs 2,436; peak memory 1.329 GB vs 1.266 GB).
 - *Targets.* On `workload-200k-seed42` cold `--jobs 8`, `time.worker-units-ms`
   drops to 3,521.0 ms (<= 4,100 ms target) and `trace.units.host` drops to
   2,406 (<= 2,600 target; `j=1` drops from 13,464 to 2,580, matching
