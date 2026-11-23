@@ -912,3 +912,31 @@ fn dead_function_with_core_mutation_does_not_block_folding_after_compaction() {
     assert!(!text.contains("rt$add"), "{text}");
     assert!(!text.contains("rt$equal"), "{text}");
 }
+
+/// Inlining a call that sits in a property-assignment receiver can expose a
+/// core replacement (`PersistentVector.EMPTY`); facts must refresh before the
+/// next fold so `(count [])` is not folded to `0`.
+#[test]
+fn inlining_exposes_core_empty_replacement_before_folding() {
+    let source = r#"
+        (defn vector-type [] cljs.core/PersistentVector)
+        (defn size [xs] (count xs))
+        (set! (.-EMPTY (vector-type)) [1])
+        (size [])"#;
+    every_level(source, "1");
+}
+
+/// An unused inert function that assigns a `deftype` constructor is dropped by
+/// initial retention and compaction; refreshing facts lets `core_protocols_intact`
+/// recover so constant folding still fires.
+#[test]
+fn dead_type_assignment_does_not_block_folding_after_compaction() {
+    let source = r#"
+        (deftype T [x])
+        (defn dead [] (set! T nil))
+        (extend-type T IHash (-hash [_] 0))
+        (count [1 2])"#;
+    let (text, stats) = every_level(source, "2");
+    assert!(stats.folded_expressions >= 1, "{stats:?}");
+    assert!(!text.contains("rt$count"), "{text}");
+}

@@ -8,7 +8,11 @@ use crate::program_fragment::visit_children;
 use std::collections::HashMap;
 
 #[cfg(test)]
-thread_local! { static PREPARATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+thread_local! {
+    static PREPARATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static RETAINS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static SIMPLIFY_CALL_SHAPES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 /// How much whole-program work application preparation does before emission.
 /// Levels are ordered: each one includes everything the previous one does.
@@ -785,10 +789,12 @@ pub fn prepare_owned_application_with_slots(
                 facts.discard_tables();
             }
         }
+        facts.clear_pessimistic();
         // Literals the program builds at each evaluation stay built, however
         // constant their items become.
         let mut built = crate::folding::built_literals(&prepared.program);
         let mut prev_inlined = 0;
+        let mut prev_removed = 0;
         for round in 0..SIMPLIFY_ROUNDS {
             let folded = if options.no_folding {
                 0
@@ -796,21 +802,34 @@ pub fn prepare_owned_application_with_slots(
                 crate::folding::fold_with_facts(&mut prepared.program, &mut built, &facts)
             };
             prepared.stats.folded_expressions += folded;
-            if round > 0 && folded == 0 && prev_inlined == 0 {
+            if round > 0 && folded == 0 && prev_inlined == 0 && prev_removed == 0 {
                 break;
             }
-            if folded > 0 || prev_inlined > 0 {
+            if folded > 0 || prev_inlined > 0 || prev_removed > 0 {
+                // Release prior buffers before building the next retain pass.
+                retained.top = Vec::new();
+                retained.candidates = Vec::new();
+                retained.pinned = Vec::new();
                 retained = retain(&mut prepared, &options.exports);
                 facts = retained.facts.take().expect("advanced retain builds facts");
+                facts.clear_pessimistic();
+                prev_removed = retained.removed;
+                if round > 0 && folded == 0 && prev_inlined == 0 && prev_removed == 0 {
+                    break;
+                }
+            } else {
+                prev_removed = 0;
             }
             if round + 1 == SIMPLIFY_ROUNDS {
                 break;
             }
-            let inlined = if options.no_inlining {
-                0
+            let (inlined, invalidated_facts) = if options.no_inlining {
+                (0, false)
             } else {
+                #[cfg(test)]
+                SIMPLIFY_CALL_SHAPES.with(|count| count.set(count.get() + 1));
                 let shapes = crate::call_shapes::analyze(&prepared.program, None, &options.exports);
-                crate::inlining::inline_with_facts(
+                crate::inlining::inline_with_facts_checked(
                     &mut prepared.program,
                     &shapes,
                     &mut growth,
@@ -820,7 +839,15 @@ pub fn prepare_owned_application_with_slots(
             };
             prepared.stats.inlined_calls += inlined;
             prev_inlined = inlined;
-            if inlined == 0 && folded == 0 {
+            if invalidated_facts {
+                let mut top = Vec::new();
+                flatten(&prepared.program, prepared.program.root, true, &mut top);
+                let top_ids: Vec<ExprId> = top.into_iter().map(|(id, _)| id).collect();
+                facts = ProgramFacts::new_light(&prepared.program, &top_ids);
+                facts.discard_tables();
+                facts.clear_pessimistic();
+            }
+            if inlined == 0 && folded == 0 && prev_removed == 0 {
                 break;
             }
         }
@@ -834,6 +861,7 @@ pub fn prepare_owned_application_with_slots(
         candidates,
         pinned,
         raw,
+        removed: _,
         facts: _,
     } = retained;
     if level.prepares() && !raw {
@@ -943,6 +971,8 @@ struct Retained {
     pinned: Vec<bool>,
     /// Below `Advanced`: a retained `js*` made every top-level form a root.
     raw: bool,
+    /// Definitions removed by this retain pass.
+    removed: usize,
     /// Lightweight post-retain facts at `Advanced`, reused by `folding` and
     /// `inlining` (light-cljs-1098).
     facts: Option<ProgramFacts>,
@@ -953,6 +983,8 @@ struct Retained {
 /// `exports`), and remove the candidate definitions of unread globals.
 /// `Advanced` runs it again after folding and inlining.
 fn retain(prepared: &mut PreparedApplication, exports: &[GlobalId]) -> Retained {
+    #[cfg(test)]
+    RETAINS.with(|count| count.set(count.get() + 1));
     let level = prepared.level;
     let program = &prepared.program;
     let mut top = Vec::new();
@@ -1047,6 +1079,7 @@ fn retain(prepared: &mut PreparedApplication, exports: &[GlobalId]) -> Retained 
         candidates,
         pinned,
         raw,
+        removed,
         facts,
     }
 }
@@ -2075,5 +2108,33 @@ mod tests {
             }
         }
         assert!(saw_protocol && saw_record);
+    }
+    #[test]
+    fn retain_rechecks_alias_after_removing_nested_redefinition() {
+        let source = "(defn f [x] x) (defn dead [] (def f (fn [x] x))) (def alias f) (if false (dead) nil) 42";
+        let p = crate::analyze(source, &crate::parse(source).unwrap()).unwrap();
+        let prepared = prepare_owned_application_with_slots(
+            p,
+            ApplicationOptions::new(OptimizationLevel::Advanced),
+            crate::scheduler::Slots::ONE,
+        );
+        assert_eq!(prepared.stats().removed_definitions, 3);
+    }
+    #[test]
+    fn simplify_skips_stable_round_tail() {
+        let source = "(js/console.log (+ 1 2)) 42";
+        let p = crate::analyze(source, &crate::parse(source).unwrap()).unwrap();
+        RETAINS.with(|count| count.set(0));
+        SIMPLIFY_CALL_SHAPES.with(|count| count.set(0));
+        let prepared = prepare_owned_application_with_slots(
+            p,
+            ApplicationOptions::new(OptimizationLevel::Advanced),
+            crate::scheduler::Slots::ONE,
+        );
+        assert_eq!(prepared.stats().folded_expressions, 1);
+        assert_eq!(prepared.stats().inlined_calls, 0);
+        // Initial retain + round 0 post-fold retain; round 1 skips retain and call_shapes.
+        RETAINS.with(|count| assert_eq!(count.get(), 2));
+        SIMPLIFY_CALL_SHAPES.with(|count| assert_eq!(count.get(), 1));
     }
 }

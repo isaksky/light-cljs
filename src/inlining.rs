@@ -67,6 +67,7 @@ use crate::core_operations::{Calls, Purity};
 use crate::folding::{NOWHERE, constant_like};
 use crate::inference::ProgramFacts;
 use crate::program_fragment::visit_children;
+use std::collections::HashSet;
 
 /// The most expressions a body inlined at every call may have.
 pub const INLINE_BUDGET: usize = 10;
@@ -142,9 +143,35 @@ pub fn inline_with_facts(
     built: &mut Vec<bool>,
     facts: &ProgramFacts,
 ) -> usize {
+    inline_with_facts_checked(program, shapes, growth, built, facts).0
+}
+
+/// [`inline_with_facts`], also reporting whether any inlined call sat in a
+/// position that [`ProgramFacts`] inspects directly (assignment target or
+/// receiver, raw JS hole, or `extend-type` target), so callers know whether
+/// cached facts must refresh before the next fold.
+pub(crate) fn inline_with_facts_checked(
+    program: &mut Program,
+    shapes: &CallShapes,
+    growth: &mut usize,
+    built: &mut Vec<bool>,
+    facts: &ProgramFacts,
+) -> (usize, bool) {
     let count = program.exprs.len();
     let mut top = Vec::new();
     flatten(program, program.root, &mut top);
+
+    // Expressions whose rewrite could expose a new `CoreFn`, `Global`,
+    // `Property` or `JsGlobal` directly inspected by `ProgramFacts::build`.
+    let mut fact_sites: HashSet<ExprId> = HashSet::new();
+    let record_assign_site = |program: &Program, target: ExprId, sites: &mut HashSet<ExprId>| {
+        sites.insert(target);
+        if let ExprKind::Property { receiver, .. } | ExprKind::JsIndex { receiver, .. } =
+            program.exprs[target.0].kind
+        {
+            sites.insert(receiver);
+        }
+    };
 
     // Walk each top-level form in order, children first, recording each
     // expression's parent count, the first form that reaches it, the
@@ -175,6 +202,25 @@ pub fn inline_with_facts(
             }
             if std::mem::replace(&mut visited[id.0], true) {
                 continue;
+            }
+            match &program.exprs[id.0].kind {
+                ExprKind::SetGlobal { target, .. } => {
+                    record_assign_site(program, *target, &mut fact_sites);
+                }
+                ExprKind::Binding { bindings, .. } => {
+                    for (target, _) in bindings {
+                        record_assign_site(program, *target, &mut fact_sites);
+                    }
+                }
+                ExprKind::JsTemplate { args, .. } => {
+                    for arg in args {
+                        record_assign_site(program, *arg, &mut fact_sites);
+                    }
+                }
+                ExprKind::ExtendType { target, .. } => {
+                    fact_sites.insert(*target);
+                }
+                _ => (),
             }
             position[id.0] = index as u32;
             pending.push((id, true));
@@ -208,6 +254,7 @@ pub fn inline_with_facts(
     }
 
     let mut inlined = 0;
+    let mut invalidated_facts = false;
     for call in calls {
         let Some(direct) = shapes.call(call) else {
             continue;
@@ -387,9 +434,10 @@ pub fn inline_with_facts(
         if !single {
             *growth -= body.nodes;
         }
+        invalidated_facts |= fact_sites.contains(&call);
         inlined += 1;
     }
-    inlined
+    (inlined, invalidated_facts)
 }
 
 /// Whether inlining a body of `body` expressions at a call with `arguments`

@@ -978,7 +978,13 @@ pub fn fold_with_facts(
     // they replaced in the arena, whose reads no longer count.
     let mut parents = vec![0u8; count];
     let mut reached = vec![false; count];
-    let reads = reachable_reads(program, Some(&mut parents), &mut reached);
+    let mut reached_lets = Vec::new();
+    let reads = reachable_reads(
+        program,
+        Some(&mut parents),
+        &mut reached,
+        Some(&mut reached_lets),
+    );
 
     let mut kept = vec![false; count];
     kept[program.root.0] = true;
@@ -1018,7 +1024,20 @@ pub fn fold_with_facts(
     };
     let root = folder.program.root;
     folder.visit(root);
-    if folder.folded > 0 || folder.saw_shared_unread_let {
+    let has_skipped_unread_let = !(folder.folded > 0 || folder.saw_shared_unread_let)
+        && reached_lets.into_iter().any(|index| {
+            !folder.visited[index]
+                && matches!(
+                    &folder.program.exprs[index].kind,
+                    ExprKind::Let { bindings, .. }
+                        if bindings.iter().any(|(local, init)| {
+                            folder.reads[local.0] == 0
+                                && !folder.pinned[local.0]
+                                && effect_free(folder.program, &folder.program.exprs[init.0].kind)
+                        })
+                )
+        });
+    if folder.folded > 0 || folder.saw_shared_unread_let || has_skipped_unread_let {
         folder.sweep();
     }
     folder.folded
@@ -1026,18 +1045,26 @@ pub fn fold_with_facts(
 
 /// How often the code the root reaches reads each local, by local. Fills
 /// `reached` (by expression) and, when given, `parents`: how many reached
-/// expressions each one is a child of.
+/// expressions each one is a child of, and `lets`: reached `ExprKind::Let`
+/// indices.
 fn reachable_reads(
     program: &Program,
     mut parents: Option<&mut Vec<u8>>,
     reached: &mut [bool],
+    mut lets: Option<&mut Vec<usize>>,
 ) -> Vec<u32> {
     let mut reads = vec![0u32; program.locals.len()];
     reached[program.root.0] = true;
     let mut pending = vec![program.root];
     while let Some(id) = pending.pop() {
-        if let ExprKind::Local(local) = program.exprs[id.0].kind {
-            reads[local.0] = reads[local.0].saturating_add(1);
+        match program.exprs[id.0].kind {
+            ExprKind::Local(local) => reads[local.0] = reads[local.0].saturating_add(1),
+            ExprKind::Let { .. } => {
+                if let Some(lets) = lets.as_deref_mut() {
+                    lets.push(id.0);
+                }
+            }
+            _ => (),
         }
         visit_children(&program.exprs[id.0].kind, |child| {
             if let Some(parents) = parents.as_deref_mut() {
@@ -1071,7 +1098,7 @@ pub fn entry_lookups(program: &Program, facts: &ProgramFacts) -> HashMap<ExprId,
         return lookups;
     }
     let mut reached = vec![false; program.exprs.len()];
-    reachable_reads(program, None, &mut reached);
+    reachable_reads(program, None, &mut reached, None);
     let mut assignable = vec![false; program.locals.len()];
     for local in program.field_bindings.keys() {
         assignable[local.0] = true;
@@ -2275,7 +2302,7 @@ impl Folder<'_> {
     fn sweep(&mut self) {
         for _ in 0..SWEEPS {
             let mut reached = vec![false; self.program.exprs.len()];
-            let reads = reachable_reads(self.program, None, &mut reached);
+            let reads = reachable_reads(self.program, None, &mut reached, None);
             let mut dropped = 0;
             for (index, reached) in reached.iter().enumerate() {
                 let ExprKind::Let { bindings, body } = &self.program.exprs[index].kind else {
@@ -2733,6 +2760,28 @@ mod tests {
         assert!(
             !matches!(program.exprs[let_idx].kind, ExprKind::Let { ref bindings, .. } if !bindings.is_empty()),
             "unread binding should be dropped by sweep: {:?}",
+            program.exprs[let_idx].kind
+        );
+    }
+
+    #[test]
+    fn sweep_drops_unread_let_in_case_operand() {
+        let source = "(case [1] [(let [unused [42]] 1)] 7 0)";
+        let mut program = crate::analyze(source, &crate::parse(source).unwrap()).unwrap();
+        let let_idx = program
+            .exprs
+            .iter()
+            .position(|e| matches!(e.kind, ExprKind::Let { .. }))
+            .expect("let expr in case operand");
+        let mut built = built_literals(&program);
+        let mut top = Vec::new();
+        flatten(&program, program.root, &mut top);
+        let facts = ProgramFacts::new_light(&program, &top);
+        let folded = fold_with_facts(&mut program, &mut built, &facts);
+        assert!(folded >= 1, "expected sweep to drop unread binding in case");
+        assert!(
+            !matches!(program.exprs[let_idx].kind, ExprKind::Let { ref bindings, .. } if !bindings.is_empty()),
+            "unread binding in case operand should be dropped: {:?}",
             program.exprs[let_idx].kind
         );
     }

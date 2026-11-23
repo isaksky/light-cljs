@@ -455,13 +455,15 @@ pub struct ProgramFacts {
     /// Type globals the program implements `ILookup` on (in the definition
     /// or with `extend-type`).
     lookups: Vec<bool>,
-    /// Top-level position of each direct top-level form, by expression.
-    top: Vec<Option<usize>>,
+    /// Top-level position of each direct top-level form, by expression
+    /// (`u32::MAX` when not a direct top-level form).
+    top: Vec<u32>,
     /// Program protocols by marker key (`ns/Name`).
     protocols: HashMap<String, Implementors>,
     /// Expressions that set a pessimistic summary flag (`replaced`, `extended`,
-    /// `equiv`, `equiv_by_name`), used to skip post-compaction refreshes when
-    /// none of them were compacted away (light-cljs-1098).
+    /// `equiv`, `equiv_by_name`, or writes to core-extension targets), populated
+    /// only in lightweight scans to skip post-compaction refreshes when none of
+    /// them were compacted away (light-cljs-1098).
     pessimistic_exprs: Vec<ExprId>,
 }
 
@@ -486,6 +488,11 @@ impl ProgramFacts {
         self.lookups = Vec::new();
         self.top = Vec::new();
         self.protocols = HashMap::new();
+    }
+
+    /// Release compaction invalidation tracking once compaction has run.
+    pub(crate) fn clear_pessimistic(&mut self) {
+        self.pessimistic_exprs = Vec::new();
     }
 
     /// Whether any expression that contributed a pessimistic summary flag
@@ -549,8 +556,11 @@ impl ProgramFacts {
         let mut equiv = false;
         let mut receives_functions = false;
         // Assigning a property of a core value (`PersistentHashMap.fromArrays`)
-        // counts as replacing it. Returns whether a core operation was marked.
-        let mut assign = |target: &ExprId| -> bool {
+        // counts as replacing it. Returns whether a core operation was marked
+        // and, in lightweight mode, records global assignments so compaction
+        // invalidation sees dropped type assignments too.
+        let mut assigned_exprs: Vec<(GlobalId, ExprId)> = Vec::new();
+        let mut assign = |expr_index: usize, target: &ExprId| -> bool {
             let target = match program.exprs[target.0].kind {
                 ExprKind::Property { receiver, .. } | ExprKind::JsIndex { receiver, .. } => {
                     receiver
@@ -564,6 +574,9 @@ impl ProgramFacts {
                 }
                 ExprKind::Global(global) => {
                     assigned[global.0] = true;
+                    if !full {
+                        assigned_exprs.push((global, ExprId(expr_index)));
+                    }
                     false
                 }
                 _ => false,
@@ -645,8 +658,8 @@ impl ProgramFacts {
                 .any(|component| equiv_member(component)),
             _ => false,
         };
-        let mut def_exprs = Vec::new();
-        let mut protocol_impl_exprs = Vec::new();
+        let mut def_exprs: Vec<u32> = Vec::new();
+        let mut protocol_impl_exprs: Vec<u32> = Vec::new();
         let mut via_metadata = Vec::new();
         let mut pessimistic_exprs = Vec::new();
         for (index, expr) in program.exprs.iter().enumerate() {
@@ -704,7 +717,7 @@ impl ProgramFacts {
                     if full {
                         core_slots_by_name |= core_slot_target(target);
                     }
-                    pessimistic |= assign(target);
+                    pessimistic |= assign(index, target);
                 }
                 ExprKind::Binding { bindings, .. } => {
                     if full {
@@ -712,7 +725,7 @@ impl ProgramFacts {
                             bindings.iter().any(|(target, _)| core_slot_target(target));
                     }
                     for (target, _) in bindings {
-                        pessimistic |= assign(target);
+                        pessimistic |= assign(index, target);
                     }
                 }
                 // Raw text may assign its holes.
@@ -722,14 +735,14 @@ impl ProgramFacts {
                             || segments.iter().any(|segment| spelled(segment, false));
                     }
                     for arg in args {
-                        pessimistic |= assign(arg);
+                        pessimistic |= assign(index, arg);
                     }
                 }
                 ExprKind::ExtendType {
                     target, methods, ..
                 } => {
                     if full {
-                        protocol_impl_exprs.push(index);
+                        protocol_impl_exprs.push(index as u32);
                     }
                     if methods.iter().any(core_protocol) {
                         extended.push(*target);
@@ -748,7 +761,7 @@ impl ProgramFacts {
                 }
                 ExprKind::Reify { methods, .. } => {
                     if full {
-                        protocol_impl_exprs.push(index);
+                        protocol_impl_exprs.push(index as u32);
                     }
                     if methods.iter().any(implements("IEquiv")) {
                         equiv = true;
@@ -763,12 +776,12 @@ impl ProgramFacts {
                     match kind {
                         ExprKind::Def { .. } => {
                             if emitted[index] {
-                                def_exprs.push(index);
+                                def_exprs.push(index as u32);
                             }
                         }
                         ExprKind::DefType { methods, .. } => {
                             if full {
-                                protocol_impl_exprs.push(index);
+                                protocol_impl_exprs.push(index as u32);
                             }
                             if methods.iter().any(implements("IEquiv")) {
                                 equiv = true;
@@ -778,7 +791,7 @@ impl ProgramFacts {
                                 receives_functions |= methods.iter().any(receives);
                             }
                             if emitted[index] {
-                                def_exprs.push(index);
+                                def_exprs.push(index as u32);
                             }
                         }
                         ExprKind::DefProtocol {
@@ -790,7 +803,7 @@ impl ProgramFacts {
                                 via_metadata.push(*global);
                             }
                             if emitted[index] {
-                                def_exprs.push(index);
+                                def_exprs.push(index as u32);
                             }
                         }
                         _ => (),
@@ -802,58 +815,68 @@ impl ProgramFacts {
                     }
                 }
             }
-            if pessimistic {
+            if !full && pessimistic {
                 pessimistic_exprs.push(ExprId(index));
             }
         }
-        let sole = |global: GlobalId| definitions[global.0] == 1 && !assigned[global.0];
+        drop(emitted);
         let mut globals = vec![Definition::Unknown; program.globals.len()];
         let mut lookups = if full {
             vec![false; program.globals.len()]
         } else {
             Vec::new()
         };
-        for index in def_exprs {
-            let id = ExprId(index);
-            match &program.exprs[index].kind {
-                ExprKind::Def { global, .. } if sole(*global) => {
-                    globals[global.0] = Definition::Def(id);
-                }
-                ExprKind::DefType {
-                    record,
-                    global,
-                    layout,
-                    methods,
-                } if sole(*global) => {
-                    let role = |role| Definition::Type {
-                        definition: id,
-                        type_global: *global,
-                        role,
-                        record: *record,
-                    };
-                    globals[global.0] = role(TypeRole::Constructor);
-                    if let Some(factory) = layout.constructor.filter(|factory| sole(*factory)) {
-                        globals[factory.0] = role(TypeRole::Factory);
+        {
+            let sole = |global: GlobalId| definitions[global.0] == 1 && !assigned[global.0];
+            for index in def_exprs {
+                let index = index as usize;
+                let id = ExprId(index);
+                match &program.exprs[index].kind {
+                    ExprKind::Def { global, .. } if sole(*global) => {
+                        globals[global.0] = Definition::Def(id);
                     }
-                    if let Some(factory) = layout.map_constructor.filter(|factory| sole(*factory)) {
-                        globals[factory.0] = role(TypeRole::MapFactory);
-                    }
-                    if full {
-                        lookups[global.0] = methods.iter().any(lookup);
-                    }
-                }
-                ExprKind::DefProtocol {
-                    global, methods, ..
-                } => {
-                    for global in std::iter::once(*global).chain(methods.iter().map(|m| m.global)) {
-                        if sole(global) {
-                            globals[global.0] = Definition::Protocol(id);
+                    ExprKind::DefType {
+                        record,
+                        global,
+                        layout,
+                        methods,
+                    } if sole(*global) => {
+                        let role = |role| Definition::Type {
+                            definition: id,
+                            type_global: *global,
+                            role,
+                            record: *record,
+                        };
+                        globals[global.0] = role(TypeRole::Constructor);
+                        if let Some(factory) = layout.constructor.filter(|factory| sole(*factory)) {
+                            globals[factory.0] = role(TypeRole::Factory);
+                        }
+                        if let Some(factory) =
+                            layout.map_constructor.filter(|factory| sole(*factory))
+                        {
+                            globals[factory.0] = role(TypeRole::MapFactory);
+                        }
+                        if full {
+                            lookups[global.0] = methods.iter().any(lookup);
                         }
                     }
+                    ExprKind::DefProtocol {
+                        global, methods, ..
+                    } => {
+                        for global in
+                            std::iter::once(*global).chain(methods.iter().map(|m| m.global))
+                        {
+                            if sole(global) {
+                                globals[global.0] = Definition::Protocol(id);
+                            }
+                        }
+                    }
+                    _ => (),
                 }
-                _ => (),
             }
         }
+        drop(definitions);
+        drop(assigned);
         let program_type = |target: ExprId| match program.exprs[target.0].kind {
             ExprKind::Global(global) => match globals[global.0] {
                 Definition::Type {
@@ -874,9 +897,9 @@ impl ProgramFacts {
                 }
             }
         }
-        let mut top_positions = vec![None; program.exprs.len()];
+        let mut top_positions = vec![u32::MAX; program.exprs.len()];
         for (position, id) in top.iter().enumerate() {
-            top_positions[id.0] = Some(position);
+            top_positions[id.0] = position as u32;
         }
         // The core protocol condition holds when every extension of a core
         // protocol targets a program type defined once at top level.
@@ -886,8 +909,22 @@ impl ProgramFacts {
                     role: TypeRole::Constructor,
                     definition,
                     ..
-                } if top_positions[definition.0].is_some()))
+                } if top_positions[definition.0] != u32::MAX))
         });
+        if !full && !core_protocols && !assigned_exprs.is_empty() {
+            let extended_globals: HashSet<GlobalId> = extended
+                .iter()
+                .filter_map(|target| match program.exprs[target.0].kind {
+                    ExprKind::Global(global) => Some(global),
+                    _ => None,
+                })
+                .collect();
+            for (global, expr_id) in assigned_exprs {
+                if extended_globals.contains(&global) {
+                    pessimistic_exprs.push(expr_id);
+                }
+            }
+        }
         let mut protocols: HashMap<String, Implementors> = HashMap::new();
         if full {
             // Who implements each program protocol: the classes, the program types,
@@ -905,6 +942,7 @@ impl ProgramFacts {
                 }
             };
             for index in protocol_impl_exprs {
+                let index = index as usize;
                 let (classes, program_type, methods) = match &program.exprs[index].kind {
                     ExprKind::DefType {
                         record,
@@ -1104,7 +1142,11 @@ impl ProgramFacts {
     /// The position of `id` among the flattened top-level forms, when it is
     /// one.
     pub fn top_position(&self, id: ExprId) -> Option<usize> {
-        self.top.get(id.0).copied().flatten()
+        self.top
+            .get(id.0)
+            .copied()
+            .filter(|&pos| pos != u32::MAX)
+            .map(|pos| pos as usize)
     }
 
     /// The classes satisfying the program protocol with marker key `key`
