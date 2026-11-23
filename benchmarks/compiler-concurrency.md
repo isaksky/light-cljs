@@ -1699,30 +1699,30 @@ Medians (min–max range); peak memory from `/usr/bin/time -l` in MiB.
 ## Compact `Inference` lattice and parallel dirty-form fixed point (light-cljs-1100, November 22, 2026)
 
 V8 build (`target/release/light-cljs`), parent `5065738dd` (immutable copy)
-against the `light-cljs-1100` candidate (`22d468a9`), clean `:advanced` builds
+against the `light-cljs-1100` candidate (`901497ccb`), clean `:advanced` builds
 (`release bench --optimize advanced --no-cache --stats`), three alternating
 before/after rounds per `(project, --jobs)` on an unreserved Apple M3 Ultra VM
-(24 vCPUs, 32 GiB; 1-minute `uptime` load 3.57–5.33 across all rounds).
+(24 vCPUs, 32 GiB; 1-minute `uptime` load 3.51–4.65 across all rounds).
 Medians (min–max range); peak memory from `/usr/bin/time -l` in MiB.
 
 | Project | `--jobs` | Binary | `prepare-application` (ms) | Wall (s) | Peak memory (MiB) | Raw / gzip bytes |
 | --- | ---: | --- | --- | --- | --- | --- |
-| `workload-200k-seed42` | 1 | base `5065738dd` | 876.1 (768.0–882.9) | 5.36 (5.07–5.38) | 903.0 (901.7–915.3) | 3,386,878 / 834,297 |
-| `workload-200k-seed42` | 1 | candidate | 771.0 (751.3–858.4) (-12.0%) | 5.15 (5.07–5.49) (-4.0%) | 895.3 (880.2–896.4) (-7.8 MiB, -0.9%) | 3,386,878 / 834,297 |
-| `workload-200k-seed42` | 2 | base `5065738dd` | 856.5 (828.8–954.5) | 3.86 (3.82–4.14) | 911.1 (907.9–935.0) | 3,386,856 / 834,297 |
-| `workload-200k-seed42` | 2 | candidate | 739.0 (735.3–773.9) (-13.7%) | 3.92 (3.71–3.98) (+1.5%) | 882.0 (865.8–891.0) (-29.1 MiB, -3.2%) | 3,386,856 / 834,297 |
-| `workload-200k-seed42` | 4 | base `5065738dd` | 845.0 (817.2–861.1) | 2.84 (2.79–2.88) | 1,084.6 (1,075.9–1,098.5) | 3,386,840 / 834,306 |
-| `workload-200k-seed42` | 4 | candidate | 733.5 (732.7–798.1) (-13.2%) | 2.71 (2.65–2.73) (-4.6%) | 1,052.5 (1,051.0–1,057.0) (-32.1 MiB, -3.0%) | 3,386,840 / 834,306 |
-| `workload-200k-seed42` | 8 | base `5065738dd` | 859.6 (786.2–861.0) | 2.51 (2.29–2.54) | 1,112.1 (1,109.1–1,119.7) | 3,386,824 / 834,686 |
-| `workload-200k-seed42` | 8 | candidate | 692.9 (623.3–726.3) (-19.4%) | 2.20 (2.12–2.37) (-12.1%) | 1,073.4 (1,072.1–1,085.3) (-38.7 MiB, -3.5%) | 3,386,824 / 834,686 |
-| `re-frame-200k-seed42` | 1 | base `5065738dd` | 1,252.8 (1,239.5–1,260.3) | 5.60 (5.54–5.97) | 1,173.3 (1,159.9–1,209.7) | 5,565,520 / 1,051,451 |
-| `re-frame-200k-seed42` | 1 | candidate | 1,081.8 (1,072.1–1,120.3) (-13.6%) | 5.43 (5.38–5.44) (-3.1%) | 1,139.4 (1,125.8–1,152.9) (-33.9 MiB, -2.9%) | 5,565,520 / 1,051,451 |
-| `re-frame-200k-seed42` | 2 | base `5065738dd` | 1,225.5 (1,188.3–1,268.8) | 4.18 (4.10–4.28) | 1,080.9 (1,078.0–1,093.5) | 5,565,506 / 1,051,455 |
-| `re-frame-200k-seed42` | 2 | candidate | 1,007.6 (1,005.6–1,112.1) (-17.8%) | 4.03 (4.00–4.06) (-3.5%) | 1,038.5 (1,037.1–1,044.1) (-42.4 MiB, -3.9%) | 5,565,506 / 1,051,455 |
-| `re-frame-200k-seed42` | 4 | base `5065738dd` | 1,191.6 (1,174.5–1,216.1) | 3.71 (3.66–3.72) | 1,224.8 (1,219.7–1,235.9) | 5,565,506 / 1,051,480 |
-| `re-frame-200k-seed42` | 4 | candidate | 1,040.2 (1,001.5–1,061.9) (-12.7%) | 3.61 (3.53–3.64) (-2.5%) | 1,179.1 (1,175.2–1,192.8) (-45.7 MiB, -3.7%) | 5,565,506 / 1,051,480 |
-| `re-frame-200k-seed42` | 8 | base `5065738dd` | 1,176.0 (1,166.7–1,231.6) | 3.35 (3.31–3.39) | 1,325.2 (1,316.9–1,346.4) | 5,565,482 / 1,051,473 |
-| `re-frame-200k-seed42` | 8 | candidate | 997.9 (989.1–1,059.1) (-15.1%) | 3.19 (3.13–3.25) (-4.7%) | 1,276.4 (1,252.2–1,305.8) (-48.8 MiB, -3.7%) | 5,565,482 / 1,051,473 |
+| `workload-200k-seed42` | 1 | base `5065738dd` | 782.4 (771.0–831.0) | 4.97 (4.92–5.32) | 919.4 (900.2–930.8) | 3,386,878 / 834,297 |
+| `workload-200k-seed42` | 1 | candidate | 691.5 (687.9–706.7) (-11.6%) | 4.92 (4.82–4.94) (-1.0%) | 884.3 (883.3–892.1) (-35.1 MiB, -3.8%) | 3,386,878 / 834,297 |
+| `workload-200k-seed42` | 2 | base `5065738dd` | 756.3 (751.7–790.2) | 3.61 (3.60–3.64) | 919.5 (914.3–938.1) | 3,386,856 / 834,297 |
+| `workload-200k-seed42` | 2 | candidate | 667.5 (665.5–670.2) (-11.7%) | 3.47 (3.46–3.54) (-4.0%) | 881.0 (880.3–883.2) (-38.5 MiB, -4.2%) | 3,386,856 / 834,297 |
+| `workload-200k-seed42` | 4 | base `5065738dd` | 713.1 (709.5–721.6) | 2.46 (2.46–2.52) | 1,067.4 (1,059.1–1,069.4) | 3,386,840 / 834,306 |
+| `workload-200k-seed42` | 4 | candidate | 619.6 (619.3–653.4) (-13.1%) | 2.41 (2.38–2.43) (-2.3%) | 1,044.9 (1,026.9–1,046.0) (-22.5 MiB, -2.1%) | 3,386,840 / 834,306 |
+| `workload-200k-seed42` | 8 | base `5065738dd` | 706.4 (688.6–744.8) | 2.14 (2.13–2.21) | 1,098.1 (1,096.0–1,104.8) | 3,386,824 / 834,686 |
+| `workload-200k-seed42` | 8 | candidate | 610.4 (609.2–617.9) (-13.6%) | 2.05 (2.05–2.06) (-4.4%) | 1,055.5 (1,055.2–1,069.4) (-42.5 MiB, -3.9%) | 3,386,824 / 834,686 |
+| `re-frame-200k-seed42` | 1 | base `5065738dd` | 1,236.1 (1,235.5–1,245.1) | 5.54 (5.52–5.92) | 1,177.2 (1,172.9–1,193.8) | 5,565,520 / 1,051,451 |
+| `re-frame-200k-seed42` | 1 | candidate | 1,063.9 (1,062.4–1,107.2) (-13.9%) | 5.42 (5.40–5.42) (-2.3%) | 1,130.0 (1,112.8–1,152.2) (-47.2 MiB, -4.0%) | 5,565,520 / 1,051,451 |
+| `re-frame-200k-seed42` | 2 | base `5065738dd` | 1,225.1 (1,218.1–1,231.2) | 4.21 (4.17–4.23) | 1,088.2 (1,065.0–1,093.8) | 5,565,506 / 1,051,455 |
+| `re-frame-200k-seed42` | 2 | candidate | 1,028.4 (1,009.1–1,036.0) (-16.1%) | 4.12 (3.95–4.16) (-2.1%) | 1,038.9 (1,028.6–1,044.2) (-49.3 MiB, -4.5%) | 5,565,506 / 1,051,455 |
+| `re-frame-200k-seed42` | 4 | base `5065738dd` | 1,227.6 (1,219.2–1,236.0) | 3.71 (3.70–3.79) | 1,210.9 (1,201.4–1,214.4) | 5,565,506 / 1,051,480 |
+| `re-frame-200k-seed42` | 4 | candidate | 974.0 (971.0–1,023.8) (-20.7%) | 3.51 (3.48–3.56) (-5.2%) | 1,172.0 (1,152.3–1,193.3) (-39.0 MiB, -3.2%) | 5,565,506 / 1,051,480 |
+| `re-frame-200k-seed42` | 8 | base `5065738dd` | 1,215.1 (1,155.9–1,237.3) | 3.41 (3.34–3.42) | 1,321.1 (1,311.7–1,325.0) | 5,565,482 / 1,051,473 |
+| `re-frame-200k-seed42` | 8 | candidate | 1,005.0 (962.6–1,020.4) (-17.3%) | 3.14 (3.09–3.17) (-8.1%) | 1,266.0 (1,246.2–1,294.1) (-55.1 MiB, -4.2%) | 5,565,482 / 1,051,473 |
 
 - *Parity.* All eight `(project, --jobs)` combinations produce byte-identical
   `out/light/workload.main.js` output to `5065738dd` (SHA-256 prefixes
@@ -1730,13 +1730,20 @@ Medians (min–max range); peak memory from `/usr/bin/time -l` in MiB.
   `4a4f9189a1885298`, `4946b32bc6bdf41b`, `40678a8a763cb89d`,
   `a9a7aa5af7bcca55`, `e934a4528dc7d18b`), match `bb oracle.bb 42 3` via
   `node run-light.mjs 42 3` (`484264` plain; `714878 117718` re-frame), and pass
-  `bb check-waste.bb --strict`.
-- *Memory and speed.* Storing internal inference state in 16-byte
-  `CompactInferred` and deferring per-expression `values` allocation until
-  fixed-point convergence cuts peak memory by 29–39 MiB on `workload-200k` at
-  `j=2..8` (at `j=1`, analysis sets the high-water mark before
-  `prepare_application`, so peak memory drops 7.8 MiB) and 34–49 MiB on
-  `re-frame-200k` across all `--jobs`. Dirty-form fixed-point iteration with
-  inline argument/filter buffers and parallel BSP waves on `scheduler::map`
-  cuts `prepare-application` by 12.0–19.4% on `workload-200k` and 12.7–17.8% on
-  `re-frame-200k`.
+  `bb check-waste.bb --strict`. Exact `PreparedApplication::stats().typed_parameters`
+  parity (`type_inference::typed_parameter_parity_200k`) holds across all four
+  `(project, --jobs)` pairs: `workload-200k-seed42` `j=1` 8,626 / 8,626 and
+  `j=8` 8,626 / 8,626 (base / candidate); `re-frame-200k-seed42` `j=1`
+  3,789 / 3,789 and `j=8` 3,789 / 3,789 (base / candidate).
+- *Memory and speed.* Shrinking retained `Inference` storage (`values` and
+  `locals`) from 48-byte `Inferred` to 16-byte `CompactInferred` saves 43.4 MiB
+  on `workload-200k-seed42` (1,287,167 expressions + 135,995 locals) and
+  50.6 MiB on `re-frame-200k-seed42` (1,510,344 expressions + 147,177 locals)
+  while `PreparedApplication::inference()` remains live through emission (when
+  process peak memory occurs). Measured process peak memory drops 22.5–42.5 MiB
+  on `workload-200k-seed42` (`-35.1 MiB` at `j=1`, `-42.5 MiB` at `j=8`) and
+  39.0–55.1 MiB on `re-frame-200k-seed42` (`-47.2 MiB` at `j=1`, `-55.1 MiB` at
+  `j=8`). Associative per-class solver refinements, dirty-form fixed-point
+  iteration with inline argument/filter buffers, deferred `values` population,
+  and parallel BSP waves on `scheduler::map` cut `prepare-application` by
+  11.6–13.6% on `workload-200k-seed42` and 13.9–20.7% on `re-frame-200k-seed42`.
