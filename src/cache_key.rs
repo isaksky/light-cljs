@@ -557,8 +557,7 @@ impl NamespaceKeys {
         fields: &crate::artifact_codec::ManifestFields,
         ns_positions: &std::collections::HashMap<String, usize>,
         id: NamespaceId,
-        source_digest: Digest,
-        resolution_digest: Digest,
+        (source_digest, resolution_digest): (Digest, Digest),
     ) -> FrontEndKey {
         assert_eq!(
             id.0 as usize,

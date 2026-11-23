@@ -41,7 +41,7 @@ impl NameIndex {
     pub fn get_str(&self, namespace: &str, name: &str) -> Option<&GlobalId> {
         // In Rust stdlib, `(&str, &str)` hashes identically to `(String, String)`
         // because both `String` and `&str` delegate `Hash::hash` to `str::hash`.
-        let hash = self.hash.hash_one(&(namespace, name));
+        let hash = self.hash.hash_one((namespace, name));
         let mut node = self.root.as_deref()?;
         let mut shift = 0;
         loop {
@@ -211,7 +211,7 @@ mod tests {
     fn get_str_matches_get_including_hash_collisions() {
         let mut index = NameIndex::default();
         let target_hash = index.hash.hash_one(&("ns".to_owned(), "k0".to_owned()));
-        assert_eq!(index.hash.hash_one(&("ns", "k0")), target_hash);
+        assert_eq!(index.hash.hash_one(("ns", "k0")), target_hash);
         // Place multiple distinct keys under the exact hash of ("ns", "k0")
         // so both `get` and `get_str` traverse a multi-entry collision leaf.
         let mut root = Arc::new(Node::Leaf {
@@ -247,7 +247,7 @@ mod tests {
             assert_eq!(index.get_str(&k.0, &k.1), index.get(&k));
         }
         // Lookup of a colliding key placed after other entries in the same leaf.
-        let k3_hash = index.hash.hash_one(&("ns", "k3"));
+        let k3_hash = index.hash.hash_one(("ns", "k3"));
         let mut collision_root = Arc::new(Node::Leaf {
             hash: k3_hash,
             entries: vec![

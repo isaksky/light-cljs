@@ -118,7 +118,7 @@ struct PrefetchedHit {
 
 enum PrefetchedBody {
     Decoded {
-        artifact: NamespaceArtifact,
+        artifact: Box<NamespaceArtifact>,
         body_bytes_read: u64,
     },
     ReadError {
@@ -626,7 +626,7 @@ impl CompileCache {
                     key: item.key,
                     artifact: item.artifact_digest,
                 });
-                Ok(Some(artifact))
+                Ok(Some(*artifact))
             }
             PrefetchedBody::ReadError {
                 error,
@@ -686,7 +686,7 @@ impl CompileCache {
             },
             ManifestOk {
                 reading: crate::artifact_store::Reading,
-                manifest: artifact_codec::Manifest,
+                manifest: Box<artifact_codec::Manifest>,
                 inputs_check: Option<Result<(), Mismatch>>,
             },
         }
@@ -769,7 +769,7 @@ impl CompileCache {
                         };
                         FirstCandidateRead::ManifestOk {
                             reading,
-                            manifest,
+                            manifest: Box::new(manifest),
                             inputs_check,
                         }
                     }
@@ -838,7 +838,7 @@ impl CompileCache {
                             inputs_check,
                         } => {
                             prefix_bytes_read += reading.prefix().len() as u64;
-                            (reading, manifest, inputs_check)
+                            (reading, *manifest, inputs_check)
                         }
                     }
                 } else {
@@ -887,8 +887,7 @@ impl CompileCache {
                     fields,
                     &self.ns_positions,
                     ns_id,
-                    outcome.source_digest,
-                    outcome.resolution_digest,
+                    (outcome.source_digest, outcome.resolution_digest),
                 );
                 let check_inputs = || match &inputs_check {
                     Some(res) => res.clone(),
@@ -1034,7 +1033,7 @@ impl CompileCache {
                     let decode_ns = t1.elapsed().as_nanos() as u64;
                     let body = match decoded {
                         Ok((_, artifact)) => PrefetchedBody::Decoded {
-                            artifact,
+                            artifact: Box::new(artifact),
                             body_bytes_read: rest,
                         },
                         Err(error) => PrefetchedBody::DecodeError {
@@ -1069,10 +1068,10 @@ impl CompileCache {
             self.prefetched.push_back(hit);
         }
         let total_cpu_ns = total_read_ns + total_decode_ns;
-        if total_cpu_ns > 0 {
-            let wall_ns = stage_c_wall.as_nanos();
-            let read_wall =
-                std::time::Duration::from_nanos((wall_ns * total_read_ns / total_cpu_ns) as u64);
+        if let Some(read_wall_ns) =
+            (stage_c_wall.as_nanos() * total_read_ns).checked_div(total_cpu_ns)
+        {
+            let read_wall = std::time::Duration::from_nanos(read_wall_ns as u64);
             self.counts.validate_time += read_wall;
             self.counts.decode_time += stage_c_wall.saturating_sub(read_wall);
         } else {
