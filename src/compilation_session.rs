@@ -3720,6 +3720,33 @@ impl CompilationSession {
     ) -> Result<Vec<crate::namespace_artifact::RegistryEntry>, String> {
         Self::take_namespaces_from(engine, pooled)
     }
+    /// Like [`Self::take_namespaces_from`], caching the per-isolate JS wrapper
+    /// in `cached` so repeated unit drains call the handle directly without
+    /// recompiling a JS function string, and returning `null` when the log is
+    /// empty (light-cljs-1102).
+    pub(crate) fn take_namespaces_from_cached(
+        engine: &dyn MacroEvaluator,
+        pooled: bool,
+        cached: &std::cell::Cell<Option<crate::evaluator::ValueId>>,
+    ) -> Result<Vec<crate::namespace_artifact::RegistryEntry>, String> {
+        let value = match cached.get().and_then(|f| engine.call(f, &[]).ok()) {
+            Some(value) => value,
+            None => {
+                let source = match pooled {
+                    true => {
+                        "rt => { const f = rt.compilerForms.takeNamespaces, c = rt.core.count; return f ? () => { const v = f(true); return v == null || c(v) === 0 ? null : v; } : () => null; }"
+                    }
+                    false => {
+                        "rt => { const f = rt.compilerForms.takeNamespaces, c = rt.core.count; return f ? () => { const v = f(); return v == null || c(v) === 0 ? null : v; } : () => null; }"
+                    }
+                };
+                let function = engine.evaluate_unit(source).map_err(|e| e.to_string())?;
+                cached.set(Some(function));
+                engine.call(function, &[]).map_err(|e| e.to_string())?
+            }
+        };
+        Self::export_namespaces(engine, value)
+    }
     fn take_namespaces_from(
         engine: &dyn MacroEvaluator,
         pooled: bool,
@@ -3730,6 +3757,12 @@ impl CompilationSession {
                 false => "rt => rt.compilerForms.takeNamespaces?.() ?? null",
             })
             .map_err(|e| e.to_string())?;
+        Self::export_namespaces(engine, value)
+    }
+    fn export_namespaces(
+        engine: &dyn MacroEvaluator,
+        value: crate::evaluator::ValueId,
+    ) -> Result<Vec<crate::namespace_artifact::RegistryEntry>, String> {
         let source = crate::compiler_data::Source::new("<namespaces>", "");
         let span = source.span(0..0).expect("an empty span");
         let call = crate::compiler_data::Form::from_data(
@@ -6368,17 +6401,25 @@ fn analyze_unit(
                 Some(engine) if captures_namespaces && unit_entered => {
                     let next_pooled = if on_worker { pooled } else { false };
                     match started_namespaces.and_then(|()| {
-                        CompilationSession::take_namespaces_from(engine, next_pooled)
+                        CompilationSession::take_namespaces_from_cached(
+                            engine,
+                            next_pooled,
+                            host.engine.work_cache.take_namespaces_handle(next_pooled),
+                        )
                     }) {
                         Ok(entries) => {
                             host.engine
                                 .work_cache
                                 .namespace_pool_mode
                                 .set(Some(next_pooled));
+                            if !entries.is_empty() {
+                                host.engine.work_cache.encode_peak_clean.set(false);
+                            }
                             Ok(entries)
                         }
                         Err(error) => {
                             host.engine.work_cache.namespace_pool_mode.set(None);
+                            host.engine.work_cache.encode_peak_clean.set(false);
                             Err(error)
                         }
                     }

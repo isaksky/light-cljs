@@ -418,6 +418,14 @@ pub(crate) struct PendingUnitCapture {
 pub(crate) struct WorkCache {
     /// The macro evaluator's `takeEncodePeak` ([`take_encode_peak`]).
     pub(crate) encode_peak: std::cell::Cell<Option<crate::evaluator::ValueId>>,
+    /// Whether `encode.peak` on this isolate is already `<= 1` (left by the
+    /// last outermost `take_encode_peak` or an empty `takeNamespaces` export),
+    /// so the next outermost expansion can skip pre-resetting it.
+    pub(crate) encode_peak_clean: std::cell::Cell<bool>,
+    /// Cached per-isolate `takeNamespaces(true)` / `takeNamespaces()` wrapper
+    /// handles returning `null` when empty.
+    pub(crate) take_namespaces_pooled: std::cell::Cell<Option<crate::evaluator::ValueId>>,
+    pub(crate) take_namespaces_unpooled: std::cell::Cell<Option<crate::evaluator::ValueId>>,
     /// The node counts of recent large environment entries, by identity, most
     /// recently used last; holding the datum keeps its address from being
     /// reused.
@@ -506,8 +514,22 @@ impl WorkCache {
 
     pub(crate) fn clear_engine_state(&self) {
         self.encode_peak.set(None);
+        self.encode_peak_clean.set(false);
+        self.take_namespaces_pooled.set(None);
+        self.take_namespaces_unpooled.set(None);
         self.gensym_log_enabled.set(false);
         self.namespace_pool_mode.set(None);
+    }
+
+    pub(crate) fn take_namespaces_handle(
+        &self,
+        pooled: bool,
+    ) -> &std::cell::Cell<Option<crate::evaluator::ValueId>> {
+        if pooled {
+            &self.take_namespaces_pooled
+        } else {
+            &self.take_namespaces_unpooled
+        }
     }
 }
 
@@ -1007,19 +1029,31 @@ impl EngineBinding {
         if logs_namespaces {
             if let Some(session) = session {
                 match session.flush_namespaces(engine, pooled) {
-                    Ok(()) => self.work_cache.namespace_pool_mode.set(Some(pooled)),
+                    Ok(()) => {
+                        self.work_cache.namespace_pool_mode.set(Some(pooled));
+                        self.work_cache.encode_peak_clean.set(false);
+                    }
                     Err(_) => {
                         self.work_cache.namespace_pool_mode.set(None);
+                        self.work_cache.encode_peak_clean.set(false);
                         namespace_error = true;
                     }
                 }
             } else if on_worker && self.work_cache.namespace_pool_mode.get() != Some(pooled) {
-                match crate::compilation_session::CompilationSession::take_namespaces_from_engine(
-                    engine, pooled,
+                match crate::compilation_session::CompilationSession::take_namespaces_from_cached(
+                    engine,
+                    pooled,
+                    self.work_cache.take_namespaces_handle(pooled),
                 ) {
-                    Ok(_) => self.work_cache.namespace_pool_mode.set(Some(pooled)),
+                    Ok(entries) => {
+                        self.work_cache.namespace_pool_mode.set(Some(pooled));
+                        if !entries.is_empty() {
+                            self.work_cache.encode_peak_clean.set(false);
+                        }
+                    }
                     Err(_) => {
                         self.work_cache.namespace_pool_mode.set(None);
+                        self.work_cache.encode_peak_clean.set(false);
                         namespace_error = true;
                     }
                 }
@@ -1380,10 +1414,13 @@ impl MacroHost {
             // What the engine's conversions charged before this expansion,
             // outside every other one, is not its own: the engine's history,
             // which differs by isolate (light-cljs-374).
-            if EXPANDING.get() == 0
-                && !reset_encode_peak(evaluator, &self.engine.work_cache.encode_peak)
-            {
-                self.note_unmeasured();
+            if EXPANDING.get() == 0 {
+                if !self.engine.work_cache.encode_peak_clean.get()
+                    && !reset_encode_peak(evaluator, &self.engine.work_cache.encode_peak)
+                {
+                    self.note_unmeasured();
+                }
+                self.engine.work_cache.encode_peak_clean.set(false);
             }
         }
         let limits = crate::form_bridge::ConversionLimits {
@@ -1456,7 +1493,12 @@ impl MacroHost {
         // them by the same remaining budget.
         if measuring && expanded.is_ok() {
             match take_encode_peak(evaluator, &self.engine.work_cache.encode_peak) {
-                Some(peak) => self.note_node_room(peak),
+                Some(peak) => {
+                    self.note_node_room(peak);
+                    if EXPANDING.get() == 0 {
+                        self.engine.work_cache.encode_peak_clean.set(true);
+                    }
+                }
                 None => self.note_unmeasured(),
             }
         }
@@ -2490,6 +2532,7 @@ impl MacroHost {
         work.unit_depth.set(0);
         work.conversion_peak.set(0);
         work.unmeasured.set(false);
+        self.engine.work_cache.encode_peak_clean.set(false);
         WorkStart {
             expansions: self.engine.expansions.get(),
             generated_nodes: self.engine.generated_nodes.get(),

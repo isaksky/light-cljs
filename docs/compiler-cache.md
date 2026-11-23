@@ -1447,9 +1447,16 @@ This is compiler-owned accounting, not an execution-effect log.
   already holds too, for the same reason. Measuring costs those calls
   and a datum count per expansion, done only while capturing, with the
   environment's large shared entries counted once by identity. A bootstrap
-  macro whose unused environment was elided under half the remaining
-  budget counts twice the environment's nodes, the budget elision needed:
-  with less, the environment is converted instead, which can cost more. Compiler data readers convert their input and result under
+  macro whose unused environment was elided, or a source macro whose
+  environment was projected to its read keys (`reader_view`, light-cljs-1102),
+  under half the remaining budget counts twice the full environment's nodes
+  (including `declared_elsewhere`), the budget elision needed: with less, the
+  whole environment is converted instead, which can cost more. Per-isolate
+  measurement caches (`takeEncodePeak` handle, bounded 16-entry LRU
+  environment-size cache, and lazy capture flags) persist in `WorkCache`
+  across per-unit `WorkMarks` resets, and worker/coordinator unit capture
+  enables `gensymLog` once per isolate and gates `takeNamespaces` on actual
+  macro-engine entry. Compiler data readers convert their input and result under
   the whole node limit, not what is left of it, so the largest of those
   conversions is recorded apart, as the conversion peak, and must fit the
   limit itself. A measurement that cannot be read leaves the namespace
