@@ -61,7 +61,6 @@
 use crate::analyzer::CoreFnId;
 use crate::namespace_artifact::*;
 use crate::sha256::{Sha256, digest};
-use std::collections::HashMap;
 use std::fmt;
 use std::sync::OnceLock;
 
@@ -784,26 +783,147 @@ fn varint(out: &mut Vec<u8>, mut value: u64) {
 }
 
 /// The artifact's string table: each distinct text once, by first use.
+///
+/// Stores all interned UTF-16 code units in a single contiguous `pool` and
+/// indexes them with a flat open-addressed table so misses perform zero
+/// per-string heap allocations and ASCII `&str` lookups avoid copying into
+/// `scratch`.
 #[derive(Default)]
 struct Interner {
-    ids: HashMap<Box<[u16]>, u32>,
-    order: Vec<Box<[u16]>>,
+    pool: Vec<u16>,
+    /// `(start, len, hash)` into `pool` for each interned string id.
+    spans: Vec<(usize, usize, u64)>,
+    /// Open-addressed hash table storing string ids (`EMPTY` when unoccupied).
+    buckets: Vec<u32>,
     scratch: Vec<u16>,
 }
 
+const INTERNER_EMPTY: u32 = u32::MAX;
+
+#[inline]
+fn interner_hash_step(h: u64, unit: u16) -> u64 {
+    (h.rotate_left(5) ^ u64::from(unit)).wrapping_mul(0x517c_c1b7_2722_0a95)
+}
+
+#[inline]
+fn interner_hash_finish(mut h: u64, len: usize) -> u64 {
+    h ^= len as u64;
+    h ^= h >> 30;
+    h = h.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    h ^= h >> 27;
+    h = h.wrapping_mul(0x94d0_49bb_1331_11eb);
+    h ^ (h >> 31)
+}
+
+#[inline]
+fn hash_u16_slice(units: &[u16]) -> u64 {
+    let mut h = 0u64;
+    for &unit in units {
+        h = interner_hash_step(h, unit);
+    }
+    interner_hash_finish(h, units.len())
+}
+
+#[inline]
+fn hash_ascii_bytes(bytes: &[u8]) -> u64 {
+    let mut h = 0u64;
+    for &byte in bytes {
+        h = interner_hash_step(h, u16::from(byte));
+    }
+    interner_hash_finish(h, bytes.len())
+}
+
 impl Interner {
-    fn units(&mut self, units: &[u16]) -> u32 {
-        if let Some(&id) = self.ids.get(units) {
-            return id;
+    fn maybe_grow(&mut self) {
+        let needed = self.spans.len() + 1;
+        if needed * 10 < self.buckets.len() * 7 {
+            return;
         }
-        let id = self.order.len() as u32;
-        let text: Box<[u16]> = units.into();
-        self.ids.insert(text.clone(), id);
-        self.order.push(text);
+        let new_cap = (self.buckets.len() * 2).max(256);
+        let mask = new_cap - 1;
+        let mut buckets = vec![INTERNER_EMPTY; new_cap];
+        for (id, &(_, _, hash)) in self.spans.iter().enumerate() {
+            let mut slot = (hash as usize) & mask;
+            while buckets[slot] != INTERNER_EMPTY {
+                slot = (slot + 1) & mask;
+            }
+            buckets[slot] = id as u32;
+        }
+        self.buckets = buckets;
+    }
+
+    fn units(&mut self, units: &[u16]) -> u32 {
+        let hash = hash_u16_slice(units);
+        if !self.buckets.is_empty() {
+            let mask = self.buckets.len() - 1;
+            let mut slot = (hash as usize) & mask;
+            loop {
+                let id = self.buckets[slot];
+                if id == INTERNER_EMPTY {
+                    break;
+                }
+                let (start, len, stored_hash) = self.spans[id as usize];
+                if stored_hash == hash
+                    && len == units.len()
+                    && &self.pool[start..start + len] == units
+                {
+                    return id;
+                }
+                slot = (slot + 1) & mask;
+            }
+        }
+        self.maybe_grow();
+        let id = self.spans.len() as u32;
+        let start = self.pool.len();
+        self.pool.extend_from_slice(units);
+        self.spans.push((start, units.len(), hash));
+        let mask = self.buckets.len() - 1;
+        let mut slot = (hash as usize) & mask;
+        while self.buckets[slot] != INTERNER_EMPTY {
+            slot = (slot + 1) & mask;
+        }
+        self.buckets[slot] = id;
         id
     }
 
     fn str(&mut self, text: &str) -> u32 {
+        if text.is_ascii() {
+            let bytes = text.as_bytes();
+            let hash = hash_ascii_bytes(bytes);
+            if !self.buckets.is_empty() {
+                let mask = self.buckets.len() - 1;
+                let mut slot = (hash as usize) & mask;
+                loop {
+                    let id = self.buckets[slot];
+                    if id == INTERNER_EMPTY {
+                        break;
+                    }
+                    let (start, len, stored_hash) = self.spans[id as usize];
+                    if stored_hash == hash
+                        && len == bytes.len()
+                        && self.pool[start..start + len]
+                            .iter()
+                            .zip(bytes)
+                            .all(|(&unit, &byte)| unit == u16::from(byte))
+                    {
+                        return id;
+                    }
+                    slot = (slot + 1) & mask;
+                }
+            }
+            self.maybe_grow();
+            let id = self.spans.len() as u32;
+            let start = self.pool.len();
+            self.pool.extend(bytes.iter().map(|&byte| u16::from(byte)));
+            self.spans.push((start, bytes.len(), hash));
+            let mask = self.buckets.len() - 1;
+            let mut slot = (hash as usize) & mask;
+            while self.buckets[slot] != INTERNER_EMPTY {
+                slot = (slot + 1) & mask;
+            }
+            self.buckets[slot] = id;
+            return id;
+        }
         let mut scratch = std::mem::take(&mut self.scratch);
         scratch.clear();
         scratch.extend(text.encode_utf16());
@@ -813,12 +933,11 @@ impl Interner {
     }
 
     fn encode(&self) -> Vec<u8> {
-        let units: usize = self.order.iter().map(|text| text.len()).sum();
-        let mut out = Vec::with_capacity(units * 2 + self.order.len() * 2 + 5);
-        varint(&mut out, self.order.len() as u64);
-        for text in &self.order {
-            varint(&mut out, text.len() as u64);
-            for unit in text.iter() {
+        let mut out = Vec::with_capacity(self.pool.len() * 2 + self.spans.len() * 2 + 5);
+        varint(&mut out, self.spans.len() as u64);
+        for &(start, len, _) in &self.spans {
+            varint(&mut out, len as u64);
+            for &unit in &self.pool[start..start + len] {
                 out.extend_from_slice(&unit.to_le_bytes());
             }
         }
@@ -4686,5 +4805,99 @@ mod tests {
             .unwrap_err();
             assert_eq!(error, DecodeError::Cancelled, "after {after} polls");
         }
+    }
+
+    #[test]
+    fn interner_matches_reference_encoding_byte_for_byte() {
+        #[derive(Default)]
+        struct RefInterner {
+            ids: std::collections::HashMap<Box<[u16]>, u32>,
+            order: Vec<Box<[u16]>>,
+        }
+        impl RefInterner {
+            fn units(&mut self, units: &[u16]) -> u32 {
+                if let Some(&id) = self.ids.get(units) {
+                    return id;
+                }
+                let id = self.order.len() as u32;
+                let text: Box<[u16]> = units.into();
+                self.ids.insert(text.clone(), id);
+                self.order.push(text);
+                id
+            }
+            fn str(&mut self, text: &str) -> u32 {
+                let units: Vec<u16> = text.encode_utf16().collect();
+                self.units(&units)
+            }
+            fn encode(&self) -> Vec<u8> {
+                let units: usize = self.order.iter().map(|t| t.len()).sum();
+                let mut out = Vec::with_capacity(units * 2 + self.order.len() * 2 + 5);
+                varint(&mut out, self.order.len() as u64);
+                for text in &self.order {
+                    varint(&mut out, text.len() as u64);
+                    for unit in text.iter() {
+                        out.extend_from_slice(&unit.to_le_bytes());
+                    }
+                }
+                out
+            }
+        }
+
+        let mut fast = Interner::default();
+        let mut reference = RefInterner::default();
+
+        // Exercise empty, ASCII, non-ASCII BMP, supplementary plane, lone
+        // surrogates, cross-API duplicates (`str` vs `units`), and rehashing
+        // past several table doublings.
+        let fixed_strs = [
+            "",
+            "cljs.core",
+            "foo",
+            "cljs.core",
+            "app.ünï",
+            "emoji-\u{1F600}-tail",
+            "a",
+            "ab",
+            "abc",
+            "",
+        ];
+        for s in fixed_strs {
+            assert_eq!(fast.str(s), reference.str(s), "str {s:?}");
+        }
+        let fixed_units: &[&[u16]] = &[
+            &[],
+            &[b'f' as u16, b'o' as u16, b'o' as u16],
+            &[0xD800],
+            &[0xD800, 0x0041],
+            &[0xD83D, 0xDE00],
+            &"emoji-\u{1F600}-tail".encode_utf16().collect::<Vec<_>>(),
+            &[0xD800],
+        ];
+        for units in fixed_units {
+            assert_eq!(fast.units(units), reference.units(units), "units {units:?}");
+        }
+        for i in 0..600u32 {
+            let s = format!("sym_{}", i % 350);
+            assert_eq!(fast.str(&s), reference.str(&s));
+            if i % 7 == 0 {
+                let u: Vec<u16> = s.encode_utf16().collect();
+                assert_eq!(fast.units(&u), reference.units(&u));
+            }
+            if i % 19 == 0 {
+                let uni = format!("ns.λ_{}", i % 100);
+                assert_eq!(fast.str(&uni), reference.str(&uni));
+            }
+        }
+        assert_eq!(fast.encode(), reference.encode());
+
+        // Also confirm full artifact encoding round-trips deterministically
+        // and matches across repeated encodes.
+        let artifact = sample(0);
+        let f = fields();
+        let first = encode(&artifact, &f).unwrap();
+        let second = encode(&artifact, &f).unwrap();
+        assert_eq!(first, second);
+        let (_, round_tripped) = decode(&first, &DecodeLimits::default(), &|| false).unwrap();
+        assert_eq!(round_tripped, artifact);
     }
 }

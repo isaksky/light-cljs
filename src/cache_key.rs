@@ -867,6 +867,83 @@ fn emission_fields(fingerprint: &mut Fingerprint, options: &EmissionOptions<'_>)
     };
 }
 
+/// Owned snapshot of the inputs [`revalidate`] needs for one namespace, so
+/// background cache publishing workers can revalidate without borrowing
+/// [`crate::manifest_prefix::ManifestPrefix`].
+#[derive(Clone, Debug)]
+pub(crate) struct RevalidateInputs {
+    pub origin: SourceOrigin,
+    pub own: crate::dependency_manifest::Lookup,
+    pub require_lookups: Vec<crate::dependency_manifest::Lookup>,
+    pub external_inputs: Vec<ExternalInput>,
+}
+
+impl RevalidateInputs {
+    pub(crate) fn from_manifest(
+        manifest: &(impl NamespaceRecords + ?Sized),
+        id: NamespaceId,
+        external_inputs: Vec<ExternalInput>,
+    ) -> Self {
+        let record = manifest.record(id);
+        let own = manifest.lookup(record.source.lookup).clone();
+        let mut require_lookups = Vec::new();
+        for require in &record.requires {
+            for &lookup in &require.lookups {
+                require_lookups.push(manifest.lookup(lookup).clone());
+            }
+        }
+        Self {
+            origin: record.source.origin,
+            own,
+            require_lookups,
+            external_inputs,
+        }
+    }
+}
+
+fn revalidate_parts<'a>(
+    origin: SourceOrigin,
+    own: &crate::dependency_manifest::Lookup,
+    require_lookups: impl IntoIterator<Item = &'a crate::dependency_manifest::Lookup>,
+    external_inputs: impl IntoIterator<Item = &'a ExternalInput>,
+    text: &str,
+    sources: &dyn SourceProvider,
+) -> Result<(), Mismatch> {
+    let request_for = |lookup: &crate::dependency_manifest::Lookup| LoadRequest {
+        namespace: crate::compiler_data::Name::new(None, &lookup.namespace),
+        requesting_namespace: crate::compiler_data::Name::new(None, &lookup.requester),
+        requesting_file: None,
+        reload: Reload::None,
+    };
+    let locate_unchanged = |lookup: &crate::dependency_manifest::Lookup| {
+        let request = request_for(lookup);
+        let mut tried = Vec::new();
+        let found = sources.locate_traced(&request, &mut tried).ok().flatten();
+        tried == lookup.candidates && found.as_deref() == lookup.found.as_deref()
+    };
+    if origin == SourceOrigin::Provider {
+        let request = request_for(own);
+        let mut tried = Vec::new();
+        let loaded = sources.load_traced(&request, &mut tried).ok().flatten();
+        let unchanged = tried == own.candidates
+            && loaded.as_ref().map(|input| input.file.as_str()) == own.found.as_deref();
+        if !unchanged {
+            return Err(Mismatch::Resolution);
+        }
+        if loaded.is_none_or(|input| input.source.as_bytes() != text.as_bytes()) {
+            return Err(Mismatch::Source);
+        }
+    } else if !locate_unchanged(own) {
+        return Err(Mismatch::Resolution);
+    }
+    for lookup in require_lookups {
+        if !locate_unchanged(lookup) {
+            return Err(Mismatch::Resolution);
+        }
+    }
+    inputs_unchanged(external_inputs, sources)
+}
+
 /// Re-read the inputs of namespace `id` from `sources` after it compiled,
 /// and report the first that no longer matches what the compilation read:
 /// its source file and text (`text`, by source index), each lookup of its
@@ -883,41 +960,35 @@ pub fn revalidate(
     sources: &dyn SourceProvider,
 ) -> Result<(), Mismatch> {
     let record = manifest.record(id);
-    let reload = |lookup: &crate::dependency_manifest::Lookup| {
-        let request = LoadRequest {
-            namespace: crate::compiler_data::Name::new(None, &lookup.namespace),
-            requesting_namespace: crate::compiler_data::Name::new(None, &lookup.requester),
-            requesting_file: None,
-            reload: Reload::None,
-        };
-        let mut tried = Vec::new();
-        let loaded = sources.load_traced(&request, &mut tried).ok().flatten();
-        let unchanged = tried == lookup.candidates
-            && loaded.as_ref().map(|input| input.file.as_str()) == lookup.found.as_deref();
-        (unchanged, loaded)
-    };
     let own = manifest.lookup(record.source.lookup);
-    let (unchanged, loaded) = reload(own);
-    if !unchanged {
-        return Err(Mismatch::Resolution);
-    }
-    if record.source.origin == SourceOrigin::Provider
-        && loaded.is_none_or(|input| digest(input.source.as_bytes()) != digest(text.as_bytes()))
-    {
-        return Err(Mismatch::Source);
-    }
-    for require in &record.requires {
-        for &lookup in &require.lookups {
-            if !reload(manifest.lookup(lookup)).0 {
-                return Err(Mismatch::Resolution);
-            }
-        }
-    }
-    inputs_unchanged(
+    revalidate_parts(
+        record.source.origin,
+        own,
+        record
+            .requires
+            .iter()
+            .flat_map(|require| require.lookups.iter().map(|&lookup| manifest.lookup(lookup))),
         record
             .external_inputs
             .iter()
             .map(|&input| manifest.input(input)),
+        text,
+        sources,
+    )
+}
+
+/// Owned counterpart of [`revalidate`] for background cache publish workers.
+pub(crate) fn revalidate_owned(
+    inputs: &RevalidateInputs,
+    text: &str,
+    sources: &dyn SourceProvider,
+) -> Result<(), Mismatch> {
+    revalidate_parts(
+        inputs.origin,
+        &inputs.own,
+        inputs.require_lookups.iter(),
+        inputs.external_inputs.iter(),
+        text,
         sources,
     )
 }

@@ -70,11 +70,18 @@ impl Sha256 {
 
     pub fn finish(mut self) -> [u8; 32] {
         let bits = self.length.wrapping_mul(8);
-        self.update(&[0x80]);
-        while self.filled != 56 {
-            self.update(&[0]);
+        self.block[self.filled] = 0x80;
+        self.filled += 1;
+        if self.filled > 56 {
+            self.block[self.filled..64].fill(0);
+            let block = self.block;
+            compress(&mut self.state, &block);
+            self.filled = 0;
         }
-        self.update(&bits.to_be_bytes());
+        self.block[self.filled..56].fill(0);
+        self.block[56..64].copy_from_slice(&bits.to_be_bytes());
+        let block = self.block;
+        compress(&mut self.state, &block);
         let mut digest = [0; 32];
         for (out, word) in digest.as_chunks_mut::<4>().0.iter_mut().zip(self.state) {
             *out = word.to_be_bytes();
@@ -92,7 +99,13 @@ pub fn digest(data: &[u8]) -> [u8; 32] {
 
 /// `digest` as lowercase hexadecimal.
 pub fn hex(digest: &[u8; 32]) -> String {
-    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out = [0u8; 64];
+    for (at, &byte) in digest.iter().enumerate() {
+        out[at * 2] = DIGITS[(byte >> 4) as usize];
+        out[at * 2 + 1] = DIGITS[(byte & 0x0f) as usize];
+    }
+    String::from_utf8(out.to_vec()).expect("hex digits are ASCII")
 }
 
 /// Framed SHA-256: the fingerprint of a sequence of typed fields. Each
@@ -130,8 +143,10 @@ impl Fingerprint {
     }
 
     fn field(&mut self, kind: Field, bytes: &[u8]) -> &mut Self {
-        self.hash.update(&[kind as u8]);
-        self.hash.update(&(bytes.len() as u64).to_le_bytes());
+        let mut header = [0u8; 9];
+        header[0] = kind as u8;
+        header[1..9].copy_from_slice(&(bytes.len() as u64).to_le_bytes());
+        self.hash.update(&header);
         self.hash.update(bytes);
         self
     }
@@ -202,43 +217,124 @@ impl Fingerprint {
     }
 }
 
+#[inline(always)]
 fn compress(state: &mut [u32; 8], block: &[u8; 64]) {
-    let mut w = [0u32; 64];
-    for (word, bytes) in w.iter_mut().zip(block.as_chunks::<4>().0) {
-        *word = u32::from_be_bytes(*bytes);
-    }
-    for i in 16..64 {
-        let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
-        let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
-        w[i] = w[i - 16]
-            .wrapping_add(s0)
-            .wrapping_add(w[i - 7])
-            .wrapping_add(s1);
-    }
+    let mut w = [
+        u32::from_be_bytes([block[0], block[1], block[2], block[3]]),
+        u32::from_be_bytes([block[4], block[5], block[6], block[7]]),
+        u32::from_be_bytes([block[8], block[9], block[10], block[11]]),
+        u32::from_be_bytes([block[12], block[13], block[14], block[15]]),
+        u32::from_be_bytes([block[16], block[17], block[18], block[19]]),
+        u32::from_be_bytes([block[20], block[21], block[22], block[23]]),
+        u32::from_be_bytes([block[24], block[25], block[26], block[27]]),
+        u32::from_be_bytes([block[28], block[29], block[30], block[31]]),
+        u32::from_be_bytes([block[32], block[33], block[34], block[35]]),
+        u32::from_be_bytes([block[36], block[37], block[38], block[39]]),
+        u32::from_be_bytes([block[40], block[41], block[42], block[43]]),
+        u32::from_be_bytes([block[44], block[45], block[46], block[47]]),
+        u32::from_be_bytes([block[48], block[49], block[50], block[51]]),
+        u32::from_be_bytes([block[52], block[53], block[54], block[55]]),
+        u32::from_be_bytes([block[56], block[57], block[58], block[59]]),
+        u32::from_be_bytes([block[60], block[61], block[62], block[63]]),
+    ];
+
     let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = *state;
-    for i in 0..64 {
-        let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
-        let choose = (e & f) ^ (!e & g);
-        let t1 = h
-            .wrapping_add(s1)
-            .wrapping_add(choose)
-            .wrapping_add(ROUND[i])
-            .wrapping_add(w[i]);
-        let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
-        let majority = (a & b) ^ (a & c) ^ (b & c);
-        let t2 = s0.wrapping_add(majority);
-        h = g;
-        g = f;
-        f = e;
-        e = d.wrapping_add(t1);
-        d = c;
-        c = b;
-        b = a;
-        a = t1.wrapping_add(t2);
+
+    macro_rules! round {
+        ($a:ident, $b:ident, $c:ident, $d:ident, $e:ident, $f:ident, $g:ident, $h:ident, $k:expr, $word:expr) => {{
+            let s1 = $e.rotate_right(6) ^ $e.rotate_right(11) ^ $e.rotate_right(25);
+            let ch = $g ^ ($e & ($f ^ $g));
+            let t1 = $h
+                .wrapping_add(s1)
+                .wrapping_add(ch)
+                .wrapping_add($k)
+                .wrapping_add($word);
+            let s0 = $a.rotate_right(2) ^ $a.rotate_right(13) ^ $a.rotate_right(22);
+            let maj = ($a & $b) | ($c & ($a | $b));
+            $d = $d.wrapping_add(t1);
+            $h = t1.wrapping_add(s0.wrapping_add(maj));
+        }};
     }
-    for (word, value) in state.iter_mut().zip([a, b, c, d, e, f, g, h]) {
-        *word = word.wrapping_add(value);
+
+    macro_rules! extend {
+        ($idx:expr) => {{
+            let w15 = w[($idx + 1) & 15];
+            let s0 = w15.rotate_right(7) ^ w15.rotate_right(18) ^ (w15 >> 3);
+            let w2 = w[($idx + 14) & 15];
+            let s1 = w2.rotate_right(17) ^ w2.rotate_right(19) ^ (w2 >> 10);
+            let next = w[$idx]
+                .wrapping_add(s0)
+                .wrapping_add(w[($idx + 9) & 15])
+                .wrapping_add(s1);
+            w[$idx] = next;
+            next
+        }};
     }
+
+    // Rounds 0..16: consume the initial 16 big-endian words directly.
+    round!(a, b, c, d, e, f, g, h, ROUND[0], w[0]);
+    round!(h, a, b, c, d, e, f, g, ROUND[1], w[1]);
+    round!(g, h, a, b, c, d, e, f, ROUND[2], w[2]);
+    round!(f, g, h, a, b, c, d, e, ROUND[3], w[3]);
+    round!(e, f, g, h, a, b, c, d, ROUND[4], w[4]);
+    round!(d, e, f, g, h, a, b, c, ROUND[5], w[5]);
+    round!(c, d, e, f, g, h, a, b, ROUND[6], w[6]);
+    round!(b, c, d, e, f, g, h, a, ROUND[7], w[7]);
+
+    round!(a, b, c, d, e, f, g, h, ROUND[8], w[8]);
+    round!(h, a, b, c, d, e, f, g, ROUND[9], w[9]);
+    round!(g, h, a, b, c, d, e, f, ROUND[10], w[10]);
+    round!(f, g, h, a, b, c, d, e, ROUND[11], w[11]);
+    round!(e, f, g, h, a, b, c, d, ROUND[12], w[12]);
+    round!(d, e, f, g, h, a, b, c, ROUND[13], w[13]);
+    round!(c, d, e, f, g, h, a, b, ROUND[14], w[14]);
+    round!(b, c, d, e, f, g, h, a, ROUND[15], w[15]);
+
+    // Rounds 16..64: rolling 16-word message schedule in 8-round unrolled groups.
+    for base in [16usize, 32, 48] {
+        let w0 = extend!(0);
+        round!(a, b, c, d, e, f, g, h, ROUND[base], w0);
+        let w1 = extend!(1);
+        round!(h, a, b, c, d, e, f, g, ROUND[base + 1], w1);
+        let w2 = extend!(2);
+        round!(g, h, a, b, c, d, e, f, ROUND[base + 2], w2);
+        let w3 = extend!(3);
+        round!(f, g, h, a, b, c, d, e, ROUND[base + 3], w3);
+        let w4 = extend!(4);
+        round!(e, f, g, h, a, b, c, d, ROUND[base + 4], w4);
+        let w5 = extend!(5);
+        round!(d, e, f, g, h, a, b, c, ROUND[base + 5], w5);
+        let w6 = extend!(6);
+        round!(c, d, e, f, g, h, a, b, ROUND[base + 6], w6);
+        let w7 = extend!(7);
+        round!(b, c, d, e, f, g, h, a, ROUND[base + 7], w7);
+
+        let w8 = extend!(8);
+        round!(a, b, c, d, e, f, g, h, ROUND[base + 8], w8);
+        let w9 = extend!(9);
+        round!(h, a, b, c, d, e, f, g, ROUND[base + 9], w9);
+        let w10 = extend!(10);
+        round!(g, h, a, b, c, d, e, f, ROUND[base + 10], w10);
+        let w11 = extend!(11);
+        round!(f, g, h, a, b, c, d, e, ROUND[base + 11], w11);
+        let w12 = extend!(12);
+        round!(e, f, g, h, a, b, c, d, ROUND[base + 12], w12);
+        let w13 = extend!(13);
+        round!(d, e, f, g, h, a, b, c, ROUND[base + 13], w13);
+        let w14 = extend!(14);
+        round!(c, d, e, f, g, h, a, b, ROUND[base + 14], w14);
+        let w15 = extend!(15);
+        round!(b, c, d, e, f, g, h, a, ROUND[base + 15], w15);
+    }
+
+    state[0] = state[0].wrapping_add(a);
+    state[1] = state[1].wrapping_add(b);
+    state[2] = state[2].wrapping_add(c);
+    state[3] = state[3].wrapping_add(d);
+    state[4] = state[4].wrapping_add(e);
+    state[5] = state[5].wrapping_add(f);
+    state[6] = state[6].wrapping_add(g);
+    state[7] = state[7].wrapping_add(h);
 }
 
 #[cfg(test)]
@@ -448,5 +544,95 @@ mod tests {
         let mut streamed = Fingerprint::new("pieces-test");
         streamed.text_pieces(pieces, joined.len());
         assert_eq!(streamed.finish(), whole.finish());
+    }
+
+    /// Textbook FIPS 180-4 SHA-256 reference for verifying the optimized
+    /// rolling-schedule implementation across every length and boundary.
+    fn reference_digest(data: &[u8]) -> [u8; 32] {
+        let mut state = INITIAL;
+        let mut padded = data.to_vec();
+        let bits = (data.len() as u64).wrapping_mul(8);
+        padded.push(0x80);
+        while padded.len() % 64 != 56 {
+            padded.push(0);
+        }
+        padded.extend_from_slice(&bits.to_be_bytes());
+        for chunk in padded.chunks_exact(64) {
+            let mut w = [0u32; 64];
+            for (at, bytes) in chunk.chunks_exact(4).enumerate() {
+                w[at] = u32::from_be_bytes(bytes.try_into().unwrap());
+            }
+            for i in 16..64 {
+                let s0 =
+                    w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+                let s1 =
+                    w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+                w[i] = w[i - 16]
+                    .wrapping_add(s0)
+                    .wrapping_add(w[i - 7])
+                    .wrapping_add(s1);
+            }
+            let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = state;
+            for i in 0..64 {
+                let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+                let ch = (e & f) ^ (!e & g);
+                let t1 = h
+                    .wrapping_add(s1)
+                    .wrapping_add(ch)
+                    .wrapping_add(ROUND[i])
+                    .wrapping_add(w[i]);
+                let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+                let maj = (a & b) ^ (a & c) ^ (b & c);
+                let t2 = s0.wrapping_add(maj);
+                h = g;
+                g = f;
+                f = e;
+                e = d.wrapping_add(t1);
+                d = c;
+                c = b;
+                b = a;
+                a = t1.wrapping_add(t2);
+            }
+            for (word, value) in state.iter_mut().zip([a, b, c, d, e, f, g, h]) {
+                *word = word.wrapping_add(value);
+            }
+        }
+        let mut out = [0u8; 32];
+        for (slot, word) in out.chunks_exact_mut(4).zip(state) {
+            slot.copy_from_slice(&word.to_be_bytes());
+        }
+        out
+    }
+
+    #[test]
+    fn compress_matches_reference_for_all_lengths_0_to_4096() {
+        let mut buf = Vec::with_capacity(4096);
+        let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
+        for _ in 0..4096 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            buf.push((x >> 56) as u8);
+        }
+        for len in 0..=4096 {
+            let slice = &buf[..len];
+            let expected = reference_digest(slice);
+            assert_eq!(digest(slice), expected, "one-shot mismatch at len {len}");
+        }
+        for &len in &[0usize, 1, 55, 56, 57, 63, 64, 65, 119, 120, 127, 128, 129, 1024, 4096] {
+            let slice = &buf[..len];
+            let expected = reference_digest(slice);
+            for &chunk_size in &[1usize, 7, 31, 55, 56, 63, 64, 65, 128] {
+                let mut hasher = Sha256::new();
+                for piece in slice.chunks(chunk_size) {
+                    hasher.update(piece);
+                }
+                assert_eq!(
+                    hasher.finish(),
+                    expected,
+                    "chunked mismatch at len {len}, chunk {chunk_size}"
+                );
+            }
+        }
     }
 }

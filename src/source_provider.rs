@@ -3,6 +3,7 @@ use crate::compiler_data::Name;
 use std::{
     fmt,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 /// Whether a request reloads: not a loaded namespace, the namespace itself,
 /// or it and every namespace it requires, directly or not, each once. They
@@ -64,6 +65,18 @@ pub trait SourceProvider {
         let _ = tried;
         self.load(request)
     }
+    /// [`Self::load_traced`], returning only the resolved file identity
+    /// (`SourceInput::file`) without reading the source text. Used when
+    /// revalidating resolution of required namespaces so unchanged dependency
+    /// files do not need to be opened and read again.
+    fn locate_traced(
+        &self,
+        request: &LoadRequest,
+        tried: &mut Vec<crate::dependency_manifest::Candidate>,
+    ) -> Result<Option<String>, LoadError> {
+        self.load_traced(request, tried)
+            .map(|loaded| loaded.map(|input| input.file))
+    }
     /// The resources `light.build/resource` reads while this provider's
     /// namespaces compile (docs/compiler.md, "Compile-time services:
     /// light.build"). The default has none, and every resource request is
@@ -81,6 +94,12 @@ pub trait SourceProvider {
     /// order of the requests; the dependency manifest still records the
     /// depth-first requester.
     fn concurrent(&self) -> Option<&(dyn SourceProvider + Send + Sync)> {
+        None
+    }
+    /// An owned thread-safe handle to this provider that background workers
+    /// (such as parallel cache publishing) may keep across the call boundary,
+    /// or `None` when the provider cannot be moved to worker threads.
+    fn owned_concurrent(&self) -> Option<Arc<dyn SourceProvider + Send + Sync>> {
         None
     }
 }
@@ -137,11 +156,13 @@ where
 /// Explicit compiler source roots, with `.cljs` taking precedence over `.cljc`.
 #[derive(Clone, Debug)]
 pub struct FileSourceProvider {
-    roots: Vec<PathBuf>,
+    roots: Arc<[PathBuf]>,
 }
 impl FileSourceProvider {
     pub fn new(roots: Vec<PathBuf>) -> Self {
-        Self { roots }
+        Self {
+            roots: roots.into(),
+        }
     }
 }
 impl SourceProvider for FileSourceProvider {
@@ -155,12 +176,24 @@ impl SourceProvider for FileSourceProvider {
     ) -> Result<Option<SourceInput>, LoadError> {
         self.locate(request, Some(tried))
     }
+    fn locate_traced(
+        &self,
+        request: &LoadRequest,
+        tried: &mut Vec<crate::dependency_manifest::Candidate>,
+    ) -> Result<Option<String>, LoadError> {
+        Ok(self
+            .resolve(request, Some(tried))?
+            .map(|path| path.to_string_lossy().into_owned()))
+    }
     fn resources(&self) -> Option<std::rc::Rc<dyn ResourceProvider>> {
         Some(std::rc::Rc::new(self.clone()))
     }
     /// Source roots answer by name alone, from any thread.
     fn concurrent(&self) -> Option<&(dyn SourceProvider + Send + Sync)> {
         Some(self)
+    }
+    fn owned_concurrent(&self) -> Option<Arc<dyn SourceProvider + Send + Sync>> {
+        Some(Arc::new(self.clone()))
     }
 }
 /// Resources across every root, like namespaces: a path in two roots is an
@@ -172,7 +205,7 @@ impl ResourceProvider for FileSourceProvider {
         tried: &mut Vec<crate::dependency_manifest::Candidate>,
     ) -> Result<Option<ResourceInput>, LoadError> {
         let mut found: Vec<PathBuf> = Vec::new();
-        for root in &self.roots {
+        for root in self.roots.iter() {
             let candidate = root.join(path);
             let metadata = std::fs::metadata(&candidate);
             let present = metadata.as_ref().is_ok_and(|m| m.is_file());
@@ -255,23 +288,117 @@ impl ResourceProvider for FileSourceProvider {
     }
 }
 impl FileSourceProvider {
+    fn resolve(
+        &self,
+        request: &LoadRequest,
+        tried: Option<&mut Vec<crate::dependency_manifest::Candidate>>,
+    ) -> Result<Option<PathBuf>, LoadError> {
+        let name = String::from_utf16_lossy(request.namespace.name());
+        if !crate::compiler::valid_namespace(&name) {
+            return Err(LoadError::Provider(format!("invalid namespace {name}")));
+        }
+        crate::compiler::locate_source_traced(&self.roots, &name, &["cljs", "cljc"], tried)
+            .map_err(|e| LoadError::Provider(e.to_string()))
+    }
+
     fn locate(
         &self,
         request: &LoadRequest,
         tried: Option<&mut Vec<crate::dependency_manifest::Candidate>>,
     ) -> Result<Option<SourceInput>, LoadError> {
-        let name = String::from_utf16_lossy(request.namespace.name());
-        if !crate::compiler::valid_namespace(&name) {
-            return Err(LoadError::Provider(format!("invalid namespace {name}")));
-        }
-        let Some(path) =
-            crate::compiler::locate_source_traced(&self.roots, &name, &["cljs", "cljc"], tried)
-                .map_err(|e| LoadError::Provider(e.to_string()))?
-        else {
+        let Some(path) = self.resolve(request, tried)? else {
             return Ok(None);
         };
         let source = std::fs::read_to_string(&path)
             .map_err(|e| LoadError::Provider(format!("{}: {e}", path.display())))?;
         Ok(Some(SourceInput::new(path.to_string_lossy(), source)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let dir = std::env::temp_dir().join(format!(
+            "light-cljs-source-provider-{tag}-{}-{nanos}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn req(ns: &str) -> LoadRequest {
+        LoadRequest {
+            namespace: Name::new(None, ns),
+            requesting_namespace: Name::new(None, "app.main"),
+            requesting_file: None,
+            reload: Reload::None,
+        }
+    }
+
+    #[test]
+    fn file_source_provider_locate_traced_matches_load_traced() {
+        let base = temp_dir("locate-traced");
+        let root_a = base.join("root-a");
+        let root_b = base.join("root-b");
+        fs::create_dir_all(root_a.join("app")).unwrap();
+        fs::create_dir_all(root_b.join("app")).unwrap();
+
+        // Present .cljs only in root_a.
+        fs::write(root_a.join("app/only_cljs.cljs"), "(ns app.only-cljs)").unwrap();
+        // Present .cljc only in root_b.
+        fs::write(root_b.join("app/only_cljc.cljc"), "(ns app.only-cljc)").unwrap();
+        // Shadowed: .cljs in root_b shadows .cljc in root_a (extension precedence).
+        fs::write(root_a.join("app/shadowed.cljc"), "(ns app.shadowed)").unwrap();
+        fs::write(root_b.join("app/shadowed.cljs"), "(ns app.shadowed)").unwrap();
+        // Ambiguous: .cljs present in both roots.
+        fs::write(root_a.join("app/ambig.cljs"), "(ns app.ambig)").unwrap();
+        fs::write(root_b.join("app/ambig.cljs"), "(ns app.ambig)").unwrap();
+        // Directory collision at candidate path.
+        fs::create_dir_all(root_a.join("app/dir_hit.cljs")).unwrap();
+        // Non-UTF-8 file: proves locate_traced inspects metadata without reading contents.
+        fs::write(root_a.join("app/raw_bytes.cljs"), [0xff, 0xfe, 0xfd]).unwrap();
+
+        let provider = FileSourceProvider::new(vec![root_a.clone(), root_b.clone()]);
+
+        for ns in [
+            "app.only-cljs",
+            "app.only-cljc",
+            "app.shadowed",
+            "app.missing",
+            "app.ambig",
+            "app.dir-hit",
+            "invalid..ns",
+        ] {
+            let request = req(ns);
+            let mut load_tried = Vec::new();
+            let loaded = provider.load_traced(&request, &mut load_tried);
+            let mut locate_tried = Vec::new();
+            let located = provider.locate_traced(&request, &mut locate_tried);
+            assert_eq!(locate_tried, load_tried, "candidates for {ns}");
+            assert_eq!(
+                located,
+                loaded.map(|opt| opt.map(|input| input.file)),
+                "result for {ns}"
+            );
+        }
+
+        // Non-UTF-8 file: load_traced fails reading UTF-8, while locate_traced
+        // succeeds because it never opens/reads the file.
+        let raw_req = req("app.raw-bytes");
+        let mut load_tried = Vec::new();
+        assert!(provider.load_traced(&raw_req, &mut load_tried).is_err());
+        let mut locate_tried = Vec::new();
+        let located = provider.locate_traced(&raw_req, &mut locate_tried).unwrap();
+        assert!(located.is_some());
+        assert_eq!(locate_tried, load_tried);
+
+        let _ = fs::remove_dir_all(&base);
     }
 }
