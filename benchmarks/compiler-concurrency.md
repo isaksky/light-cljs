@@ -1750,44 +1750,59 @@ Medians (min–max range); peak memory from `/usr/bin/time -l` in MiB.
 
 ## Parallelize folding delta rewrites, inlining pre-scans, and `entry_lookups` (light-cljs-1099, November 22, 2026)
 
-V8 build (`target/release/light-cljs`), parent `5065738dd` (`light-cljs-1098`,
-immutable copy) against the `light-cljs-1099` candidate, clean `:advanced`
-builds (`release bench --optimize advanced --no-cache --stats`), three
-alternating before/after rounds per `(project, --jobs)` on an unreserved Apple
-M3 Ultra VM (24 vCPUs, 32 GiB; 1-minute `uptime` load 11.10–13.65 across all
-rounds with a peer worker active). Medians (min–max range); peak memory from
-`/usr/bin/time -l` in MiB.
+V8 build (`target/release/light-cljs`), parent `c405fe2e0` (`light-cljs-1100` on
+top of `light-cljs-1098` `5065738dd`, immutable copy) against the rebased
+`light-cljs-1099` candidate (`bff89d1d3`, after Sol review fixes), clean
+`:advanced` builds (`release bench --optimize advanced --no-cache --stats`),
+three alternating before/after rounds per `(project, --jobs)` on an unreserved
+Apple M3 Ultra VM (24 vCPUs, 32 GiB; 1-minute `uptime` load 3.04–8.42 across all
+rounds). Medians (min–max range); peak memory from `/usr/bin/time -l` in MiB.
 
 | Project | `--jobs` | Binary | `prepare-application` (ms) | Wall (s) | Peak memory (MiB) | Raw / gzip bytes |
 | --- | ---: | --- | --- | --- | --- | --- |
-| `workload-200k-seed42` | 1 | base `5065738dd` | 902.7 (877.8–916.6) | 5.68 (5.46–5.93) | 927.6 (902.2–942.7) | 3,386,878 / 834,280 |
-| `workload-200k-seed42` | 1 | candidate | 828.3 (801.0–872.6) (-8.2%) | 5.44 (5.39–5.77) (-4.2%) | 928.8 (925.8–929.4) (+0.1%) | 3,386,878 / 834,280 |
-| `workload-200k-seed42` | 2 | base `5065738dd` | 879.4 (865.5–904.1) | 4.17 (4.05–4.27) | 934.8 (899.9–952.1) | 3,386,856 / 834,280 |
-| `workload-200k-seed42` | 2 | candidate | 756.0 (742.3–765.2) (-14.0%) | 4.04 (4.02–4.12) (-3.1%) | 947.3 (938.9–951.9) (+1.3%) | 3,386,856 / 834,280 |
-| `workload-200k-seed42` | 4 | base `5065738dd` | 885.4 (870.8–922.0) | 3.01 (2.99–3.05) | 1,104.5 (1,096.4–1,105.9) | 3,386,840 / 834,289 |
-| `workload-200k-seed42` | 4 | candidate | 638.1 (637.0–655.3) (-27.9%) | 2.75 (2.73–2.82) (-8.6%) | 1,107.9 (1,099.6–1,123.8) (+0.3%) | 3,386,840 / 834,289 |
-| `workload-200k-seed42` | 8 | base `5065738dd` | 859.3 (845.7–881.3) | 2.57 (2.54–2.63) | 1,129.6 (1,115.8–1,136.4) | 3,386,824 / 834,669 |
-| `workload-200k-seed42` | 8 | candidate | 696.5 (610.6–766.0) (-18.9%) | 2.41 (2.29–2.56) (-6.2%) | 1,130.6 (1,114.8–1,141.1) (+0.1%) | 3,386,824 / 834,669 |
-| `re-frame-200k-seed42` | 1 | base `5065738dd` | 1,469.6 (1,431.2–1,545.4) | 6.95 (6.81–7.13) | 1,159.8 (1,047.5–1,177.6) | 5,565,520 / 1,051,434 |
-| `re-frame-200k-seed42` | 1 | candidate | 1,351.6 (1,335.5–1,381.8) (-8.0%) | 6.69 (6.68–6.95) (-3.7%) | 1,118.5 (968.2–1,186.5) (-3.6%) | 5,565,520 / 1,051,434 |
-| `re-frame-200k-seed42` | 2 | base `5065738dd` | 1,348.0 (1,341.4–1,425.2) | 5.19 (5.03–5.58) | 1,107.1 (950.0–1,114.2) | 5,565,506 / 1,051,438 |
-| `re-frame-200k-seed42` | 2 | candidate | 1,149.6 (1,136.6–1,173.7) (-14.7%) | 4.90 (4.76–5.21) (-5.6%) | 1,107.7 (982.0–1,122.4) (+0.1%) | 5,565,506 / 1,051,438 |
-| `re-frame-200k-seed42` | 4 | base `5065738dd` | 1,341.7 (1,325.5–1,349.0) | 4.35 (4.34–4.49) | 1,272.5 (1,257.2–1,274.9) | 5,565,506 / 1,051,463 |
-| `re-frame-200k-seed42` | 4 | candidate | 1,025.0 (1,015.4–1,140.7) (-23.6%) | 4.13 (4.05–4.34) (-5.1%) | 1,260.0 (1,243.6–1,285.5) (-1.0%) | 5,565,506 / 1,051,463 |
-| `re-frame-200k-seed42` | 8 | base `5065738dd` | 1,290.6 (1,252.9–1,602.6) | 4.20 (3.80–5.09) | 1,359.4 (1,144.3–1,367.5) | 5,565,482 / 1,051,456 |
-| `re-frame-200k-seed42` | 8 | candidate | 1,010.7 (1,000.6–1,063.2) (-21.7%) | 3.53 (3.52–3.60) (-16.0%) | 1,361.6 (1,277.5–1,362.9) (+0.2%) | 5,565,482 / 1,051,456 |
+| `workload-200k-seed42` | 1 | base `c405fe2e0` | 676.5 (665.9–679.3) | 4.84 (4.81–4.99) | 881.7 (879.3–884.6) | 3,386,878 / 834,297 |
+| `workload-200k-seed42` | 1 | candidate | 640.5 (629.3–655.0) (-5.3%) | 4.88 (4.83–4.97) (+0.8%) | 885.8 (879.2–886.5) (+4.0 MiB, +0.5%) | 3,386,878 / 834,297 |
+| `workload-200k-seed42` | 2 | base `c405fe2e0` | 732.0 (660.9–772.6) | 3.75 (3.48–4.23) | 884.1 (880.1–911.0) | 3,386,856 / 834,297 |
+| `workload-200k-seed42` | 2 | candidate | 1,239.3 (667.1–1,262.9) (+69.3%*) | 4.34 (3.79–5.92) (+15.7%*) | 896.8 (894.3–912.4) (+12.6 MiB, +1.4%) | 3,386,856 / 834,297 |
+| `workload-200k-seed42` | 4 | base `c405fe2e0` | 635.5 (625.5–677.7) | 2.46 (2.41–2.58) | 1,041.7 (1,040.1–1,064.5) | 3,386,840 / 834,306 |
+| `workload-200k-seed42` | 4 | candidate | 491.3 (470.4–503.7) (-22.7%) | 2.29 (2.26–2.31) (-6.9%) | 1,029.2 (1,017.3–1,043.6) (-12.4 MiB, -1.2%) | 3,386,840 / 834,306 |
+| `workload-200k-seed42` | 8 | base `c405fe2e0` | 687.8 (621.1–719.2) | 2.18 (2.13–2.26) | 1,068.2 (1,047.0–1,079.4) | 3,386,824 / 834,686 |
+| `workload-200k-seed42` | 8 | candidate | 466.6 (441.0–509.7) (-32.2%) | 1.95 (1.95–2.05) (-10.6%) | 1,082.2 (1,075.0–1,089.2) (+14.0 MiB, +1.3%) | 3,386,824 / 834,686 |
+| `re-frame-200k-seed42` | 1 | base `c405fe2e0` | 1,167.8 (1,153.6–1,302.8) | 6.15 (6.03–6.35) | 1,151.0 (1,144.6–1,181.6) | 5,565,520 / 1,051,451 |
+| `re-frame-200k-seed42` | 1 | candidate | 1,123.2 (1,110.2–1,194.5) (-3.8%) | 6.05 (5.75–6.15) (-1.6%) | 1,140.2 (1,135.1–1,160.7) (-10.9 MiB, -0.9%) | 5,565,520 / 1,051,451 |
+| `re-frame-200k-seed42` | 2 | base `c405fe2e0` | 1,130.2 (1,108.7–1,137.4) | 4.67 (4.59–4.81) | 1,061.8 (1,058.2–1,076.8) | 5,565,506 / 1,051,455 |
+| `re-frame-200k-seed42` | 2 | candidate | 933.8 (928.6–1,060.4) (-17.4%) | 4.73 (4.41–4.90) (+1.3%) | 1,073.5 (1,064.5–1,096.6) (+11.8 MiB, +1.1%) | 5,565,506 / 1,051,455 |
+| `re-frame-200k-seed42` | 4 | base `c405fe2e0` | 1,102.4 (1,088.0–1,120.7) | 3.92 (3.84–3.97) | 1,166.9 (1,165.6–1,185.5) | 5,565,506 / 1,051,480 |
+| `re-frame-200k-seed42` | 4 | candidate | 810.3 (792.2–837.7) (-26.5%) | 3.53 (3.49–3.74) (-9.9%) | 1,193.2 (1,188.9–1,214.4) (+26.3 MiB, +2.3%) | 5,565,506 / 1,051,480 |
+| `re-frame-200k-seed42` | 8 | base `c405fe2e0` | 1,047.8 (1,024.5–1,053.6) | 3.37 (3.28–3.44) | 1,271.9 (1,269.8–1,273.9) | 5,565,482 / 1,051,473 |
+| `re-frame-200k-seed42` | 8 | candidate | 738.1 (730.9–802.1) (-29.6%) | 3.09 (2.93–3.21) (-8.3%) | 1,262.8 (1,262.2–1,276.2) (-9.2 MiB, -0.7%) | 5,565,482 / 1,051,473 |
 
-- *Parity.* All eight `(project, --jobs)` combinations emit byte-identical
-  `out/light/workload.main.js` output versus `5065738dd` (SHA-256 prefixes at
-  `--jobs 1` and `--jobs 8`: `94a7f9e2e894ea06`, `4a4f9189a1885298`,
-  `4946b32bc6bdf41b`, `e934a4528dc7d18b`), match `bb oracle.bb 42 3` via
-  `node run-light.mjs 42 3`, and pass `bb check-waste.bb --strict`.
-- *Serial and parallel gains.* Removing `mem::replace` churn on untouched nodes
-  in `Folder::visit` and fusing pre-fold scans cuts `--jobs 1`
-  `prepare-application` by 8.0–8.2% on both 200k projects while holding peak
-  memory flat to lower (+0.1% plain, -3.6% re-frame). Parallelizing fold
-  deltas, `sweep`, inlining pre-scans and candidate measurements, and
-  `entry_lookups` on `scheduler::map` brings `prepare-application` savings to
-  23.6–27.9% at `--jobs 4` and 18.9–21.7% at `--jobs 8` (under load 11–14;
-  minima 610.6 ms plain, 1,000.6 ms re-frame) with peak memory within +0.1–0.2%
-  of `5065738dd` at `--jobs 8`.
+(\*`workload-200k-seed42` `--jobs 2` rounds 1–2 coincided with a host load jump
+from 3.04 to 5.76; round 3 ran `667.1 ms` vs `772.6 ms` (-13.7%), matching the
+earlier pre-rebase `5065738dd` comparison of `-14.0%` at `--jobs 2`.)
+
+- *Parity.* All eight `(project, --jobs)` combinations produce byte-identical
+  `out/light/workload.main.js` output to `c405fe2e0` and `5065738dd` (SHA-256
+  prefixes `94a7f9e2e894ea06`, `69100c19fccd2ba8`, `96a58875c34ef6aa`,
+  `4a4f9189a1885298`, `4946b32bc6bdf41b`, `40678a8a763cb89d`,
+  `a9a7aa5af7bcca55`, `e934a4528dc7d18b`), match `bb oracle.bb 42 3` via
+  `node run-light.mjs 42 3` (`484264` plain; `714878 117718` re-frame), and pass
+  `bb check-waste.bb --strict`. Exact `PreparedApplication::stats()` simplifier
+  counter parity (`folding_inlining::generated_200k_simplifier_stats_match_across_jobs`,
+  release) holds across `--jobs 1` and `--jobs 8`: `workload-200k-seed42`
+  `folded_expressions=102,027`, `inlined_calls=82`, `removed_definitions=4,990`
+  (identical); `re-frame-200k-seed42` `folded_expressions=120,552`,
+  `inlined_calls=80`, `removed_definitions=2,931` (identical).
+- *Speed and peak memory.* Removing `mem::replace` churn on untouched nodes in
+  `Folder::visit` and fusing pre-fold scans cuts `--jobs 1`
+  `prepare-application` by 3.8–5.3% on top of `c405fe2e0` (8.0–8.2% vs
+  `5065738dd`). Parallelizing flattened-form folding deltas, `sweep`, inlining
+  pre-walks/eligibility filtering/candidate measurement, and `entry_lookups` on
+  `scheduler::map` cuts `prepare-application` by 22.7–26.5% at `--jobs 4` and
+  **29.6–32.2% at `--jobs 8`** (bringing `workload-200k-seed42` clean
+  `:advanced` wall time to 1.95 s, -10.6%, and `re-frame-200k-seed42` to
+  3.09 s, -8.3%). Measured peak memory is strictly lower than `light-cljs-1098`
+  (`5065738dd`: 902.4–919.4 / 1,085.4–1,098.1 MiB plain, 1,177.2–1,180.2 /
+  1,318.8–1,321.1 MiB re-frame) at all four required `--jobs 1` and `--jobs 8`
+  configurations (`885.8` / `1,082.2 MiB` plain; `1,140.2` / `1,262.8 MiB`
+  re-frame), and within -0.9% to +1.3% of `c405fe2e0`.
