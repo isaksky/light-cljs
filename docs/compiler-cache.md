@@ -1584,25 +1584,30 @@ build is a supported debugging and comparison path.
     `slots` in deterministic filename order and records `SnapshotHealth`
     (`max_per_namespace`, `total_bytes`, `saw_unhealthy`). `CompileCache::finish`
     skips `Store::trim` when nothing was published, no damaged artifact was
-    observed, and the snapshot is already healthy and within retention.
+    observed, the snapshot is already healthy and within retention, and no
+    staging lease has expired (`Store::has_expired_staging_leases`).
   - `CompileCache::lookup_batched` prefetches consecutive candidate-bearing
-    namespaces in a bounded sliding window (up to 128 namespaces and 16 MiB of
-    encoded artifacts): Stage A reads newest-candidate manifest prefixes and
-    computes `source`/`resolution` digests (plus concurrent `inputs_unchanged`)
-    in parallel; Stage B walks `ManifestPrefix` and `NamespaceKeys` serially in
-    topological order, stopping at the first miss or bypass so stale candidates
-    only read their manifest prefix; Stage C runs `Reading::finish` (full-file
-    SHA-256 verification) and `artifact_codec::decode_verified` (skipping
-    redundant per-section digests and using fused
-    `NamespaceArtifact::validate_with_depth`) in parallel, dropping raw bytes
-    immediately on workers; Stage D installs decoded artifacts serially via
-    `artifact_install::install_validated`, `NamespaceArtifact::into_bodies_only`,
-    and borrowed `NameIndex::get_str`, falling back cleanly at the exact index
-    on mid-window corruption, cancellation, or install refusal.
+    namespaces in a bounded sliding window (up to 64 namespaces and 3 MiB of
+    newest-entry encoded bytes): Stage A reads newest-candidate manifest
+    prefixes and computes `source`/`resolution` digests (plus concurrent
+    `inputs_unchanged`) in parallel; Stage B walks `NamespaceKeys` serially in
+    topological order via `next_stored` / `append_stored` (leaving
+    `ManifestPrefix` untouched until Stage D delivery), stopping at the first
+    miss or bypass so stale candidates only read their manifest prefix; Stage C
+    runs `Reading::finish` (full-file SHA-256 verification) and
+    `artifact_codec::decode_verified` (skipping redundant per-section digests
+    and using fused `NamespaceArtifact::validate_with_depth`) in parallel,
+    dropping raw bytes immediately on workers; Stage D installs decoded
+    artifacts serially via `artifact_install::install_validated`,
+    `NamespaceArtifact::into_bodies_only`, and borrowed `NameIndex::get_str`,
+    falling back cleanly at the exact index on mid-window corruption,
+    cancellation, or install refusal.
   - `compiler.rs` starts the unit pool, V8 bootstrap, and `ParallelTopLevel`
-    lazily on the first actual cache miss (replaying installed indices into
-    `ParallelTopLevel::note_published` before `extend_graph`), so 100% warm
-    cache builds run with zero V8 bootstrap (`trace.engine.entries == 0`).
+    lazily on the first actual cache miss (buffering namespace-registry updates
+    in `InstallIndex::set_defer_registry` until `start_pool` runs and replaying
+    installed indices into `ParallelTopLevel::note_published` before
+    `extend_graph`), so 100% warm cache builds run with zero V8 bootstrap
+    (`trace.engine.entries == 0`).
 - **Failure.** The first failed write (a read-only directory, a full disk)
   prints one `warning:` line and turns writing off for the store's
   lifetime. A failed write leaves at most a temporary file, so what the

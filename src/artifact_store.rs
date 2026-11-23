@@ -1157,6 +1157,33 @@ impl Store {
         Temporary::write_with_lease(dir, bytes, lease)
     }
 
+    /// Whether `root` contains any staging lease file whose modification time
+    /// is at least `grace` old, indicating an abandoned writer whose staged
+    /// temporaries and lease need [`Store::trim`] even when this build
+    /// published nothing.
+    pub(crate) fn has_expired_staging_leases(&self, grace: Duration) -> bool {
+        let Ok(entries) = fs::read_dir(&self.inner.root) else {
+            return false;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if !name.starts_with(LEASE_PREFIX) {
+                continue;
+            }
+            let old = entry
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .ok()
+                .and_then(|time| time.elapsed().ok())
+                .is_some_and(|age| age >= grace);
+            if old {
+                return true;
+            }
+        }
+        false
+    }
+
     fn trim_leases(&self, grace: Duration) {
         let Ok(entries) = fs::read_dir(&self.inner.root) else {
             return;

@@ -3070,6 +3070,9 @@ fn analyze_entry(
                         return Err(NamespaceCompileError::new(error));
                     }
                 }
+                analysis
+                    .flush_deferred_registry(macros)
+                    .map_err(NamespaceCompileError::new)?;
                 if parallel_top_eligible
                     && let Some(policy) = macros
                         .session_handle()
@@ -3089,6 +3092,8 @@ fn analyze_entry(
     }
     if cache.is_none() && install.is_none() {
         ensure_pool_started!(0);
+    } else if !namespace_workers && analysis.unit_slots.get() > 1 && !macros.tables.interactive {
+        analysis.set_defer_registry(true);
     }
     // A cache blocker and its consumers keep their units on this thread's
     // isolate (docs/compiler-concurrency.md, "As built (light-cljs-340)").

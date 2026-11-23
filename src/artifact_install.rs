@@ -52,9 +52,32 @@ pub(crate) struct InstallIndex {
     fresh_from: Option<crate::generated_names::Counters>,
     /// The `gensym` spellings of the installed namespaces.
     gensyms: std::collections::HashSet<Vec<u16>>,
+    /// While the unit pool is deferred (lazy startup on first cache miss),
+    /// buffer installed namespace-registry entries so `reserve_namespaces`
+    /// runs after `start_pool` with the true pool policy.
+    defer_registry: bool,
+    deferred_registry: Vec<RegistryEntry>,
 }
 
 impl InstallIndex {
+    /// Configure whether installed registry entries are buffered until the
+    /// unit pool starts lazily on the first cache miss.
+    pub(crate) fn set_defer_registry(&mut self, defer: bool) {
+        self.defer_registry = defer;
+    }
+
+    /// Replay buffered registry entries once the unit pool has started (or is
+    /// known not to start) so `reserve_namespaces` observes the real pool policy.
+    pub(crate) fn flush_deferred_registry(
+        &mut self,
+        program: &Program,
+        macro_host: &MacroHost,
+    ) -> Result<(), String> {
+        self.defer_registry = false;
+        let entries = std::mem::take(&mut self.deferred_registry);
+        reserve_registry(&entries, program, self, macro_host)
+    }
+
     /// Note where the compilation's own allocations begin.
     pub(crate) fn begin_generated_names(&mut self, from: crate::generated_names::Counters) {
         self.fresh_from = Some(from);
@@ -344,6 +367,10 @@ fn reserve_registry(
     macro_host: &MacroHost,
 ) -> Result<(), String> {
     if entries.is_empty() {
+        return Ok(());
+    }
+    if index.defer_registry {
+        index.deferred_registry.extend_from_slice(entries);
         return Ok(());
     }
     let Some(session) = macro_host.session_handle() else {

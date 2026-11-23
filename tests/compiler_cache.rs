@@ -2591,19 +2591,21 @@ fn cache_staging_io_does_not_block_deferred_analysis() {
 fn warm_rebuild_with_jobs_8_has_zero_engine_entries() {
     let project = Project::new(FIXTURE);
     let oracle = project.uncached("main");
-    let cold = project.cached("main", &["--jobs", "8"]);
+    let args = ["--jobs", "8", "--macro-memory-limit", "268435456"];
+    let cold = project.cached("main", &args);
     assert_eq!(cold.js, oracle.js);
     assert_eq!(cold.stat("cache.published"), 5, "{}", cold.stats);
 
-    let warm = project.cached("main", &["--jobs", "8"]);
+    let warm = project.cached("main", &args);
     assert_eq!(warm.js, oracle.js);
     assert_eq!(warm.run(), "h1 9 84 h2\n");
     assert_eq!(warm.stat("cache.hits"), 5, "{}", warm.stats);
     assert_eq!(warm.stat("cache.published"), 0, "{}", warm.stats);
-    assert_eq!(
-        warm.stat("trace.engine.entries"),
-        0,
-        "100% warm cache rebuild at --jobs 8 must not eagerly boot V8:\n{}",
+    assert!(
+        warm.stats
+            .lines()
+            .any(|line| line == "trace.engine.entries 0"),
+        "100% warm cache rebuild at --jobs 8 with worker isolates eligible must emit literal trace.engine.entries 0:\n{}",
         warm.stats
     );
 }
@@ -2750,5 +2752,50 @@ fn warm_rebuild_skips_trim_when_within_retention_and_trims_when_exceeding() {
         project.objects().len(),
         5,
         "tighter --cache-retention 1 must trim down to 1 artifact per namespace"
+    );
+}
+
+#[test]
+fn warm_batch_trims_missing_candidate_before_older_hit() {
+    use light_cljs::artifact_codec::{DecodeLimits, read_manifest};
+
+    let project = Project::new(FIXTURE);
+    let first = project.cached("main", &["--jobs", "4"]);
+    assert_eq!(first.stat("cache.published"), 5, "{}", first.stats);
+    let first_objects = project.objects();
+
+    // Publish a second revision of `plain` (and `main`), then delete the newer
+    // `plain` object while leaving its index entry intact.
+    project.write("plain.cljs", "(ns plain) (def answer (+ 40 3))");
+    let second = project.cached("main", &["--jobs", "4"]);
+    assert_eq!(second.stat("cache.published"), 2, "{}", second.stats);
+    let newer_plain = project
+        .objects()
+        .into_iter()
+        .find(|path| {
+            !first_objects.contains(path)
+                && read_manifest(&fs::read(path).unwrap(), &DecodeLimits::default())
+                    .unwrap()
+                    .namespace
+                    == "plain"
+        })
+        .expect("newer plain object exists");
+    fs::remove_file(&newer_plain).unwrap();
+
+    // Revert to the older `plain` sources. The batched rebuild sees the missing
+    // newer candidate, hits the older artifact, publishes nothing, and must
+    // still run `Store::trim` so the dangling index entry is cleaned up.
+    project.write("plain.cljs", "(ns plain) (def answer (+ 40 2))");
+    let store = light_cljs::artifact_store::Store::open(project.cache());
+    assert_eq!(store.candidates("plain").len(), 2);
+
+    let rebuilt = project.cached("main", &["--jobs", "4"]);
+    assert_eq!(rebuilt.js, first.js);
+    assert_eq!(rebuilt.stat("cache.hits"), 5, "{}", rebuilt.stats);
+    assert_eq!(rebuilt.stat("cache.published"), 0, "{}", rebuilt.stats);
+    assert_eq!(
+        store.candidates("plain").len(),
+        1,
+        "missing newer candidate before older hit must still trigger trim to drop the dangling index entry"
     );
 }

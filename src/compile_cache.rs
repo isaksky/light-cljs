@@ -114,6 +114,7 @@ struct PrefetchedHit {
     body: PrefetchedBody,
     candidate_index: usize,
     prior_miss: Option<(&'static str, String)>,
+    saw_damage: bool,
 }
 
 enum PrefetchedBody {
@@ -329,6 +330,7 @@ impl CompileCache {
         if self.counts.published == 0
             && !self.saw_damage
             && self.snapshot.within_retention(&self.retention)
+            && !self.store.has_expired_staging_leases(self.retention.grace)
         {
             return;
         }
@@ -620,6 +622,9 @@ impl CompileCache {
                 artifact,
                 body_bytes_read,
             } => {
+                if item.saw_damage {
+                    self.saw_damage = true;
+                }
                 self.counts.bytes_read += body_bytes_read;
                 self.prefix.push_stored(loader, &item.fields, false);
                 self.pending = Some(Pending::Hit {
@@ -632,6 +637,9 @@ impl CompileCache {
                 error,
                 body_bytes_read,
             } => {
+                if item.saw_damage {
+                    self.saw_damage = true;
+                }
                 self.counts.bytes_read += body_bytes_read;
                 self.prefetched.clear();
                 if let Some((kind, description)) = item.prior_miss {
@@ -656,8 +664,8 @@ impl CompileCache {
                 if error == artifact_codec::DecodeError::Cancelled {
                     return Err(error.to_string());
                 }
-                if let Some((kind, description)) = item.prior_miss {
-                    self.miss(kind, description);
+                if item.saw_damage {
+                    self.saw_damage = true;
                 }
                 self.miss("undecodable", error.to_string());
                 Ok(None)
@@ -704,6 +712,7 @@ impl CompileCache {
             prefix_bytes_read: u64,
             candidate_index: usize,
             prior_miss: Option<(&'static str, String)>,
+            saw_damage: bool,
         }
 
         let validate_started = Instant::now();
@@ -789,6 +798,7 @@ impl CompileCache {
         let mut first_ns_miss: Option<(&'static str, String)> = None;
         let mut first_ns_bypass = false;
         let mut first_ns_prefix_bytes = 0u64;
+        let mut first_ns_saw_damage = false;
 
         'window: for (offset, outcome) in stage_a.into_iter().enumerate() {
             let ns_idx = index + offset;
@@ -801,7 +811,11 @@ impl CompileCache {
                 .expect("window entries have candidates");
             let mut prefix_bytes_read = 0u64;
             let mut prior_miss: Option<(&'static str, String)> = None;
+            let mut ns_saw_damage = false;
             let mut note_miss = |kind: &'static str, description: String| {
+                if matches!(kind, "unreadable" | "index" | "undecodable") {
+                    ns_saw_damage = true;
+                }
                 if prior_miss.is_none() {
                     prior_miss = Some((kind, description));
                 }
@@ -925,6 +939,7 @@ impl CompileCache {
                     if offset == 0 {
                         first_ns_bypass = true;
                         first_ns_prefix_bytes = prefix_bytes_read;
+                        first_ns_saw_damage = ns_saw_damage;
                     }
                     break 'window;
                 }
@@ -939,6 +954,7 @@ impl CompileCache {
                     prefix_bytes_read,
                     candidate_index: cand_idx,
                     prior_miss: prior_miss.take(),
+                    saw_damage: ns_saw_damage,
                 });
                 matched_hit = true;
                 break;
@@ -947,6 +963,7 @@ impl CompileCache {
                 if offset == 0 {
                     first_ns_miss = prior_miss;
                     first_ns_prefix_bytes = prefix_bytes_read;
+                    first_ns_saw_damage = ns_saw_damage;
                 }
                 break;
             }
@@ -961,6 +978,9 @@ impl CompileCache {
 
         if stage_c_jobs.is_empty() {
             self.counts.bytes_read += first_ns_prefix_bytes;
+            if first_ns_saw_damage {
+                self.saw_damage = true;
+            }
             if !first_ns_bypass && let Some((kind, description)) = first_ns_miss {
                 self.miss(kind, description);
             }
@@ -984,6 +1004,7 @@ impl CompileCache {
                 prefix_bytes_read,
                 candidate_index,
                 prior_miss,
+                saw_damage,
             } = job;
             if cancelled() {
                 drop(reading);
@@ -1000,6 +1021,7 @@ impl CompileCache {
                         },
                         candidate_index,
                         prior_miss,
+                        saw_damage,
                     },
                     0u64,
                     0u64,
@@ -1054,6 +1076,7 @@ impl CompileCache {
                     body,
                     candidate_index,
                     prior_miss,
+                    saw_damage,
                 },
                 read_ns,
                 decode_ns,

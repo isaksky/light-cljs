@@ -5699,6 +5699,15 @@ impl NamespaceAnalysis {
         Ok(())
     }
 
+    pub(crate) fn set_defer_registry(&mut self, defer: bool) {
+        self.install_index.set_defer_registry(defer);
+    }
+
+    pub(crate) fn flush_deferred_registry(&mut self, macro_host: &MacroHost) -> Result<(), String> {
+        self.install_index
+            .flush_deferred_registry(&self.program, macro_host)
+    }
+
     /// Check the lazy targets and close the program. Its root runs every
     /// source in order. Its value is the value of source `entry`: when
     /// sources reached only through lazy references follow the entry, the
