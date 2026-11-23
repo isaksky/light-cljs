@@ -668,12 +668,13 @@ impl Store {
                 found,
             });
         }
-        let mut bytes = Vec::new();
+        let mut bytes = Vec::with_capacity(artifact_codec::HEADER_LENGTH.min(found as usize));
         let header = (artifact_codec::HEADER_LENGTH as u64).min(found);
         read_up_to(&mut file, &mut bytes, header, found)?;
         // A header that claims more than the file holds is the manifest
         // reader's to report, from the bytes there are.
         let end = artifact_codec::manifest_end(&bytes).map_or(header, |end| end.min(found));
+        bytes.reserve_exact((end as usize).saturating_sub(bytes.len()));
         read_up_to(&mut file, &mut bytes, end, found)?;
         Ok(Reading {
             file,
@@ -1639,10 +1640,11 @@ fn read_index_bytes(path: &Path) -> Result<Vec<u8>, IndexError> {
         _ => IndexError::Io(error.to_string()),
     };
     let file = fs::File::open(path).map_err(io)?;
-    if file.metadata().map_err(io)?.len() > MAX_INDEX_BYTES {
+    let len = file.metadata().map_err(io)?.len();
+    if len > MAX_INDEX_BYTES {
         return Err(IndexError::Damaged);
     }
-    let mut bytes = Vec::new();
+    let mut bytes = Vec::with_capacity(len as usize);
     io::Read::read_to_end(&mut io::Read::take(file, MAX_INDEX_BYTES + 1), &mut bytes)
         .map_err(io)?;
     Ok(bytes)

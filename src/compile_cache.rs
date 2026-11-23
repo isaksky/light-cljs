@@ -97,10 +97,11 @@ pub enum CacheCpuKind {
 
 /// Upper bound on consecutive candidate-bearing namespaces prefetched in one
 /// sliding-window cache lookup batch.
-const LOOKUP_WINDOW_MAX_NS: usize = 128;
+const LOOKUP_WINDOW_MAX_NS: usize = 64;
 /// Upper bound on total encoded artifact bytes prefetched in one sliding-window
-/// cache lookup batch (16 MiB), bounding in-flight decoded memory.
-const LOOKUP_WINDOW_MAX_BYTES: u64 = 16 * 1024 * 1024;
+/// cache lookup batch (3 MiB), bounding in-flight decoded memory to keep peak
+/// memory below the single-threaded/baseline budget.
+const LOOKUP_WINDOW_MAX_BYTES: u64 = 3 * 1024 * 1024;
 
 /// A candidate matched and verified/decoded ahead of time during a sliding-window
 /// parallel cache lookup, waiting for serial deterministic install in Stage D.
@@ -158,6 +159,13 @@ pub struct CompileCache {
     /// True if any lookup observed a damaged index or unreadable/undecodable
     /// object, forcing [`Self::finish`] to run [`Store::trim`].
     saw_damage: bool,
+    /// True once any earlier namespace has a propagated bypass (`Some(_)` in
+    /// `self.propagated`), letting `reaching` skip scanning coarse edges when
+    /// no bypass exists.
+    any_propagated: bool,
+    /// Incrementally maintained `namespace -> source index` table over
+    /// `loader.sources` so sliding-window lookup avoids rebuilding it per batch.
+    ns_positions: std::collections::HashMap<String, usize>,
     /// Prefetched decoded hits from the current sliding window, consumed in
     /// strict source order by [`Self::lookup_batched`].
     prefetched: VecDeque<PrefetchedHit>,
@@ -224,6 +232,8 @@ impl CompileCache {
             retention: options.retention,
             declaring: 0,
             saw_damage: false,
+            any_propagated: false,
+            ns_positions: std::collections::HashMap::new(),
             prefetched: VecDeque::new(),
             slots,
             pool: None,
@@ -697,13 +707,14 @@ impl CompileCache {
         }
 
         let validate_started = Instant::now();
-        let ns_positions: std::collections::HashMap<&str, usize> = loader
-            .sources
-            .iter()
-            .take(window_end)
-            .enumerate()
-            .map(|(pos, src)| (src.name.as_str(), pos))
-            .collect();
+        if self.ns_positions.len() < loader.sources.len() {
+            let start = self.ns_positions.len();
+            self.ns_positions.reserve(loader.sources.len() - start);
+            for (pos, src) in loader.sources.iter().enumerate().skip(start) {
+                self.ns_positions.insert(src.name.clone(), pos);
+            }
+        }
+        let ns_positions = &self.ns_positions;
         let concurrent_sources = sources.concurrent();
         let store = &self.store;
         let snapshot = &self.snapshot;
@@ -727,7 +738,7 @@ impl CompileCache {
             let text = text_of(ns_idx);
             let source_digest = crate::cache_key::source_digest_from_loader(src, text, entry);
             let resolution_digest =
-                crate::cache_key::resolution_digest_from_loader(loader, ns_idx, &ns_positions);
+                crate::cache_key::resolution_digest_from_loader(loader, ns_idx, ns_positions);
             let first = &snapshot
                 .candidates(&src.name)
                 .expect("window entries have candidates")[0];
@@ -771,8 +782,9 @@ impl CompileCache {
             }
         });
 
-        // Stage B: fast in-memory serial chain walk in topological order.
-        let mut pushed_count = 0usize;
+        // Stage B: fast in-memory serial chain walk in topological order without
+        // mutating `ManifestPrefix` (avoiding duplicate coarse-edge expansion).
+        let mut pushed_keys = 0usize;
         let mut stage_c_jobs: Vec<StageCJob> = Vec::with_capacity(stage_a.len());
         let mut first_ns_miss: Option<(&'static str, String)> = None;
         let mut first_ns_bypass = false;
@@ -781,12 +793,12 @@ impl CompileCache {
         'window: for (offset, outcome) in stage_a.into_iter().enumerate() {
             let ns_idx = index + offset;
             let ns_id = NamespaceId(ns_idx as u32);
-            let name = loader.sources[ns_idx].name.clone();
+            let src = &loader.sources[ns_idx];
+            let name = src.name.as_str();
             let candidates = self
                 .snapshot
-                .candidates(&name)
-                .expect("window entries have candidates")
-                .to_vec();
+                .candidates(name)
+                .expect("window entries have candidates");
             let mut prefix_bytes_read = 0u64;
             let mut prior_miss: Option<(&'static str, String)> = None;
             let mut note_miss = |kind: &'static str, description: String| {
@@ -869,10 +881,11 @@ impl CompileCache {
                     continue;
                 }
                 let fields = &manifest.fields;
-                self.prefix.push_stored(loader, fields, false);
-                let key = self.keys.next_with_digests(
+                let key = self.keys.next_stored(
                     &self.environment,
-                    &self.prefix,
+                    loader,
+                    fields,
+                    &self.ns_positions,
                     ns_id,
                     outcome.source_digest,
                     outcome.resolution_digest,
@@ -891,25 +904,33 @@ impl CompileCache {
                         check_inputs()
                     };
                 if let Err(mismatch) = matched {
-                    self.prefix.pop();
                     note_miss(kind(&mismatch), mismatch.to_string());
                     continue;
                 }
+                let reaches_bypass = self.any_propagated
+                    && (fields.coarse
+                        || fields.dependencies.iter().any(|dep| {
+                            EdgeKinds(dep.kinds).intersects(EdgeKinds::COMPILATION)
+                                && self.ns_positions.get(dep.namespace.as_str()).is_some_and(
+                                    |&pos| {
+                                        pos < self.propagated.len()
+                                            && self.propagated[pos].is_some()
+                                    },
+                                )
+                        }));
                 if fields.no_cache
                     || fields.always
-                    || self.reaching(ns_id).is_some()
-                    || self.origin(ns_id, false, false).is_some()
+                    || reaches_bypass
+                    || self.blockers.iter().any(|blocker| blocker == name)
                 {
-                    self.prefix.pop();
                     if offset == 0 {
                         first_ns_bypass = true;
                         first_ns_prefix_bytes = prefix_bytes_read;
                     }
                     break 'window;
                 }
-                self.keys.append(self.prefix.record(ns_id), key.clone());
-                self.propagated.push(None);
-                pushed_count += 1;
+                self.keys.append_stored(src, fields, key.clone());
+                pushed_keys += 1;
                 stage_c_jobs.push(StageCJob {
                     id: ns_id,
                     reading,
@@ -932,12 +953,10 @@ impl CompileCache {
             }
         }
 
-        // Unwind speculative chain state before Stage C/D so any mid-window
-        // corruption or install refusal leaves prefix/keys untouched.
-        for _ in 0..pushed_count {
-            self.prefix.pop();
+        // Unwind speculative key chain before Stage C/D so any mid-window
+        // corruption or install refusal leaves `self.keys` untouched.
+        for _ in 0..pushed_keys {
             self.keys.pop();
-            self.propagated.pop();
         }
         self.counts.validate_time += validate_started.elapsed();
 
@@ -1267,6 +1286,9 @@ impl CompileCache {
             .origin(id, metadata.always, true)
             .map(|reason| (reason, id.0))
             .or_else(|| self.reaching(id));
+        if propagated.is_some() {
+            self.any_propagated = true;
+        }
         self.propagated.push(propagated);
         self.artifacts.push(None);
         let pending = self.pending.take();
@@ -1583,6 +1605,9 @@ impl CompileCache {
     /// The propagated bypass of the first namespace `id` depends on through
     /// a compilation edge that one reaches, with that namespace.
     fn reaching(&self, id: NamespaceId) -> Option<(Bypass, u32)> {
+        if !self.any_propagated {
+            return None;
+        }
         self.prefix
             .row(id)
             .iter()

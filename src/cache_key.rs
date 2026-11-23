@@ -490,6 +490,188 @@ impl NamespaceKeys {
         &self.keys[id.0 as usize]
     }
 
+    /// Append `key` for a speculative Stage B hit directly from `src` and
+    /// `fields`, matching [`Self::append`] identically without constructing a
+    /// temporary [`NamespaceRecord`] or coarse-edge row in [`ManifestPrefix`].
+    pub(crate) fn append_stored(
+        &mut self,
+        src: &crate::dependency_manifest::LoadedSource,
+        fields: &crate::artifact_codec::ManifestFields,
+        key: FrontEndKey,
+    ) -> &FrontEndKey {
+        let id = NamespaceId(self.keys.len() as u32);
+        if self.chain.is_empty() {
+            self.chain.push(self.earlier(id));
+            self.declared.push(self.declared(id));
+        }
+        let mut chain = Fingerprint::new("light-cljs earlier namespaces");
+        chain
+            .digest(&self.earlier(id))
+            .text(&src.name)
+            .digest(&key.digest);
+        self.chain.push(chain.finish());
+        let mut declared = Fingerprint::new("light-cljs earlier declarations");
+        declared
+            .digest(&self.declared(id))
+            .text(&src.name)
+            .text(&src.file)
+            .flag(src.kind == SourceKind::Cljc)
+            .flag(src.origin == SourceOrigin::Bundled)
+            .flag(fields.coarse);
+        match &fields.declarations {
+            None => declared.absent().digest(&key.digest),
+            Some(view) => {
+                declared.present().digest(&view.interface);
+                match &view.prefix {
+                    None => declared.absent(),
+                    Some(prefix) => {
+                        let mut decl_key = Fingerprint::new("light-cljs declaration key");
+                        decl_key
+                            .text(&src.name)
+                            .text(&src.file)
+                            .flag(src.kind == SourceKind::Cljc)
+                            .flag(src.origin == SourceOrigin::Bundled)
+                            .digest(prefix);
+                        for component in Component::ALL {
+                            if component != Component::Source {
+                                decl_key.digest(&key.components[component as usize]);
+                            }
+                        }
+                        declared.present().digest(&decl_key.finish())
+                    }
+                }
+            }
+        };
+        self.declared.push(declared.finish());
+        self.keys.push(key);
+        &self.keys[id.0 as usize]
+    }
+
+    /// Compute the [`FrontEndKey`] of a candidate in Stage B directly from
+    /// `loader`, `fields`, `ns_positions`, and precomputed `source_digest` /
+    /// `resolution_digest` without mutating [`ManifestPrefix`].
+    pub(crate) fn next_stored(
+        &self,
+        environment: &KeyEnvironment,
+        loader: &crate::dependency_manifest::LoaderRecord,
+        fields: &crate::artifact_codec::ManifestFields,
+        ns_positions: &std::collections::HashMap<String, usize>,
+        id: NamespaceId,
+        source_digest: Digest,
+        resolution_digest: Digest,
+    ) -> FrontEndKey {
+        assert_eq!(
+            id.0 as usize,
+            self.keys.len(),
+            "keys are computed in source order"
+        );
+        let mut components = [[0; 32]; Component::ALL.len()];
+        components[Component::Compiler as usize] = environment.compiler;
+        components[Component::Options as usize] = environment.options;
+        components[Component::Config as usize] = environment.config;
+        components[Component::Source as usize] = source_digest;
+        components[Component::Resolution as usize] = resolution_digest;
+
+        let exact = EdgeKinds(EdgeKinds::COMPILATION.0 & !EdgeKinds::COARSE.0);
+        let mut edges: Vec<(NamespaceId, EdgeKinds)> =
+            Vec::with_capacity(fields.dependencies.len());
+        for dependency in &fields.dependencies {
+            let kinds = EdgeKinds(dependency.kinds & !EdgeKinds::LAZY.0);
+            if kinds == EdgeKinds::default() {
+                continue;
+            }
+            if let Some(&pos) = ns_positions.get(dependency.namespace.as_str())
+                && pos < id.0 as usize
+            {
+                edges.push((NamespaceId(pos as u32), kinds));
+            }
+        }
+        edges.sort_by_key(|&(target, _)| target.0);
+        let mut merged: Vec<(NamespaceId, EdgeKinds)> = Vec::with_capacity(edges.len());
+        for (target, kinds) in edges {
+            if let Some(last) = merged.last_mut()
+                && last.0 == target
+            {
+                last.1 |= kinds;
+            } else {
+                merged.push((target, kinds));
+            }
+        }
+        let dependencies: Vec<DependencyKey> = merged
+            .into_iter()
+            .filter(|(_, kinds)| kinds.intersects(exact))
+            .map(|(target, mut kinds)| {
+                if fields.coarse {
+                    kinds |= EdgeKinds::COARSE;
+                }
+                DependencyKey {
+                    namespace: loader.sources[target.0 as usize].name.clone(),
+                    kinds: kinds.0,
+                    key: self.key(target).digest,
+                }
+            })
+            .collect();
+        let mut fingerprint = Fingerprint::new("light-cljs dependencies");
+        fingerprint.count(dependencies.len());
+        for dependency in &dependencies {
+            fingerprint
+                .text(&dependency.namespace)
+                .number(u64::from(dependency.kinds))
+                .digest(&dependency.key);
+        }
+        components[Component::Dependencies as usize] = fingerprint.finish();
+
+        let mut inputs = Fingerprint::new("light-cljs inputs");
+        inputs.count(fields.inputs.len());
+        let (mut namespaces, mut declarations) = (false, false);
+        for input in &fields.inputs {
+            external_input(&mut inputs, input);
+            match input {
+                ExternalInput::View(BroadView::Namespaces) => namespaces = true,
+                ExternalInput::View(BroadView::Declarations) => declarations = true,
+                _ => {}
+            }
+        }
+        components[Component::Inputs as usize] = inputs.finish();
+
+        let mut view = Fingerprint::new("light-cljs view");
+        view.flag(fields.coarse).flag(declarations).flag(namespaces);
+        if declarations {
+            view.digest(&self.earlier(id));
+        } else if fields.coarse {
+            view.digest(&self.declared(id));
+        }
+        if namespaces {
+            let mut inv = Fingerprint::new("light-cljs namespace inventory");
+            let count = id.0 as usize + 1;
+            inv.count(count);
+            for src in &loader.sources[..count] {
+                inv.text(&src.name)
+                    .text(&src.file)
+                    .flag(src.kind == SourceKind::Cljc)
+                    .flag(src.origin == SourceOrigin::Bundled);
+            }
+            view.digest(&inv.finish());
+        }
+        view.count(fields.absent.len());
+        for name in &fields.absent {
+            view.text(name);
+            match ns_positions
+                .get(name.as_str())
+                .copied()
+                .filter(|&pos| pos < id.0 as usize)
+            {
+                Some(pos) => view
+                    .present()
+                    .digest(&self.key(NamespaceId(pos as u32)).digest),
+                None => view.absent(),
+            };
+        }
+        components[Component::View as usize] = view.finish();
+
+        FrontEndKey::new(components, dependencies)
+    }
+
     /// Remove the last key [`Self::append`] appended.
     pub fn pop(&mut self) {
         if self.keys.pop().is_some() {
@@ -669,7 +851,7 @@ pub(crate) fn source_digest_from_loader(
 pub(crate) fn resolution_digest_from_loader(
     loader: &crate::dependency_manifest::LoaderRecord,
     id: usize,
-    ns_positions: &std::collections::HashMap<&str, usize>,
+    ns_positions: &std::collections::HashMap<String, usize>,
 ) -> Digest {
     let source_rec = &loader.sources[id];
     let mut resolution = Fingerprint::new("light-cljs resolution");
