@@ -385,6 +385,268 @@ impl Inferred {
     }
 }
 
+const KNOWN_UNKNOWN: u8 = 0;
+const KNOWN_FUNCTION: u8 = 1;
+const KNOWN_INSTANCE: u8 = 2;
+const KNOWN_VECTOR: u8 = 3;
+const KNOWN_ARRAY: u8 = 4;
+const KNOWN_UNVISITED: u8 = u8::MAX;
+
+#[inline]
+const fn known_classes(tag: u8) -> Type {
+    match tag {
+        KNOWN_FUNCTION => Type::FN,
+        KNOWN_INSTANCE => Type::RECORD.union(Type::OBJECT),
+        KNOWN_VECTOR => Type::VECTOR,
+        KNOWN_ARRAY => Type::HOST,
+        _ => Type::NEVER,
+    }
+}
+
+#[inline]
+fn decode_known(tag: u8, id: u32) -> Known {
+    match tag {
+        KNOWN_FUNCTION => Known::Function(ExprId(id as usize)),
+        KNOWN_INSTANCE => Known::Instance(GlobalId(id as usize)),
+        KNOWN_VECTOR => Known::Vector,
+        KNOWN_ARRAY => Known::Array,
+        _ => Known::Unknown,
+    }
+}
+
+#[inline]
+fn join_pair(
+    a_ty: Type,
+    a_tag: u8,
+    a_id: u32,
+    b_ty: Type,
+    b_tag: u8,
+    b_id: u32,
+) -> (Type, u8, u32) {
+    if a_ty.is_never() {
+        return (b_ty, b_tag, b_id);
+    }
+    if b_ty.is_never() {
+        return (a_ty, a_tag, a_id);
+    }
+    let (tag, id) = if a_tag == b_tag && a_id == b_id {
+        (a_tag, a_id)
+    } else if a_tag == KNOWN_UNKNOWN && a_ty.intersection(known_classes(b_tag)).is_never() {
+        (b_tag, b_id)
+    } else if b_tag == KNOWN_UNKNOWN && b_ty.intersection(known_classes(a_tag)).is_never() {
+        (a_tag, a_id)
+    } else {
+        (KNOWN_UNKNOWN, 0)
+    };
+    let ty = a_ty.union(b_ty);
+    if tag != KNOWN_UNKNOWN && ty.intersection(known_classes(tag)).is_never() {
+        (ty, KNOWN_UNKNOWN, 0)
+    } else {
+        (ty, tag, id)
+    }
+}
+
+/// Compact 16-byte internal representation of [`Inferred`] used throughout
+/// inference storage and fixed-point solving (light-cljs-1100).
+///
+/// Invariants for every normalized value:
+/// - `known_id == 0` whenever `known_tag` is not `KNOWN_FUNCTION` or `KNOWN_INSTANCE`.
+/// - `elem_id == 0` whenever `elem_tag` is not `KNOWN_FUNCTION` or `KNOWN_INSTANCE`.
+/// - `known_tag == KNOWN_UNKNOWN` whenever `ty.intersection(known_classes(known_tag)).is_never()`.
+/// - `elem_ty == Type::NEVER` and `elem_tag == KNOWN_UNKNOWN` whenever
+///   `ty.intersection(SEQUENTIAL).is_never()`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CompactInferred {
+    ty: Type,
+    elem_ty: Type,
+    known_tag: u8,
+    elem_tag: u8,
+    known_id: u32,
+    elem_id: u32,
+}
+
+const _: () = assert!(std::mem::size_of::<CompactInferred>() == 16);
+
+impl CompactInferred {
+    const NEVER: Self = Self::of(Type::NEVER);
+    const ANY: Self = Self::of(Type::ANY);
+    const UNVISITED: Self = Self {
+        ty: Type::ANY,
+        elem_ty: Type::ANY,
+        known_tag: KNOWN_UNVISITED,
+        elem_tag: KNOWN_UNKNOWN,
+        known_id: 0,
+        elem_id: 0,
+    };
+
+    #[inline]
+    const fn of(ty: Type) -> Self {
+        Self {
+            ty,
+            elem_ty: if ty.intersection(SEQUENTIAL).is_never() {
+                Type::NEVER
+            } else {
+                Type::ANY
+            },
+            known_tag: KNOWN_UNKNOWN,
+            elem_tag: KNOWN_UNKNOWN,
+            known_id: 0,
+            elem_id: 0,
+        }
+    }
+
+    #[inline]
+    fn known_raw(ty: Type, known_tag: u8, known_id: u32) -> Self {
+        let mut value = Self::of(ty);
+        value.known_tag = known_tag;
+        value.known_id = known_id;
+        value.normalized()
+    }
+
+    #[inline]
+    fn known_function(id: ExprId) -> Self {
+        let raw = u32::try_from(id.0).expect("expression id fits in u32");
+        Self::known_raw(Type::FN, KNOWN_FUNCTION, raw)
+    }
+
+    #[inline]
+    fn known_instance(ty: Type, global: GlobalId) -> Self {
+        let raw = u32::try_from(global.0).expect("global id fits in u32");
+        Self::known_raw(ty, KNOWN_INSTANCE, raw)
+    }
+
+    #[inline]
+    fn known_instance_raw(ty: Type, global: u32) -> Self {
+        Self::known_raw(ty, KNOWN_INSTANCE, global)
+    }
+
+    #[inline]
+    fn with_elements(mut self, element: Self) -> Self {
+        let (elem_ty, elem_tag, elem_id) = if element.known_tag != KNOWN_UNKNOWN
+            && element
+                .ty
+                .intersection(known_classes(element.known_tag))
+                .is_never()
+        {
+            (element.ty, KNOWN_UNKNOWN, 0)
+        } else {
+            (element.ty, element.known_tag, element.known_id)
+        };
+        self.elem_ty = elem_ty;
+        self.elem_tag = elem_tag;
+        self.elem_id = elem_id;
+        self.normalized()
+    }
+
+    #[inline]
+    fn normalized(mut self) -> Self {
+        if self.known_tag != KNOWN_UNKNOWN
+            && self
+                .ty
+                .intersection(known_classes(self.known_tag))
+                .is_never()
+        {
+            self.known_tag = KNOWN_UNKNOWN;
+            self.known_id = 0;
+        }
+        if self.ty.intersection(SEQUENTIAL).is_never() {
+            self.elem_ty = Type::NEVER;
+            self.elem_tag = KNOWN_UNKNOWN;
+            self.elem_id = 0;
+        }
+        self
+    }
+
+    #[inline]
+    fn union(self, other: Self) -> Self {
+        if self == other || other.ty.is_never() {
+            return self;
+        }
+        if self.ty.is_never() {
+            return other;
+        }
+        let (ty, known_tag, known_id) = join_pair(
+            self.ty,
+            self.known_tag,
+            self.known_id,
+            other.ty,
+            other.known_tag,
+            other.known_id,
+        );
+        let (elem_ty, elem_tag, elem_id) = if self.elem_ty == other.elem_ty
+            && self.elem_tag == other.elem_tag
+            && self.elem_id == other.elem_id
+        {
+            (self.elem_ty, self.elem_tag, self.elem_id)
+        } else {
+            join_pair(
+                self.elem_ty,
+                self.elem_tag,
+                self.elem_id,
+                other.elem_ty,
+                other.elem_tag,
+                other.elem_id,
+            )
+        };
+        Self {
+            ty,
+            elem_ty,
+            known_tag,
+            elem_tag,
+            known_id,
+            elem_id,
+        }
+    }
+
+    #[inline]
+    fn keep(mut self, classes: Type) -> Self {
+        self.ty = self.ty.intersection(classes);
+        self.normalized()
+    }
+
+    #[inline]
+    fn remove(mut self, classes: Type) -> Self {
+        self.ty = self.ty.difference(classes);
+        self.normalized()
+    }
+
+    #[inline]
+    fn element(self) -> Self {
+        let mut element = Self::NEVER;
+        if !self.ty.intersection(SEQUENTIAL).is_never() {
+            element = Self::known_raw(self.elem_ty, self.elem_tag, self.elem_id);
+        }
+        if !self.ty.intersection(Type::MAP).is_never() {
+            element = element.union(Self::of(Type::VECTOR));
+        }
+        if !self.ty.intersection(Type::STRING).is_never() {
+            element = element.union(Self::of(Type::STRING));
+        }
+        let other = self.ty.difference(
+            SEQUENTIAL
+                .union(Type::MAP)
+                .union(Type::STRING)
+                .union(Type::NIL),
+        );
+        if !other.is_never() {
+            element = Self::ANY;
+        }
+        element
+    }
+
+    #[inline]
+    fn to_inferred(self) -> Inferred {
+        Inferred {
+            ty: self.ty,
+            known: decode_known(self.known_tag, self.known_id),
+            elements: Element {
+                ty: self.elem_ty,
+                known: decode_known(self.elem_tag, self.elem_id),
+            },
+        }
+    }
+}
+
 /// How a global is defined, when the program defines it exactly once and
 /// never assigns it (`set!`, `binding`, `with-redefs`, a `js*` hole).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1158,8 +1420,8 @@ impl ProgramFacts {
 
 /// The result of [`Inference::new`]; see the module documentation.
 pub struct Inference {
-    values: Vec<Inferred>,
-    locals: Vec<Inferred>,
+    values: Vec<CompactInferred>,
+    locals: Vec<CompactInferred>,
     uses: Vec<u32>,
     facts: ProgramFacts,
     rounds: usize,
@@ -1171,43 +1433,82 @@ impl Inference {
     /// (scanned from the same program), joining the parameters of the `fn`s
     /// that `closed` finds closed over their calls.
     pub fn new(program: &Program, facts: ProgramFacts, closed: &ClosedFunctions) -> Self {
-        let mut walker = Walker::new(program, &facts, closed);
-        let mut solved = walker.solve();
+        Self::new_with_slots(program, facts, closed, crate::scheduler::Slots::ONE)
+    }
+
+    /// [`Inference::new`] with a work-slot budget for parallel dirty-form BSP
+    /// waves and final value population on [`crate::scheduler::map`]
+    /// (light-cljs-1100). With [`crate::scheduler::Slots::ONE`] everything runs
+    /// inline with zero thread overhead.
+    pub fn new_with_slots(
+        program: &Program,
+        facts: ProgramFacts,
+        closed: &ClosedFunctions,
+        slots: crate::scheduler::Slots,
+    ) -> Self {
+        Self::build(
+            program,
+            facts,
+            closed,
+            slots,
+            PARALLEL_DIRTY_MIN_NODES,
+            PARALLEL_FINAL_MIN_NODES,
+        )
+    }
+
+    fn build(
+        program: &Program,
+        facts: ProgramFacts,
+        closed: &ClosedFunctions,
+        slots: crate::scheduler::Slots,
+        parallel_dirty_min_nodes: usize,
+        parallel_final_min_nodes: usize,
+    ) -> Self {
+        let mut solver = Solver::new(program, &facts, closed);
+        let mut solved = solver.solve(slots, parallel_dirty_min_nodes);
         // Parameter types that do not converge (a call chain longer than the
         // round limit runs one round per link) must not cost the program the
         // types it has without them.
         let without = ClosedFunctions::default();
         if solved.is_none() && !closed.is_empty() {
-            walker = Walker::new(program, &facts, &without);
-            solved = walker.solve();
+            solver = Solver::new(program, &facts, &without);
+            solved = solver.solve(slots, parallel_dirty_min_nodes);
         }
-        let rounds = solved.unwrap_or_else(|| {
-            walker.values.fill(Inferred::ANY);
-            walker.locals.fill(Inferred::ANY);
-            ROUND_LIMIT
-        });
-        // Expressions the walk never reached are not emitted; claim nothing.
-        for (value, visited) in walker.values.iter_mut().zip(&walker.visited) {
-            if !visited {
-                *value = Inferred::ANY;
+        let (values, mut locals, uses, rounds, pinned, parameters) = match solved {
+            Some((rounds, form_nodes)) => {
+                let values = solver.populate_values(slots, &form_nodes, parallel_final_min_nodes);
+                let Solver {
+                    ctx, state, uses, ..
+                } = solver;
+                (
+                    values,
+                    state.locals,
+                    uses,
+                    rounds,
+                    ctx.pinned,
+                    ctx.parameters,
+                )
             }
-        }
-        let Walker {
-            values,
-            mut locals,
-            pinned,
-            uses,
-            parameters,
-            ..
-        } = walker;
+            None => {
+                let Solver { ctx, uses, .. } = solver;
+                (
+                    vec![CompactInferred::ANY; program.exprs.len()],
+                    vec![CompactInferred::ANY; program.locals.len()],
+                    uses,
+                    ROUND_LIMIT,
+                    ctx.pinned,
+                    ctx.parameters,
+                )
+            }
+        };
         for (local, pinned) in locals.iter_mut().zip(pinned) {
             if pinned {
-                *local = Inferred::ANY;
+                *local = CompactInferred::ANY;
             }
         }
         let typed_parameters = parameters
             .iter()
-            .filter(|parameter| locals[parameter.0] != Inferred::ANY)
+            .filter(|parameter| locals[parameter.0] != CompactInferred::ANY)
             .count();
         Self {
             values,
@@ -1222,17 +1523,21 @@ impl Inference {
     /// The inferred value of `id`, in the context it is evaluated in
     /// (narrowed by the tests of enclosing `if`s).
     pub fn value(&self, id: ExprId) -> Inferred {
-        self.values.get(id.0).copied().unwrap_or(Inferred::ANY)
+        self.values
+            .get(id.0)
+            .map_or(Inferred::ANY, |value| value.to_inferred())
     }
 
     /// The inferred type of `id`.
     pub fn ty(&self, id: ExprId) -> Type {
-        self.value(id).ty
+        self.values.get(id.0).map_or(Type::ANY, |value| value.ty)
     }
 
     /// Every value `local` is bound to, before any narrowing.
     pub fn local(&self, local: LocalId) -> Inferred {
-        self.locals.get(local.0).copied().unwrap_or(Inferred::ANY)
+        self.locals
+            .get(local.0)
+            .map_or(Inferred::ANY, |value| value.to_inferred())
     }
 
     /// How many `Local` expressions reachable from the root read `local`.
@@ -1245,15 +1550,19 @@ impl Inference {
     /// Promise of its body's value.
     pub fn returns(&self, program: &Program, function: ExprId) -> Inferred {
         match &program.exprs[function.0].kind {
-            ExprKind::Fn { methods, .. } => {
-                methods.iter().fold(Inferred::NEVER, |value, method| {
+            ExprKind::Fn { methods, .. } => methods
+                .iter()
+                .fold(CompactInferred::NEVER, |value, method| {
                     value.union(if method.asynchronous {
-                        Inferred::ANY
+                        CompactInferred::ANY
                     } else {
-                        self.value(method.body)
+                        self.values
+                            .get(method.body.0)
+                            .copied()
+                            .unwrap_or(CompactInferred::ANY)
                     })
                 })
-            }
+                .to_inferred(),
             _ => Inferred::ANY,
         }
     }
@@ -1263,12 +1572,15 @@ impl Inference {
         let ExprKind::Call { callee, .. } = program.exprs[call.0].kind else {
             return None;
         };
-        let value = self.value(callee);
-        match value.known {
-            Known::Function(function) if Type::FN.union(Type::NIL).contains(value.ty) => {
-                Some(function)
-            }
-            _ => None,
+        let value = self
+            .values
+            .get(callee.0)
+            .copied()
+            .unwrap_or(CompactInferred::ANY);
+        if value.known_tag == KNOWN_FUNCTION && Type::FN.union(Type::NIL).contains(value.ty) {
+            Some(ExprId(value.known_id as usize))
+        } else {
+            None
         }
     }
 
@@ -1288,22 +1600,153 @@ impl Inference {
     }
 }
 
+/// Minimum AST nodes in the dirty set to run a parallel BSP wave.
+const PARALLEL_DIRTY_MIN_NODES: usize = 16_384;
+/// Minimum total AST nodes to run the final `values` pass in parallel.
+const PARALLEL_FINAL_MIN_NODES: usize = 32_768;
+/// Switch remaining rounds to serial after this many parallel BSP waves so deep
+/// cross-slice dependency chains always converge within `ROUND_LIMIT`.
+const PARALLEL_ROUND_LIMIT: usize = ROUND_LIMIT / 2;
+/// Sequential mini-batches for large parallel final passes, bounding transient
+/// `(ExprId, CompactInferred)` slice buffers.
+const FINAL_PASS_BATCHES: usize = 4;
+const LOCAL_UNASSIGNED: u32 = u32::MAX;
+const LOCAL_MULTI_FORM: u32 = u32::MAX - 1;
+
+const INLINE_ARGS: usize = 8;
+const INLINE_FILTERS: usize = 4;
+
+enum ArgBuf {
+    Inline([CompactInferred; INLINE_ARGS], usize),
+    Heap(Vec<CompactInferred>),
+}
+
+impl ArgBuf {
+    #[inline]
+    fn as_slice(&self) -> &[CompactInferred] {
+        match self {
+            Self::Inline(buf, len) => &buf[..*len],
+            Self::Heap(vec) => vec.as_slice(),
+        }
+    }
+
+    #[inline]
+    fn push(&mut self, value: CompactInferred) {
+        match self {
+            Self::Inline(buf, len) => {
+                if *len < INLINE_ARGS {
+                    buf[*len] = value;
+                    *len += 1;
+                } else {
+                    let mut vec = Vec::with_capacity(INLINE_ARGS * 2);
+                    vec.extend_from_slice(buf);
+                    vec.push(value);
+                    *self = Self::Heap(vec);
+                }
+            }
+            Self::Heap(vec) => vec.push(value),
+        }
+    }
+}
+
+enum TypeBuf {
+    Inline([Type; INLINE_ARGS], usize),
+    Heap(Vec<Type>),
+}
+
+impl TypeBuf {
+    #[inline]
+    fn from_args(arguments: &[CompactInferred]) -> Self {
+        if arguments.len() <= INLINE_ARGS {
+            let mut buf = [Type::NEVER; INLINE_ARGS];
+            for (slot, arg) in buf.iter_mut().zip(arguments) {
+                *slot = arg.ty;
+            }
+            Self::Inline(buf, arguments.len())
+        } else {
+            Self::Heap(arguments.iter().map(|value| value.ty).collect())
+        }
+    }
+
+    #[inline]
+    fn as_slice(&self) -> &[Type] {
+        match self {
+            Self::Inline(buf, len) => &buf[..*len],
+            Self::Heap(vec) => vec.as_slice(),
+        }
+    }
+}
+
 /// A narrowing of one local in one branch.
 #[derive(Clone, Copy)]
 enum Filter {
     Keep(Type),
     Remove(Type),
-    Instance(GlobalId, Type),
+    Instance(u32, Type),
 }
 
 impl Filter {
-    fn apply(self, value: Inferred) -> Inferred {
+    #[inline]
+    fn apply(self, value: CompactInferred) -> CompactInferred {
         match self {
             Self::Keep(classes) => value.keep(classes),
             Self::Remove(classes) => value.remove(classes),
             Self::Instance(global, class) => {
-                Inferred::known(value.ty.intersection(class), Known::Instance(global))
+                CompactInferred::known_instance_raw(value.ty.intersection(class), global)
             }
+        }
+    }
+}
+
+enum FilterBuf {
+    Inline([(LocalId, Filter); INLINE_FILTERS], usize),
+    Heap(Vec<(LocalId, Filter)>),
+}
+
+impl Default for FilterBuf {
+    #[inline]
+    fn default() -> Self {
+        Self::Inline([(LocalId(0), Filter::Keep(Type::NEVER)); INLINE_FILTERS], 0)
+    }
+}
+
+impl FilterBuf {
+    #[inline]
+    fn one(entry: (LocalId, Filter)) -> Self {
+        let mut buf = [(LocalId(0), Filter::Keep(Type::NEVER)); INLINE_FILTERS];
+        buf[0] = entry;
+        Self::Inline(buf, 1)
+    }
+
+    #[inline]
+    fn as_slice(&self) -> &[(LocalId, Filter)] {
+        match self {
+            Self::Inline(buf, len) => &buf[..*len],
+            Self::Heap(vec) => vec.as_slice(),
+        }
+    }
+
+    #[inline]
+    fn push(&mut self, entry: (LocalId, Filter)) {
+        match self {
+            Self::Inline(buf, len) => {
+                if *len < INLINE_FILTERS {
+                    buf[*len] = entry;
+                    *len += 1;
+                } else {
+                    let mut vec = Vec::with_capacity(INLINE_FILTERS * 2);
+                    vec.extend_from_slice(buf);
+                    vec.push(entry);
+                    *self = Self::Heap(vec);
+                }
+            }
+            Self::Heap(vec) => vec.push(entry),
+        }
+    }
+
+    fn extend_from(&mut self, other: &Self) {
+        for &entry in other.as_slice() {
+            self.push(entry);
         }
     }
 }
@@ -1311,8 +1754,8 @@ impl Filter {
 /// What a test tells about locals when it is truthy and when it is not.
 #[derive(Default)]
 struct Narrowing {
-    yes: Vec<(LocalId, Filter)>,
-    no: Vec<(LocalId, Filter)>,
+    yes: FilterBuf,
+    no: FilterBuf,
 }
 
 impl Narrowing {
@@ -1330,7 +1773,7 @@ impl Narrowing {
 enum Receivers {
     /// Instances of the program type of this global, of class `record` or
     /// `object`: its `deftype` or `defrecord`, or an `extend-type` of it.
-    Type(GlobalId, Type),
+    Type(u32, Type),
     /// Objects of a `reify`, which are no program type's instances.
     Reify,
     /// Any receiver: the target of `specify!` may be any object.
@@ -1339,80 +1782,348 @@ enum Receivers {
 
 impl Receivers {
     /// Whether a call with receiver `receiver` may run the implementation.
-    /// Each instance of one program type has only that type's slots, so a
-    /// receiver known to be an instance of another type ([`Known::Instance`])
-    /// does not reach a type's or a `reify`'s method. A host object may
-    /// inherit any object's slots (`#js {"__proto__" t}`), and where the
-    /// program names a prototype (`inherits`) any value may.
-    fn reach(self, receiver: Inferred, inherits: bool) -> bool {
+    #[inline]
+    fn reach(self, receiver: CompactInferred, inherits: bool) -> bool {
         match self {
             _ if inherits || !receiver.ty.intersection(Type::HOST).is_never() => {
                 !receiver.ty.is_never()
             }
             Self::Type(global, class) => {
                 !receiver.ty.intersection(class).is_never()
-                    && !matches!(receiver.known, Known::Instance(other) if other != global)
+                    && !(receiver.known_tag == KNOWN_INSTANCE && receiver.known_id != global)
             }
             Self::Reify => {
                 !receiver.ty.intersection(Type::OBJECT).is_never()
-                    && !matches!(receiver.known, Known::Instance(_))
+                    && receiver.known_tag != KNOWN_INSTANCE
             }
             Self::Any => true,
         }
     }
 }
 
-struct Walker<'p> {
+/// Compact bitset supporting fast forward/reverse sweeps over dirty forms.
+struct BitSet {
+    words: Vec<u64>,
+}
+
+impl BitSet {
+    fn new(bits: usize) -> Self {
+        Self {
+            words: vec![0; bits.div_ceil(64)],
+        }
+    }
+
+    #[inline]
+    fn set(&mut self, index: usize) {
+        self.words[index >> 6] |= 1u64 << (index & 63);
+    }
+
+    #[inline]
+    fn get(&self, index: usize) -> bool {
+        (self.words[index >> 6] & (1u64 << (index & 63))) != 0
+    }
+
+    #[inline]
+    fn clear(&mut self) {
+        self.words.fill(0);
+    }
+
+    fn is_empty(&self) -> bool {
+        self.words.iter().all(|&word| word == 0)
+    }
+
+    /// Remove and return the smallest set bit `>= from`.
+    #[inline]
+    fn pop_next(&mut self, from: usize) -> Option<usize> {
+        let mut word_idx = from >> 6;
+        if word_idx >= self.words.len() {
+            return None;
+        }
+        let mut word = self.words[word_idx] & (!0u64 << (from & 63));
+        while word == 0 {
+            word_idx += 1;
+            if word_idx >= self.words.len() {
+                return None;
+            }
+            word = self.words[word_idx];
+        }
+        let bit = word.trailing_zeros() as usize;
+        self.words[word_idx] &= !(1u64 << bit);
+        Some((word_idx << 6) | bit)
+    }
+
+    /// Remove and return the largest set bit `<= from`.
+    #[inline]
+    fn pop_prev(&mut self, from: usize) -> Option<usize> {
+        if self.words.is_empty() {
+            return None;
+        }
+        let mut word_idx = (from >> 6).min(self.words.len() - 1);
+        let mask = if (from >> 6) < self.words.len() {
+            !0u64 >> (63 - (from & 63))
+        } else {
+            !0u64
+        };
+        let mut word = self.words[word_idx] & mask;
+        while word == 0 {
+            if word_idx == 0 {
+                return None;
+            }
+            word_idx -= 1;
+            word = self.words[word_idx];
+        }
+        let bit = 63 - word.leading_zeros() as usize;
+        self.words[word_idx] &= !(1u64 << bit);
+        Some((word_idx << 6) | bit)
+    }
+}
+
+/// Unified dense numbering of inter-form summaries:
+/// `[0..fn_base)`: `def_values` by `GlobalId`
+/// `[fn_base..param_base)`: `fn_returns` by dense `fn_slot`
+/// `[param_base..atom_base)`: closed parameter `locals` by dense `param_slot`
+/// `[atom_base..total)`: closed atom `contents` by atom index
+#[derive(Clone, Copy)]
+struct SummaryLayout {
+    fn_base: usize,
+    param_base: usize,
+    atom_base: usize,
+    total: usize,
+}
+
+impl SummaryLayout {
+    #[inline]
+    fn def_dep(&self, global: GlobalId) -> usize {
+        global.0
+    }
+
+    #[inline]
+    fn fn_dep(&self, slot: u32) -> usize {
+        self.fn_base + slot as usize
+    }
+
+    #[inline]
+    fn param_dep(&self, slot: u32) -> usize {
+        self.param_base + slot as usize
+    }
+
+    #[inline]
+    fn atom_dep(&self, atom: usize) -> usize {
+        self.atom_base + atom
+    }
+}
+
+/// Inverted subscriber graph mapping each inter-form summary `dep` to the
+/// sorted list of top-level form indices that read it.
+struct SubscriberGraph {
+    offsets: Vec<u32>,
+    forms: Vec<u32>,
+    extra: HashMap<u32, Vec<u32>>,
+}
+
+impl SubscriberGraph {
+    fn from_round1(total_deps: usize, edges: &[(u32, u32)]) -> Self {
+        let mut counts = vec![0u32; total_deps];
+        for &(dep, _) in edges {
+            counts[dep as usize] += 1;
+        }
+        let mut offsets = Vec::with_capacity(total_deps + 1);
+        let mut sum = 0u32;
+        for &count in &counts {
+            offsets.push(sum);
+            sum = sum
+                .checked_add(count)
+                .expect("subscriber graph fits in u32");
+        }
+        offsets.push(sum);
+        let mut forms = vec![0u32; sum as usize];
+        let mut cursor = offsets[..total_deps].to_vec();
+        for &(dep, form) in edges {
+            let slot = &mut cursor[dep as usize];
+            forms[*slot as usize] = form;
+            *slot += 1;
+        }
+        Self {
+            offsets,
+            forms,
+            extra: HashMap::new(),
+        }
+    }
+
+    #[inline]
+    fn csr_slice(&self, dep: usize) -> &[u32] {
+        let start = self.offsets[dep] as usize;
+        let end = self.offsets[dep + 1] as usize;
+        &self.forms[start..end]
+    }
+
+    #[inline]
+    fn contains(&self, dep: usize, form: u32) -> bool {
+        if self.csr_slice(dep).binary_search(&form).is_ok() {
+            return true;
+        }
+        self.extra
+            .get(&(dep as u32))
+            .is_some_and(|list| list.binary_search(&form).is_ok())
+    }
+
+    fn insert_extra(&mut self, dep: u32, form: u32) {
+        if self.csr_slice(dep as usize).binary_search(&form).is_ok() {
+            return;
+        }
+        let list = self.extra.entry(dep).or_default();
+        if let Err(pos) = list.binary_search(&form) {
+            list.insert(pos, form);
+        }
+    }
+
+    #[inline]
+    fn for_each(&self, dep: usize, mut f: impl FnMut(usize)) {
+        for &form in self.csr_slice(dep) {
+            f(form as usize);
+        }
+        if let Some(extra) = self.extra.get(&(dep as u32)) {
+            for &form in extra {
+                f(form as usize);
+            }
+        }
+    }
+
+    /// Invoke `f` for every subscriber `form` with `lo <= form < hi`.
+    #[inline]
+    fn for_each_in_range(&self, dep: usize, lo: usize, hi: usize, mut f: impl FnMut(usize)) {
+        if lo >= hi {
+            return;
+        }
+        let lo32 = lo as u32;
+        let hi32 = hi as u32;
+        let slice = self.csr_slice(dep);
+        let start = slice.partition_point(|&form| form < lo32);
+        for &form in &slice[start..] {
+            if form >= hi32 {
+                break;
+            }
+            f(form as usize);
+        }
+        if let Some(extra) = self.extra.get(&(dep as u32)) {
+            let start = extra.partition_point(|&form| form < lo32);
+            for &form in &extra[start..] {
+                if form >= hi32 {
+                    break;
+                }
+                f(form as usize);
+            }
+        }
+    }
+}
+
+/// Read-only per-program tables shared across all solver phases and workers.
+struct StaticCtx<'p> {
     program: &'p Program,
     facts: &'p ProgramFacts,
     closed: &'p ClosedFunctions,
-    /// The parameters of closed functions and protocol method
-    /// implementations that are not pinned.
     parameters: Vec<LocalId>,
-    /// By index in [`ClosedFunctions::implementations`]: who may run the
-    /// implementation, when its parameters join the calls of its protocol
-    /// method.
     receivers: Vec<Option<Receivers>>,
-    /// By index in [`ClosedFunctions::atom`]: every value the closed atom
-    /// holds (light-cljs-252).
-    contents: Vec<Inferred>,
-    values: Vec<Inferred>,
-    visited: Vec<bool>,
-    locals: Vec<Inferred>,
-    /// Locals that are `any` and never narrowed.
     pinned: Vec<bool>,
-    /// The `let` initializer of each local, to narrow through a local bound to
-    /// a test.
-    initializers: Vec<Option<ExprId>>,
-    uses: Vec<u32>,
-    narrowed: Vec<(LocalId, Inferred)>,
-    /// The top-level forms, numbered as `crate::application`'s flattening
-    /// numbers them, and the `do`s that hold them, inner ones first.
+    initializers: Vec<u32>,
+    fn_slot: Vec<u32>,
+    param_slot: Vec<u32>,
     forms: Vec<ExprId>,
     dos: Vec<ExprId>,
-    /// Position of the top-level form being walked.
-    position: usize,
-    changed: bool,
-    /// The first round also counts local reads.
-    first_round: bool,
+    layout: SummaryLayout,
 }
 
-impl<'p> Walker<'p> {
+/// Mutable fixed-point summary tables owned by the coordinator (and read as an
+/// immutable snapshot during parallel BSP waves and the final pass).
+struct SolverState {
+    def_values: Vec<CompactInferred>,
+    fn_returns: Vec<CompactInferred>,
+    locals: Vec<CompactInferred>,
+    contents: Vec<CompactInferred>,
+}
+
+impl SolverState {
+    #[inline]
+    fn read_dep(&self, ctx: &StaticCtx<'_>, dep: usize) -> CompactInferred {
+        let layout = ctx.layout;
+        if dep < layout.fn_base {
+            self.def_values[dep]
+        } else if dep < layout.param_base {
+            self.fn_returns[dep - layout.fn_base]
+        } else if dep < layout.atom_base {
+            let local = ctx.parameters[dep - layout.param_base];
+            self.locals[local.0]
+        } else {
+            self.contents[dep - layout.atom_base]
+        }
+    }
+
+    #[inline]
+    fn join_dep(&mut self, ctx: &StaticCtx<'_>, dep: usize, value: CompactInferred) -> bool {
+        let layout = ctx.layout;
+        let slot = if dep < layout.fn_base {
+            &mut self.def_values[dep]
+        } else if dep < layout.param_base {
+            &mut self.fn_returns[dep - layout.fn_base]
+        } else if dep < layout.atom_base {
+            let local = ctx.parameters[dep - layout.param_base];
+            &mut self.locals[local.0]
+        } else {
+            &mut self.contents[dep - layout.atom_base]
+        };
+        let joined = slot.union(value);
+        if joined != *slot {
+            *slot = joined;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Per-form metadata discovered during Round 1.
+struct FormMeta {
+    form_nodes: Vec<u32>,
+    local_owner: Vec<u32>,
+    local_in_form: Vec<u32>,
+    form_locals_flat: Vec<LocalId>,
+    form_locals_offsets: Vec<u32>,
+}
+
+struct Solver<'p> {
+    ctx: StaticCtx<'p>,
+    state: SolverState,
+    uses: Vec<u32>,
+}
+
+impl<'p> Solver<'p> {
     fn new(program: &'p Program, facts: &'p ProgramFacts, closed: &'p ClosedFunctions) -> Self {
-        let mut bound = vec![false; program.locals.len()];
-        let mut pinned = vec![false; program.locals.len()];
-        let mut initializers = vec![None; program.locals.len()];
+        let expr_count = program.exprs.len();
+        let local_count = program.locals.len();
+        assert!(
+            u32::try_from(expr_count).is_ok()
+                && u32::try_from(program.globals.len()).is_ok()
+                && u32::try_from(local_count).is_ok(),
+            "program tables fit in u32"
+        );
+        let mut bound = vec![false; local_count];
+        let mut pinned = vec![false; local_count];
+        let mut initializers = vec![u32::MAX; local_count];
+        let mut fn_slot = vec![u32::MAX; expr_count];
+        let mut fn_returns = Vec::new();
+        let mut closed_fns = Vec::new();
+        let mut has_js_arguments = false;
         let assigned = |target: ExprId, pinned: &mut Vec<bool>| {
             if let ExprKind::Local(local) = program.exprs[target.0].kind {
                 pinned[local.0] = true;
             }
         };
-        for expr in &program.exprs {
+        for (index, expr) in program.exprs.iter().enumerate() {
             match &expr.kind {
                 ExprKind::Let { bindings, .. } => {
                     for &(local, init) in bindings {
                         bound[local.0] = true;
-                        initializers[local.0] = Some(init);
+                        initializers[local.0] = init.0 as u32;
                     }
                 }
                 ExprKind::Loop { bindings, .. } | ExprKind::LetFn { bindings, .. } => {
@@ -1420,9 +2131,21 @@ impl<'p> Walker<'p> {
                         bound[local.0] = true;
                     }
                 }
-                ExprKind::Fn {
-                    name: Some(name), ..
-                } => bound[name.0] = true,
+                ExprKind::Fn { name, methods } => {
+                    if let Some(name) = name {
+                        bound[name.0] = true;
+                    }
+                    let slot = u32::try_from(fn_returns.len()).expect("fn count fits in u32");
+                    fn_slot[index] = slot;
+                    fn_returns.push(if methods.iter().any(|method| method.asynchronous) {
+                        CompactInferred::ANY
+                    } else {
+                        CompactInferred::NEVER
+                    });
+                    if closed.closed(ExprId(index)) {
+                        closed_fns.push(ExprId(index));
+                    }
+                }
                 ExprKind::SetGlobal { target, .. } => assigned(*target, &mut pinned),
                 ExprKind::Binding { bindings, .. } => {
                     for (target, _) in bindings {
@@ -1435,33 +2158,37 @@ impl<'p> Walker<'p> {
                         assigned(*arg, &mut pinned);
                     }
                 }
+                ExprKind::JsArguments => has_js_arguments = true,
                 _ => (),
             }
         }
         // `(js-arguments)` escapes the arguments object, which aliases the
         // parameters of the enclosing (non-strict) functions; any expression
         // that reads it may change them.
-        if program
-            .exprs
-            .iter()
-            .any(|expr| matches!(expr.kind, ExprKind::JsArguments))
-        {
+        if has_js_arguments {
             for expr in &program.exprs {
-                let methods: Vec<&FnMethod> = match &expr.kind {
-                    ExprKind::Fn { methods, .. } => methods.iter().collect(),
+                match &expr.kind {
+                    ExprKind::Fn { methods, .. } => {
+                        for method in methods {
+                            if reads_arguments(program, method.body) {
+                                for param in method.params.iter().chain(&method.rest) {
+                                    pinned[param.0] = true;
+                                }
+                            }
+                        }
+                    }
                     ExprKind::DefType { methods, .. }
                     | ExprKind::Reify { methods, .. }
                     | ExprKind::ExtendType { methods, .. } => {
-                        methods.iter().map(|(_, method)| method).collect()
-                    }
-                    _ => Vec::new(),
-                };
-                for method in methods {
-                    if reads_arguments(program, method.body) {
-                        for param in method.params.iter().chain(&method.rest) {
-                            pinned[param.0] = true;
+                        for (_, method) in methods {
+                            if reads_arguments(program, method.body) {
+                                for param in method.params.iter().chain(&method.rest) {
+                                    pinned[param.0] = true;
+                                }
+                            }
                         }
                     }
+                    _ => (),
                 }
             }
         }
@@ -1471,14 +2198,15 @@ impl<'p> Walker<'p> {
         }
         // The parameters of closed functions grow from their calls.
         let mut parameters = Vec::new();
-        for (index, expr) in program.exprs.iter().enumerate() {
-            if let ExprKind::Fn { methods, .. } = &expr.kind
-                && closed.closed(ExprId(index))
-            {
+        let mut param_slot = vec![u32::MAX; local_count];
+        for function in closed_fns {
+            if let ExprKind::Fn { methods, .. } = &program.exprs[function.0].kind {
                 for method in methods {
                     for &param in method.params.iter().chain(&method.rest) {
-                        if !pinned[param.0] {
+                        if !pinned[param.0] && param_slot[param.0] == u32::MAX {
                             bound[param.0] = true;
+                            param_slot[param.0] =
+                                u32::try_from(parameters.len()).expect("param count fits in u32");
                             parameters.push(param);
                         }
                     }
@@ -1487,9 +2215,7 @@ impl<'p> Walker<'p> {
         }
         // So do the parameters of the implementations of closed protocol
         // methods (light-cljs-253) that the program defines once and never
-        // assigns. An `extend-type` installs its methods on the prototype of
-        // a program type; on anything else the dispatcher may also reach it
-        // by the receiver's host type.
+        // assigns.
         let receivers: Vec<Option<Receivers>> = closed
             .implementations()
             .iter()
@@ -1503,14 +2229,14 @@ impl<'p> Walker<'p> {
                 let class = |record: bool| if record { Type::RECORD } else { Type::OBJECT };
                 match &program.exprs[implementation.owner.0].kind {
                     ExprKind::DefType { global, record, .. } => {
-                        Some(Receivers::Type(*global, class(*record)))
+                        Some(Receivers::Type(global.0 as u32, class(*record)))
                     }
                     ExprKind::Reify { .. } => Some(Receivers::Reify),
                     ExprKind::ExtendType { instance: true, .. } => Some(Receivers::Any),
                     ExprKind::ExtendType { target, .. } => match program.exprs[target.0].kind {
                         ExprKind::Global(global) => facts
                             .program_type(global)
-                            .map(|(_, record)| Receivers::Type(global, class(record))),
+                            .map(|(_, record)| Receivers::Type(global.0 as u32, class(record))),
                         _ => None,
                     },
                     _ => None,
@@ -1525,8 +2251,10 @@ impl<'p> Walker<'p> {
                 continue;
             };
             for &param in &method.params {
-                if !pinned[param.0] {
+                if !pinned[param.0] && param_slot[param.0] == u32::MAX {
                     bound[param.0] = true;
+                    param_slot[param.0] =
+                        u32::try_from(parameters.len()).expect("param count fits in u32");
                     parameters.push(param);
                 }
             }
@@ -1539,9 +2267,9 @@ impl<'p> Walker<'p> {
             .zip(&pinned)
             .map(|(bound, pinned)| {
                 if *bound && !*pinned {
-                    Inferred::NEVER
+                    CompactInferred::NEVER
                 } else {
-                    Inferred::ANY
+                    CompactInferred::ANY
                 }
             })
             .collect();
@@ -1557,1049 +2285,2346 @@ impl<'p> Walker<'p> {
                 _ => forms.push(id),
             }
         }
-        Self {
+        let fn_base = program.globals.len();
+        let param_base = fn_base + fn_returns.len();
+        let atom_base = param_base + parameters.len();
+        let total = atom_base + closed.atoms();
+        assert!(u32::try_from(total).is_ok(), "summary count fits in u32");
+        let layout = SummaryLayout {
+            fn_base,
+            param_base,
+            atom_base,
+            total,
+        };
+        let state = SolverState {
+            def_values: vec![CompactInferred::NEVER; program.globals.len()],
+            fn_returns,
+            locals,
+            contents: vec![CompactInferred::NEVER; closed.atoms()],
+        };
+        let ctx = StaticCtx {
             program,
             facts,
             closed,
             parameters,
             receivers,
-            contents: vec![Inferred::NEVER; closed.atoms()],
-            values: vec![Inferred::NEVER; program.exprs.len()],
-            visited: vec![false; program.exprs.len()],
-            locals,
             pinned,
             initializers,
-            uses: vec![0; program.locals.len()],
-            narrowed: Vec::new(),
+            fn_slot,
+            param_slot,
             forms,
             dos,
-            position: 0,
-            changed: false,
-            first_round: true,
+            layout,
+        };
+        Self {
+            ctx,
+            state,
+            uses: vec![0; local_count],
         }
     }
 
-    /// Run rounds until one changes nothing: how many it took, or `None` when
-    /// [`ROUND_LIMIT`] rounds do not converge.
-    fn solve(&mut self) -> Option<usize> {
-        for round in 1..=ROUND_LIMIT {
-            self.changed = false;
-            self.round(round % 2 == 0);
-            self.first_round = false;
-            if !self.changed {
-                return Some(round);
+    /// Run Round 1 (forward, collecting exact read dependencies and local
+    /// ownership), then iterate dirty-form fixed-point rounds alternating
+    /// reverse/forward until convergence or [`ROUND_LIMIT`].
+    fn solve(
+        &mut self,
+        slots: crate::scheduler::Slots,
+        parallel_dirty_min_nodes: usize,
+    ) -> Option<(usize, Vec<u32>)> {
+        let form_count = self.ctx.forms.len();
+        let (round1_changed, mut subs, meta, mut cur_dirty) = self.run_round1();
+        if !round1_changed && cur_dirty.is_empty() {
+            return Some((1, meta.form_nodes));
+        }
+        let mut next_dirty = BitSet::new(form_count);
+        let use_parallel = slots != crate::scheduler::Slots::ONE;
+        let mut narrowed = Vec::new();
+        let mut local_read_stamp = Vec::new();
+        for round in 2..=ROUND_LIMIT {
+            if cur_dirty.is_empty() {
+                return Some((round, meta.form_nodes));
             }
+            let reverse = round % 2 == 0;
+            let changed = if use_parallel && round <= PARALLEL_ROUND_LIMIT {
+                let (dirty_count, dirty_nodes) = dirty_stats(&cur_dirty, &meta.form_nodes);
+                if dirty_nodes >= parallel_dirty_min_nodes && dirty_count >= slots.get() * 2 {
+                    let ranges = partition_dirty_ranges(
+                        &cur_dirty,
+                        &meta.form_nodes,
+                        dirty_nodes,
+                        slots.get(),
+                    );
+                    self.run_parallel_wave_bsp(
+                        slots,
+                        reverse,
+                        &mut subs,
+                        &meta,
+                        &cur_dirty,
+                        &ranges,
+                        &mut next_dirty,
+                    )
+                } else {
+                    self.run_serial_wave(
+                        reverse,
+                        &mut subs,
+                        &mut cur_dirty,
+                        &mut next_dirty,
+                        &mut narrowed,
+                        &mut local_read_stamp,
+                    )
+                }
+            } else {
+                self.run_serial_wave(
+                    reverse,
+                    &mut subs,
+                    &mut cur_dirty,
+                    &mut next_dirty,
+                    &mut narrowed,
+                    &mut local_read_stamp,
+                )
+            };
+            if !changed && next_dirty.is_empty() {
+                return Some((round, meta.form_nodes));
+            }
+            std::mem::swap(&mut cur_dirty, &mut next_dirty);
+            next_dirty.clear();
         }
         None
     }
 
-    /// Walk every top-level form once, the last first when `reverse`, then the
-    /// `do`s that hold them. Values flow forward from definitions to later
-    /// reads, and parameter types backward from calls to the earlier
-    /// definitions they call, so rounds alternate: either order reaches the
-    /// same least fixed point, since every value only grows.
-    fn round(&mut self, reverse: bool) {
-        let forms = std::mem::take(&mut self.forms);
-        let mut walk = |position: usize| {
-            self.position = position;
-            self.walk(forms[position]);
+    fn run_round1(&mut self) -> (bool, SubscriberGraph, FormMeta, BitSet) {
+        let form_count = self.ctx.forms.len();
+        let total_deps = self.ctx.layout.total;
+        let local_count = self.ctx.program.locals.len();
+        let mut env = Round1Env {
+            ctx: &self.ctx,
+            state: &mut self.state,
+            uses: &mut self.uses,
+            narrowed: Vec::new(),
+            position: 0,
+            changed: false,
+            dep_seen_stamp: vec![u32::MAX; total_deps],
+            last_changed_pos: vec![u32::MAX; total_deps],
+            dep_edges: Vec::with_capacity(form_count.saturating_mul(4)),
+            local_read_stamp: vec![u32::MAX; local_count],
+            local_owner: vec![LOCAL_UNASSIGNED; local_count],
+            local_in_form: vec![u32::MAX; local_count],
+            form_locals_flat: Vec::with_capacity(local_count / 2),
+            form_locals_offsets: Vec::with_capacity(form_count + 1),
+            cur_form_locals: 0,
+            cur_form_nodes: 0,
+            form_nodes: Vec::with_capacity(form_count),
+            form_local_changed: false,
+            self_dirty: Vec::new(),
+        };
+        env.form_locals_offsets.push(0);
+        for pos in 0..form_count {
+            env.position = pos;
+            env.cur_form_locals = 0;
+            env.cur_form_nodes = 0;
+            env.form_local_changed = false;
+            let form_id = env.ctx.forms[pos];
+            walk_expr(&mut env, form_id);
+            env.form_nodes.push(env.cur_form_nodes);
+            env.form_locals_offsets
+                .push(u32::try_from(env.form_locals_flat.len()).expect("locals fit in u32"));
+            if env.form_local_changed {
+                env.self_dirty.push(pos as u32);
+            }
+        }
+        let Round1Env {
+            changed,
+            last_changed_pos,
+            dep_edges,
+            local_owner,
+            local_in_form,
+            form_locals_flat,
+            form_locals_offsets,
+            form_nodes,
+            self_dirty,
+            ..
+        } = env;
+        let subs = SubscriberGraph::from_round1(total_deps, &dep_edges);
+        drop(dep_edges);
+        let mut dirty = BitSet::new(form_count);
+        for (dep, &last_pos) in last_changed_pos.iter().enumerate() {
+            if last_pos == u32::MAX {
+                continue;
+            }
+            for &form in subs.csr_slice(dep) {
+                if form > last_pos {
+                    break;
+                }
+                dirty.set(form as usize);
+            }
+        }
+        for form in self_dirty {
+            dirty.set(form as usize);
+        }
+        let meta = FormMeta {
+            form_nodes,
+            local_owner,
+            local_in_form,
+            form_locals_flat,
+            form_locals_offsets,
+        };
+        (changed, subs, meta, dirty)
+    }
+
+    fn run_serial_wave(
+        &mut self,
+        reverse: bool,
+        subs: &mut SubscriberGraph,
+        cur_dirty: &mut BitSet,
+        next_dirty: &mut BitSet,
+        narrowed: &mut Vec<(LocalId, CompactInferred)>,
+        local_read_stamp: &mut Vec<u32>,
+    ) -> bool {
+        let form_count = self.ctx.forms.len();
+        if local_read_stamp.len() != self.ctx.program.locals.len() {
+            local_read_stamp.resize(self.ctx.program.locals.len(), u32::MAX);
+        } else {
+            local_read_stamp.fill(u32::MAX);
+        }
+        let mut env = SerialDirtyEnv {
+            ctx: &self.ctx,
+            state: &mut self.state,
+            subs,
+            cur_dirty,
+            next_dirty,
+            narrowed,
+            local_read_stamp: local_read_stamp.as_mut_slice(),
+            position: 0,
+            reverse,
+            changed: false,
+            form_local_changed: false,
         };
         if reverse {
-            (0..forms.len()).rev().for_each(&mut walk);
+            if form_count > 0 {
+                let mut cursor = form_count - 1;
+                while let Some(pos) = env.cur_dirty.pop_prev(cursor) {
+                    env.position = pos;
+                    env.form_local_changed = false;
+                    let form_id = env.ctx.forms[pos];
+                    walk_expr(&mut env, form_id);
+                    if env.form_local_changed {
+                        env.next_dirty.set(pos);
+                    }
+                    if pos == 0 {
+                        break;
+                    }
+                    cursor = pos - 1;
+                }
+            }
         } else {
-            (0..forms.len()).for_each(&mut walk);
+            let mut cursor = 0;
+            while let Some(pos) = env.cur_dirty.pop_next(cursor) {
+                env.position = pos;
+                env.form_local_changed = false;
+                let form_id = env.ctx.forms[pos];
+                walk_expr(&mut env, form_id);
+                if env.form_local_changed {
+                    env.next_dirty.set(pos);
+                }
+                cursor = pos + 1;
+            }
         }
-        self.forms = forms;
-        // Each `do` evaluates to its last form; inner `do`s come first.
-        let dos = std::mem::take(&mut self.dos);
-        for &id in &dos {
-            let ExprKind::Do(items) = &self.program.exprs[id.0].kind else {
-                continue;
-            };
-            let value = items
-                .last()
-                .map_or(Inferred::of(Type::NIL), |last| self.values[last.0]);
-            self.record(id, value);
-        }
-        self.dos = dos;
+        env.changed
     }
 
-    fn record(&mut self, id: ExprId, value: Inferred) -> Inferred {
-        self.visited[id.0] = true;
-        let joined = self.values[id.0].union(value);
-        if joined != self.values[id.0] {
-            self.values[id.0] = joined;
-            self.changed = true;
-        }
-        joined
-    }
-
-    fn bind(&mut self, local: LocalId, value: Inferred) {
-        if self.pinned[local.0] {
-            return;
-        }
-        let joined = self.locals[local.0].union(value);
-        if joined != self.locals[local.0] {
-            self.locals[local.0] = joined;
-            self.changed = true;
-        }
-    }
-
-    fn local(&self, local: LocalId) -> Inferred {
-        if self.pinned[local.0] {
-            return Inferred::ANY;
-        }
-        self.narrowed
+    #[allow(clippy::too_many_arguments)]
+    fn run_parallel_wave_bsp(
+        &mut self,
+        slots: crate::scheduler::Slots,
+        reverse: bool,
+        subs: &mut SubscriberGraph,
+        meta: &FormMeta,
+        cur_dirty: &BitSet,
+        ranges: &[(usize, usize, usize)],
+        next_dirty: &mut BitSet,
+    ) -> bool {
+        let jobs: Vec<(u64, (usize, usize, usize))> = ranges
             .iter()
-            .rev()
-            .find(|(narrowed, _)| *narrowed == local)
-            .map_or(self.locals[local.0], |(_, value)| *value)
-    }
-
-    /// Walk `id` with `filters` applied to their locals.
-    fn walk_narrowed(&mut self, id: ExprId, filters: &[(LocalId, Filter)]) -> Inferred {
-        let depth = self.narrowed.len();
-        for &(local, filter) in filters {
-            if !self.pinned[local.0] {
-                let value = filter.apply(self.local(local));
-                self.narrowed.push((local, value));
-            }
-        }
-        let value = self.walk(id);
-        self.narrowed.truncate(depth);
-        value
-    }
-
-    fn walk_all(&mut self, ids: &[ExprId]) -> Vec<Inferred> {
-        ids.iter().map(|id| self.walk(*id)).collect()
-    }
-
-    /// Walk `ids` and join their values.
-    fn join_all(&mut self, ids: &[ExprId]) -> Inferred {
-        ids.iter()
-            .fold(Inferred::NEVER, |value, id| value.union(self.walk(*id)))
-    }
-
-    fn methods(&mut self, methods: &[FnMethod]) -> Inferred {
-        let mut value = Inferred::NEVER;
-        for method in methods {
-            value = value.union(self.walk(method.body));
-        }
-        value
-    }
-
-    fn walk(&mut self, id: ExprId) -> Inferred {
-        use ExprKind as K;
-        let program = self.program;
-        let value = match &program.exprs[id.0].kind {
-            K::Nil => Inferred::of(Type::NIL),
-            // The runtime's `Loadable` class, like a core type's (`AtomType`).
-            K::LoadableType => Inferred::of(Type::FN),
-            // `new Loadable(...)`, as `K::Construct` below.
-            K::Loadable { class, .. } => {
-                self.walk(*class);
-                match program.exprs[class.0].kind {
-                    K::Global(global) => self.instance(global, true).unwrap_or(Inferred::ANY),
-                    _ => Inferred::ANY,
+            .enumerate()
+            .map(|(slice_idx, &(lo, hi, weight))| (weight as u64, (slice_idx, lo, hi)))
+            .collect();
+        let ctx = &self.ctx;
+        let snapshot = &self.state;
+        let subs_ref: &SubscriberGraph = subs;
+        let total_deps = ctx.layout.total;
+        let outputs: Vec<SliceWaveOutput> = crate::scheduler::map(slots, jobs, |(_, lo, hi)| {
+            let slice_len = hi - lo;
+            let mut slice_dirty = BitSet::new(slice_len);
+            for pos in lo..hi {
+                if cur_dirty.get(pos) {
+                    slice_dirty.set(pos - lo);
                 }
             }
-            K::Bool(_) => Inferred::of(Type::BOOLEAN),
-            K::Number(_) => Inferred::of(Type::NUMBER),
-            K::String(_) => Inferred::of(Type::STRING),
-            K::Keyword(_) => Inferred::of(Type::KEYWORD),
-            K::Symbol(_) => Inferred::of(Type::SYMBOL),
-            K::ReaderLiteral {
-                kind,
-                items,
-                quoted,
-            } => {
-                self.walk_all(items);
-                match (kind, quoted) {
-                    (CompilerLiteralKind::JsArray, false) => {
-                        Inferred::known(Type::HOST, Known::Array)
-                    }
-                    (
-                        CompilerLiteralKind::JsObject
-                        | CompilerLiteralKind::Regex
-                        | CompilerLiteralKind::Instant,
-                        false,
-                    ) => Inferred::of(Type::HOST),
-                    (CompilerLiteralKind::Uuid | CompilerLiteralKind::Queue, false) => {
-                        Inferred::of(Type::OBJECT)
-                    }
-                    _ => Inferred::ANY,
-                }
-            }
-            K::DefinitionTest { value, .. } | K::NamespaceView { value, .. } => self.walk(*value),
-            K::WithMeta { value, metadata } => {
-                let arguments = [self.walk(*value).ty, self.walk(*metadata).ty];
-                self.core_call(CoreFnId::WithMeta, &arguments)
-            }
-            K::Var {
-                value, metadata, ..
-            } => {
-                self.walk(*value);
-                if let Some(metadata) = metadata {
-                    self.walk(*metadata);
-                }
-                Inferred::of(Type::OBJECT)
-            }
-            K::List(items) => {
-                let element = self.join_all(items);
-                Inferred::of(Type::LIST).with_elements(element)
-            }
-            K::Vector(items) => {
-                let element = self.join_all(items);
-                Inferred::known(Type::VECTOR, Known::Vector).with_elements(element)
-            }
-            K::Map(items) | K::LiteralMap(items) => {
-                self.walk_all(items);
-                Inferred::of(Type::MAP)
-            }
-            K::Set(items) | K::LiteralSet(items) => {
-                let element = self.join_all(items);
-                Inferred::of(Type::SET).with_elements(element)
-            }
-            K::CoreFn(core) => {
-                if self.facts.replaced(*core) {
-                    Inferred::ANY
-                } else {
-                    Inferred::of(core.operation().value)
-                }
-            }
-            K::Local(local) => {
-                if self.first_round {
-                    self.uses[local.0] += 1;
-                }
-                self.local(*local)
-            }
-            K::Global(global) => self.global(*global),
-            K::JsGlobal(_) => Inferred::ANY,
-            K::JsTemplate { args, .. } => {
-                self.walk_all(args);
-                Inferred::ANY
-            }
-            K::JsIndex { receiver, indices } => {
-                self.walk(*receiver);
-                self.walk_all(indices);
-                Inferred::ANY
-            }
-            K::ThisAs { body, .. } => self.walk(*body),
-            K::JsArguments => Inferred::of(Type::HOST),
-            K::JsDelete { receiver, key } => {
-                self.walk(*receiver);
-                self.walk(*key);
-                Inferred::of(Type::BOOLEAN)
-            }
-            K::QualifiedMethod { class, .. } => {
-                self.walk(*class);
-                Inferred::of(Type::FN)
-            }
-            K::CopyArguments(dest) => {
-                self.walk(*dest);
-                Inferred::of(Type::NIL)
-            }
-            K::DefProtocol { .. } => Inferred::of(Type::NIL),
-            K::ProtocolPredicate {
-                protocol, value, ..
-            } => {
-                self.walk(*protocol);
-                self.walk(*value);
-                Inferred::of(Type::BOOLEAN)
-            }
-            K::ExtendType {
-                target, methods, ..
-            } => {
-                self.walk(*target);
-                for (_, method) in methods {
-                    self.walk(method.body);
-                }
-                Inferred::ANY
-            }
-            K::Reify {
-                metadata, methods, ..
-            } => {
-                if let Some(metadata) = metadata {
-                    self.walk(*metadata);
-                }
-                for (_, method) in methods {
-                    self.walk(method.body);
-                }
-                Inferred::of(Type::OBJECT)
-            }
-            K::DefType {
-                layout, methods, ..
-            } => {
-                if let Some(masks) = layout.masks {
-                    self.walk(masks);
-                }
-                for (_, method) in methods {
-                    self.walk(method.body);
-                }
-                match layout.body {
-                    Some(body) => self.walk(body),
-                    None => Inferred::of(Type::FN),
-                }
-            }
-            K::Construct { callee, args } => {
-                self.walk(*callee);
-                self.walk_all(args);
-                match program.exprs[callee.0].kind {
-                    K::Global(global) => self.instance(global, true).unwrap_or(Inferred::ANY),
-                    _ => Inferred::ANY,
-                }
-            }
-            K::Assert { test, message, .. } => {
-                self.walk(*test);
-                if let Some(message) = message {
-                    self.walk(*message);
-                }
-                Inferred::of(Type::NIL)
-            }
-            K::Def {
-                init, test, once, ..
-            } => {
-                let value = match init {
-                    Some(init) => self.walk(*init),
-                    None => Inferred::of(Type::NIL),
-                };
-                if let Some(test) = test {
-                    self.walk(*test);
-                }
-                if *once {
-                    value.union(Inferred::of(Type::NIL))
-                } else {
-                    value
-                }
-            }
-            K::SetGlobal { target, value } => {
-                self.walk(*target);
-                self.walk(*value)
-            }
-            K::Binding { bindings, body } => {
-                for &(target, init) in bindings {
-                    self.walk(target);
-                    self.walk(init);
-                }
-                self.walk(*body)
-            }
-            K::WithOutStr(body) => {
-                self.walk(*body);
-                Inferred::of(Type::STRING)
-            }
-            K::Exists(value) | K::BindingExists(value) => {
-                self.walk(*value);
-                Inferred::of(Type::BOOLEAN)
-            }
-            K::BooleanHint(value) => {
-                self.walk(*value);
-                Inferred::of(Type::BOOLEAN)
-            }
-            K::Property { receiver, .. } => {
-                self.walk(*receiver);
-                Inferred::ANY
-            }
-            K::MethodCall { receiver, args, .. } => {
-                self.walk(*receiver);
-                self.walk_all(args);
-                Inferred::ANY
-            }
-            K::If { test, yes, no } => {
-                self.walk(*test);
-                let narrowing = self.narrowing(*test, 0);
-                let yes = self.walk_narrowed(*yes, &narrowing.yes);
-                let no = self.walk_narrowed(*no, &narrowing.no);
-                if constant_truthy(&program.exprs[test.0].kind) {
-                    yes
-                } else {
-                    yes.union(no)
-                }
-            }
-            K::Do(items) => self
-                .walk_all(items)
-                .last()
-                .copied()
-                .unwrap_or(Inferred::of(Type::NIL)),
-            K::Let { bindings, body } | K::Loop { bindings, body, .. } => {
-                for &(local, init) in bindings {
-                    let value = self.walk(init);
-                    self.bind(local, value);
-                }
-                self.walk(*body)
-            }
-            K::LetFn { bindings, body } => {
-                for &(local, init) in bindings {
-                    let value = self.walk(init);
-                    self.bind(local, value);
-                }
-                self.walk(*body)
-            }
-            K::Recur { target, args } => {
-                let params = &program.recur_targets[target.0].params;
-                for (index, &arg) in args.iter().enumerate() {
-                    let value = self.walk(arg);
-                    if let Some(&param) = params.get(index) {
-                        self.bind(param, value);
+            let mut env = ParallelSliceEnv {
+                ctx,
+                snapshot,
+                subs: subs_ref,
+                meta,
+                lo,
+                hi,
+                reverse,
+                position: lo,
+                narrowed: Vec::new(),
+                slice_dirty,
+                touched: BitSet::new(total_deps),
+                dep_deltas: HashMap::new(),
+                cur_locals: Vec::new(),
+                cur_local_read: Vec::new(),
+                local_deltas: Vec::new(),
+                extra_local_deltas: HashMap::new(),
+                new_deps: Vec::new(),
+                self_dirty: Vec::new(),
+                form_local_changed: false,
+            };
+            if reverse {
+                if slice_len > 0 {
+                    let mut cursor = slice_len - 1;
+                    while let Some(rel) = env.slice_dirty.pop_prev(cursor) {
+                        let pos = lo + rel;
+                        env.walk_form(pos);
+                        if rel == 0 {
+                            break;
+                        }
+                        cursor = rel - 1;
                     }
                 }
-                Inferred::NEVER
-            }
-            K::Throw(value) => {
-                self.walk(*value);
-                Inferred::NEVER
-            }
-            // What a promise settles to, or the value itself, is not known.
-            K::Await(value) => {
-                self.walk(*value);
-                Inferred::ANY
-            }
-            K::Try {
-                body,
-                catches,
-                finally,
-            } => {
-                let mut value = self.walk(*body);
-                for catch in catches {
-                    if let Some(class) = catch.class {
-                        self.walk(class);
-                    }
-                    value = value.union(self.walk(catch.body));
-                }
-                if let Some(finally) = finally {
-                    self.walk(*finally);
-                }
-                value
-            }
-            K::Case {
-                test,
-                branches,
-                default,
-                ..
-            } => {
-                self.walk(*test);
-                let mut value = Inferred::NEVER;
-                for &(constant, branch) in branches {
-                    self.walk(constant);
-                    value = value.union(self.walk(branch));
-                }
-                if let Some(default) = default {
-                    value = value.union(self.walk(*default));
-                }
-                value
-            }
-            K::Fn { name, methods } => {
-                let function = Inferred::known(Type::FN, Known::Function(id));
-                if let Some(name) = name {
-                    self.bind(*name, function);
-                }
-                self.methods(methods);
-                if program.macro_functions.contains(&id) {
-                    Inferred::ANY
-                } else {
-                    function
-                }
-            }
-            K::Call { callee, args } => {
-                let callee_value = self.walk(*callee);
-                let arguments = self.walk_all(args);
-                if let Some((function, method)) = self.closed.call(id) {
-                    self.pass(function, method, &arguments);
-                }
-                self.dispatch(id, &arguments);
-                if let K::CoreFn(core) = program.exprs[callee.0].kind {
-                    for (index, function) in self.closed.callbacks(id) {
-                        self.pass_callback(core, args, &arguments, index, function);
-                    }
-                    self.store(id, core, args, &arguments);
-                }
-                self.call(*callee, callee_value, args, &arguments)
-            }
-            K::InstanceOf { class, value } => {
-                self.walk(*class);
-                self.walk(*value);
-                Inferred::of(Type::BOOLEAN)
-            }
-        };
-        self.record(id, value)
-    }
-
-    /// Join what the call `call` of `core` with argument expressions `args`
-    /// of values `arguments` stores in a closed atom (`crate::call_shapes`,
-    /// "Atoms", light-cljs-252) into what the atom holds: the initial value
-    /// of its `(atom x)`, the new state of `reset!`, `reset-vals!` and
-    /// `compare-and-set!`, and what the function given to `swap!` or
-    /// `swap-vals!` returns when called with the state and the call's other
-    /// arguments, as the runtime calls it on its own atoms. A replaced
-    /// operation, including `deref`, may store anything in the atom it gets,
-    /// and so may a protocol method that a core protocol extension adds to
-    /// atoms.
-    fn store(&mut self, call: ExprId, core: CoreFnId, args: &[ExprId], arguments: &[Inferred]) {
-        let target = if core == CoreFnId::Atom {
-            call
-        } else {
-            match args.first() {
-                Some(&target) => target,
-                None => return,
-            }
-        };
-        let Some(atom) = self.closed.atom(target) else {
-            return;
-        };
-        let argument = |index: usize| arguments.get(index).copied().unwrap_or(Inferred::ANY);
-        let stored = match core {
-            _ if !self.facts.trusted(core, Calls::Invoke) => Inferred::ANY,
-            CoreFnId::Atom => argument(0),
-            CoreFnId::Reset | CoreFnId::ResetVals => argument(1),
-            CoreFnId::CompareAndSet => argument(2),
-            CoreFnId::Swap | CoreFnId::SwapVals => self.callback_returns(core, 1, args, arguments),
-            _ => return,
-        };
-        let joined = self.contents[atom].union(stored);
-        if joined != self.contents[atom] {
-            self.contents[atom] = joined;
-            self.changed = true;
-        }
-    }
-
-    /// What the closed atom read by `arg` holds (`sN`), else `any`.
-    fn state(&self, arg: Option<&ExprId>) -> Inferred {
-        arg.and_then(|arg| self.closed.atom(*arg))
-            .map_or(Inferred::ANY, |atom| self.contents[atom])
-    }
-
-    /// What a call of `core` with argument expressions `args` of values
-    /// `arguments` returns when its first argument reads a closed atom
-    /// (light-cljs-256), under the conditions of [`Walker::store`]: `deref`
-    /// returns what the atom holds, `reset!` its new state and `swap!` what
-    /// its function returns, as the runtime's atoms do. A replaced `atom`
-    /// may make anything, such as a program type whose `-reset!` returns
-    /// another value. `None` for other calls, whose row applies:
-    /// `reset-vals!` and `swap-vals!` return vectors of states (`sN`).
-    fn atom_result(
-        &self,
-        core: CoreFnId,
-        args: &[ExprId],
-        arguments: &[Inferred],
-    ) -> Option<Inferred> {
-        let atom = self.closed.atom(*args.first()?)?;
-        if !self.facts.trusted(core, Calls::Invoke) || self.facts.replaced(CoreFnId::Atom) {
-            return None;
-        }
-        match core {
-            CoreFnId::Deref => Some(self.contents[atom]),
-            CoreFnId::Reset => arguments.get(1).copied(),
-            CoreFnId::Swap => Some(self.callback_returns(core, 1, args, arguments)),
-            _ => None,
-        }
-    }
-
-    /// Bind the parameters of method `method` of the closed `fn` `function`
-    /// to the `arguments` of a call, as the dispatcher or a direct call passes
-    /// them: `nil` (`undefined`) for missing arguments, and a rest sequence
-    /// (`fnRest`) or `nil` for the rest parameter.
-    fn pass(&mut self, function: ExprId, method: usize, arguments: &[Inferred]) {
-        let ExprKind::Fn { methods, .. } = &self.program.exprs[function.0].kind else {
-            return;
-        };
-        let Some(method) = methods.get(method) else {
-            return;
-        };
-        for (index, &param) in method.params.iter().enumerate() {
-            let argument = arguments
-                .get(index)
-                .copied()
-                .unwrap_or(Inferred::of(Type::NIL));
-            self.bind(param, argument);
-        }
-        if let Some(rest) = method.rest {
-            let rest_type = if arguments.len() > method.params.len() {
-                Type::SEQ
             } else {
-                Type::NIL
-            };
-            self.bind(rest, Inferred::of(rest_type));
+                let mut cursor = 0;
+                while let Some(rel) = env.slice_dirty.pop_next(cursor) {
+                    let pos = lo + rel;
+                    env.walk_form(pos);
+                    cursor = rel + 1;
+                }
+            }
+            let mut deltas: Vec<(u32, CompactInferred, u32)> = env
+                .dep_deltas
+                .into_iter()
+                .map(|(dep, (val, last_pos))| (dep, val, last_pos))
+                .collect();
+            deltas.sort_unstable_by_key(|&(dep, _, _)| dep);
+            for (local, val) in env.extra_local_deltas {
+                env.local_deltas.push((local, val));
+            }
+            SliceWaveOutput {
+                lo,
+                hi,
+                deltas,
+                local_deltas: env.local_deltas,
+                new_deps: env.new_deps,
+                self_dirty: env.self_dirty,
+            }
+        });
+
+        // 1. Apply newly discovered dynamic dependencies BEFORE marking
+        //    subscribers of changed summaries dirty.
+        for output in &outputs {
+            for &(dep, form) in &output.new_deps {
+                subs.insert_extra(dep, form);
+            }
         }
+
+        // 2. Merge intra-form local deltas and self-dirty forms.
+        let mut any_changed = false;
+        for output in &outputs {
+            for &(local, val) in &output.local_deltas {
+                let slot = &mut self.state.locals[local.0];
+                let joined = slot.union(val);
+                if joined != *slot {
+                    *slot = joined;
+                    any_changed = true;
+                }
+            }
+            for &form in &output.self_dirty {
+                next_dirty.set(form as usize);
+                any_changed = true;
+            }
+        }
+
+        // 3. Merge inter-form summary deltas in slice order `0..P`, tracking
+        //    whether a single slice wrote each changed summary so already-run
+        //    intra-slice subscribers need not be needlessly re-queued.
+        let mut changed_deps: HashMap<u32, (u32, usize, usize, u32)> = HashMap::new();
+        for output in &outputs {
+            for &(dep, val, last_pos) in &output.deltas {
+                if self.state.join_dep(&self.ctx, dep as usize, val) {
+                    any_changed = true;
+                }
+                changed_deps
+                    .entry(dep)
+                    .and_modify(|entry| {
+                        entry.0 = entry.0.saturating_add(1);
+                    })
+                    .or_insert((1, output.lo, output.hi, last_pos));
+            }
+        }
+
+        for (dep, (writers, lo, hi, last_pos)) in changed_deps {
+            let last_pos = last_pos as usize;
+            if writers == 1 {
+                // Subscribers strictly ahead of `last_pos` inside `[lo..hi)`
+                // were already woken and evaluated after `last_pos` wrote the
+                // sole changed value of `dep`.
+                if reverse {
+                    subs.for_each(dep as usize, |sub| {
+                        if sub < lo || sub >= last_pos {
+                            next_dirty.set(sub);
+                        }
+                    });
+                } else {
+                    subs.for_each(dep as usize, |sub| {
+                        if sub <= last_pos || sub >= hi {
+                            next_dirty.set(sub);
+                        }
+                    });
+                }
+            } else {
+                subs.for_each(dep as usize, |sub| {
+                    next_dirty.set(sub);
+                });
+            }
+        }
+
+        any_changed
     }
 
-    /// Bind the parameters of each implementation that the protocol method
-    /// call `call` with `arguments` may run, as its dispatcher passes them:
-    /// the receiver and the arguments, `nil` (`undefined`) for missing ones
-    /// (light-cljs-253).
-    fn dispatch(&mut self, call: ExprId, arguments: &[Inferred]) {
-        let receiver = arguments
-            .first()
-            .copied()
-            .unwrap_or(Inferred::of(Type::NIL));
-        for (index, implementation) in self.closed.dispatch(call) {
-            let inherits = self.closed.inherits();
-            if !self.receivers[index].is_some_and(|receivers| receivers.reach(receiver, inherits)) {
-                continue;
-            }
-            let Some(method) = implementation.method(self.program) else {
-                continue;
+    /// Populate `values` once all summaries and locals have converged.
+    fn populate_values(
+        &self,
+        slots: crate::scheduler::Slots,
+        form_nodes: &[u32],
+        parallel_final_min_nodes: usize,
+    ) -> Vec<CompactInferred> {
+        let expr_count = self.ctx.program.exprs.len();
+        let form_count = self.ctx.forms.len();
+        let total_nodes: usize = form_nodes.iter().map(|&n| n as usize).sum();
+        let mut values = vec![CompactInferred::UNVISITED; expr_count];
+        if slots == crate::scheduler::Slots::ONE
+            || total_nodes < parallel_final_min_nodes
+            || form_count < slots.get() * 2
+        {
+            let mut env = FinalDirectEnv {
+                ctx: &self.ctx,
+                state: &self.state,
+                values: &mut values,
+                narrowed: Vec::new(),
+                position: 0,
             };
-            for (position, &param) in method.params.iter().enumerate() {
-                let argument = arguments
-                    .get(position)
-                    .copied()
-                    .unwrap_or(Inferred::of(Type::NIL));
-                self.bind(param, argument);
+            for pos in 0..form_count {
+                env.position = pos;
+                let form_id = env.ctx.forms[pos];
+                walk_expr(&mut env, form_id);
             }
-        }
-    }
-
-    /// A read of `global`.
-    fn global(&self, global: GlobalId) -> Inferred {
-        let program = self.program;
-        if program.globals[global.0].name.contains('.') {
-            return Inferred::ANY;
-        }
-        let (definition, value) = match self.facts.definition(global) {
-            Definition::Unknown => return Inferred::ANY,
-            Definition::Def(definition) => {
-                let ExprKind::Def { init, once, .. } = program.exprs[definition.0].kind else {
-                    return Inferred::ANY;
-                };
-                let value = match init {
-                    Some(init) => self.values[init.0],
-                    None => Inferred::of(Type::NIL),
-                };
-                if once {
-                    return value.union(Inferred::of(Type::NIL));
-                }
-                (definition, value)
-            }
-            Definition::Type { definition, .. } => (definition, Inferred::of(Type::FN)),
-            Definition::Protocol(definition) => {
-                let ExprKind::DefProtocol {
-                    global: protocol, ..
-                } = program.exprs[definition.0].kind
-                else {
-                    return Inferred::ANY;
-                };
-                if protocol == global {
-                    return Inferred::ANY;
-                }
-                (definition, Inferred::of(Type::FN))
-            }
-        };
-        // Before its definition runs, a global is undefined. A read in a later
-        // top-level form than a top-level definition runs after it: an earlier
-        // form that throws ends the program.
-        let defined_before = self
-            .facts
-            .top_position(definition)
-            .is_some_and(|position| position < self.position);
-        if defined_before {
-            value
         } else {
-            value.union(Inferred::of(Type::NIL))
-        }
-    }
-
-    /// What `new global` (`construct`) or a call of `global` returns when
-    /// `global` is a program type's constructor, or its positional or map
-    /// factory: an instance of that type.
-    fn instance(&self, global: GlobalId, construct: bool) -> Option<Inferred> {
-        let Definition::Type {
-            type_global,
-            role,
-            record,
-            ..
-        } = self.facts.definition(global)
-        else {
-            return None;
-        };
-        if construct != (role == TypeRole::Constructor) {
-            return None;
-        }
-        let class = if record { Type::RECORD } else { Type::OBJECT };
-        Some(Inferred::known(class, Known::Instance(type_global)))
-    }
-
-    fn core_call(&self, core: CoreFnId, arguments: &[Type]) -> Inferred {
-        let operation = core.operation();
-        let call = operation.call(arguments);
-        if !self.facts.trusted(core, call.calls) {
-            return Inferred::ANY;
-        }
-        // Joining `returns` keeps the result monotone in the arguments: a call
-        // outside the domain may also return what one inside does.
-        let returns = call.returns.union(operation.returns_for(arguments.len()));
-        let known = match core {
-            CoreFnId::Vector => Known::Vector,
-            CoreFnId::Array => Known::Array,
-            _ => Known::Unknown,
-        };
-        Inferred::known(returns, known)
-    }
-
-    /// Whether the table describes a call of `core` with arguments of these
-    /// types: the call is within the operation's domain and the program
-    /// keeps the table's conditions for it. Elements and callback arguments
-    /// come from traversing the arguments, which runs core protocols even in
-    /// a lazy operation that runs nothing itself (`Calls::None`), so core
-    /// protocols must be intact.
-    fn described(&self, core: CoreFnId, types: &[Type]) -> bool {
-        let operation = core.operation();
-        operation
-            .arity(types.len())
-            .is_some_and(|arity| arity.admits(types))
-            && self.facts.trusted(core, operation.calls)
-            && self.facts.core_protocols_intact()
-    }
-
-    /// A call of `core` with argument expressions `args` of values
-    /// `arguments`: [`Walker::core_call`], whose sequential collections hold
-    /// what the row's element type says when the table describes the call
-    /// (light-cljs-243), or [`Walker::atom_result`] on a closed atom. `args`
-    /// may be empty for a call the operation makes, whose `rN` terms are then
-    /// `any`.
-    fn core_result(&self, core: CoreFnId, args: &[ExprId], arguments: &[Inferred]) -> Inferred {
-        if let Some(result) = self.atom_result(core, args, arguments) {
-            return result;
-        }
-        let types: Vec<Type> = arguments.iter().map(|value| value.ty).collect();
-        let result = self.core_call(core, &types);
-        match &core.operation().elements {
-            Some(elements) if self.described(core, &types) => {
-                result.with_elements(self.describe(core, elements, args, arguments, true))
-            }
-            _ => result,
-        }
-    }
-
-    /// The value `descriptor` names for a call of `core` (see
-    /// [`crate::core_operations::Descriptor`]), joining `aN+` and `eN+`
-    /// terms. `rN` is `any` unless `returns`.
-    fn describe(
-        &self,
-        core: CoreFnId,
-        descriptor: &Descriptor,
-        args: &[ExprId],
-        arguments: &[Inferred],
-        returns: bool,
-    ) -> Inferred {
-        let argument = |index: usize| arguments.get(index).copied().unwrap_or(Inferred::ANY);
-        let from = |index: usize| arguments.get(index..).unwrap_or(&[]).iter().copied();
-        descriptor
-            .terms
-            .iter()
-            .fold(Inferred::NEVER, |value, term| {
-                value.union(match *term {
-                    Term::Type(ty) => Inferred::of(ty),
-                    Term::Argument(index) => argument(index),
-                    Term::Element(index) => argument(index).element(),
-                    Term::Arguments(index) => from(index).fold(Inferred::NEVER, Inferred::union),
-                    Term::Elements(index) => from(index)
-                        .fold(Inferred::NEVER, |value, argument| {
-                            value.union(argument.element())
-                        }),
-                    Term::State(index) => self.state(args.get(index)),
-                    Term::Returns(index) if returns => {
-                        self.callback_returns(core, index, args, arguments)
+            let batches = if total_nodes >= 200_000 {
+                FINAL_PASS_BATCHES
+            } else {
+                1
+            };
+            let batch_ranges =
+                partition_node_ranges(form_nodes, 0, form_count, total_nodes, batches);
+            let ctx = &self.ctx;
+            let state = &self.state;
+            for (batch_lo, batch_hi, batch_nodes) in batch_ranges {
+                let slice_ranges =
+                    partition_node_ranges(form_nodes, batch_lo, batch_hi, batch_nodes, slots.get());
+                let jobs: Vec<(u64, (usize, usize, usize))> = slice_ranges
+                    .into_iter()
+                    .map(|(lo, hi, nodes)| (nodes as u64, (lo, hi, nodes)))
+                    .collect();
+                let chunks: Vec<Vec<(u32, CompactInferred)>> =
+                    crate::scheduler::map(slots, jobs, |(lo, hi, nodes)| {
+                        let mut env = FinalSliceEnv {
+                            ctx,
+                            state,
+                            entries: Vec::with_capacity(nodes),
+                            narrowed: Vec::new(),
+                            position: lo,
+                        };
+                        for pos in lo..hi {
+                            env.position = pos;
+                            let form_id = ctx.forms[pos];
+                            walk_expr(&mut env, form_id);
+                        }
+                        env.entries
+                    });
+                for chunk in chunks {
+                    for (id, value) in chunk {
+                        record_value(&mut values, ExprId(id as usize), value);
                     }
-                    Term::Returns(_) => Inferred::ANY,
-                })
-            })
-    }
-
-    /// The arguments of one call that `core` makes of a function argument,
-    /// as its callback shape describes them (`call`), with `rN` as in
-    /// [`Walker::describe`].
-    fn callback_arguments(
-        &self,
-        core: CoreFnId,
-        call: &[Descriptor],
-        args: &[ExprId],
-        arguments: &[Inferred],
-        returns: bool,
-    ) -> Vec<Inferred> {
-        let mut values = Vec::new();
-        for descriptor in call {
-            match descriptor.spread() {
-                Some(Term::Arguments(from)) => {
-                    values.extend(arguments.iter().skip(from).copied());
                 }
-                Some(Term::Elements(from)) => {
-                    values.extend(arguments.iter().skip(from).map(|value| value.element()));
+            }
+        }
+        // Each `do` evaluates to its last form; inner `do`s come first.
+        for &id in &self.ctx.dos {
+            let ExprKind::Do(items) = &self.ctx.program.exprs[id.0].kind else {
+                continue;
+            };
+            let value = items.last().map_or(CompactInferred::of(Type::NIL), |last| {
+                let last_val = values[last.0];
+                if last_val.known_tag == KNOWN_UNVISITED {
+                    CompactInferred::NEVER
+                } else {
+                    last_val
                 }
-                _ => values.push(self.describe(core, descriptor, args, arguments, returns)),
+            });
+            record_value(&mut values, id, value);
+        }
+        // Expressions the walk never reached are not emitted; claim nothing.
+        for slot in &mut values {
+            if slot.known_tag == KNOWN_UNVISITED {
+                slot.known_tag = KNOWN_UNKNOWN;
             }
         }
         values
     }
+}
 
-    /// What the function argument at `index` of a call of `core` returns when
-    /// `core` calls it as its callback shape says, with its `rN` arguments
-    /// `any`.
-    fn callback_returns(
-        &self,
-        core: CoreFnId,
-        index: usize,
-        args: &[ExprId],
-        arguments: &[Inferred],
-    ) -> Inferred {
-        let callback = core
-            .operation()
-            .arity(arguments.len())
-            .and_then(|arity| arity.callback(index));
-        let (Some(callback), Some(&callee), Some(&value)) =
-            (callback, args.get(index), arguments.get(index))
-        else {
-            return Inferred::ANY;
-        };
-        callback.calls.iter().fold(Inferred::NEVER, |result, call| {
-            let call_arguments = self.callback_arguments(core, call, args, arguments, false);
-            result.union(self.call(callee, value, &[], &call_arguments))
-        })
+#[inline]
+fn record_value(values: &mut [CompactInferred], id: ExprId, value: CompactInferred) {
+    let slot = &mut values[id.0];
+    if slot.known_tag == KNOWN_UNVISITED {
+        *slot = value;
+    } else {
+        *slot = slot.union(value);
+    }
+}
+
+fn dirty_stats(dirty: &BitSet, form_nodes: &[u32]) -> (usize, usize) {
+    let mut count = 0usize;
+    let mut nodes = 0usize;
+    for (word_idx, &word) in dirty.words.iter().enumerate() {
+        let mut w = word;
+        let base = word_idx << 6;
+        while w != 0 {
+            let bit = w.trailing_zeros() as usize;
+            w &= w - 1;
+            let pos = base | bit;
+            if pos < form_nodes.len() {
+                count += 1;
+                nodes += form_nodes[pos] as usize;
+            }
+        }
+    }
+    (count, nodes)
+}
+
+/// Partition `0..form_nodes.len()` into up to `parts` contiguous ranges
+/// `(lo, hi, dirty_weight)` balanced by dirty AST node weight.
+fn partition_dirty_ranges(
+    dirty: &BitSet,
+    form_nodes: &[u32],
+    total_dirty_nodes: usize,
+    parts: usize,
+) -> Vec<(usize, usize, usize)> {
+    let form_count = form_nodes.len();
+    if form_count == 0 || parts <= 1 {
+        return vec![(0, form_count, total_dirty_nodes)];
+    }
+    let target = (total_dirty_nodes / parts).max(1);
+    let mut ranges = Vec::with_capacity(parts);
+    let mut lo = 0usize;
+    let mut acc = 0usize;
+    for (word_idx, &word) in dirty.words.iter().enumerate() {
+        let mut w = word;
+        let base = word_idx << 6;
+        while w != 0 {
+            let bit = w.trailing_zeros() as usize;
+            w &= w - 1;
+            let pos = base | bit;
+            if pos >= form_count {
+                break;
+            }
+            acc += form_nodes[pos] as usize;
+            if acc >= target && ranges.len() + 1 < parts {
+                let hi = pos + 1;
+                ranges.push((lo, hi, acc));
+                lo = hi;
+                acc = 0;
+            }
+        }
+    }
+    if lo < form_count && acc > 0 {
+        ranges.push((lo, form_count, acc));
+    } else if let Some(last) = ranges.last_mut() {
+        last.1 = form_count;
+    }
+    ranges
+}
+
+/// Partition `start..end` into up to `parts` contiguous ranges `(lo, hi, nodes)`
+/// balanced by `form_nodes`.
+fn partition_node_ranges(
+    form_nodes: &[u32],
+    start: usize,
+    end: usize,
+    total_nodes: usize,
+    parts: usize,
+) -> Vec<(usize, usize, usize)> {
+    if start >= end {
+        return Vec::new();
+    }
+    if parts <= 1 {
+        return vec![(start, end, total_nodes)];
+    }
+    let target = (total_nodes / parts).max(1);
+    let mut ranges = Vec::with_capacity(parts);
+    let mut lo = start;
+    let mut acc = 0usize;
+    for (pos, &nodes) in form_nodes[start..end].iter().enumerate() {
+        let abs = start + pos;
+        acc += nodes as usize;
+        if acc >= target && ranges.len() + 1 < parts && abs + 1 < end {
+            ranges.push((lo, abs + 1, acc));
+            lo = abs + 1;
+            acc = 0;
+        }
+    }
+    if lo < end {
+        ranges.push((lo, end, acc));
+    }
+    ranges
+}
+
+struct SliceWaveOutput {
+    lo: usize,
+    hi: usize,
+    deltas: Vec<(u32, CompactInferred, u32)>,
+    local_deltas: Vec<(LocalId, CompactInferred)>,
+    new_deps: Vec<(u32, u32)>,
+    self_dirty: Vec<u32>,
+}
+
+trait WalkEnv<'p: 'c, 'c> {
+    const COUNT_USES: bool = false;
+    const FINAL_PASS: bool = false;
+
+    fn ctx(&self) -> &'c StaticCtx<'p>;
+    fn position(&self) -> usize;
+    fn narrowed(&self) -> &[(LocalId, CompactInferred)];
+    fn narrowed_mut(&mut self) -> &mut Vec<(LocalId, CompactInferred)>;
+
+    #[inline]
+    fn on_enter_expr(&mut self) {}
+    #[inline]
+    fn on_record(&mut self, _id: ExprId, value: CompactInferred) -> CompactInferred {
+        value
+    }
+    #[inline]
+    fn on_local_read_count(&mut self, _local: LocalId) {}
+    #[inline]
+    fn on_declare_local(&mut self, _local: LocalId) {}
+
+    fn read_local_raw(&mut self, local: LocalId) -> CompactInferred;
+    fn bind_local(&mut self, local: LocalId, value: CompactInferred);
+
+    fn read_def(&mut self, global: GlobalId) -> CompactInferred;
+    fn join_def(&mut self, global: GlobalId, value: CompactInferred);
+
+    fn read_fn_return(&mut self, slot: u32) -> CompactInferred;
+    fn join_fn_return(&mut self, slot: u32, value: CompactInferred);
+
+    fn read_atom(&mut self, atom: usize) -> CompactInferred;
+    fn join_atom(&mut self, atom: usize, value: CompactInferred);
+}
+
+struct Round1Env<'p, 'c> {
+    ctx: &'c StaticCtx<'p>,
+    state: &'c mut SolverState,
+    uses: &'c mut [u32],
+    narrowed: Vec<(LocalId, CompactInferred)>,
+    position: usize,
+    changed: bool,
+    dep_seen_stamp: Vec<u32>,
+    last_changed_pos: Vec<u32>,
+    dep_edges: Vec<(u32, u32)>,
+    local_read_stamp: Vec<u32>,
+    local_owner: Vec<u32>,
+    local_in_form: Vec<u32>,
+    form_locals_flat: Vec<LocalId>,
+    form_locals_offsets: Vec<u32>,
+    cur_form_locals: usize,
+    cur_form_nodes: u32,
+    form_nodes: Vec<u32>,
+    form_local_changed: bool,
+    self_dirty: Vec<u32>,
+}
+
+impl<'p, 'c> Round1Env<'p, 'c> {
+    #[inline]
+    fn record_dep(&mut self, dep: usize) {
+        let pos = self.position as u32;
+        if self.dep_seen_stamp[dep] != pos {
+            self.dep_seen_stamp[dep] = pos;
+            self.dep_edges.push((dep as u32, pos));
+        }
     }
 
-    /// Bind the parameters of the closed `fn` `function`, the argument at
-    /// `index` of a call of `core` with argument expressions `args` of values
-    /// `arguments`, to the arguments of every call `core` makes of it
-    /// (light-cljs-243). Where the table does not describe the call, or a
-    /// program type that receives functions (`IReduce`, `IKVReduce`, `ISwap`)
-    /// may get the function, any call can reach it. A closed atom that
-    /// `atom` made (light-cljs-252) is the runtime's, not a program type.
-    fn pass_callback(
-        &mut self,
-        core: CoreFnId,
-        args: &[ExprId],
-        arguments: &[Inferred],
-        index: usize,
-        function: ExprId,
-    ) {
-        let types: Vec<Type> = arguments.iter().map(|value| value.ty).collect();
-        let program_types = Type::RECORD.union(Type::OBJECT);
-        let runtime_atom = |position: usize| {
-            !self.facts.replaced(CoreFnId::Atom)
-                && args
-                    .get(position)
-                    .is_some_and(|arg| self.closed.atom(*arg).is_some())
-        };
-        let reachable = self.facts.receives_functions()
-            && types.iter().enumerate().any(|(position, ty)| {
-                position != index
-                    && !ty.intersection(program_types).is_never()
-                    && !runtime_atom(position)
-            });
-        let callback = core
-            .operation()
-            .arity(arguments.len())
-            .and_then(|arity| arity.callback(index))
-            .filter(|_| self.described(core, &types) && !reachable);
-        let ExprKind::Fn { methods, .. } = &self.program.exprs[function.0].kind else {
+    #[inline]
+    fn mark_dep_changed(&mut self, dep: usize) {
+        self.last_changed_pos[dep] = self.position as u32;
+        self.changed = true;
+    }
+}
+
+impl<'p, 'c> WalkEnv<'p, 'c> for Round1Env<'p, 'c> {
+    const COUNT_USES: bool = true;
+
+    #[inline]
+    fn ctx(&self) -> &'c StaticCtx<'p> {
+        self.ctx
+    }
+
+    #[inline]
+    fn position(&self) -> usize {
+        self.position
+    }
+
+    #[inline]
+    fn narrowed(&self) -> &[(LocalId, CompactInferred)] {
+        &self.narrowed
+    }
+
+    #[inline]
+    fn narrowed_mut(&mut self) -> &mut Vec<(LocalId, CompactInferred)> {
+        &mut self.narrowed
+    }
+
+    #[inline]
+    fn on_enter_expr(&mut self) {
+        self.cur_form_nodes = self.cur_form_nodes.saturating_add(1);
+    }
+
+    #[inline]
+    fn on_local_read_count(&mut self, local: LocalId) {
+        self.uses[local.0] += 1;
+    }
+
+    #[inline]
+    fn on_declare_local(&mut self, local: LocalId) {
+        if self.ctx.pinned[local.0] || self.ctx.param_slot[local.0] != u32::MAX {
             return;
-        };
-        let Some(callback) = callback else {
-            for method in methods {
-                for &param in method.params.iter().chain(&method.rest) {
-                    self.bind(param, Inferred::ANY);
-                }
-            }
+        }
+        let pos = self.position as u32;
+        let owner = &mut self.local_owner[local.0];
+        if *owner == LOCAL_UNASSIGNED {
+            *owner = pos;
+            self.local_in_form[local.0] =
+                u32::try_from(self.cur_form_locals).expect("form locals fit in u32");
+            self.form_locals_flat.push(local);
+            self.cur_form_locals += 1;
+        } else if *owner != pos {
+            *owner = LOCAL_MULTI_FORM;
+        }
+    }
+
+    #[inline]
+    fn read_local_raw(&mut self, local: LocalId) -> CompactInferred {
+        let param = self.ctx.param_slot[local.0];
+        if param != u32::MAX {
+            self.record_dep(self.ctx.layout.param_dep(param));
+        } else {
+            self.local_read_stamp[local.0] = self.position as u32;
+        }
+        self.state.locals[local.0]
+    }
+
+    #[inline]
+    fn bind_local(&mut self, local: LocalId, value: CompactInferred) {
+        if self.ctx.pinned[local.0] {
             return;
-        };
-        for call in &callback.calls {
-            let call_arguments = self.callback_arguments(core, call, args, arguments, true);
-            if let Some(method) =
-                crate::call_shapes::dispatched_method(methods, call_arguments.len())
-            {
-                self.pass(function, method, &call_arguments);
+        }
+        let param = self.ctx.param_slot[local.0];
+        if param == u32::MAX {
+            self.on_declare_local(local);
+        }
+        let slot = &mut self.state.locals[local.0];
+        let joined = slot.union(value);
+        if joined != *slot {
+            *slot = joined;
+            if param != u32::MAX {
+                self.mark_dep_changed(self.ctx.layout.param_dep(param));
+            } else {
+                self.changed = true;
+                if self.local_read_stamp[local.0] == self.position as u32 {
+                    self.form_local_changed = true;
+                }
             }
         }
     }
 
-    fn call(
-        &self,
-        callee: ExprId,
-        value: Inferred,
-        args: &[ExprId],
-        arguments: &[Inferred],
-    ) -> Inferred {
-        let program = self.program;
-        match &program.exprs[callee.0].kind {
-            ExprKind::CoreFn(core) => return self.core_result(*core, args, arguments),
-            ExprKind::Global(global) => {
-                if let Some(instance) = self.instance(*global, false) {
-                    return instance;
-                }
-            }
-            ExprKind::BooleanHint(inner) => {
-                if let ExprKind::Global(global) = program.exprs[inner.0].kind
-                    && program.globals[global.0].boolean_tag
-                {
-                    return Inferred::of(Type::BOOLEAN);
-                }
-            }
-            _ => (),
-        }
-        // Calling nil throws. Staying `never` until the callee is known keeps
-        // the fixed point from starting at `any` for recursive functions.
-        let callable = value.ty.difference(Type::NIL);
-        if callable.is_never() {
-            return Inferred::NEVER;
-        }
-        match value.known {
-            Known::Function(function) if callable == Type::FN => {
-                match &program.exprs[function.0].kind {
-                    // An `^:async` method returns a Promise.
-                    ExprKind::Fn { methods, .. } => {
-                        methods.iter().fold(Inferred::NEVER, |result, method| {
-                            result.union(if method.asynchronous {
-                                Inferred::ANY
-                            } else {
-                                self.values[method.body.0]
-                            })
-                        })
-                    }
-                    _ => Inferred::ANY,
-                }
-            }
-            _ => Inferred::ANY,
+    #[inline]
+    fn read_def(&mut self, global: GlobalId) -> CompactInferred {
+        self.record_dep(self.ctx.layout.def_dep(global));
+        self.state.def_values[global.0]
+    }
+
+    #[inline]
+    fn join_def(&mut self, global: GlobalId, value: CompactInferred) {
+        let slot = &mut self.state.def_values[global.0];
+        let joined = slot.union(value);
+        if joined != *slot {
+            *slot = joined;
+            self.mark_dep_changed(self.ctx.layout.def_dep(global));
         }
     }
 
-    /// What `test` tells about locals in the branches of an `if`.
-    fn narrowing(&self, test: ExprId, depth: usize) -> Narrowing {
-        use ExprKind as K;
-        let program = self.program;
-        if depth > 8 {
-            return Narrowing::default();
+    #[inline]
+    fn read_fn_return(&mut self, slot: u32) -> CompactInferred {
+        self.record_dep(self.ctx.layout.fn_dep(slot));
+        self.state.fn_returns[slot as usize]
+    }
+
+    #[inline]
+    fn join_fn_return(&mut self, slot: u32, value: CompactInferred) {
+        let entry = &mut self.state.fn_returns[slot as usize];
+        let joined = entry.union(value);
+        if joined != *entry {
+            *entry = joined;
+            self.mark_dep_changed(self.ctx.layout.fn_dep(slot));
         }
-        match &program.exprs[test.0].kind {
-            K::Local(local) if !self.pinned[local.0] => {
-                let mut narrowing = match self.initializers[local.0] {
-                    Some(init) => self.narrowing(init, depth + 1),
-                    None => Narrowing::default(),
-                };
-                narrowing.yes.push((*local, Filter::Remove(Type::NIL)));
-                narrowing
-                    .no
-                    .push((*local, Filter::Keep(Type::NIL.union(Type::BOOLEAN))));
-                narrowing
-            }
-            K::BooleanHint(inner)
-            | K::DefinitionTest { value: inner, .. }
-            | K::NamespaceView { value: inner, .. } => self.narrowing(*inner, depth + 1),
-            K::Do(items) if items.len() == 1 => self.narrowing(items[0], depth + 1),
-            K::Call { callee, args } => {
-                let K::CoreFn(core) = program.exprs[callee.0].kind else {
-                    return Narrowing::default();
-                };
-                if self.facts.replaced(core) {
-                    return Narrowing::default();
-                }
-                if core == CoreFnId::Not && args.len() == 1 {
-                    return self.narrowing(args[0], depth + 1).swap();
-                }
-                let [arg] = args.as_slice() else {
-                    return Narrowing::default();
-                };
-                let K::Local(local) = program.exprs[arg.0].kind else {
-                    return Narrowing::default();
-                };
-                let user = Type::RECORD.union(Type::OBJECT);
-                let intact = self.facts.core_protocols_intact();
-                let (yes, no) = match core {
-                    CoreFnId::IsNil => (Filter::Keep(Type::NIL), Some(Filter::Remove(Type::NIL))),
-                    CoreFnId::IsSome => (Filter::Remove(Type::NIL), Some(Filter::Keep(Type::NIL))),
-                    CoreFnId::IsString => (
-                        Filter::Keep(Type::STRING),
-                        Some(Filter::Remove(Type::STRING)),
-                    ),
-                    CoreFnId::IsNumber => (
-                        Filter::Keep(Type::NUMBER),
-                        Some(Filter::Remove(Type::NUMBER)),
-                    ),
-                    CoreFnId::IsKeyword => (
-                        Filter::Keep(Type::KEYWORD),
-                        Some(Filter::Remove(Type::KEYWORD)),
-                    ),
-                    CoreFnId::IsSymbol => (
-                        Filter::Keep(Type::SYMBOL),
-                        Some(Filter::Remove(Type::SYMBOL)),
-                    ),
-                    CoreFnId::IsBoolean => (
-                        Filter::Keep(Type::BOOLEAN),
-                        Some(Filter::Remove(Type::BOOLEAN)),
-                    ),
-                    CoreFnId::IsTrue | CoreFnId::IsFalse => (Filter::Keep(Type::BOOLEAN), None),
-                    CoreFnId::IsArray => (Filter::Keep(Type::HOST), None),
-                    CoreFnId::IsVector if intact => (Filter::Keep(Type::VECTOR.union(user)), None),
-                    CoreFnId::IsMap if intact => (Filter::Keep(Type::MAP.union(user)), None),
-                    CoreFnId::IsSet if intact => (Filter::Keep(Type::SET.union(user)), None),
-                    CoreFnId::IsSeq if intact => {
-                        (Filter::Keep(Type::SEQ.union(Type::LIST).union(user)), None)
-                    }
-                    CoreFnId::IsRecord if intact => (Filter::Keep(user), None),
-                    _ => return Narrowing::default(),
-                };
-                Narrowing {
-                    yes: vec![(local, yes)],
-                    no: no.map(|no| vec![(local, no)]).unwrap_or_default(),
-                }
-            }
-            K::InstanceOf { class, value } => {
-                let (K::Global(global), K::Local(local)) =
-                    (&program.exprs[class.0].kind, &program.exprs[value.0].kind)
-                else {
-                    return Narrowing::default();
-                };
-                match self.facts.program_type(*global) {
-                    Some((_, record)) => {
-                        let class = if record { Type::RECORD } else { Type::OBJECT };
-                        Narrowing {
-                            yes: vec![(*local, Filter::Instance(*global, class))],
-                            no: Vec::new(),
-                        }
-                    }
-                    None => Narrowing::default(),
-                }
-            }
-            K::ProtocolPredicate { value, key, .. } => {
-                let K::Local(local) = program.exprs[value.0].kind else {
-                    return Narrowing::default();
-                };
-                match self.facts.implementors(key) {
-                    Some(Implementors {
-                        sole: Some(global),
-                        classes,
-                    }) => Narrowing {
-                        yes: vec![(local, Filter::Instance(global, classes))],
-                        no: Vec::new(),
-                    },
-                    Some(Implementors { classes, .. }) => Narrowing {
-                        yes: vec![(local, Filter::Keep(classes))],
-                        no: Vec::new(),
-                    },
-                    None => Narrowing::default(),
-                }
-            }
-            // `(and a b)` is `(let [t a] (if t b t))` and `(or a b)` is
-            // `(let [t a] (if t t b))`, with `t` read nowhere else.
-            K::Let { bindings, body } => {
-                let Some((_, init, other, and)) = short_circuit(program, bindings, *body) else {
-                    return Narrowing::default();
-                };
-                let (first, second) = (
-                    self.narrowing(init, depth + 1),
-                    self.narrowing(other, depth + 1),
-                );
-                if and {
-                    Narrowing {
-                        yes: first.yes.into_iter().chain(second.yes).collect(),
-                        no: Vec::new(),
-                    }
+    }
+
+    #[inline]
+    fn read_atom(&mut self, atom: usize) -> CompactInferred {
+        self.record_dep(self.ctx.layout.atom_dep(atom));
+        self.state.contents[atom]
+    }
+
+    #[inline]
+    fn join_atom(&mut self, atom: usize, value: CompactInferred) {
+        let entry = &mut self.state.contents[atom];
+        let joined = entry.union(value);
+        if joined != *entry {
+            *entry = joined;
+            self.mark_dep_changed(self.ctx.layout.atom_dep(atom));
+        }
+    }
+}
+
+struct SerialDirtyEnv<'p, 'c> {
+    ctx: &'c StaticCtx<'p>,
+    state: &'c mut SolverState,
+    subs: &'c mut SubscriberGraph,
+    cur_dirty: &'c mut BitSet,
+    next_dirty: &'c mut BitSet,
+    narrowed: &'c mut Vec<(LocalId, CompactInferred)>,
+    local_read_stamp: &'c mut [u32],
+    position: usize,
+    reverse: bool,
+    changed: bool,
+    form_local_changed: bool,
+}
+
+impl<'p, 'c> SerialDirtyEnv<'p, 'c> {
+    #[inline]
+    fn notify_dep(&mut self, dep: usize) {
+        self.changed = true;
+        let pos = self.position;
+        if self.reverse {
+            self.subs.for_each(dep, |sub| {
+                if sub < pos {
+                    self.cur_dirty.set(sub);
                 } else {
-                    Narrowing {
-                        yes: Vec::new(),
-                        no: first.no.into_iter().chain(second.no).collect(),
-                    }
+                    self.next_dirty.set(sub);
+                }
+            });
+        } else {
+            self.subs.for_each(dep, |sub| {
+                if sub > pos {
+                    self.cur_dirty.set(sub);
+                } else {
+                    self.next_dirty.set(sub);
+                }
+            });
+        }
+    }
+
+    #[inline]
+    fn ensure_dynamic_dep(&mut self, dep: usize) {
+        let form = self.position as u32;
+        if !self.subs.contains(dep, form) {
+            self.subs.insert_extra(dep as u32, form);
+        }
+    }
+}
+
+impl<'p, 'c> WalkEnv<'p, 'c> for SerialDirtyEnv<'p, 'c> {
+    #[inline]
+    fn ctx(&self) -> &'c StaticCtx<'p> {
+        self.ctx
+    }
+
+    #[inline]
+    fn position(&self) -> usize {
+        self.position
+    }
+
+    #[inline]
+    fn narrowed(&self) -> &[(LocalId, CompactInferred)] {
+        self.narrowed
+    }
+
+    #[inline]
+    fn narrowed_mut(&mut self) -> &mut Vec<(LocalId, CompactInferred)> {
+        self.narrowed
+    }
+
+    #[inline]
+    fn read_local_raw(&mut self, local: LocalId) -> CompactInferred {
+        if self.ctx.param_slot[local.0] == u32::MAX {
+            self.local_read_stamp[local.0] = self.position as u32;
+        }
+        self.state.locals[local.0]
+    }
+
+    #[inline]
+    fn bind_local(&mut self, local: LocalId, value: CompactInferred) {
+        if self.ctx.pinned[local.0] {
+            return;
+        }
+        let slot = &mut self.state.locals[local.0];
+        let joined = slot.union(value);
+        if joined != *slot {
+            *slot = joined;
+            let param = self.ctx.param_slot[local.0];
+            if param != u32::MAX {
+                self.notify_dep(self.ctx.layout.param_dep(param));
+            } else {
+                self.changed = true;
+                if self.local_read_stamp[local.0] == self.position as u32 {
+                    self.form_local_changed = true;
                 }
             }
-            _ => Narrowing::default(),
         }
+    }
+
+    #[inline]
+    fn read_def(&mut self, global: GlobalId) -> CompactInferred {
+        self.state.def_values[global.0]
+    }
+
+    #[inline]
+    fn join_def(&mut self, global: GlobalId, value: CompactInferred) {
+        let slot = &mut self.state.def_values[global.0];
+        let joined = slot.union(value);
+        if joined != *slot {
+            *slot = joined;
+            self.notify_dep(self.ctx.layout.def_dep(global));
+        }
+    }
+
+    #[inline]
+    fn read_fn_return(&mut self, slot: u32) -> CompactInferred {
+        self.ensure_dynamic_dep(self.ctx.layout.fn_dep(slot));
+        self.state.fn_returns[slot as usize]
+    }
+
+    #[inline]
+    fn join_fn_return(&mut self, slot: u32, value: CompactInferred) {
+        let entry = &mut self.state.fn_returns[slot as usize];
+        let joined = entry.union(value);
+        if joined != *entry {
+            *entry = joined;
+            self.notify_dep(self.ctx.layout.fn_dep(slot));
+        }
+    }
+
+    #[inline]
+    fn read_atom(&mut self, atom: usize) -> CompactInferred {
+        self.ensure_dynamic_dep(self.ctx.layout.atom_dep(atom));
+        self.state.contents[atom]
+    }
+
+    #[inline]
+    fn join_atom(&mut self, atom: usize, value: CompactInferred) {
+        let entry = &mut self.state.contents[atom];
+        let joined = entry.union(value);
+        if joined != *entry {
+            *entry = joined;
+            self.notify_dep(self.ctx.layout.atom_dep(atom));
+        }
+    }
+}
+
+struct ParallelSliceEnv<'p, 'c> {
+    ctx: &'c StaticCtx<'p>,
+    snapshot: &'c SolverState,
+    subs: &'c SubscriberGraph,
+    meta: &'c FormMeta,
+    lo: usize,
+    hi: usize,
+    reverse: bool,
+    position: usize,
+    narrowed: Vec<(LocalId, CompactInferred)>,
+    slice_dirty: BitSet,
+    touched: BitSet,
+    dep_deltas: HashMap<u32, (CompactInferred, u32)>,
+    cur_locals: Vec<CompactInferred>,
+    cur_local_read: Vec<bool>,
+    local_deltas: Vec<(LocalId, CompactInferred)>,
+    extra_local_deltas: HashMap<LocalId, CompactInferred>,
+    new_deps: Vec<(u32, u32)>,
+    self_dirty: Vec<u32>,
+    form_local_changed: bool,
+}
+
+impl<'p, 'c> ParallelSliceEnv<'p, 'c> {
+    fn walk_form(&mut self, pos: usize) {
+        self.position = pos;
+        self.form_local_changed = false;
+        let start = self.meta.form_locals_offsets[pos] as usize;
+        let end = self.meta.form_locals_offsets[pos + 1] as usize;
+        self.cur_locals.clear();
+        self.cur_local_read.clear();
+        for &local in &self.meta.form_locals_flat[start..end] {
+            self.cur_locals.push(self.snapshot.locals[local.0]);
+            self.cur_local_read.push(false);
+        }
+        let form_id = self.ctx.forms[pos];
+        walk_expr(self, form_id);
+        for (idx, &local) in self.meta.form_locals_flat[start..end].iter().enumerate() {
+            let val = self.cur_locals[idx];
+            if val != self.snapshot.locals[local.0] {
+                self.local_deltas.push((local, val));
+            }
+        }
+        if self.form_local_changed {
+            self.self_dirty.push(pos as u32);
+        }
+    }
+
+    #[inline]
+    fn read_summary(&self, dep: usize) -> CompactInferred {
+        if self.touched.get(dep)
+            && let Some(&(val, _)) = self.dep_deltas.get(&(dep as u32))
+        {
+            return val;
+        }
+        self.snapshot.read_dep(self.ctx, dep)
+    }
+
+    #[inline]
+    fn write_summary(&mut self, dep: usize, value: CompactInferred) {
+        let cur = self.read_summary(dep);
+        let joined = cur.union(value);
+        if joined == cur {
+            return;
+        }
+        self.touched.set(dep);
+        self.dep_deltas
+            .insert(dep as u32, (joined, self.position as u32));
+        // Propagate immediately to subscribers strictly ahead within `[lo..hi)`.
+        let (range_lo, range_hi) = if self.reverse {
+            (self.lo, self.position)
+        } else {
+            (self.position + 1, self.hi)
+        };
+        let lo = self.lo;
+        self.subs.for_each_in_range(dep, range_lo, range_hi, |sub| {
+            self.slice_dirty.set(sub - lo);
+        });
+    }
+
+    #[inline]
+    fn record_dynamic_dep(&mut self, dep: usize) {
+        let form = self.position as u32;
+        if !self.subs.contains(dep, form) {
+            self.new_deps.push((dep as u32, form));
+        }
+    }
+}
+
+impl<'p, 'c> WalkEnv<'p, 'c> for ParallelSliceEnv<'p, 'c> {
+    #[inline]
+    fn ctx(&self) -> &'c StaticCtx<'p> {
+        self.ctx
+    }
+
+    #[inline]
+    fn position(&self) -> usize {
+        self.position
+    }
+
+    #[inline]
+    fn narrowed(&self) -> &[(LocalId, CompactInferred)] {
+        &self.narrowed
+    }
+
+    #[inline]
+    fn narrowed_mut(&mut self) -> &mut Vec<(LocalId, CompactInferred)> {
+        &mut self.narrowed
+    }
+
+    #[inline]
+    fn read_local_raw(&mut self, local: LocalId) -> CompactInferred {
+        let owner = self.meta.local_owner[local.0];
+        if owner == self.position as u32 {
+            let slot = self.meta.local_in_form[local.0] as usize;
+            self.cur_local_read[slot] = true;
+            return self.cur_locals[slot];
+        }
+        let param = self.ctx.param_slot[local.0];
+        if param != u32::MAX {
+            return self.read_summary(self.ctx.layout.param_dep(param));
+        }
+        if owner == LOCAL_MULTI_FORM
+            && let Some(&val) = self.extra_local_deltas.get(&local)
+        {
+            return val;
+        }
+        self.snapshot.locals[local.0]
+    }
+
+    #[inline]
+    fn bind_local(&mut self, local: LocalId, value: CompactInferred) {
+        if self.ctx.pinned[local.0] {
+            return;
+        }
+        let owner = self.meta.local_owner[local.0];
+        if owner == self.position as u32 {
+            let slot = self.meta.local_in_form[local.0] as usize;
+            let joined = self.cur_locals[slot].union(value);
+            if joined != self.cur_locals[slot] {
+                self.cur_locals[slot] = joined;
+                if self.cur_local_read[slot] {
+                    self.form_local_changed = true;
+                }
+            }
+            return;
+        }
+        let param = self.ctx.param_slot[local.0];
+        if param != u32::MAX {
+            self.write_summary(self.ctx.layout.param_dep(param), value);
+            return;
+        }
+        if owner == LOCAL_MULTI_FORM {
+            let cur = self
+                .extra_local_deltas
+                .get(&local)
+                .copied()
+                .unwrap_or(self.snapshot.locals[local.0]);
+            let joined = cur.union(value);
+            if joined != cur {
+                self.extra_local_deltas.insert(local, joined);
+                self.form_local_changed = true;
+            }
+        }
+    }
+
+    #[inline]
+    fn read_def(&mut self, global: GlobalId) -> CompactInferred {
+        self.read_summary(self.ctx.layout.def_dep(global))
+    }
+
+    #[inline]
+    fn join_def(&mut self, global: GlobalId, value: CompactInferred) {
+        self.write_summary(self.ctx.layout.def_dep(global), value);
+    }
+
+    #[inline]
+    fn read_fn_return(&mut self, slot: u32) -> CompactInferred {
+        let dep = self.ctx.layout.fn_dep(slot);
+        self.record_dynamic_dep(dep);
+        self.read_summary(dep)
+    }
+
+    #[inline]
+    fn join_fn_return(&mut self, slot: u32, value: CompactInferred) {
+        self.write_summary(self.ctx.layout.fn_dep(slot), value);
+    }
+
+    #[inline]
+    fn read_atom(&mut self, atom: usize) -> CompactInferred {
+        let dep = self.ctx.layout.atom_dep(atom);
+        self.record_dynamic_dep(dep);
+        self.read_summary(dep)
+    }
+
+    #[inline]
+    fn join_atom(&mut self, atom: usize, value: CompactInferred) {
+        self.write_summary(self.ctx.layout.atom_dep(atom), value);
+    }
+}
+
+struct FinalDirectEnv<'p, 'c> {
+    ctx: &'c StaticCtx<'p>,
+    state: &'c SolverState,
+    values: &'c mut [CompactInferred],
+    narrowed: Vec<(LocalId, CompactInferred)>,
+    position: usize,
+}
+
+impl<'p, 'c> WalkEnv<'p, 'c> for FinalDirectEnv<'p, 'c> {
+    const FINAL_PASS: bool = true;
+
+    #[inline]
+    fn ctx(&self) -> &'c StaticCtx<'p> {
+        self.ctx
+    }
+
+    #[inline]
+    fn position(&self) -> usize {
+        self.position
+    }
+
+    #[inline]
+    fn narrowed(&self) -> &[(LocalId, CompactInferred)] {
+        &self.narrowed
+    }
+
+    #[inline]
+    fn narrowed_mut(&mut self) -> &mut Vec<(LocalId, CompactInferred)> {
+        &mut self.narrowed
+    }
+
+    #[inline]
+    fn on_record(&mut self, id: ExprId, value: CompactInferred) -> CompactInferred {
+        record_value(self.values, id, value);
+        value
+    }
+
+    #[inline]
+    fn read_local_raw(&mut self, local: LocalId) -> CompactInferred {
+        self.state.locals[local.0]
+    }
+
+    #[inline]
+    fn bind_local(&mut self, _local: LocalId, _value: CompactInferred) {}
+
+    #[inline]
+    fn read_def(&mut self, global: GlobalId) -> CompactInferred {
+        self.state.def_values[global.0]
+    }
+
+    #[inline]
+    fn join_def(&mut self, _global: GlobalId, _value: CompactInferred) {}
+
+    #[inline]
+    fn read_fn_return(&mut self, slot: u32) -> CompactInferred {
+        self.state.fn_returns[slot as usize]
+    }
+
+    #[inline]
+    fn join_fn_return(&mut self, _slot: u32, _value: CompactInferred) {}
+
+    #[inline]
+    fn read_atom(&mut self, atom: usize) -> CompactInferred {
+        self.state.contents[atom]
+    }
+
+    #[inline]
+    fn join_atom(&mut self, _atom: usize, _value: CompactInferred) {}
+}
+
+struct FinalSliceEnv<'p, 'c> {
+    ctx: &'c StaticCtx<'p>,
+    state: &'c SolverState,
+    entries: Vec<(u32, CompactInferred)>,
+    narrowed: Vec<(LocalId, CompactInferred)>,
+    position: usize,
+}
+
+impl<'p, 'c> WalkEnv<'p, 'c> for FinalSliceEnv<'p, 'c> {
+    const FINAL_PASS: bool = true;
+
+    #[inline]
+    fn ctx(&self) -> &'c StaticCtx<'p> {
+        self.ctx
+    }
+
+    #[inline]
+    fn position(&self) -> usize {
+        self.position
+    }
+
+    #[inline]
+    fn narrowed(&self) -> &[(LocalId, CompactInferred)] {
+        &self.narrowed
+    }
+
+    #[inline]
+    fn narrowed_mut(&mut self) -> &mut Vec<(LocalId, CompactInferred)> {
+        &mut self.narrowed
+    }
+
+    #[inline]
+    fn on_record(&mut self, id: ExprId, value: CompactInferred) -> CompactInferred {
+        self.entries.push((id.0 as u32, value));
+        value
+    }
+
+    #[inline]
+    fn read_local_raw(&mut self, local: LocalId) -> CompactInferred {
+        self.state.locals[local.0]
+    }
+
+    #[inline]
+    fn bind_local(&mut self, _local: LocalId, _value: CompactInferred) {}
+
+    #[inline]
+    fn read_def(&mut self, global: GlobalId) -> CompactInferred {
+        self.state.def_values[global.0]
+    }
+
+    #[inline]
+    fn join_def(&mut self, _global: GlobalId, _value: CompactInferred) {}
+
+    #[inline]
+    fn read_fn_return(&mut self, slot: u32) -> CompactInferred {
+        self.state.fn_returns[slot as usize]
+    }
+
+    #[inline]
+    fn join_fn_return(&mut self, _slot: u32, _value: CompactInferred) {}
+
+    #[inline]
+    fn read_atom(&mut self, atom: usize) -> CompactInferred {
+        self.state.contents[atom]
+    }
+
+    #[inline]
+    fn join_atom(&mut self, _atom: usize, _value: CompactInferred) {}
+}
+
+#[inline]
+fn read_local<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, local: LocalId) -> CompactInferred {
+    if env.ctx().pinned[local.0] {
+        return CompactInferred::ANY;
+    }
+    if let Some(&(_, value)) = env
+        .narrowed()
+        .iter()
+        .rev()
+        .find(|(narrowed, _)| *narrowed == local)
+    {
+        return value;
+    }
+    env.read_local_raw(local)
+}
+
+/// Walk `id` with `filters` applied to their locals.
+fn walk_narrowed<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(
+    env: &mut E,
+    id: ExprId,
+    filters: &[(LocalId, Filter)],
+) -> CompactInferred {
+    if filters.is_empty() {
+        return walk_expr(env, id);
+    }
+    let ctx = env.ctx();
+    let depth = env.narrowed().len();
+    for &(local, filter) in filters {
+        if !ctx.pinned[local.0] {
+            let current = read_local(env, local);
+            let value = filter.apply(current);
+            env.narrowed_mut().push((local, value));
+        }
+    }
+    let value = walk_expr(env, id);
+    env.narrowed_mut().truncate(depth);
+    value
+}
+
+#[inline]
+fn walk_discard<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, ids: &[ExprId]) {
+    for &id in ids {
+        walk_expr(env, id);
+    }
+}
+
+#[inline]
+fn walk_last<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, ids: &[ExprId]) -> CompactInferred {
+    let mut last = CompactInferred::of(Type::NIL);
+    for &id in ids {
+        last = walk_expr(env, id);
+    }
+    last
+}
+
+#[inline]
+fn walk_args<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, ids: &[ExprId]) -> ArgBuf {
+    if ids.len() <= INLINE_ARGS {
+        let mut buf = [CompactInferred::NEVER; INLINE_ARGS];
+        for (slot, &id) in buf.iter_mut().zip(ids) {
+            *slot = walk_expr(env, id);
+        }
+        ArgBuf::Inline(buf, ids.len())
+    } else {
+        let mut vec = Vec::with_capacity(ids.len());
+        for &id in ids {
+            vec.push(walk_expr(env, id));
+        }
+        ArgBuf::Heap(vec)
+    }
+}
+
+/// Walk `ids` and join their values.
+#[inline]
+fn join_all<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, ids: &[ExprId]) -> CompactInferred {
+    let mut acc = CompactInferred::NEVER;
+    for &id in ids {
+        acc = acc.union(walk_expr(env, id));
+    }
+    acc
+}
+
+fn walk_expr<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, id: ExprId) -> CompactInferred {
+    use ExprKind as K;
+    env.on_enter_expr();
+    let ctx = env.ctx();
+    let program = ctx.program;
+    let value = match &program.exprs[id.0].kind {
+        K::Nil => CompactInferred::of(Type::NIL),
+        // The runtime's `Loadable` class, like a core type's (`AtomType`).
+        K::LoadableType => CompactInferred::of(Type::FN),
+        // `new Loadable(...)`, as `K::Construct` below.
+        K::Loadable { class, .. } => {
+            walk_expr(env, *class);
+            match program.exprs[class.0].kind {
+                K::Global(global) => instance(ctx, global, true).unwrap_or(CompactInferred::ANY),
+                _ => CompactInferred::ANY,
+            }
+        }
+        K::Bool(_) => CompactInferred::of(Type::BOOLEAN),
+        K::Number(_) => CompactInferred::of(Type::NUMBER),
+        K::String(_) => CompactInferred::of(Type::STRING),
+        K::Keyword(_) => CompactInferred::of(Type::KEYWORD),
+        K::Symbol(_) => CompactInferred::of(Type::SYMBOL),
+        K::ReaderLiteral {
+            kind,
+            items,
+            quoted,
+        } => {
+            walk_discard(env, items);
+            match (kind, quoted) {
+                (CompilerLiteralKind::JsArray, false) => {
+                    CompactInferred::known_raw(Type::HOST, KNOWN_ARRAY, 0)
+                }
+                (
+                    CompilerLiteralKind::JsObject
+                    | CompilerLiteralKind::Regex
+                    | CompilerLiteralKind::Instant,
+                    false,
+                ) => CompactInferred::of(Type::HOST),
+                (CompilerLiteralKind::Uuid | CompilerLiteralKind::Queue, false) => {
+                    CompactInferred::of(Type::OBJECT)
+                }
+                _ => CompactInferred::ANY,
+            }
+        }
+        K::DefinitionTest { value, .. } | K::NamespaceView { value, .. } => walk_expr(env, *value),
+        K::WithMeta { value, metadata } => {
+            let arguments = [walk_expr(env, *value).ty, walk_expr(env, *metadata).ty];
+            core_call(ctx, CoreFnId::WithMeta, &arguments)
+        }
+        K::Var {
+            value, metadata, ..
+        } => {
+            walk_expr(env, *value);
+            if let Some(metadata) = metadata {
+                walk_expr(env, *metadata);
+            }
+            CompactInferred::of(Type::OBJECT)
+        }
+        K::List(items) => {
+            let element = join_all(env, items);
+            CompactInferred::of(Type::LIST).with_elements(element)
+        }
+        K::Vector(items) => {
+            let element = join_all(env, items);
+            CompactInferred::known_raw(Type::VECTOR, KNOWN_VECTOR, 0).with_elements(element)
+        }
+        K::Map(items) | K::LiteralMap(items) => {
+            walk_discard(env, items);
+            CompactInferred::of(Type::MAP)
+        }
+        K::Set(items) | K::LiteralSet(items) => {
+            let element = join_all(env, items);
+            CompactInferred::of(Type::SET).with_elements(element)
+        }
+        K::CoreFn(core) => {
+            if ctx.facts.replaced(*core) {
+                CompactInferred::ANY
+            } else {
+                CompactInferred::of(core.operation().value)
+            }
+        }
+        K::Local(local) => {
+            if E::COUNT_USES {
+                env.on_local_read_count(*local);
+            }
+            read_local(env, *local)
+        }
+        K::Global(global) => read_global(env, *global),
+        K::JsGlobal(_) => CompactInferred::ANY,
+        K::JsTemplate { args, .. } => {
+            walk_discard(env, args);
+            CompactInferred::ANY
+        }
+        K::JsIndex { receiver, indices } => {
+            walk_expr(env, *receiver);
+            walk_discard(env, indices);
+            CompactInferred::ANY
+        }
+        K::ThisAs { body, .. } => walk_expr(env, *body),
+        K::JsArguments => CompactInferred::of(Type::HOST),
+        K::JsDelete { receiver, key } => {
+            walk_expr(env, *receiver);
+            walk_expr(env, *key);
+            CompactInferred::of(Type::BOOLEAN)
+        }
+        K::QualifiedMethod { class, .. } => {
+            walk_expr(env, *class);
+            CompactInferred::of(Type::FN)
+        }
+        K::CopyArguments(dest) => {
+            walk_expr(env, *dest);
+            CompactInferred::of(Type::NIL)
+        }
+        K::DefProtocol { .. } => CompactInferred::of(Type::NIL),
+        K::ProtocolPredicate {
+            protocol, value, ..
+        } => {
+            walk_expr(env, *protocol);
+            walk_expr(env, *value);
+            CompactInferred::of(Type::BOOLEAN)
+        }
+        K::ExtendType {
+            target, methods, ..
+        } => {
+            walk_expr(env, *target);
+            for (_, method) in methods {
+                walk_expr(env, method.body);
+            }
+            CompactInferred::ANY
+        }
+        K::Reify {
+            metadata, methods, ..
+        } => {
+            if let Some(metadata) = metadata {
+                walk_expr(env, *metadata);
+            }
+            for (_, method) in methods {
+                walk_expr(env, method.body);
+            }
+            CompactInferred::of(Type::OBJECT)
+        }
+        K::DefType {
+            layout, methods, ..
+        } => {
+            if let Some(masks) = layout.masks {
+                walk_expr(env, masks);
+            }
+            for (_, method) in methods {
+                walk_expr(env, method.body);
+            }
+            match layout.body {
+                Some(body) => walk_expr(env, body),
+                None => CompactInferred::of(Type::FN),
+            }
+        }
+        K::Construct { callee, args } => {
+            walk_expr(env, *callee);
+            walk_discard(env, args);
+            match program.exprs[callee.0].kind {
+                K::Global(global) => instance(ctx, global, true).unwrap_or(CompactInferred::ANY),
+                _ => CompactInferred::ANY,
+            }
+        }
+        K::Assert { test, message, .. } => {
+            walk_expr(env, *test);
+            if let Some(message) = message {
+                walk_expr(env, *message);
+            }
+            CompactInferred::of(Type::NIL)
+        }
+        K::Def {
+            global,
+            init,
+            test,
+            once,
+            ..
+        } => {
+            let value = match init {
+                Some(init) => {
+                    let init_val = walk_expr(env, *init);
+                    if !E::FINAL_PASS
+                        && matches!(ctx.facts.definition(*global), Definition::Def(def_id) if def_id == id)
+                    {
+                        env.join_def(*global, init_val);
+                    }
+                    init_val
+                }
+                None => CompactInferred::of(Type::NIL),
+            };
+            if let Some(test) = test {
+                walk_expr(env, *test);
+            }
+            if *once {
+                value.union(CompactInferred::of(Type::NIL))
+            } else {
+                value
+            }
+        }
+        K::SetGlobal { target, value } => {
+            walk_expr(env, *target);
+            walk_expr(env, *value)
+        }
+        K::Binding { bindings, body } => {
+            for &(target, init) in bindings {
+                walk_expr(env, target);
+                walk_expr(env, init);
+            }
+            walk_expr(env, *body)
+        }
+        K::WithOutStr(body) => {
+            walk_expr(env, *body);
+            CompactInferred::of(Type::STRING)
+        }
+        K::Exists(value) | K::BindingExists(value) => {
+            walk_expr(env, *value);
+            CompactInferred::of(Type::BOOLEAN)
+        }
+        K::BooleanHint(value) => {
+            walk_expr(env, *value);
+            CompactInferred::of(Type::BOOLEAN)
+        }
+        K::Property { receiver, .. } => {
+            walk_expr(env, *receiver);
+            CompactInferred::ANY
+        }
+        K::MethodCall { receiver, args, .. } => {
+            walk_expr(env, *receiver);
+            walk_discard(env, args);
+            CompactInferred::ANY
+        }
+        K::If { test, yes, no } => {
+            walk_expr(env, *test);
+            let narrowing = narrowing(ctx, *test, 0);
+            let yes = walk_narrowed(env, *yes, narrowing.yes.as_slice());
+            let no = walk_narrowed(env, *no, narrowing.no.as_slice());
+            if constant_truthy(&program.exprs[test.0].kind) {
+                yes
+            } else {
+                yes.union(no)
+            }
+        }
+        K::Do(items) => walk_last(env, items),
+        K::Let { bindings, body } | K::Loop { bindings, body, .. } => {
+            for &(local, init) in bindings {
+                let value = walk_expr(env, init);
+                if !E::FINAL_PASS {
+                    env.bind_local(local, value);
+                }
+            }
+            walk_expr(env, *body)
+        }
+        K::LetFn { bindings, body } => {
+            if !E::FINAL_PASS {
+                for &(local, _) in bindings {
+                    env.on_declare_local(local);
+                }
+            }
+            for &(local, init) in bindings {
+                let value = walk_expr(env, init);
+                if !E::FINAL_PASS {
+                    env.bind_local(local, value);
+                }
+            }
+            walk_expr(env, *body)
+        }
+        K::Recur { target, args } => {
+            let params = &program.recur_targets[target.0].params;
+            for (index, &arg) in args.iter().enumerate() {
+                let value = walk_expr(env, arg);
+                if !E::FINAL_PASS
+                    && let Some(&param) = params.get(index)
+                {
+                    env.bind_local(param, value);
+                }
+            }
+            CompactInferred::NEVER
+        }
+        K::Throw(value) => {
+            walk_expr(env, *value);
+            CompactInferred::NEVER
+        }
+        // What a promise settles to, or the value itself, is not known.
+        K::Await(value) => {
+            walk_expr(env, *value);
+            CompactInferred::ANY
+        }
+        K::Try {
+            body,
+            catches,
+            finally,
+        } => {
+            let mut value = walk_expr(env, *body);
+            for catch in catches {
+                if let Some(class) = catch.class {
+                    walk_expr(env, class);
+                }
+                value = value.union(walk_expr(env, catch.body));
+            }
+            if let Some(finally) = finally {
+                walk_expr(env, *finally);
+            }
+            value
+        }
+        K::Case {
+            test,
+            branches,
+            default,
+            ..
+        } => {
+            walk_expr(env, *test);
+            let mut value = CompactInferred::NEVER;
+            for &(constant, branch) in branches {
+                walk_expr(env, constant);
+                value = value.union(walk_expr(env, branch));
+            }
+            if let Some(default) = default {
+                value = value.union(walk_expr(env, *default));
+            }
+            value
+        }
+        K::Fn { name, methods } => {
+            let function = CompactInferred::known_function(id);
+            if !E::FINAL_PASS
+                && let Some(name) = name
+            {
+                env.bind_local(*name, function);
+            }
+            let mut ret = CompactInferred::NEVER;
+            for method in methods {
+                let body_val = walk_expr(env, method.body);
+                if !E::FINAL_PASS {
+                    ret = ret.union(if method.asynchronous {
+                        CompactInferred::ANY
+                    } else {
+                        body_val
+                    });
+                }
+            }
+            if !E::FINAL_PASS {
+                let slot = ctx.fn_slot[id.0];
+                if slot != u32::MAX {
+                    env.join_fn_return(slot, ret);
+                }
+            }
+            if program.macro_functions.contains(&id) {
+                CompactInferred::ANY
+            } else {
+                function
+            }
+        }
+        K::Call { callee, args } => {
+            let callee_value = walk_expr(env, *callee);
+            let arguments = walk_args(env, args);
+            let args_slice = arguments.as_slice();
+            if !E::FINAL_PASS {
+                if let Some((function, method)) = ctx.closed.call(id) {
+                    pass(env, function, method, args_slice);
+                }
+                dispatch(env, id, args_slice);
+                if let K::CoreFn(core) = program.exprs[callee.0].kind {
+                    for (index, function) in ctx.closed.callbacks(id) {
+                        pass_callback(env, core, args, args_slice, index, function);
+                    }
+                    store(env, id, core, args, args_slice);
+                }
+            }
+            call(env, *callee, callee_value, args, args_slice)
+        }
+        K::InstanceOf { class, value } => {
+            walk_expr(env, *class);
+            walk_expr(env, *value);
+            CompactInferred::of(Type::BOOLEAN)
+        }
+    };
+    env.on_record(id, value)
+}
+
+/// Join what the call `call` of `core` with argument expressions `args` of
+/// values `arguments` stores in a closed atom (light-cljs-252).
+fn store<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(
+    env: &mut E,
+    call_id: ExprId,
+    core: CoreFnId,
+    args: &[ExprId],
+    arguments: &[CompactInferred],
+) {
+    let ctx = env.ctx();
+    let target = if core == CoreFnId::Atom {
+        call_id
+    } else {
+        match args.first() {
+            Some(&target) => target,
+            None => return,
+        }
+    };
+    let Some(atom) = ctx.closed.atom(target) else {
+        return;
+    };
+    let argument = |index: usize| {
+        arguments
+            .get(index)
+            .copied()
+            .unwrap_or(CompactInferred::ANY)
+    };
+    let stored = match core {
+        _ if !ctx.facts.trusted(core, Calls::Invoke) => CompactInferred::ANY,
+        CoreFnId::Atom => argument(0),
+        CoreFnId::Reset | CoreFnId::ResetVals => argument(1),
+        CoreFnId::CompareAndSet => argument(2),
+        CoreFnId::Swap | CoreFnId::SwapVals => callback_returns(env, core, 1, args, arguments),
+        _ => return,
+    };
+    env.join_atom(atom, stored);
+}
+
+/// What the closed atom read by `arg` holds (`sN`), else `any`.
+#[inline]
+fn state<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, arg: Option<&ExprId>) -> CompactInferred {
+    match arg.and_then(|arg| env.ctx().closed.atom(*arg)) {
+        Some(atom) => env.read_atom(atom),
+        None => CompactInferred::ANY,
+    }
+}
+
+/// What a call of `core` returns when its first argument reads a closed atom
+/// (light-cljs-256).
+fn atom_result<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(
+    env: &mut E,
+    core: CoreFnId,
+    args: &[ExprId],
+    arguments: &[CompactInferred],
+) -> Option<CompactInferred> {
+    let ctx = env.ctx();
+    let atom = ctx.closed.atom(*args.first()?)?;
+    if !ctx.facts.trusted(core, Calls::Invoke) || ctx.facts.replaced(CoreFnId::Atom) {
+        return None;
+    }
+    match core {
+        CoreFnId::Deref => Some(env.read_atom(atom)),
+        CoreFnId::Reset => arguments.get(1).copied(),
+        CoreFnId::Swap => Some(callback_returns(env, core, 1, args, arguments)),
+        _ => None,
+    }
+}
+
+/// Bind the parameters of method `method` of the closed `fn` `function` to
+/// `arguments`.
+fn pass<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(
+    env: &mut E,
+    function: ExprId,
+    method: usize,
+    arguments: &[CompactInferred],
+) {
+    let ExprKind::Fn { methods, .. } = &env.ctx().program.exprs[function.0].kind else {
+        return;
+    };
+    let Some(method) = methods.get(method) else {
+        return;
+    };
+    for (index, &param) in method.params.iter().enumerate() {
+        let argument = arguments
+            .get(index)
+            .copied()
+            .unwrap_or(CompactInferred::of(Type::NIL));
+        env.bind_local(param, argument);
+    }
+    if let Some(rest) = method.rest {
+        let rest_type = if arguments.len() > method.params.len() {
+            Type::SEQ
+        } else {
+            Type::NIL
+        };
+        env.bind_local(rest, CompactInferred::of(rest_type));
+    }
+}
+
+/// Bind the parameters of each implementation that the protocol method call
+/// `call` with `arguments` may run (light-cljs-253).
+fn dispatch<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(
+    env: &mut E,
+    call_id: ExprId,
+    arguments: &[CompactInferred],
+) {
+    let ctx = env.ctx();
+    let receiver = arguments
+        .first()
+        .copied()
+        .unwrap_or(CompactInferred::of(Type::NIL));
+    let inherits = ctx.closed.inherits();
+    for (index, implementation) in ctx.closed.dispatch(call_id) {
+        if !ctx.receivers[index].is_some_and(|receivers| receivers.reach(receiver, inherits)) {
+            continue;
+        }
+        let Some(method) = implementation.method(ctx.program) else {
+            continue;
+        };
+        for (position, &param) in method.params.iter().enumerate() {
+            let argument = arguments
+                .get(position)
+                .copied()
+                .unwrap_or(CompactInferred::of(Type::NIL));
+            env.bind_local(param, argument);
+        }
+    }
+}
+
+/// A read of `global`.
+fn read_global<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(env: &mut E, global: GlobalId) -> CompactInferred {
+    let ctx = env.ctx();
+    let program = ctx.program;
+    if program.globals[global.0].name.contains('.') {
+        return CompactInferred::ANY;
+    }
+    let (definition, value) = match ctx.facts.definition(global) {
+        Definition::Unknown => return CompactInferred::ANY,
+        Definition::Def(definition) => {
+            let ExprKind::Def { init, once, .. } = program.exprs[definition.0].kind else {
+                return CompactInferred::ANY;
+            };
+            let value = match init {
+                Some(_) => env.read_def(global),
+                None => CompactInferred::of(Type::NIL),
+            };
+            if once {
+                return value.union(CompactInferred::of(Type::NIL));
+            }
+            (definition, value)
+        }
+        Definition::Type { definition, .. } => (definition, CompactInferred::of(Type::FN)),
+        Definition::Protocol(definition) => {
+            let ExprKind::DefProtocol {
+                global: protocol, ..
+            } = program.exprs[definition.0].kind
+            else {
+                return CompactInferred::ANY;
+            };
+            if protocol == global {
+                return CompactInferred::ANY;
+            }
+            (definition, CompactInferred::of(Type::FN))
+        }
+    };
+    // Before its definition runs, a global is undefined. A read in a later
+    // top-level form than a top-level definition runs after it: an earlier
+    // form that throws ends the program.
+    let defined_before = ctx
+        .facts
+        .top_position(definition)
+        .is_some_and(|position| position < env.position());
+    if defined_before {
+        value
+    } else {
+        value.union(CompactInferred::of(Type::NIL))
+    }
+}
+
+/// What `new global` (`construct`) or a call of `global` returns when `global`
+/// is a program type's constructor, or its positional or map factory.
+#[inline]
+fn instance(ctx: &StaticCtx<'_>, global: GlobalId, construct: bool) -> Option<CompactInferred> {
+    let Definition::Type {
+        type_global,
+        role,
+        record,
+        ..
+    } = ctx.facts.definition(global)
+    else {
+        return None;
+    };
+    if construct != (role == TypeRole::Constructor) {
+        return None;
+    }
+    let class = if record { Type::RECORD } else { Type::OBJECT };
+    Some(CompactInferred::known_instance(class, type_global))
+}
+
+#[inline]
+fn core_call(ctx: &StaticCtx<'_>, core: CoreFnId, arguments: &[Type]) -> CompactInferred {
+    let operation = core.operation();
+    let call = operation.call(arguments);
+    if !ctx.facts.trusted(core, call.calls) {
+        return CompactInferred::ANY;
+    }
+    // Joining `returns` keeps the result monotone in the arguments: a call
+    // outside the domain may also return what one inside does.
+    let returns = call.returns.union(operation.returns_for(arguments.len()));
+    let known_tag = match core {
+        CoreFnId::Vector => KNOWN_VECTOR,
+        CoreFnId::Array => KNOWN_ARRAY,
+        _ => KNOWN_UNKNOWN,
+    };
+    CompactInferred::known_raw(returns, known_tag, 0)
+}
+
+#[inline]
+fn described(ctx: &StaticCtx<'_>, core: CoreFnId, types: &[Type]) -> bool {
+    let operation = core.operation();
+    operation
+        .arity(types.len())
+        .is_some_and(|arity| arity.admits(types))
+        && ctx.facts.trusted(core, operation.calls)
+        && ctx.facts.core_protocols_intact()
+}
+
+fn core_result<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(
+    env: &mut E,
+    core: CoreFnId,
+    args: &[ExprId],
+    arguments: &[CompactInferred],
+) -> CompactInferred {
+    if let Some(result) = atom_result(env, core, args, arguments) {
+        return result;
+    }
+    let ctx = env.ctx();
+    let types = TypeBuf::from_args(arguments);
+    let types_slice = types.as_slice();
+    let result = core_call(ctx, core, types_slice);
+    match &core.operation().elements {
+        Some(elements) if described(ctx, core, types_slice) => {
+            let elem = describe(env, core, elements, args, arguments, true);
+            result.with_elements(elem)
+        }
+        _ => result,
+    }
+}
+
+fn describe<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(
+    env: &mut E,
+    core: CoreFnId,
+    descriptor: &Descriptor,
+    args: &[ExprId],
+    arguments: &[CompactInferred],
+    returns: bool,
+) -> CompactInferred {
+    let argument = |index: usize| {
+        arguments
+            .get(index)
+            .copied()
+            .unwrap_or(CompactInferred::ANY)
+    };
+    let mut value = CompactInferred::NEVER;
+    for &term in &descriptor.terms {
+        let part = match term {
+            Term::Type(ty) => CompactInferred::of(ty),
+            Term::Argument(index) => argument(index),
+            Term::Element(index) => argument(index).element(),
+            Term::Arguments(index) => arguments
+                .get(index..)
+                .unwrap_or(&[])
+                .iter()
+                .copied()
+                .fold(CompactInferred::NEVER, CompactInferred::union),
+            Term::Elements(index) => arguments
+                .get(index..)
+                .unwrap_or(&[])
+                .iter()
+                .copied()
+                .fold(CompactInferred::NEVER, |acc, arg| acc.union(arg.element())),
+            Term::State(index) => state(env, args.get(index)),
+            Term::Returns(index) if returns => callback_returns(env, core, index, args, arguments),
+            Term::Returns(_) => CompactInferred::ANY,
+        };
+        value = value.union(part);
+    }
+    value
+}
+
+fn callback_arguments<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(
+    env: &mut E,
+    core: CoreFnId,
+    call: &[Descriptor],
+    args: &[ExprId],
+    arguments: &[CompactInferred],
+    returns: bool,
+) -> ArgBuf {
+    let mut values = ArgBuf::Inline([CompactInferred::NEVER; INLINE_ARGS], 0);
+    for descriptor in call {
+        match descriptor.spread() {
+            Some(Term::Arguments(from)) => {
+                for &arg in arguments.iter().skip(from) {
+                    values.push(arg);
+                }
+            }
+            Some(Term::Elements(from)) => {
+                for arg in arguments.iter().skip(from) {
+                    values.push(arg.element());
+                }
+            }
+            _ => values.push(describe(env, core, descriptor, args, arguments, returns)),
+        }
+    }
+    values
+}
+
+fn callback_returns<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(
+    env: &mut E,
+    core: CoreFnId,
+    index: usize,
+    args: &[ExprId],
+    arguments: &[CompactInferred],
+) -> CompactInferred {
+    let callback = core
+        .operation()
+        .arity(arguments.len())
+        .and_then(|arity| arity.callback(index));
+    let (Some(callback), Some(&callee), Some(&value)) =
+        (callback, args.get(index), arguments.get(index))
+    else {
+        return CompactInferred::ANY;
+    };
+    let mut result = CompactInferred::NEVER;
+    for call_desc in &callback.calls {
+        let call_arguments = callback_arguments(env, core, call_desc, args, arguments, false);
+        result = result.union(call(env, callee, value, &[], call_arguments.as_slice()));
+    }
+    result
+}
+
+fn pass_callback<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(
+    env: &mut E,
+    core: CoreFnId,
+    args: &[ExprId],
+    arguments: &[CompactInferred],
+    index: usize,
+    function: ExprId,
+) {
+    let ctx = env.ctx();
+    let types = TypeBuf::from_args(arguments);
+    let types_slice = types.as_slice();
+    let program_types = Type::RECORD.union(Type::OBJECT);
+    let runtime_atom = |position: usize| {
+        !ctx.facts.replaced(CoreFnId::Atom)
+            && args
+                .get(position)
+                .is_some_and(|arg| ctx.closed.atom(*arg).is_some())
+    };
+    let reachable = ctx.facts.receives_functions()
+        && types_slice.iter().enumerate().any(|(position, ty)| {
+            position != index
+                && !ty.intersection(program_types).is_never()
+                && !runtime_atom(position)
+        });
+    let callback = core
+        .operation()
+        .arity(arguments.len())
+        .and_then(|arity| arity.callback(index))
+        .filter(|_| described(ctx, core, types_slice) && !reachable);
+    let ExprKind::Fn { methods, .. } = &ctx.program.exprs[function.0].kind else {
+        return;
+    };
+    let Some(callback) = callback else {
+        for method in methods {
+            for &param in method.params.iter().chain(&method.rest) {
+                env.bind_local(param, CompactInferred::ANY);
+            }
+        }
+        return;
+    };
+    for call_desc in &callback.calls {
+        let call_arguments = callback_arguments(env, core, call_desc, args, arguments, true);
+        let call_slice = call_arguments.as_slice();
+        if let Some(method) = crate::call_shapes::dispatched_method(methods, call_slice.len()) {
+            pass(env, function, method, call_slice);
+        }
+    }
+}
+
+fn call<'p: 'c, 'c, E: WalkEnv<'p, 'c>>(
+    env: &mut E,
+    callee: ExprId,
+    value: CompactInferred,
+    args: &[ExprId],
+    arguments: &[CompactInferred],
+) -> CompactInferred {
+    let ctx = env.ctx();
+    let program = ctx.program;
+    match &program.exprs[callee.0].kind {
+        ExprKind::CoreFn(core) => return core_result(env, *core, args, arguments),
+        ExprKind::Global(global) => {
+            if let Some(instance) = instance(ctx, *global, false) {
+                return instance;
+            }
+        }
+        ExprKind::BooleanHint(inner) => {
+            if let ExprKind::Global(global) = program.exprs[inner.0].kind
+                && program.globals[global.0].boolean_tag
+            {
+                return CompactInferred::of(Type::BOOLEAN);
+            }
+        }
+        _ => (),
+    }
+    // Calling nil throws. Staying `never` until the callee is known keeps
+    // the fixed point from starting at `any` for recursive functions.
+    let callable = value.ty.difference(Type::NIL);
+    if callable.is_never() {
+        return CompactInferred::NEVER;
+    }
+    if value.known_tag == KNOWN_FUNCTION && callable == Type::FN {
+        let slot = ctx.fn_slot[value.known_id as usize];
+        if slot != u32::MAX {
+            return env.read_fn_return(slot);
+        }
+    }
+    CompactInferred::ANY
+}
+
+/// What `test` tells about locals in the branches of an `if`.
+fn narrowing(ctx: &StaticCtx<'_>, test: ExprId, depth: usize) -> Narrowing {
+    use ExprKind as K;
+    let program = ctx.program;
+    if depth > 8 {
+        return Narrowing::default();
+    }
+    match &program.exprs[test.0].kind {
+        K::Local(local) if !ctx.pinned[local.0] => {
+            let init = ctx.initializers[local.0];
+            let mut result = if init != u32::MAX {
+                narrowing(ctx, ExprId(init as usize), depth + 1)
+            } else {
+                Narrowing::default()
+            };
+            result.yes.push((*local, Filter::Remove(Type::NIL)));
+            result
+                .no
+                .push((*local, Filter::Keep(Type::NIL.union(Type::BOOLEAN))));
+            result
+        }
+        K::BooleanHint(inner)
+        | K::DefinitionTest { value: inner, .. }
+        | K::NamespaceView { value: inner, .. } => narrowing(ctx, *inner, depth + 1),
+        K::Do(items) if items.len() == 1 => narrowing(ctx, items[0], depth + 1),
+        K::Call { callee, args } => {
+            let K::CoreFn(core) = program.exprs[callee.0].kind else {
+                return Narrowing::default();
+            };
+            if ctx.facts.replaced(core) {
+                return Narrowing::default();
+            }
+            if core == CoreFnId::Not && args.len() == 1 {
+                return narrowing(ctx, args[0], depth + 1).swap();
+            }
+            let [arg] = args.as_slice() else {
+                return Narrowing::default();
+            };
+            let K::Local(local) = program.exprs[arg.0].kind else {
+                return Narrowing::default();
+            };
+            let user = Type::RECORD.union(Type::OBJECT);
+            let intact = ctx.facts.core_protocols_intact();
+            let (yes, no) = match core {
+                CoreFnId::IsNil => (Filter::Keep(Type::NIL), Some(Filter::Remove(Type::NIL))),
+                CoreFnId::IsSome => (Filter::Remove(Type::NIL), Some(Filter::Keep(Type::NIL))),
+                CoreFnId::IsString => (
+                    Filter::Keep(Type::STRING),
+                    Some(Filter::Remove(Type::STRING)),
+                ),
+                CoreFnId::IsNumber => (
+                    Filter::Keep(Type::NUMBER),
+                    Some(Filter::Remove(Type::NUMBER)),
+                ),
+                CoreFnId::IsKeyword => (
+                    Filter::Keep(Type::KEYWORD),
+                    Some(Filter::Remove(Type::KEYWORD)),
+                ),
+                CoreFnId::IsSymbol => (
+                    Filter::Keep(Type::SYMBOL),
+                    Some(Filter::Remove(Type::SYMBOL)),
+                ),
+                CoreFnId::IsBoolean => (
+                    Filter::Keep(Type::BOOLEAN),
+                    Some(Filter::Remove(Type::BOOLEAN)),
+                ),
+                CoreFnId::IsTrue | CoreFnId::IsFalse => (Filter::Keep(Type::BOOLEAN), None),
+                CoreFnId::IsArray => (Filter::Keep(Type::HOST), None),
+                CoreFnId::IsVector if intact => (Filter::Keep(Type::VECTOR.union(user)), None),
+                CoreFnId::IsMap if intact => (Filter::Keep(Type::MAP.union(user)), None),
+                CoreFnId::IsSet if intact => (Filter::Keep(Type::SET.union(user)), None),
+                CoreFnId::IsSeq if intact => {
+                    (Filter::Keep(Type::SEQ.union(Type::LIST).union(user)), None)
+                }
+                CoreFnId::IsRecord if intact => (Filter::Keep(user), None),
+                _ => return Narrowing::default(),
+            };
+            Narrowing {
+                yes: FilterBuf::one((local, yes)),
+                no: no.map_or_else(FilterBuf::default, |filter| FilterBuf::one((local, filter))),
+            }
+        }
+        K::InstanceOf { class, value } => {
+            let (K::Global(global), K::Local(local)) =
+                (&program.exprs[class.0].kind, &program.exprs[value.0].kind)
+            else {
+                return Narrowing::default();
+            };
+            match ctx.facts.program_type(*global) {
+                Some((_, record)) => {
+                    let class = if record { Type::RECORD } else { Type::OBJECT };
+                    Narrowing {
+                        yes: FilterBuf::one((*local, Filter::Instance(global.0 as u32, class))),
+                        no: FilterBuf::default(),
+                    }
+                }
+                None => Narrowing::default(),
+            }
+        }
+        K::ProtocolPredicate { value, key, .. } => {
+            let K::Local(local) = program.exprs[value.0].kind else {
+                return Narrowing::default();
+            };
+            match ctx.facts.implementors(key) {
+                Some(Implementors {
+                    sole: Some(global),
+                    classes,
+                }) => Narrowing {
+                    yes: FilterBuf::one((local, Filter::Instance(global.0 as u32, classes))),
+                    no: FilterBuf::default(),
+                },
+                Some(Implementors { classes, .. }) => Narrowing {
+                    yes: FilterBuf::one((local, Filter::Keep(classes))),
+                    no: FilterBuf::default(),
+                },
+                None => Narrowing::default(),
+            }
+        }
+        // `(and a b)` is `(let [t a] (if t b t))` and `(or a b)` is
+        // `(let [t a] (if t t b))`, with `t` read nowhere else.
+        K::Let { bindings, body } => {
+            let Some((_, init, other, and)) = short_circuit(program, bindings, *body) else {
+                return Narrowing::default();
+            };
+            let (first, second) = (
+                narrowing(ctx, init, depth + 1),
+                narrowing(ctx, other, depth + 1),
+            );
+            if and {
+                let mut yes = first.yes;
+                yes.extend_from(&second.yes);
+                Narrowing {
+                    yes,
+                    no: FilterBuf::default(),
+                }
+            } else {
+                let mut no = first.no;
+                no.extend_from(&second.no);
+                Narrowing {
+                    yes: FilterBuf::default(),
+                    no,
+                }
+            }
+        }
+        _ => Narrowing::default(),
     }
 }
 
@@ -2710,5 +4735,222 @@ mod tests {
         for falsy_in_js in [Type::NUMBER, Type::STRING, Type::HOST, Type::ANY] {
             assert!(!Inferred::of(falsy_in_js).truth_is_js(), "{falsy_in_js}");
         }
+    }
+
+    #[test]
+    fn compact_inferred_matches_public_inferred_lattice() {
+        assert_eq!(std::mem::size_of::<CompactInferred>(), 16);
+        let pairs: Vec<(Inferred, CompactInferred)> = vec![
+            (Inferred::NEVER, CompactInferred::NEVER),
+            (Inferred::ANY, CompactInferred::ANY),
+            (Inferred::of(Type::NIL), CompactInferred::of(Type::NIL)),
+            (
+                Inferred::of(Type::NUMBER),
+                CompactInferred::of(Type::NUMBER),
+            ),
+            (
+                Inferred::known(Type::FN, Known::Function(ExprId(7))),
+                CompactInferred::known_function(ExprId(7)),
+            ),
+            (
+                Inferred::known(Type::FN, Known::Function(ExprId(8))),
+                CompactInferred::known_function(ExprId(8)),
+            ),
+            (
+                Inferred::known(Type::RECORD, Known::Instance(GlobalId(3))),
+                CompactInferred::known_instance(Type::RECORD, GlobalId(3)),
+            ),
+            (
+                Inferred::known(Type::VECTOR, Known::Vector)
+                    .with_elements(Inferred::of(Type::NUMBER)),
+                CompactInferred::known_raw(Type::VECTOR, KNOWN_VECTOR, 0)
+                    .with_elements(CompactInferred::of(Type::NUMBER)),
+            ),
+            (
+                Inferred::known(Type::VECTOR, Known::Vector)
+                    .with_elements(Inferred::known(Type::FN, Known::Function(ExprId(7)))),
+                CompactInferred::known_raw(Type::VECTOR, KNOWN_VECTOR, 0)
+                    .with_elements(CompactInferred::known_function(ExprId(7))),
+            ),
+            (
+                Inferred::known(Type::HOST, Known::Array),
+                CompactInferred::known_raw(Type::HOST, KNOWN_ARRAY, 0),
+            ),
+            (Inferred::of(Type::MAP), CompactInferred::of(Type::MAP)),
+            (
+                Inferred::of(Type::STRING),
+                CompactInferred::of(Type::STRING),
+            ),
+        ];
+        for (a_pub, a_cmp) in &pairs {
+            assert_eq!(a_cmp.to_inferred(), *a_pub);
+            assert_eq!(a_cmp.element().to_inferred(), a_pub.element());
+            for mask in [
+                Type::NIL,
+                Type::FN,
+                Type::VECTOR,
+                Type::RECORD,
+                Type::NUMBER,
+            ] {
+                assert_eq!(a_cmp.keep(mask).to_inferred(), a_pub.keep(mask));
+                assert_eq!(a_cmp.remove(mask).to_inferred(), a_pub.remove(mask));
+            }
+            for (b_pub, b_cmp) in &pairs {
+                assert_eq!(a_cmp.union(*b_cmp).to_inferred(), a_pub.union(*b_pub));
+                assert_eq!(
+                    a_cmp.with_elements(*b_cmp).to_inferred(),
+                    a_pub.with_elements(*b_pub)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bitset_forward_and_reverse_sweeps_cover_word_boundaries() {
+        let mut bits = BitSet::new(200);
+        assert!(bits.is_empty());
+        assert_eq!(bits.pop_next(0), None);
+        assert_eq!(bits.pop_prev(199), None);
+        let expected = [0usize, 1, 63, 64, 65, 127, 128, 199];
+        for &i in &expected {
+            bits.set(i);
+        }
+        let mut forward = Vec::new();
+        let mut cursor = 0;
+        while let Some(pos) = bits.pop_next(cursor) {
+            forward.push(pos);
+            cursor = pos + 1;
+        }
+        assert_eq!(forward, expected);
+        assert!(bits.is_empty());
+
+        for &i in &expected {
+            bits.set(i);
+        }
+        let mut reverse = Vec::new();
+        let mut cursor = 199;
+        while let Some(pos) = bits.pop_prev(cursor) {
+            reverse.push(pos);
+            if pos == 0 {
+                break;
+            }
+            cursor = pos - 1;
+        }
+        let mut expected_rev = expected.to_vec();
+        expected_rev.reverse();
+        assert_eq!(reverse, expected_rev);
+        assert!(bits.is_empty());
+    }
+
+    #[test]
+    fn parallel_bsp_matches_serial_exactly_across_chains_atoms_protocols_and_loops() {
+        // Build a program with >40 top-level forms exercising forward/backward
+        // call chains, mutual recursion, closed atoms, closed protocol methods,
+        // loops, narrowing, and callbacks, then compare serial vs forced
+        // parallel BSP + parallel final pass on 4 and 8 slots.
+        let mut source = String::new();
+        source.push_str("(defprotocol P (pm [this v]))\n");
+        source.push_str("(defrecord R [x] P (pm [this v] (+ x v)))\n");
+        source.push_str("(def state (atom 0))\n");
+        source.push_str("(defn f0 [x] (swap! state + x) (pm (->R x) x))\n");
+        for i in 1..=36 {
+            source.push_str(&format!(
+                "(defn f{i} [x] (let [y (if (number? x) (inc x) 0)] (f{} y)))\n",
+                i - 1
+            ));
+        }
+        source.push_str(
+            "(defn looped [n] (loop [i 0 acc []] (if (< i n) (recur (inc i) (conj acc i)) acc)))\n",
+        );
+        source.push_str("(defn mapped [xs] (mapv (fn [z] (+ z 1)) xs))\n");
+        source.push_str("(defn caller [] (+ (f36 1) @state (count (mapped (looped 4)))))\n");
+        source.push_str("(caller)\n");
+
+        let forms = crate::parse(&source).expect("parse");
+        let program = crate::analyze(&source, &forms).expect("analyze");
+        let mut top = Vec::new();
+        let mut pending = vec![program.root];
+        while let Some(id) = pending.pop() {
+            match &program.exprs[id.0].kind {
+                ExprKind::Do(items) => pending.extend(items.iter().rev().copied()),
+                _ => top.push(id),
+            }
+        }
+        let closed = crate::call_shapes::closed_functions(&program, &[]);
+        let serial = Inference::new(&program, ProgramFacts::new(&program, &top), &closed);
+        assert!(serial.typed_parameters() > 30);
+
+        for slot_count in [2usize, 4, 8] {
+            let slots = crate::scheduler::Slots::new(slot_count).unwrap();
+            let parallel = Inference::build(
+                &program,
+                ProgramFacts::new(&program, &top),
+                &closed,
+                slots,
+                1,
+                1,
+            );
+            assert_eq!(
+                parallel.typed_parameters(),
+                serial.typed_parameters(),
+                "typed_parameters mismatch at slots={slot_count}"
+            );
+            for expr in 0..program.exprs.len() {
+                let id = ExprId(expr);
+                assert_eq!(
+                    parallel.value(id),
+                    serial.value(id),
+                    "value mismatch for {id:?} at slots={slot_count}"
+                );
+            }
+            for local in 0..program.locals.len() {
+                let id = LocalId(local);
+                assert_eq!(
+                    parallel.local(id),
+                    serial.local(id),
+                    "local mismatch for {id:?} at slots={slot_count}"
+                );
+                assert_eq!(
+                    parallel.uses(id),
+                    serial.uses(id),
+                    "uses mismatch for {id:?} at slots={slot_count}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn parallel_bsp_switches_to_serial_and_converges_on_deep_chains() {
+        let mut source = String::from("(defn f0 [x] x)\n");
+        for i in 1..120 {
+            source.push_str(&format!("(defn f{i} [x] (f{} x))\n", i - 1));
+        }
+        source.push_str("(f119 \"ok\")\n");
+        let forms = crate::parse(&source).expect("parse");
+        let program = crate::analyze(&source, &forms).expect("analyze");
+        let mut top = Vec::new();
+        let mut pending = vec![program.root];
+        while let Some(id) = pending.pop() {
+            match &program.exprs[id.0].kind {
+                ExprKind::Do(items) => pending.extend(items.iter().rev().copied()),
+                _ => top.push(id),
+            }
+        }
+        let closed = crate::call_shapes::closed_functions(&program, &[]);
+        let serial = Inference::new(&program, ProgramFacts::new(&program, &top), &closed);
+        assert_eq!(serial.typed_parameters(), 120);
+        assert_eq!(serial.value(program.root), Inferred::of(Type::STRING));
+
+        let slots = crate::scheduler::Slots::new(8).unwrap();
+        let parallel = Inference::build(
+            &program,
+            ProgramFacts::new(&program, &top),
+            &closed,
+            slots,
+            1,
+            1,
+        );
+        assert_eq!(parallel.typed_parameters(), 120);
+        assert_eq!(parallel.value(program.root), Inferred::of(Type::STRING));
     }
 }

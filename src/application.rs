@@ -895,7 +895,7 @@ pub fn prepare_owned_application_with_slots(
         // analysis then rewrites: its removals only drop calls, so the calls
         // found here include every call emission keeps.
         let closed = crate::call_shapes::closed_functions(&prepared.program, &options.exports);
-        let inference = Inference::new(&prepared.program, facts, &closed);
+        let inference = Inference::new_with_slots(&prepared.program, facts, &closed, slots);
         prepared.stats.typed_parameters = inference.typed_parameters();
         // Rapid type analysis (Phase 2 step 4) drops the methods no instance
         // can run, the types nothing instantiates and the definitions only those

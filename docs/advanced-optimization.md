@@ -1048,7 +1048,9 @@ and `Prepare` output does not change.
 
 - **API.** `PreparedApplication::inference()` is the `Inference` of the
   program `PreparedApplication::program()` emits, built by
-  `Inference::new(program, ProgramFacts::new(program, top), &closed)`, where
+  `Inference::new(program, ProgramFacts::new(program, top), &closed)` (or
+  `Inference::new_with_slots(..., slots)` when `prepare_owned_application_with_slots`
+  has a multi-slot budget, light-cljs-1100), where
   `closed` is `call_shapes::closed_functions(program, exports)` (since
   light-cljs-229; see "Phase 2 parameter type extension points").
   `value(expr)` is an `Inferred`: a `core_operations::Type` and a `Known`
@@ -1109,10 +1111,16 @@ and `Prepare` output does not change.
   the parameters of functions that read `(js-arguments)`, which aliases them.
 - **Fixed point.** Locals and expressions start at `never` and grow until
   nothing changes. Every transfer is monotone over a finite lattice, and
-  calling `nil` gives `never`, so recursive functions converge. Rounds walk
-  the top-level forms forward and backward in turn: values flow forward from
-  a definition to later reads, and parameter types backward from a call to
-  the earlier definition it calls. After `ROUND_LIMIT` rounds, inference
+  calling `nil` gives `never`, so recursive functions converge. Internally the
+  solver stores values in a 16-byte `CompactInferred` lattice (converting to
+  `Inferred` at the public query boundary), records per-form read dependencies
+  during the initial forward round, and re-walks only dirty forms in
+  alternating reverse/forward rounds (partitioned across `scheduler::map`
+  slices in parallel BSP waves when `slots > 1` and the dirty work exceeds a
+  threshold, falling back to serial rounds past `ROUND_LIMIT / 2` so deep
+  cross-slice chains converge identically). Per-expression `values` population
+  is deferred to a single read-only pass after convergence (batched on
+  `scheduler::map` when `slots > 1`). After `ROUND_LIMIT` rounds, inference
   starts over without parameter types, and if that does not converge either,
   everything is `any`.
 - **Program-wide conditions.** `ProgramFacts` is the scan `Inert` used,
