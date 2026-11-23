@@ -847,7 +847,7 @@ pub fn prepare_owned_application_with_slots(
                 facts.discard_tables();
                 facts.clear_pessimistic();
             }
-            if inlined == 0 && folded == 0 && prev_removed == 0 {
+            if inlined == 0 && folded == 0 {
                 break;
             }
         }
