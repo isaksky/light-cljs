@@ -1017,3 +1017,190 @@ fn parallel_prepare_folding_inlining_and_entry_lookups_match_serial() {
         assert_eq!(out, serial_out, "runtime output mismatch at jobs={jobs}");
     }
 }
+
+/// When the inlining growth budget runs out mid-pass, parallel pre-scans and
+/// candidate measurement must rewrite the exact same earlier multi-use call
+/// sites (and leave the same remaining budget) as `Slots::ONE`.
+#[test]
+fn parallel_inline_growth_budget_preserves_call_order() {
+    use light_cljs::analyzer::{ExprId, ExprKind};
+    use light_cljs::call_shapes;
+    use light_cljs::folding::built_literals;
+    use light_cljs::inference::ProgramFacts;
+    use light_cljs::inlining::inline_with_facts_with_slots;
+    use light_cljs::scheduler::Slots;
+
+    // 160 multi-use pure functions (each called twice so they spend growth
+    // budget) plus enough nodes to cross the 2,048-expr parallel threshold.
+    let mut source = String::new();
+    for i in 0..160 {
+        source.push_str(&format!("(defn m{i} [x] (+ x {i}))\n"));
+    }
+    for i in 0..160 {
+        source.push_str(&format!("(def r{i} [(m{i} 1) (m{i} 2)])\n"));
+    }
+    source.push_str("r0\n");
+
+    let base = program(&source);
+    assert!(
+        base.exprs.len() >= 2048,
+        "fixture must exceed parallel threshold: {}",
+        base.exprs.len()
+    );
+
+    // Record all Call ExprIds before inlining so we can assert the exact set
+    // of rewritten call sites when the budget runs out.
+    let initial_calls: Vec<ExprId> = base
+        .exprs
+        .iter()
+        .enumerate()
+        .filter_map(|(i, e)| matches!(e.kind, ExprKind::Call { .. }).then_some(ExprId(i)))
+        .collect();
+
+    // Each `(+ x i)` body has 4 nodes; budget of 9 allows exactly 2 multi-use
+    // calls (spending 8, leaving 1), forcing the 3rd..320th calls to lose.
+    let tight_budget = 9usize;
+
+    let run = |jobs: usize| {
+        let mut p = base.clone();
+        let mut built = built_literals(&p);
+        let top = match &p.exprs[p.root.0].kind {
+            ExprKind::Do(items) => items.clone(),
+            _ => vec![p.root],
+        };
+        let facts = ProgramFacts::new(&p, &top);
+        let shapes = call_shapes::analyze(&p, None, &[]);
+        let mut growth = tight_budget;
+        let inlined = inline_with_facts_with_slots(
+            &mut p,
+            &shapes,
+            &mut growth,
+            &mut built,
+            &facts,
+            Slots::new(jobs).unwrap(),
+        );
+        let rewritten: Vec<ExprId> = initial_calls
+            .iter()
+            .copied()
+            .filter(|id| !matches!(p.exprs[id.0].kind, ExprKind::Call { .. }))
+            .collect();
+        (inlined, growth, rewritten)
+    };
+
+    let (inlined1, growth1, rewritten1) = run(1);
+    assert!(
+        (1..10).contains(&inlined1) && growth1 < tight_budget,
+        "tight budget should exhaust early: inlined={inlined1}, remaining={growth1}"
+    );
+    assert!(!rewritten1.is_empty());
+
+    for jobs in [2, 4, 8] {
+        let (inlinedn, growthn, rewrittenn) = run(jobs);
+        assert_eq!(inlinedn, inlined1, "inlined count mismatch at jobs={jobs}");
+        assert_eq!(growthn, growth1, "remaining growth mismatch at jobs={jobs}");
+        assert_eq!(
+            rewrittenn, rewritten1,
+            "rewritten call site order mismatch at jobs={jobs}"
+        );
+    }
+}
+
+/// Ignored benchmark parity check: verifies `folded_expressions` and
+/// `inlined_calls` from `PreparedApplication::stats()` match between `--jobs 1`
+/// and `--jobs 8` on both 200k generated projects when `research/shadow-credibility`
+/// is present.
+#[test]
+#[ignore]
+fn generated_200k_simplifier_stats_match_across_jobs() {
+    use light_cljs::analyzer::AnalysisOptions;
+    use light_cljs::compiler::analyze_namespace_entry;
+    use light_cljs::scheduler::Slots;
+    use light_cljs::{MacroHost, prepare_owned_application_with_slots};
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    let projects: &[(&str, &[&str], usize, usize, usize)] = &[
+        (
+            "workload-200k-seed42",
+            &["src", "macros"],
+            10_000_000,
+            1_000_000_000,
+            2_147_483_648,
+        ),
+        (
+            "re-frame-200k-seed42",
+            &[
+                "src",
+                "macros",
+                "lib/light/vendor",
+                "lib/light/compat",
+                "lib/light/re-frame",
+            ],
+            100_000_000,
+            4_000_000_000,
+            4_000_000_000,
+        ),
+    ];
+
+    for &(name, subdirs, expansions, nodes, mem_limit) in projects {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("research/shadow-credibility/projects")
+            .join(name);
+        assert!(root.exists(), "missing 200k project at {}", root.display());
+        let roots: Vec<PathBuf> = subdirs.iter().map(|s| root.join(s)).collect();
+        let mut host = MacroHost::new();
+        host.opaque_packages = true;
+        host.limits.expansions = expansions;
+        host.limits.generated_nodes = nodes;
+        host.evaluator_options.memory_limit = mem_limit;
+        host.evaluator_options.poll_budget = 1_000_000_000_000;
+        host.evaluator_options.timeout = Duration::from_secs(3600);
+        let mut warnings = Vec::new();
+        let base = analyze_namespace_entry(
+            "workload.main",
+            &roots,
+            &mut host,
+            AnalysisOptions::default(),
+            &mut warnings,
+        )
+        .expect("analyze 200k project");
+
+        let p1 = prepare_owned_application_with_slots(
+            base.clone(),
+            ApplicationOptions::new(OptimizationLevel::Advanced),
+            Slots::ONE,
+        );
+        let s1 = p1.stats().clone();
+        drop(p1);
+
+        let p8 = prepare_owned_application_with_slots(
+            base,
+            ApplicationOptions::new(OptimizationLevel::Advanced),
+            Slots::new(8).unwrap(),
+        );
+        let s8 = p8.stats().clone();
+        drop(p8);
+
+        eprintln!(
+            "200K_STATS {name} | j=1: folded={} inlined={} removed={} | j=8: folded={} inlined={} removed={}",
+            s1.folded_expressions,
+            s1.inlined_calls,
+            s1.removed_definitions,
+            s8.folded_expressions,
+            s8.inlined_calls,
+            s8.removed_definitions
+        );
+        assert_eq!(
+            s8.folded_expressions, s1.folded_expressions,
+            "{name} folded_expressions mismatch"
+        );
+        assert_eq!(
+            s8.inlined_calls, s1.inlined_calls,
+            "{name} inlined_calls mismatch"
+        );
+        assert_eq!(
+            s8.removed_definitions, s1.removed_definitions,
+            "{name} removed_definitions mismatch"
+        );
+    }
+}

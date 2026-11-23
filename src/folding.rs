@@ -19,7 +19,7 @@
 //!   scalar or symbol literal, a read of such a global, or a call without
 //!   arguments of a function whose one method takes no parameters and returns
 //!   one, and so is such a call in a later top-level form (light-cljs-984,
-//!   [`constant_globals`]): `(defn ^boolean on? [] enabled?)` and
+//!   [`constant_globals_from_defs`]): `(defn ^boolean on? [] enabled?)` and
 //!   `(def alias? enabled?)` fold where `enabled?` does.
 //! - A `let` binding of a constant is substituted into its reads and dropped,
 //!   and so is a binding nothing reads whose initializer has no effect. This is
@@ -40,13 +40,13 @@
 //!   document): a [`Constant::Collection`] is a literal the constant pool
 //!   may hold, which [`Folder::collection`] also finds behind locals and
 //!   `^:const` globals; [`evaluate`] gives its counts and predicates and
-//!   [`select`] its items, which are copied to the call's place as the same
+//!   [`select_view`] its items, which are copied to the call's place as the same
 //!   pool entries. A map literal whose keys are constants answers its count
 //!   and the lookups of absent keys whatever its values
 //!   ([`Folder::keyed`]), and [`entry_lookups`] lists the lookups of present
 //!   keys, which emission reads from the map's entries. Destructuring a
 //!   constant folds through the `nth` and `get` its expansion calls, and
-//!   [`Folder::sweep`] drops the bindings that leaves unread.
+//!   [`sweep_with_slots`] drops the bindings that leaves unread.
 //!
 //! # Soundness
 //!
@@ -71,7 +71,7 @@
 //! copied ([`Folder::copyable`]).
 //!
 //! A fold against a collection reproduces the runtime's lookups
-//! ([`same_key`], [`lookup`]) and needs core protocols intact, so that only
+//! ([`same_key_view`], [`lookup_view`]) and needs core protocols intact, so that only
 //! the runtime's implementations run. It never folds a call that throws (an
 //! `nth` out of range without a default stays), never decides an equality
 //! the runtime's hashing could decide otherwise, and drops only constants
@@ -97,6 +97,18 @@ const PARALLEL_FORM_THRESHOLD: usize = 16;
 
 /// Target slices per CPU slot for LPT balancing on `scheduler::map`.
 const SLICES_PER_SLOT: usize = 4;
+
+/// Target slice or chunk count for `scheduler::map`, saturating before
+/// bounding by `work_len` so arbitrarily large [`Slots`] budgets never
+/// overflow.
+#[inline]
+pub(crate) fn bounded_slice_count(slots: Slots, work_len: usize) -> usize {
+    slots
+        .get()
+        .saturating_mul(SLICES_PER_SLOT)
+        .min(work_len)
+        .max(1)
+}
 
 /// Compact dense bitset (1 bit per ID, ~62 KiB for 500k expressions) so
 /// parallel workers keep per-slice scratch tiny.
@@ -383,7 +395,7 @@ fn shape_view<S: ExprSource>(src: &S, mut id: ExprId) -> Option<(Shape, &[ExprId
     }
 }
 
-/// The result of a fold that [`select`] computes.
+/// The result of a fold that [`select_view`] computes.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Folded {
     /// This scalar or symbol.
@@ -1092,37 +1104,106 @@ pub fn fold_with_facts(
     fold_with_facts_with_slots(program, built, facts, Slots::ONE)
 }
 
-/// A top-level child of `program.root` (or `program.root` itself if not a `Do`),
-/// paired with the contiguous range of flattened `top` forms it contains.
-#[derive(Clone, Copy)]
-struct RootItem {
-    id: ExprId,
-    top_start: usize,
-    top_end: usize,
+/// Flattened top-level forms and the `Do` spine connecting `program.root` to
+/// them, preserving each form's exact discard role (including trailing empty
+/// `Do` blocks).
+struct TopForms {
+    top: Vec<ExprId>,
+    top_discarded: Vec<bool>,
+    /// Post-order list of `(do_id, discarded)` along the top-level `Do` spine.
+    spine_dos: Vec<(ExprId, bool)>,
+    /// Dense bitset of all `Do` spine expression IDs.
+    spine_bits: BitSet,
+    /// Whether any `Do` node appears more than once in the top-level `Do` spine.
+    spine_shared: bool,
+    root_is_do: bool,
 }
 
-fn collect_root_items(program: &Program) -> (Vec<ExprId>, Vec<RootItem>, bool) {
-    let mut top = Vec::new();
-    if let ExprKind::Do(items) = &program.exprs[program.root.0].kind {
-        let mut root_items = Vec::with_capacity(items.len());
-        for &item in items {
-            let start = top.len();
-            flatten(program, item, &mut top);
-            root_items.push(RootItem {
-                id: item,
-                top_start: start,
-                top_end: top.len(),
-            });
+#[allow(clippy::too_many_arguments)]
+fn walk_top_forms(
+    program: &Program,
+    id: ExprId,
+    discarded: bool,
+    top: &mut Vec<ExprId>,
+    top_discarded: &mut Vec<bool>,
+    spine_dos: &mut Vec<(ExprId, bool)>,
+    spine_bits: &mut BitSet,
+    spine_shared: &mut bool,
+) {
+    if let ExprKind::Do(items) = &program.exprs[id.0].kind {
+        let already = spine_bits.set(id.0);
+        if already {
+            *spine_shared = true;
         }
-        (top, root_items, true)
+        let last = items.len().saturating_sub(1);
+        for (index, &item) in items.iter().enumerate() {
+            walk_top_forms(
+                program,
+                item,
+                discarded || index != last,
+                top,
+                top_discarded,
+                spine_dos,
+                spine_bits,
+                spine_shared,
+            );
+        }
+        if !already {
+            spine_dos.push((id, discarded));
+        }
     } else {
-        flatten(program, program.root, &mut top);
-        let root_items = vec![RootItem {
-            id: program.root,
-            top_start: 0,
-            top_end: top.len(),
-        }];
-        (top, root_items, false)
+        top.push(id);
+        top_discarded.push(discarded);
+    }
+}
+
+fn collect_top_forms(program: &Program) -> TopForms {
+    let count = program.exprs.len();
+    let root_is_do = matches!(program.exprs[program.root.0].kind, ExprKind::Do(_));
+    let mut top = Vec::new();
+    let mut top_discarded = Vec::new();
+    let mut spine_dos = Vec::new();
+    let mut spine_bits = BitSet::new(count);
+    let mut spine_shared = false;
+    walk_top_forms(
+        program,
+        program.root,
+        false,
+        &mut top,
+        &mut top_discarded,
+        &mut spine_dos,
+        &mut spine_bits,
+        &mut spine_shared,
+    );
+    TopForms {
+        top,
+        top_discarded,
+        spine_dos,
+        spine_bits,
+        spine_shared,
+        root_is_do,
+    }
+}
+
+/// Exact first top-level position of each expression, walking `top` in order
+/// with its own visited state independent of the top-level `Do` spine.
+fn recompute_first_positions(program: &Program, top: &[ExprId], position: &mut [u32]) {
+    position.fill(NOWHERE);
+    let mut pending = Vec::new();
+    for (index, &form) in top.iter().enumerate() {
+        let pos = index as u32;
+        if position[form.0] == NOWHERE {
+            position[form.0] = pos;
+            pending.push(form);
+            while let Some(id) = pending.pop() {
+                visit_children(&program.exprs[id.0].kind, |child| {
+                    if position[child.0] == NOWHERE {
+                        position[child.0] = pos;
+                        pending.push(child);
+                    }
+                });
+            }
+        }
     }
 }
 
@@ -1138,7 +1219,7 @@ struct ReachScanSlice {
 fn scan_reach_slice(
     program: &Program,
     top: &[ExprId],
-    root_items: &[RootItem],
+    spine_bits: &BitSet,
     range: std::ops::Range<usize>,
 ) -> ReachScanSlice {
     let count = program.exprs.len();
@@ -1152,80 +1233,49 @@ fn scan_reach_slice(
     let mut inter_item_shared = false;
     let mut pending: Vec<(ExprId, u32)> = Vec::new();
 
-    for item in &root_items[range] {
+    for (offset, &form) in top[range.clone()].iter().enumerate() {
+        let top_idx = range.start + offset;
         let mut weight = 0u64;
-        // Walk intermediate `Do` spine (if `item.id` is a nested `Do`) to count
-        // parents and mark reached without assigning `position` to spine `Do`s.
-        if item.top_end - item.top_start != 1 || top[item.top_start] != item.id {
-            let mut spine = vec![item.id];
-            while let Some(d) = spine.pop() {
-                let d32 = d.0 as u32;
-                if in_item.get(d.0) {
-                    let p = parent_overflow.entry(d32).or_insert(1);
-                    *p = p.saturating_add(1);
-                    continue;
-                }
-                if reached.get(d.0) {
-                    inter_item_shared = true;
-                    let p = parent_overflow.entry(d32).or_insert(1);
-                    *p = p.saturating_add(1);
-                    continue;
-                }
-                if let ExprKind::Do(children) = &program.exprs[d.0].kind {
-                    reached.set(d.0);
-                    in_item.set(d.0);
-                    item_nodes.push(d32);
-                    weight += 1;
-                    for &c in children {
-                        if matches!(program.exprs[c.0].kind, ExprKind::Do(_)) {
-                            spine.push(c);
-                        }
-                    }
-                }
-            }
+        let form32 = form.0 as u32;
+        if reached.get(form.0) {
+            inter_item_shared = true;
+            let p = parent_overflow.entry(form32).or_insert(1);
+            *p = p.saturating_add(1);
+            item_weights.push(1);
+            continue;
         }
-        for top_idx in item.top_start..item.top_end {
-            let form = top[top_idx];
-            let form32 = form.0 as u32;
-            if in_item.get(form.0) {
-                let p = parent_overflow.entry(form32).or_insert(1);
-                *p = p.saturating_add(1);
-                continue;
+        reached.set(form.0);
+        in_item.set(form.0);
+        item_nodes.push(form32);
+        positions.push((form32, top_idx as u32));
+        pending.push((form, top_idx as u32));
+        while let Some((id, pos)) = pending.pop() {
+            weight += 1;
+            if let ExprKind::Local(local) = program.exprs[id.0].kind {
+                local_reads.push(local.0 as u32);
             }
-            if reached.get(form.0) {
-                inter_item_shared = true;
-                let p = parent_overflow.entry(form32).or_insert(1);
-                *p = p.saturating_add(1);
-                continue;
-            }
-            reached.set(form.0);
-            in_item.set(form.0);
-            item_nodes.push(form32);
-            positions.push((form32, top_idx as u32));
-            pending.push((form, top_idx as u32));
-            while let Some((id, pos)) = pending.pop() {
-                weight += 1;
-                if let ExprKind::Local(local) = program.exprs[id.0].kind {
-                    local_reads.push(local.0 as u32);
+            visit_children(&program.exprs[id.0].kind, |child| {
+                if matches!(program.exprs[child.0].kind, ExprKind::Do(_)) && spine_bits.get(child.0)
+                {
+                    inter_item_shared = true;
+                    return;
                 }
-                visit_children(&program.exprs[id.0].kind, |child| {
-                    let c32 = child.0 as u32;
-                    if in_item.get(child.0) {
-                        let p = parent_overflow.entry(c32).or_insert(1);
-                        *p = p.saturating_add(1);
-                    } else if reached.get(child.0) {
-                        inter_item_shared = true;
-                        let p = parent_overflow.entry(c32).or_insert(1);
-                        *p = p.saturating_add(1);
-                    } else {
-                        reached.set(child.0);
-                        in_item.set(child.0);
-                        item_nodes.push(c32);
-                        positions.push((c32, pos));
-                        pending.push((child, pos));
-                    }
-                });
-            }
+                let c32 = child.0 as u32;
+                if in_item.get(child.0) {
+                    let p = parent_overflow.entry(c32).or_insert(1);
+                    *p = p.saturating_add(1);
+                } else if reached.get(child.0) {
+                    inter_item_shared = true;
+                    let p = parent_overflow.entry(c32).or_insert(1);
+                    *p = p.saturating_add(1);
+                } else {
+                    reached.set(child.0);
+                    in_item.set(child.0);
+                    item_nodes.push(c32);
+                    positions.push((c32, pos));
+                    pending.push((child, pos));
+                }
+            });
         }
         for node in item_nodes.drain(..) {
             in_item.clear(node as usize);
@@ -1249,23 +1299,21 @@ struct FoldReachData {
     reads: Vec<u32>,
     item_weights: Vec<u64>,
     can_parallel_fold: bool,
+    saw_spine_edge: bool,
 }
 
-fn scan_fold_reachability_serial(
-    program: &Program,
-    top: &[ExprId],
-    root_items_len: usize,
-) -> FoldReachData {
+fn scan_fold_reachability_serial(program: &Program, forms: &TopForms) -> FoldReachData {
     let count = program.exprs.len();
     let mut position = vec![NOWHERE; count];
     let mut parents = vec![0u8; count];
     let mut reads = vec![0u32; program.locals.len()];
     let mut reached = BitSet::new(count);
+    let mut saw_spine_edge = forms.spine_shared;
 
     // Single fused reachability pass: mark intermediate `Do` spine from
     // `program.root`, then DFS each flattened `top` form once to fill
     // `position`, `parents`, and `reads`.
-    if let ExprKind::Do(_) = &program.exprs[program.root.0].kind {
+    if forms.root_is_do {
         let mut spine = vec![program.root];
         reached.set(program.root.0);
         while let Some(d) = spine.pop() {
@@ -1281,7 +1329,7 @@ fn scan_fold_reachability_serial(
     }
 
     let mut pending = Vec::new();
-    for (index, &form) in top.iter().enumerate() {
+    for (index, &form) in forms.top.iter().enumerate() {
         let pos = index as u32;
         if position[form.0] == NOWHERE {
             position[form.0] = pos;
@@ -1293,6 +1341,11 @@ fn scan_fold_reachability_serial(
                     }
                     visit_children(&program.exprs[id.0].kind, |child| {
                         parents[child.0] = parents[child.0].saturating_add(1);
+                        if matches!(program.exprs[child.0].kind, ExprKind::Do(_))
+                            && forms.spine_bits.get(child.0)
+                        {
+                            saw_spine_edge = true;
+                        }
                         if position[child.0] == NOWHERE {
                             position[child.0] = pos;
                         }
@@ -1305,46 +1358,38 @@ fn scan_fold_reachability_serial(
         }
     }
 
+    if saw_spine_edge {
+        recompute_first_positions(program, &forms.top, &mut position);
+    }
+
     FoldReachData {
         position,
         parents,
         reads,
-        item_weights: vec![1; root_items_len],
+        item_weights: vec![1; forms.top.len()],
         can_parallel_fold: false,
+        saw_spine_edge,
     }
 }
 
-fn scan_fold_reachability(
-    program: &Program,
-    top: &[ExprId],
-    root_items: &[RootItem],
-    root_is_do: bool,
-    slots: Slots,
-) -> FoldReachData {
+fn scan_fold_reachability(program: &Program, forms: &TopForms, slots: Slots) -> FoldReachData {
     let count = program.exprs.len();
-    let use_parallel = root_is_do
+    let use_parallel = forms.root_is_do
+        && !forms.spine_shared
         && slots.get() > 1
         && count >= PARALLEL_EXPR_THRESHOLD
-        && root_items.len() >= PARALLEL_FORM_THRESHOLD;
+        && forms.top.len() >= PARALLEL_FORM_THRESHOLD;
     if !use_parallel {
-        return scan_fold_reachability_serial(program, top, root_items.len());
+        return scan_fold_reachability_serial(program, forms);
     }
 
-    let target_slices = (slots.get() * SLICES_PER_SLOT).min(root_items.len());
-    let est_weights: Vec<u64> = root_items
-        .iter()
-        .map(|item| (item.top_end - item.top_start).max(1) as u64)
-        .collect();
+    let target_slices = bounded_slice_count(slots, forms.top.len());
+    let est_weights: Vec<u64> = vec![1; forms.top.len()];
     let ranges = partition_slices(&est_weights, target_slices);
-    let jobs: Vec<(u64, std::ops::Range<usize>)> = ranges
-        .into_iter()
-        .map(|r| {
-            let w: u64 = est_weights[r.clone()].iter().sum();
-            (w, r)
-        })
-        .collect();
+    let jobs: Vec<(u64, std::ops::Range<usize>)> =
+        ranges.into_iter().map(|r| (r.len() as u64, r)).collect();
     let slices = scheduler::map(slots, jobs, |range| {
-        scan_reach_slice(program, top, root_items, range)
+        scan_reach_slice(program, &forms.top, &forms.spine_bits, range)
     });
 
     let mut global_reached = BitSet::new(count);
@@ -1359,14 +1404,14 @@ fn scan_fold_reachability(
     }
     if any_overlap {
         drop(slices);
-        return scan_fold_reachability_serial(program, top, root_items.len());
+        return scan_fold_reachability_serial(program, forms);
     }
     drop(global_reached);
 
     let mut position = vec![NOWHERE; count];
     let mut parents = vec![0u8; count];
     let mut reads = vec![0u32; program.locals.len()];
-    let mut item_weights = Vec::with_capacity(root_items.len());
+    let mut item_weights = Vec::with_capacity(forms.top.len());
     for slice in slices {
         for (id, pos) in slice.positions {
             let idx = id as usize;
@@ -1382,10 +1427,10 @@ fn scan_fold_reachability(
         }
         item_weights.extend(slice.item_weights);
     }
-    // Root's direct children have parent count at least 1 (including nested Do spines).
-    for item in root_items {
-        if parents[item.id.0] == 0 {
-            parents[item.id.0] = 1;
+    // Every non-root `Do` node along the unshared top-level spine has one parent.
+    for &(do_id, _) in &forms.spine_dos {
+        if do_id != program.root && parents[do_id.0] == 0 {
+            parents[do_id.0] = 1;
         }
     }
     FoldReachData {
@@ -1394,6 +1439,7 @@ fn scan_fold_reachability(
         reads,
         item_weights,
         can_parallel_fold: true,
+        saw_spine_edge: false,
     }
 }
 
@@ -1538,7 +1584,7 @@ fn scan_fold_arena(program: &Program, position: &[u32], slots: Slots) -> FoldAre
     }
 
     if slots.get() > 1 && count >= PARALLEL_EXPR_THRESHOLD {
-        let num_chunks = (slots.get() * SLICES_PER_SLOT).min(count);
+        let num_chunks = bounded_slice_count(slots, count);
         let chunk_size = count.div_ceil(num_chunks);
         let jobs: Vec<(u64, std::ops::Range<usize>)> = (0..count)
             .step_by(chunk_size)
@@ -1750,7 +1796,7 @@ pub(crate) fn sole_definitions_and_fenced_with_slots(
     let mut fenced = BitSet::new(count);
 
     if slots.get() > 1 && count >= PARALLEL_EXPR_THRESHOLD {
-        let num_chunks = (slots.get() * SLICES_PER_SLOT).min(count);
+        let num_chunks = bounded_slice_count(slots, count);
         let chunk_size = count.div_ceil(num_chunks);
         let jobs: Vec<(u64, std::ops::Range<usize>)> = (0..count)
             .step_by(chunk_size)
@@ -1866,6 +1912,77 @@ fn is_pure_literal_tree(program: &Program, root: ExprId) -> bool {
     true
 }
 
+/// Apply the exact `ExprKind::Do` simplification rules of [`Folder::visit`]
+/// bottom-up across the unshared top-level `Do` spine once all flattened
+/// top-level forms have been folded.
+fn fold_do_spine(
+    program: &mut Program,
+    built: &mut [bool],
+    spine_dos: &[(ExprId, bool)],
+    kept: &BitSet,
+    fenced: &BitSet,
+    parents: &[u8],
+) -> usize {
+    let mut folded = 0usize;
+    for &(do_id, discarded) in spine_dos {
+        if kept.get(do_id.0) {
+            continue;
+        }
+        let items_len = match &program.exprs[do_id.0].kind {
+            ExprKind::Do(items) if !items.is_empty() => items.len(),
+            _ => continue,
+        };
+        let do_discarded = discarded && parents[do_id.0] <= 1;
+        let last = items_len - 1;
+        let mut forms: Option<Vec<ExprId>> = None;
+        let mut kept_single: Option<ExprId> = None;
+        let mut kept_count = 0usize;
+        {
+            let ExprKind::Do(items) = &program.exprs[do_id.0].kind else {
+                unreachable!();
+            };
+            for (index, &item) in items.iter().enumerate() {
+                let keep_item = (index == last && !do_discarded)
+                    || kept.get(item.0)
+                    || !effect_free(program, &program.exprs[item.0].kind);
+                if keep_item {
+                    kept_count += 1;
+                    kept_single = Some(item);
+                    if let Some(ref mut f) = forms {
+                        f.push(item);
+                    }
+                } else if forms.is_none() {
+                    let mut f = Vec::with_capacity(items_len - 1);
+                    f.extend_from_slice(&items[..index]);
+                    forms = Some(f);
+                }
+            }
+        }
+        folded += items_len - kept_count;
+        if kept_count == 0 {
+            program.exprs[do_id.0].kind = ExprKind::Nil;
+            continue;
+        }
+        if kept_count == 1
+            && let Some(form) = kept_single
+            && !scoped(program, form)
+            && !kept.get(form.0)
+            && !(fenced.get(do_id.0) && constant_like(program, &program.exprs[form.0].kind))
+        {
+            if do_id.0 < built.len() {
+                built[do_id.0] = built.get(form.0).copied().unwrap_or(false);
+            }
+            program.exprs[do_id.0].kind = program.exprs[form.0].kind.clone();
+            folded += 1;
+            continue;
+        }
+        if let Some(forms) = forms {
+            program.exprs[do_id.0].kind = ExprKind::Do(forms);
+        }
+    }
+    folded
+}
+
 /// Fold `program` in place using precomputed [`ProgramFacts`] and `slots` CPU
 /// work slots (`--jobs N`), returning how many expressions were rewritten.
 pub fn fold_with_facts_with_slots(
@@ -1874,7 +1991,7 @@ pub fn fold_with_facts_with_slots(
     facts: &ProgramFacts,
     slots: Slots,
 ) -> usize {
-    let (top, root_items, root_is_do) = collect_root_items(program);
+    let forms = collect_top_forms(program);
     let count = program.exprs.len();
     built.resize(count, false);
 
@@ -1884,7 +2001,17 @@ pub fn fold_with_facts_with_slots(
         reads,
         item_weights,
         can_parallel_fold,
-    } = scan_fold_reachability(program, &top, &root_items, root_is_do, slots);
+        saw_spine_edge,
+    } = scan_fold_reachability(program, &forms, slots);
+
+    let TopForms {
+        top,
+        top_discarded,
+        spine_dos,
+        spine_bits: _,
+        spine_shared,
+        root_is_do,
+    } = forms;
 
     let FoldArenaFacts {
         definitions,
@@ -1940,7 +2067,7 @@ pub fn fold_with_facts_with_slots(
             {
                 continue;
             }
-            let discarded = (at as usize) + 1 != top.len();
+            let discarded = top_discarded[at as usize];
             let shared = FoldContext {
                 program: &*program,
                 facts,
@@ -1985,7 +2112,7 @@ pub fn fold_with_facts_with_slots(
 
         let base_exprs = program.exprs.len();
         let base_strings = program.strings.len();
-        let target_slices = (slots.get() * SLICES_PER_SLOT).min(root_items.len());
+        let target_slices = bounded_slice_count(slots, top.len());
         let ranges = partition_slices(&item_weights, target_slices);
         let jobs: Vec<(u64, std::ops::Range<usize>)> = ranges
             .into_iter()
@@ -1994,7 +2121,6 @@ pub fn fold_with_facts_with_slots(
                 (w, r)
             })
             .collect();
-        let last_root_item = root_items.len().saturating_sub(1);
 
         let deltas: Vec<FoldDelta> = {
             let shared = FoldContext {
@@ -2016,8 +2142,8 @@ pub fn fold_with_facts_with_slots(
             };
             scheduler::map(slots, jobs, |range| {
                 let mut folder = Folder::new(&shared);
-                for index in range {
-                    folder.visit(root_items[index].id, index != last_root_item);
+                for (&form, &discarded) in top[range.clone()].iter().zip(&top_discarded[range]) {
+                    folder.visit(form, discarded);
                 }
                 folder.into_delta()
             })
@@ -2045,17 +2171,20 @@ pub fn fold_with_facts_with_slots(
         let final_len = program.exprs.len();
         kept.resize(final_len);
         fenced.resize(final_len);
-    } else if root_is_do && !root_items.is_empty() {
-        // Serial path over a `Do` root: flush deltas every small batch of
-        // top-level items while preserving a single `visited` BitSet so peak
-        // delta memory stays tiny and `delta_map` stays cache-hot.
+        parents.resize(final_len, 1);
+        total_folded += fold_do_spine(program, built, &spine_dos, &kept, &fenced, &parents);
+    } else if root_is_do && !spine_shared && !saw_spine_edge && !top.is_empty() {
+        // Serial path over an unshared `Do` spine: flush deltas every small
+        // batch of flattened forms while preserving a single `visited` BitSet
+        // so peak delta memory stays tiny and `delta_map` stays cache-hot.
         const FLUSH_BATCH: usize = 64;
-        let last_root_item = root_items.len().saturating_sub(1);
         let empty_pre = HashSet::new();
         let mut visited = BitSet::new(program.exprs.len());
-        visited.set(program.root.0);
-        for batch_start in (0..root_items.len()).step_by(FLUSH_BATCH) {
-            let batch_end = (batch_start + FLUSH_BATCH).min(root_items.len());
+        for &(do_id, _) in &spine_dos {
+            visited.set(do_id.0);
+        }
+        for batch_start in (0..top.len()).step_by(FLUSH_BATCH) {
+            let batch_end = (batch_start + FLUSH_BATCH).min(top.len());
             let base_exprs = program.exprs.len();
             let base_strings = program.strings.len();
             visited.resize(base_exprs);
@@ -2078,8 +2207,11 @@ pub fn fold_with_facts_with_slots(
                     pre_folded: &empty_pre,
                 };
                 let mut folder = Folder::with_visited(&shared, visited);
-                for index in batch_start..batch_end {
-                    folder.visit(root_items[index].id, index != last_root_item);
+                for (&form, &discarded) in top[batch_start..batch_end]
+                    .iter()
+                    .zip(&top_discarded[batch_start..batch_end])
+                {
+                    folder.visit(form, discarded);
                 }
                 folder.into_delta_and_visited()
             };
@@ -2096,6 +2228,7 @@ pub fn fold_with_facts_with_slots(
                 fenced.resize(new_len);
             }
         }
+        total_folded += fold_do_spine(program, built, &spine_dos, &kept, &fenced, &parents);
     } else {
         let base_exprs = program.exprs.len();
         let base_strings = program.strings.len();
@@ -2129,6 +2262,18 @@ pub fn fold_with_facts_with_slots(
         kept.resize(final_len);
         fenced.resize(final_len);
     }
+
+    drop(position);
+    drop(parents);
+    drop(reads);
+    drop(globals);
+    drop(collections);
+    drop(returns);
+    drop(assignable);
+    drop(item_weights);
+    drop(top);
+    drop(top_discarded);
+    drop(spine_dos);
 
     if total_folded > 0 || saw_shared_unread_let {
         total_folded += sweep_with_slots(program, built, &pinned, &kept, &fenced, slots);
@@ -2175,43 +2320,41 @@ fn reachable_reads_bits(
 /// (without allocating or counting local reads).
 fn reachable_bitset_with_slots(program: &Program, slots: Slots) -> BitSet {
     let count = program.exprs.len();
-    if let ExprKind::Do(items) = &program.exprs[program.root.0].kind
-        && slots.get() > 1
-        && count >= PARALLEL_EXPR_THRESHOLD
-        && items.len() >= PARALLEL_FORM_THRESHOLD
-    {
-        let target_slices = (slots.get() * SLICES_PER_SLOT).min(items.len());
-        let chunk_size = items.len().div_ceil(target_slices);
-        let jobs: Vec<(u64, std::ops::Range<usize>)> = (0..items.len())
-            .step_by(chunk_size)
-            .map(|start| {
-                let end = (start + chunk_size).min(items.len());
-                ((end - start) as u64, start..end)
-            })
-            .collect();
-        let bitsets = scheduler::map(slots, jobs, |range| {
-            let mut local = BitSet::new(count);
-            let mut pending = Vec::new();
-            for &item in &items[range] {
-                if !local.set(item.0) {
-                    pending.push(item);
+    if slots.get() > 1 && count >= PARALLEL_EXPR_THRESHOLD {
+        let forms = collect_top_forms(program);
+        if forms.root_is_do && forms.top.len() >= PARALLEL_FORM_THRESHOLD {
+            let target_slices = bounded_slice_count(slots, forms.top.len());
+            let chunk_size = forms.top.len().div_ceil(target_slices);
+            let jobs: Vec<(u64, std::ops::Range<usize>)> = (0..forms.top.len())
+                .step_by(chunk_size)
+                .map(|start| {
+                    let end = (start + chunk_size).min(forms.top.len());
+                    ((end - start) as u64, start..end)
+                })
+                .collect();
+            let bitsets = scheduler::map(slots, jobs, |range| {
+                let mut local = BitSet::new(count);
+                let mut pending = Vec::new();
+                for &item in &forms.top[range] {
+                    if !local.set(item.0) {
+                        pending.push(item);
+                    }
+                    while let Some(id) = pending.pop() {
+                        visit_children(&program.exprs[id.0].kind, |child| {
+                            if !local.set(child.0) {
+                                pending.push(child);
+                            }
+                        });
+                    }
                 }
-                while let Some(id) = pending.pop() {
-                    visit_children(&program.exprs[id.0].kind, |child| {
-                        if !local.set(child.0) {
-                            pending.push(child);
-                        }
-                    });
-                }
+                local
+            });
+            let mut reached = forms.spine_bits;
+            for bs in bitsets {
+                reached.or_assign(&bs);
             }
-            local
-        });
-        let mut reached = BitSet::new(count);
-        reached.set(program.root.0);
-        for bs in bitsets {
-            reached.or_assign(&bs);
+            return reached;
         }
-        return reached;
     }
 
     let mut reached = BitSet::new(count);
@@ -2231,67 +2374,71 @@ fn reachable_bitset_with_slots(program: &Program, slots: Slots) -> BitSet {
 /// [`sweep_with_slots`].
 fn reachable_reads_and_lets_with_slots(program: &Program, slots: Slots) -> (Vec<u32>, Vec<usize>) {
     let count = program.exprs.len();
-    if let ExprKind::Do(items) = &program.exprs[program.root.0].kind
-        && slots.get() > 1
-        && count >= PARALLEL_EXPR_THRESHOLD
-        && items.len() >= PARALLEL_FORM_THRESHOLD
-    {
-        let target_slices = (slots.get() * SLICES_PER_SLOT).min(items.len());
-        let chunk_size = items.len().div_ceil(target_slices);
-        let jobs: Vec<(u64, std::ops::Range<usize>)> = (0..items.len())
-            .step_by(chunk_size)
-            .map(|start| {
-                let end = (start + chunk_size).min(items.len());
-                ((end - start) as u64, start..end)
-            })
-            .collect();
-        let slices = scheduler::map(slots, jobs, |range| {
-            let mut reached = BitSet::new(count);
-            let mut local_reads = Vec::new();
-            let mut lets = Vec::new();
-            let mut pending = Vec::new();
-            for &item in &items[range] {
-                if !reached.set(item.0) {
-                    pending.push(item);
-                }
-                while let Some(id) = pending.pop() {
-                    match program.exprs[id.0].kind {
-                        ExprKind::Local(local) => local_reads.push(local),
-                        ExprKind::Let { .. } => lets.push(id.0),
-                        _ => (),
+    if slots.get() > 1 && count >= PARALLEL_EXPR_THRESHOLD {
+        let forms = collect_top_forms(program);
+        if forms.root_is_do && !forms.spine_shared && forms.top.len() >= PARALLEL_FORM_THRESHOLD {
+            let target_slices = bounded_slice_count(slots, forms.top.len());
+            let chunk_size = forms.top.len().div_ceil(target_slices);
+            let jobs: Vec<(u64, std::ops::Range<usize>)> = (0..forms.top.len())
+                .step_by(chunk_size)
+                .map(|start| {
+                    let end = (start + chunk_size).min(forms.top.len());
+                    ((end - start) as u64, start..end)
+                })
+                .collect();
+            let slices = scheduler::map(slots, jobs, |range| {
+                let mut reached = BitSet::new(count);
+                let mut local_reads = Vec::new();
+                let mut lets = Vec::new();
+                let mut pending = Vec::new();
+                let mut saw_spine = false;
+                for &item in &forms.top[range] {
+                    if !reached.set(item.0) {
+                        pending.push(item);
                     }
-                    visit_children(&program.exprs[id.0].kind, |child| {
-                        if !reached.set(child.0) {
-                            pending.push(child);
+                    while let Some(id) = pending.pop() {
+                        match program.exprs[id.0].kind {
+                            ExprKind::Local(local) => local_reads.push(local),
+                            ExprKind::Let { .. } => lets.push(id.0),
+                            _ => (),
                         }
-                    });
+                        visit_children(&program.exprs[id.0].kind, |child| {
+                            if matches!(program.exprs[child.0].kind, ExprKind::Do(_))
+                                && forms.spine_bits.get(child.0)
+                            {
+                                saw_spine = true;
+                            }
+                            if !reached.set(child.0) {
+                                pending.push(child);
+                            }
+                        });
+                    }
                 }
-            }
-            (reached, local_reads, lets)
-        });
+                (reached, local_reads, lets, saw_spine)
+            });
 
-        let mut global_reached = BitSet::new(count);
-        global_reached.set(program.root.0);
-        let mut overlaps = false;
-        for (reached, _, _) in &slices {
-            if global_reached.intersects(reached) {
-                overlaps = true;
-                break;
-            }
-            global_reached.or_assign(reached);
-        }
-        if !overlaps {
-            let mut reads = vec![0u32; program.locals.len()];
-            let mut lets = Vec::new();
-            for (_, local_reads, slice_lets) in slices {
-                for local in local_reads {
-                    reads[local.0] = reads[local.0].saturating_add(1);
+            let mut global_reached = forms.spine_bits;
+            let mut overlaps = false;
+            for (reached, _, _, saw_spine) in &slices {
+                if *saw_spine || global_reached.intersects(reached) {
+                    overlaps = true;
+                    break;
                 }
-                lets.extend(slice_lets);
+                global_reached.or_assign(reached);
             }
-            return (reads, lets);
+            if !overlaps {
+                let mut reads = vec![0u32; program.locals.len()];
+                let mut lets = Vec::new();
+                for (_, local_reads, slice_lets, _) in slices {
+                    for local in local_reads {
+                        reads[local.0] = reads[local.0].saturating_add(1);
+                    }
+                    lets.extend(slice_lets);
+                }
+                return (reads, lets);
+            }
+            drop(slices);
         }
-        drop(slices);
     }
 
     let mut reached = BitSet::new(count);
@@ -2378,10 +2525,10 @@ fn sweep_with_slots(
 /// (which a found key does not evaluate to). A local is bound by `let`
 /// (never assigned: no type field, `js*` hole or `set!` target), possibly
 /// through other locals, to a `Map` literal; the literal's keys are constants
-/// (at most one of them a collection) that no two may be `=` ([`distinct`]), so the
+/// (at most one of them a collection) that no two may be `=` ([`distinct_view`]), so the
 /// literal's builder (`mapFromArray`, `mapFromArrays` or a key shape) makes
 /// one entry per key, in order; the lookup key is `=` to exactly one of them
-/// and provably unequal to the others ([`same_key`]). Needs core protocols
+/// and provably unequal to the others ([`same_key_view`]). Needs core protocols
 /// intact and `get` not replaced, so that the runtime's own `lookup` runs.
 pub fn entry_lookups(program: &Program, facts: &ProgramFacts) -> HashMap<ExprId, usize> {
     entry_lookups_with_slots(program, facts, Slots::ONE)
@@ -2437,7 +2584,7 @@ pub fn entry_lookups_with_slots(
             }
             (assignable_locals, bound_entries)
         };
-        let num_chunks = (slots.get() * SLICES_PER_SLOT).min(count);
+        let num_chunks = bounded_slice_count(slots, count);
         let chunk_size = count.div_ceil(num_chunks);
         let jobs: Vec<(u64, std::ops::Range<usize>)> = (0..count)
             .step_by(chunk_size)
@@ -2562,7 +2709,7 @@ pub fn entry_lookups_with_slots(
     };
 
     if slots.get() > 1 && count >= PARALLEL_EXPR_THRESHOLD {
-        let num_chunks = (slots.get() * SLICES_PER_SLOT).min(count);
+        let num_chunks = bounded_slice_count(slots, count);
         let chunk_size = count.div_ceil(num_chunks);
         let jobs: Vec<(u64, std::ops::Range<usize>)> = (0..count)
             .step_by(chunk_size)
@@ -3202,12 +3349,16 @@ struct Folder<'p> {
     new_positions: Vec<u32>,
     new_strings: Vec<Vec<u16>>,
     built_overrides: HashMap<ExprId, bool>,
-    /// Lexically scoped constant/alias substitutions for active `Let` bindings.
-    locals: Vec<(LocalId, ExprKind)>,
+    /// Lexically scoped constant/alias substitutions for active `Let` bindings,
+    /// indexed by `LocalId` with a rollback log for O(1) lookups in wide `let`s.
+    locals: HashMap<u32, ExprKind>,
+    local_undo: Vec<(u32, Option<ExprKind>)>,
     /// Lexically scoped locals bound to truthy literals (`fn` / collections).
-    truths: Vec<LocalId>,
+    truths: HashSet<u32>,
+    truth_undo: Vec<u32>,
     /// Lexically scoped locals bound to collections or chains of such locals.
-    bound: Vec<(LocalId, ExprId)>,
+    bound: HashMap<u32, ExprId>,
+    bound_undo: Vec<(u32, Option<ExprId>)>,
     /// Sparse constant-pool classification memoization.
     classes: HashMap<ExprId, ConstantClass>,
     folded: usize,
@@ -3238,9 +3389,12 @@ impl<'p> Folder<'p> {
             new_positions: Vec::new(),
             new_strings: Vec::new(),
             built_overrides: HashMap::new(),
-            locals: Vec::new(),
-            truths: Vec::new(),
-            bound: Vec::new(),
+            locals: HashMap::new(),
+            local_undo: Vec::new(),
+            truths: HashSet::new(),
+            truth_undo: Vec::new(),
+            bound: HashMap::new(),
+            bound_undo: Vec::new(),
             classes: HashMap::new(),
             folded: 0,
             saw_shared_unread_let: false,
@@ -3358,15 +3512,63 @@ impl<'p> Folder<'p> {
     }
 
     #[inline]
+    fn push_local(&mut self, local: LocalId, kind: ExprKind) {
+        let key = local.0 as u32;
+        let prev = self.locals.insert(key, kind);
+        self.local_undo.push((key, prev));
+    }
+
+    #[inline]
+    fn push_bound(&mut self, local: LocalId, init: ExprId) {
+        let key = local.0 as u32;
+        let prev = self.bound.insert(key, init);
+        self.bound_undo.push((key, prev));
+    }
+
+    #[inline]
+    fn push_truth(&mut self, local: LocalId) {
+        let key = local.0 as u32;
+        if self.truths.insert(key) {
+            self.truth_undo.push(key);
+        }
+    }
+
+    #[inline]
+    fn rollback_scopes(&mut self, saved_locals: usize, saved_truths: usize, saved_bound: usize) {
+        while self.local_undo.len() > saved_locals {
+            let (key, prev) = self.local_undo.pop().expect("saved scope bound");
+            match prev {
+                Some(kind) => {
+                    self.locals.insert(key, kind);
+                }
+                None => {
+                    self.locals.remove(&key);
+                }
+            }
+        }
+        while self.truth_undo.len() > saved_truths {
+            let key = self.truth_undo.pop().expect("saved scope bound");
+            self.truths.remove(&key);
+        }
+        while self.bound_undo.len() > saved_bound {
+            let (key, prev) = self.bound_undo.pop().expect("saved scope bound");
+            match prev {
+                Some(init) => {
+                    self.bound.insert(key, init);
+                }
+                None => {
+                    self.bound.remove(&key);
+                }
+            }
+        }
+    }
+
+    #[inline]
     fn local_value(&self, local: LocalId) -> Option<&ExprKind> {
         if self.locals.is_empty() {
             return None;
         }
-        self.locals
-            .iter()
-            .rev()
-            .find(|(l, _)| *l == local)
-            .map(|(_, kind)| kind)
+        self.locals.get(&(local.0 as u32))
     }
 
     #[inline]
@@ -3374,16 +3576,12 @@ impl<'p> Folder<'p> {
         if self.bound.is_empty() {
             return None;
         }
-        self.bound
-            .iter()
-            .rev()
-            .find(|(l, _)| *l == local)
-            .map(|(_, init)| *init)
+        self.bound.get(&(local.0 as u32)).copied()
     }
 
     #[inline]
     fn is_truthy_local(&self, local: LocalId) -> bool {
-        !self.truths.is_empty() && self.truths.contains(&local)
+        !self.truths.is_empty() && self.truths.contains(&(local.0 as u32))
     }
 
     fn is_bound_candidate(&self, init: ExprId) -> bool {
@@ -3456,9 +3654,9 @@ impl<'p> Folder<'p> {
                 // Substitution rewrites the reads while it visits the body, so
                 // a body another parent already visited keeps its bindings.
                 let shared = body.0 < self.base_exprs && self.visited.get(body.0);
-                let saved_locals = self.locals.len();
-                let saved_truths = self.truths.len();
-                let saved_bound = self.bound.len();
+                let saved_locals = self.local_undo.len();
+                let saved_truths = self.truth_undo.len();
+                let saved_bound = self.bound_undo.len();
                 let mut kept: Option<Vec<(LocalId, ExprId)>> = None;
                 for (b_idx, &(local, init)) in bindings.iter().enumerate() {
                     self.visit(init, false);
@@ -3466,7 +3664,7 @@ impl<'p> Folder<'p> {
                     // is bound to.
                     if !shared && !self.ctx.assignable.get(local.0) && self.is_bound_candidate(init)
                     {
-                        self.bound.push((local, init));
+                        self.push_bound(local, init);
                     }
                     // Another local bound to a collection literal whose value
                     // cannot change: the aliases a destructuring binds, such
@@ -3492,7 +3690,7 @@ impl<'p> Folder<'p> {
                     {
                         // A constant or such an alias is read in its place.
                         let val = self.kind(init).clone();
-                        self.locals.push((local, val));
+                        self.push_local(local, val);
                         self.folded += 1;
                     } else if self.ctx.reads[local.0] == 0
                         && effect_free_view(&self.view(), self.kind(init))
@@ -3502,7 +3700,7 @@ impl<'p> Folder<'p> {
                         // A literal collection or `fn` is true wherever the
                         // local is tested.
                         if literal_truth_view(&self.view(), self.kind(init)) == Some(true) {
-                            self.truths.push(local);
+                            self.push_truth(local);
                         }
                         keep_binding = true;
                     }
@@ -3518,9 +3716,7 @@ impl<'p> Folder<'p> {
                 }
                 let body_discarded = discarded && self.ctx.parents[id.0] <= 1;
                 self.visit(body, body_discarded);
-                self.locals.truncate(saved_locals);
-                self.truths.truncate(saved_truths);
-                self.bound.truncate(saved_bound);
+                self.rollback_scopes(saved_locals, saved_truths, saved_bound);
                 let kept_empty = match &kept {
                     Some(k) => k.is_empty(),
                     None => bindings.is_empty(),
@@ -4841,5 +5037,180 @@ mod tests {
         let f4 = ProgramFacts::new_light(&p4, &t4);
         let folded4 = fold_with_facts_with_slots(&mut p4, &mut b4, &f4, Slots::new(4).unwrap());
         assert_eq!(folded4, folded1);
+    }
+
+    #[test]
+    fn shared_do_does_not_fold_global_before_definition() {
+        use super::{PARALLEL_EXPR_THRESHOLD, fold_with_facts_with_slots};
+        use crate::scheduler::Slots;
+
+        let build = |extra_forms: usize| {
+            let mut source = String::from(
+                "(defn sink [x] x)\n\
+                 (def g 1)\n\
+                 (sink (do g))\n\
+                 (do g)\n",
+            );
+            for i in 0..extra_forms {
+                source.push_str(&format!(
+                    "(defn pad{i} [x] (let [a (+ 1 2) b (+ {i} 3)] (+ a b x)))\n"
+                ));
+            }
+            let mut program = crate::analyze(&source, &crate::parse(&source).unwrap()).unwrap();
+            let ExprKind::Do(root_items) = program.exprs[program.root.0].kind.clone() else {
+                panic!("expected Do root");
+            };
+            // root_items: [0: defn sink, 1: def g 1, 2: (sink (do g)), 3: (do g), ...]
+            let sink_call = root_items[2];
+            let def_g = root_items[1];
+            let shared_do = root_items[3];
+            // Point the sink call's argument to the exact same `Do([Global(g)])`
+            // expression that also sits in the top-level `Do` spine AFTER `def g`,
+            // and reorder to `[defn sink, sink(shared_do), def g, shared_do, ...]`.
+            if let ExprKind::Call { ref mut args, .. } = program.exprs[sink_call.0].kind {
+                args[0] = shared_do;
+            } else {
+                panic!("expected sink call");
+            }
+            let mut reordered = Vec::with_capacity(root_items.len());
+            reordered.push(root_items[0]);
+            reordered.push(sink_call);
+            reordered.push(def_g);
+            reordered.push(shared_do);
+            reordered.extend_from_slice(&root_items[4..]);
+            program.exprs[program.root.0].kind = ExprKind::Do(reordered);
+
+            let g_read = match &program.exprs[shared_do.0].kind {
+                ExprKind::Do(items) => items[0],
+                other => panic!("expected shared Do, got {other:?}"),
+            };
+            assert!(matches!(program.exprs[g_read.0].kind, ExprKind::Global(_)));
+            (program, g_read)
+        };
+
+        for (extra, n) in [(0, 1), (160, 1), (160, 4)] {
+            let (mut program, g_read) = build(extra);
+            if extra > 0 {
+                assert!(program.exprs.len() >= PARALLEL_EXPR_THRESHOLD);
+            }
+            let mut built = built_literals(&program);
+            let mut top = Vec::new();
+            flatten(&program, program.root, &mut top);
+            let facts = ProgramFacts::new_light(&program, &top);
+            let slots = Slots::new(n).unwrap();
+            fold_with_facts_with_slots(&mut program, &mut built, &facts, slots);
+            assert!(
+                matches!(program.exprs[g_read.0].kind, ExprKind::Global(_)),
+                "shared top-level Do must not substitute global before definition (extra={extra}, slots={n}): {:?}",
+                program.exprs[g_read.0].kind
+            );
+        }
+    }
+
+    #[test]
+    fn fold_slice_count_handles_large_slot_budget() {
+        use super::{PARALLEL_EXPR_THRESHOLD, bounded_slice_count, fold_with_facts_with_slots};
+        use crate::scheduler::Slots;
+
+        let huge_slots = Slots::new(1usize << (usize::BITS - 2)).unwrap();
+        assert_eq!(bounded_slice_count(huge_slots, 2048), 2048);
+        assert_eq!(bounded_slice_count(huge_slots, 1), 1);
+
+        let mut source = String::from("[");
+        for i in 0..2048 {
+            source.push_str(&format!("{i} "));
+        }
+        source.push(']');
+        let mut program = crate::analyze(&source, &crate::parse(&source).unwrap()).unwrap();
+        assert!(program.exprs.len() >= PARALLEL_EXPR_THRESHOLD);
+        let mut built = built_literals(&program);
+        let mut top = Vec::new();
+        flatten(&program, program.root, &mut top);
+        let facts = ProgramFacts::new_light(&program, &top);
+        let folded = fold_with_facts_with_slots(&mut program, &mut built, &facts, huge_slots);
+        assert_eq!(folded, 0);
+    }
+
+    #[test]
+    fn parallel_fold_slices_large_namespace() {
+        use super::{
+            PARALLEL_EXPR_THRESHOLD, PARALLEL_FORM_THRESHOLD, collect_top_forms,
+            fold_with_facts_with_slots, scan_fold_reachability,
+        };
+        use crate::analyzer::Expr;
+        use crate::scheduler::Slots;
+
+        let mut source = String::new();
+        for i in 0..160 {
+            source.push_str(&format!(
+                "(defn nsfn{i} [x] (let [a (+ 1 2) b (+ {i} 3)] (+ a b x)))\n"
+            ));
+        }
+        source.push_str("(nsfn0 1)\n");
+        let mut base = crate::analyze(&source, &crate::parse(&source).unwrap()).unwrap();
+        assert!(base.exprs.len() >= PARALLEL_EXPR_THRESHOLD);
+
+        // Wrap all top-level forms inside a single namespace `Do` child of `program.root`,
+        // mirroring a single-namespace entry build (`program.root = Do([ns_do])`).
+        let inner_root = base.root;
+        let wrapper = Expr {
+            kind: ExprKind::Do(vec![inner_root]),
+            span: base.exprs[inner_root.0].span.clone(),
+            context: base.exprs[inner_root.0].context,
+            source_index: base.exprs[inner_root.0].source_index,
+        };
+        let new_root = ExprId(base.exprs.len());
+        base.exprs.push(wrapper);
+        base.root = new_root;
+
+        let slots4 = Slots::new(4).unwrap();
+        let forms = collect_top_forms(&base);
+        assert!(forms.top.len() >= PARALLEL_FORM_THRESHOLD);
+        let reach = scan_fold_reachability(&base, &forms, slots4);
+        assert!(
+            reach.can_parallel_fold,
+            "single large namespace should enter parallel fold path"
+        );
+
+        let mut p1 = base.clone();
+        let mut b1 = built_literals(&p1);
+        let f1 = ProgramFacts::new_light(&p1, &forms.top);
+        let folded1 = fold_with_facts_with_slots(&mut p1, &mut b1, &f1, Slots::ONE);
+
+        let mut p4 = base;
+        let mut b4 = built_literals(&p4);
+        let f4 = ProgramFacts::new_light(&p4, &forms.top);
+        let folded4 = fold_with_facts_with_slots(&mut p4, &mut b4, &f4, slots4);
+
+        assert_eq!(folded4, folded1);
+        assert!(folded1 >= 160 * 3);
+    }
+
+    #[test]
+    fn fold_wide_let_scaling() {
+        use super::fold_with_facts_with_slots;
+        use crate::scheduler::Slots;
+
+        let mut source = String::from("(let [");
+        let n = 1500;
+        for i in 0..n {
+            source.push_str(&format!("v{i} {i} "));
+        }
+        source.push_str("] [");
+        for i in 0..n {
+            source.push_str(&format!("v{i} "));
+        }
+        source.push_str("])");
+
+        let mut program = crate::analyze(&source, &crate::parse(&source).unwrap()).unwrap();
+        let mut built = built_literals(&program);
+        let mut top = Vec::new();
+        flatten(&program, program.root, &mut top);
+        let facts = ProgramFacts::new_light(&program, &top);
+        let folded = fold_with_facts_with_slots(&mut program, &mut built, &facts, Slots::ONE);
+        assert!(
+            folded >= n * 2,
+            "expected every binding and read to fold: {folded}"
+        );
     }
 }

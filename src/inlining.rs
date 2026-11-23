@@ -28,7 +28,7 @@
 //! # What is inlined
 //!
 //! The callee is a global whose sole definition
-//! ([`crate::folding::sole_definitions`]) is a direct top-level `def`, and the
+//! ([`crate::folding::sole_definitions_and_fenced_with_slots`]) is a direct top-level `def`, and the
 //! call runs after it: in a later top-level form, or inside the function
 //! itself. Its argument count matches the method's fixed parameters (a
 //! variadic method may receive more, when its body never reads the rest
@@ -65,7 +65,8 @@ use crate::analyzer::{Expr, ExprId, ExprKind, LocalBinding, LocalId, Program};
 use crate::call_shapes::CallShapes;
 use crate::core_operations::{Calls, Purity};
 use crate::folding::{
-    BitSet, NOWHERE, constant_like, partition_slices, sole_definitions_and_fenced_with_slots,
+    BitSet, NOWHERE, bounded_slice_count, constant_like, partition_slices,
+    sole_definitions_and_fenced_with_slots,
 };
 use crate::inference::ProgramFacts;
 use crate::program_fragment::visit_children;
@@ -77,9 +78,6 @@ const PARALLEL_EXPR_THRESHOLD: usize = 2048;
 
 /// Minimum top-level form count before slicing the inlining pre-walk.
 const PARALLEL_FORM_THRESHOLD: usize = 16;
-
-/// Target slices per CPU slot for load balancing on `scheduler::map`.
-const SLICES_PER_SLOT: usize = 4;
 
 /// The most expressions a body inlined at every call may have.
 pub const INLINE_BUDGET: usize = 10;
@@ -215,6 +213,7 @@ struct InlineScanSlice {
     fn_owners: Vec<(u32, u32)>,
     def_positions: Vec<(u32, u32)>,
     fact_sites: Vec<u32>,
+    has_shared: bool,
 }
 
 fn record_assign_site(program: &Program, target: ExprId, sites: &mut Vec<u32>) {
@@ -242,13 +241,17 @@ fn scan_inline_slice(
     let mut fact_sites = Vec::new();
     let mut roles = Vec::new();
     let mut pending: Vec<(ExprId, bool, bool, u32)> = Vec::new();
+    let mut has_shared = false;
 
     for index in range {
         let form = top[index];
         if visited.get(form.0) {
+            has_shared = true;
             continue;
         }
-        pushed.set(form.0);
+        if pushed.set(form.0) {
+            multi_parents.insert(form.0 as u32);
+        }
         pending.push((form, false, true, NO_OWNER));
         while let Some((id, expanded, is_block, cur_owner)) = pending.pop() {
             if expanded {
@@ -265,6 +268,7 @@ fn scan_inline_slice(
                 continue;
             }
             if visited.set(id.0) {
+                has_shared = true;
                 continue;
             }
             match &program.exprs[id.0].kind {
@@ -303,6 +307,7 @@ fn scan_inline_slice(
             for &(child, role) in roles.iter().rev() {
                 if pushed.set(child.0) {
                     multi_parents.insert(child.0 as u32);
+                    has_shared = true;
                 }
                 if !visited.get(child.0) {
                     pending.push((child, false, role, inner));
@@ -312,6 +317,7 @@ fn scan_inline_slice(
     }
 
     if !multi_parents.is_empty() {
+        has_shared = true;
         for call in &mut direct_calls {
             if multi_parents.contains(&call.id) {
                 call.flags |= FLAG_MULTI_PARENT;
@@ -325,7 +331,104 @@ fn scan_inline_slice(
         fn_owners,
         def_positions,
         fact_sites,
+        has_shared,
     }
+}
+
+/// Read-only eligibility check for one direct call site, shared by parallel
+/// pre-filtering workers and the serial commit loop. Returns:
+/// - `Err(true)` if the call cannot be ruled out statically (its callee is
+///   itself a `Call` that an earlier inline could rewrite to a `Global`), so
+///   the serial commit loop must recheck it;
+/// - `Err(false)` if the call is definitely ineligible;
+/// - `Ok((function, method_idx, body, limit))` if the call passes all
+///   immutable checks and needs body measurement.
+#[allow(clippy::too_many_arguments)]
+fn check_call_eligibility(
+    program: &Program,
+    shapes: &CallShapes,
+    top: &[ExprId],
+    definitions: &[Option<ExprId>],
+    def_positions: &HashMap<u32, u32>,
+    fn_owners: &HashMap<u32, u32>,
+    sites: &HashMap<u32, u32>,
+    call: DirectCallInfo,
+) -> Result<(u32, u32, ExprId, usize), bool> {
+    if call.multi_parent() {
+        return Err(false);
+    }
+    let call_id = ExprId(call.id as usize);
+    let Some(direct) = shapes.call(call_id) else {
+        return Err(false);
+    };
+    let ExprKind::Call { callee, args } = &program.exprs[call_id.0].kind else {
+        return Err(false);
+    };
+    let ExprKind::Global(global) = program.exprs[callee.0].kind else {
+        // An inner call in callee position may inline into a `Global` before
+        // this outer call is visited in post-order.
+        return Err(matches!(
+            program.exprs[callee.0].kind,
+            ExprKind::Call { .. }
+        ));
+    };
+    if program.globals[global.0].boolean_tag {
+        return Err(false);
+    }
+    let Some(definition) = definitions[global.0] else {
+        return Err(false);
+    };
+    let defined = def_positions
+        .get(&(definition.0 as u32))
+        .copied()
+        .unwrap_or(NOWHERE);
+    if top.get(defined as usize) != Some(&definition)
+        || call.top_index == NOWHERE
+        || call.top_index < defined
+    {
+        return Err(false);
+    }
+    if call.top_index == defined {
+        let mut inside = false;
+        let mut function = call.owner;
+        while function != NO_OWNER {
+            if function == direct.function.0 as u32 {
+                inside = true;
+                break;
+            }
+            function = fn_owners.get(&function).copied().unwrap_or(NO_OWNER);
+        }
+        if !inside {
+            return Err(false);
+        }
+    }
+    let ExprKind::Fn { methods, .. } = &program.exprs[direct.function.0].kind else {
+        return Err(false);
+    };
+    let method = &methods[direct.method];
+    let fixed = method.params.len();
+    if method.asynchronous
+        || !method.captures.is_empty()
+        || program.recur_targets[method.target.0].used
+        || (method.rest.is_none() && args.len() != fixed)
+        || args.len() < fixed
+    {
+        return Err(false);
+    }
+    let closed = shapes.closed(global);
+    let call_count = sites.get(&(direct.function.0 as u32)).copied().unwrap_or(0) as usize;
+    let single = closed && call_count == 1;
+    let limit = if single {
+        SINGLE_USE_LIMIT
+    } else {
+        INLINE_BUDGET
+    };
+    Ok((
+        direct.function.0 as u32,
+        direct.method as u32,
+        method.body,
+        limit,
+    ))
 }
 
 /// [`inline_with_facts_checked`] running read-only pre-scans on `slots` CPU
@@ -348,9 +451,9 @@ pub(crate) fn inline_with_facts_checked_with_slots(
     // Walk each top-level form in order, children first, recording each
     // direct call's single-parent status, top-level form index, innermost `fn`
     // owner, and whether emission writes it in block/return position.
-    let (global_reached, direct_calls, fn_owners, def_positions, fact_sites, cross_slice_shared) =
+    let (global_reached, direct_calls, fn_owners, def_positions, fact_sites, has_shared) =
         if use_parallel {
-            let target_slices = (slots.get() * SLICES_PER_SLOT).min(top.len());
+            let target_slices = bounded_slice_count(slots, top.len());
             let weights: Vec<u64> = vec![1; top.len()];
             let ranges = partition_slices(&weights, target_slices);
             let jobs: Vec<(u64, std::ops::Range<usize>)> =
@@ -385,6 +488,7 @@ pub(crate) fn inline_with_facts_checked_with_slots(
                     true,
                 )
             } else {
+                let any_shared = slice_results.iter().any(|s| s.has_shared);
                 let total_calls: usize = slice_results.iter().map(|s| s.direct_calls.len()).sum();
                 let total_fns: usize = slice_results.iter().map(|s| s.fn_owners.len()).sum();
                 let total_defs: usize = slice_results.iter().map(|s| s.def_positions.len()).sum();
@@ -404,7 +508,7 @@ pub(crate) fn inline_with_facts_checked_with_slots(
                     fn_owners,
                     def_positions,
                     fact_sites,
-                    false,
+                    any_shared,
                 )
             }
         } else {
@@ -418,7 +522,7 @@ pub(crate) fn inline_with_facts_checked_with_slots(
                 fn_owners,
                 def_positions,
                 fact_sites,
-                false,
+                single.has_shared,
             )
         };
 
@@ -434,89 +538,94 @@ pub(crate) fn inline_with_facts_checked_with_slots(
         }
     }
 
-    // Pre-measure distinct eligible `(function, method)` candidates in parallel
-    // when running on multiple slots. For `Slots::ONE`, skip upfront batch
-    // allocation and measure lazily during the commit loop (caching only
-    // multi-call small bodies so single-use bodies are never retained).
-    let mut measured_bodies: HashMap<(u32, u32), (u32, Option<Body>)> =
-        if slots.get() > 1 && !cross_slice_shared {
-            let mut candidate_seen: HashSet<(u32, u32)> = HashSet::new();
-            let mut candidates: Vec<(u32, u32, ExprId, usize)> = Vec::new();
-            for call in &direct_calls {
-                if call.multi_parent() {
-                    continue;
-                }
-                let call_id = ExprId(call.id as usize);
-                let Some(direct) = shapes.call(call_id) else {
-                    continue;
-                };
-                let ExprKind::Call { callee, args } = &program.exprs[call_id.0].kind else {
-                    continue;
-                };
-                let ExprKind::Global(global) = program.exprs[callee.0].kind else {
-                    continue;
-                };
-                if program.globals[global.0].boolean_tag {
-                    continue;
-                }
-                let Some(definition) = definitions[global.0] else {
-                    continue;
-                };
-                let defined = def_positions
-                    .get(&(definition.0 as u32))
-                    .copied()
-                    .unwrap_or(NOWHERE);
-                if top.get(defined as usize) != Some(&definition)
-                    || call.top_index == NOWHERE
-                    || call.top_index < defined
-                {
-                    continue;
-                }
-                if call.top_index == defined {
-                    let mut inside = false;
-                    let mut function = call.owner;
-                    while function != NO_OWNER {
-                        if function == direct.function.0 as u32 {
-                            inside = true;
-                            break;
+    // Run read-only eligibility filtering and candidate body measurement on
+    // workers when above the parallel threshold and free of shared subgraphs.
+    // For `Slots::ONE`, small programs, or shared graphs, keep eligibility and
+    // measurement inline/lazy during the serial commit loop.
+    type MeasuredBodies = HashMap<(u32, u32), (u32, Option<Body>)>;
+    let (commit_calls, mut measured_bodies): (Vec<DirectCallInfo>, MeasuredBodies) =
+        if use_parallel && !has_shared {
+            let (eligible_calls, candidates) = if direct_calls.len() >= PARALLEL_FORM_THRESHOLD {
+                let num_chunks = bounded_slice_count(slots, direct_calls.len());
+                let chunk_size = direct_calls.len().div_ceil(num_chunks);
+                let jobs: Vec<(u64, std::ops::Range<usize>)> = (0..direct_calls.len())
+                    .step_by(chunk_size)
+                    .map(|start| {
+                        let end = (start + chunk_size).min(direct_calls.len());
+                        ((end - start) as u64, start..end)
+                    })
+                    .collect();
+                let filtered_chunks = scheduler::map(slots, jobs, |range| {
+                    let mut kept_calls = Vec::new();
+                    let mut local_seen: HashSet<(u32, u32)> = HashSet::new();
+                    let mut local_candidates: Vec<(u32, u32, ExprId, usize)> = Vec::new();
+                    for &call in &direct_calls[range] {
+                        match check_call_eligibility(
+                            program,
+                            shapes,
+                            &top,
+                            &definitions,
+                            &def_positions,
+                            &fn_owners,
+                            &sites,
+                            call,
+                        ) {
+                            Ok((func, method_idx, body, limit)) => {
+                                kept_calls.push(call);
+                                if local_seen.insert((func, method_idx)) {
+                                    local_candidates.push((func, method_idx, body, limit));
+                                }
+                            }
+                            Err(true) => kept_calls.push(call),
+                            Err(false) => (),
                         }
-                        function = fn_owners.get(&function).copied().unwrap_or(NO_OWNER);
                     }
-                    if !inside {
-                        continue;
+                    (kept_calls, local_candidates)
+                });
+                drop(direct_calls);
+                let total_kept: usize = filtered_chunks.iter().map(|(c, _)| c.len()).sum();
+                let mut eligible_calls = Vec::with_capacity(total_kept);
+                let mut candidate_seen: HashSet<(u32, u32)> = HashSet::new();
+                let mut candidates: Vec<(u32, u32, ExprId, usize)> = Vec::new();
+                for (kept_calls, local_candidates) in filtered_chunks {
+                    eligible_calls.extend(kept_calls);
+                    for cand in local_candidates {
+                        if candidate_seen.insert((cand.0, cand.1)) {
+                            candidates.push(cand);
+                        }
                     }
                 }
-                let ExprKind::Fn { methods, .. } = &program.exprs[direct.function.0].kind else {
-                    continue;
-                };
-                let method = &methods[direct.method];
-                let fixed = method.params.len();
-                if method.asynchronous
-                    || !method.captures.is_empty()
-                    || program.recur_targets[method.target.0].used
-                    || (method.rest.is_none() && args.len() != fixed)
-                    || args.len() < fixed
-                {
-                    continue;
+                (eligible_calls, candidates)
+            } else {
+                let mut eligible_calls = Vec::with_capacity(direct_calls.len());
+                let mut candidate_seen: HashSet<(u32, u32)> = HashSet::new();
+                let mut candidates: Vec<(u32, u32, ExprId, usize)> = Vec::new();
+                for call in direct_calls {
+                    match check_call_eligibility(
+                        program,
+                        shapes,
+                        &top,
+                        &definitions,
+                        &def_positions,
+                        &fn_owners,
+                        &sites,
+                        call,
+                    ) {
+                        Ok((func, method_idx, body, limit)) => {
+                            eligible_calls.push(call);
+                            if candidate_seen.insert((func, method_idx)) {
+                                candidates.push((func, method_idx, body, limit));
+                            }
+                        }
+                        Err(true) => eligible_calls.push(call),
+                        Err(false) => (),
+                    }
                 }
-                let key = (direct.function.0 as u32, direct.method as u32);
-                if candidate_seen.insert(key) {
-                    let closed = shapes.closed(global);
-                    let call_count =
-                        sites.get(&(direct.function.0 as u32)).copied().unwrap_or(0) as usize;
-                    let single = closed && call_count == 1;
-                    let limit = if single {
-                        SINGLE_USE_LIMIT
-                    } else {
-                        INLINE_BUDGET
-                    };
-                    candidates.push((key.0, key.1, method.body, limit));
-                }
-            }
-            drop(candidate_seen);
+                (eligible_calls, candidates)
+            };
 
-            if candidates.len() >= PARALLEL_FORM_THRESHOLD {
-                let target_slices = (slots.get() * SLICES_PER_SLOT).min(candidates.len());
+            let measured = if candidates.len() >= PARALLEL_FORM_THRESHOLD {
+                let target_slices = bounded_slice_count(slots, candidates.len());
                 let weights: Vec<u64> = candidates.iter().map(|c| c.3 as u64).collect();
                 let ranges = partition_slices(&weights, target_slices);
                 let jobs: Vec<(u64, std::ops::Range<usize>)> = ranges
@@ -551,9 +660,10 @@ pub(crate) fn inline_with_facts_checked_with_slots(
                     );
                 }
                 map
-            }
+            };
+            (eligible_calls, measured)
         } else {
-            HashMap::new()
+            (direct_calls, HashMap::new())
         };
 
     // Version counter per enclosing `fn`: bumped whenever an inlined call
@@ -563,7 +673,7 @@ pub(crate) fn inline_with_facts_checked_with_slots(
 
     let mut inlined = 0;
     let mut invalidated_facts = false;
-    for call_info in direct_calls {
+    for call_info in commit_calls {
         let call = ExprId(call_info.id as usize);
         let Some(direct) = shapes.call(call) else {
             continue;
@@ -635,7 +745,7 @@ pub(crate) fn inline_with_facts_checked_with_slots(
         let func32 = direct.function.0 as u32;
         let key = (func32, direct.method as u32);
         let cur_ver = fn_versions.get(&func32).copied().unwrap_or(0);
-        let body = if cross_slice_shared {
+        let body = if has_shared {
             measure(program, facts, method.body, limit)
         } else if single {
             // Single-use body is needed at most once: take ownership and free immediately.
@@ -1267,5 +1377,192 @@ impl Copier<'_> {
         self.built.resize(self.program.exprs.len(), false);
         self.built[copy.0] = mark;
         copy
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::call_shapes;
+    use crate::folding::built_literals;
+
+    #[test]
+    fn inline_remeasures_same_slice_shared_body() {
+        let mut source = String::from(
+            "(defn leaf [] 7)\n\
+             (defn a [] [(leaf)])\n\
+             (defn b [] [(leaf)])\n\
+             (defn use-all [] [(a) (b) (b)])\n",
+        );
+        for i in 0..160 {
+            source.push_str(&format!(
+                "(defn pad{i} [x] (+ x {i} 1 2 3))\n(pad{i} {i})\n"
+            ));
+        }
+        source.push_str("(use-all)\n");
+        let mut base = crate::analyze(&source, &crate::parse(&source).unwrap()).unwrap();
+        assert!(base.exprs.len() >= PARALLEL_EXPR_THRESHOLD);
+
+        // Give `a` and `b` the exact same method body ExprId (within the same
+        // early slice) so inlining `leaf` while visiting `a` mutates `b`'s body.
+        let ExprKind::Do(ref items) = base.exprs[base.root.0].kind else {
+            panic!("expected Do root");
+        };
+        let def_a = items[1];
+        let def_b = items[2];
+        let unwrap_fn = |program: &Program, def_id: ExprId| -> ExprId {
+            let mut cur = match program.exprs[def_id.0].kind {
+                ExprKind::Def {
+                    init: Some(init), ..
+                } => init,
+                ref other => panic!("expected Def, got {other:?}"),
+            };
+            while let ExprKind::Do(ref inner) = program.exprs[cur.0].kind {
+                cur = *inner.last().expect("non-empty Do");
+            }
+            assert!(
+                matches!(program.exprs[cur.0].kind, ExprKind::Fn { .. }),
+                "expected Fn, got {:?}",
+                program.exprs[cur.0].kind
+            );
+            cur
+        };
+        let a_fn = unwrap_fn(&base, def_a);
+        let b_fn = unwrap_fn(&base, def_b);
+        let a_body = match &base.exprs[a_fn.0].kind {
+            ExprKind::Fn { methods, .. } => methods[0].body,
+            _ => unreachable!(),
+        };
+        if let ExprKind::Fn {
+            ref mut methods, ..
+        } = base.exprs[b_fn.0].kind
+        {
+            methods[0].body = a_body;
+        }
+
+        let run = |n: usize| {
+            let mut program = base.clone();
+            let mut built = built_literals(&program);
+            let mut top = Vec::new();
+            flatten(&program, program.root, &mut top);
+            let facts = ProgramFacts::new_light(&program, &top);
+            let shapes = call_shapes::analyze(&program, None, &[]);
+            let mut growth = growth_budget(program.exprs.len());
+            let inlined = inline_with_facts_with_slots(
+                &mut program,
+                &shapes,
+                &mut growth,
+                &mut built,
+                &facts,
+                Slots::new(n).unwrap(),
+            );
+            (inlined, growth)
+        };
+
+        let (inlined1, growth1) = run(1);
+        for n in [2, 4, 8] {
+            let (inlinedn, growthn) = run(n);
+            assert_eq!(inlinedn, inlined1, "inlined count mismatch at slots={n}");
+            assert_eq!(growthn, growth1, "remaining growth mismatch at slots={n}");
+        }
+    }
+
+    #[test]
+    fn small_inline_program_keeps_measurement_inline() {
+        let mut source = String::new();
+        for i in 0..16 {
+            source.push_str(&format!("(defn f{i} [x] (+ x {i}))\n"));
+        }
+        source.push('[');
+        for i in 0..16 {
+            source.push_str(&format!("(f{i} {i}) "));
+        }
+        source.push(']');
+        let base = crate::analyze(&source, &crate::parse(&source).unwrap()).unwrap();
+        assert!(
+            base.exprs.len() < PARALLEL_EXPR_THRESHOLD,
+            "fixture must stay below parallel expr threshold: {}",
+            base.exprs.len()
+        );
+
+        let run = |slots: Slots| {
+            let mut program = base.clone();
+            let mut built = built_literals(&program);
+            let mut top = Vec::new();
+            flatten(&program, program.root, &mut top);
+            let facts = ProgramFacts::new_light(&program, &top);
+            let shapes = call_shapes::analyze(&program, None, &[]);
+            let mut growth = growth_budget(program.exprs.len());
+            let inlined = inline_with_facts_with_slots(
+                &mut program,
+                &shapes,
+                &mut growth,
+                &mut built,
+                &facts,
+                slots,
+            );
+            (inlined, growth)
+        };
+
+        assert_eq!(run(Slots::new(8).unwrap()), run(Slots::ONE));
+    }
+
+    #[test]
+    fn parallel_inline_eligibility_matches_serial() {
+        let mut source = String::from(
+            "(declare later)\n\
+             (defn before-use [] (later 1))\n\
+             (defn later [x] (+ x 1))\n\
+             (defn escaped [x] (+ x 2))\n\
+             (def esc-ref escaped)\n\
+             (defn fixed2 [x y] (+ x y))\n\
+             (defn with-cap [x] (let [f (fn [y] (+ x y))] (f 3)))\n",
+        );
+        for i in 0..160 {
+            source.push_str(&format!(
+                "(defn ok{i} [x] (+ x {i}))\n\
+                 (defn caller{i} [x] [(ok{i} x) (ok{i} 1) (escaped x) (fixed2 x 1) (with-cap x) (later x)])\n"
+            ));
+        }
+        source.push_str("[(before-use) esc-ref ");
+        for i in 0..160 {
+            source.push_str(&format!("(caller{i} {i}) "));
+        }
+        source.push(']');
+
+        let base = crate::analyze(&source, &crate::parse(&source).unwrap()).unwrap();
+        assert!(base.exprs.len() >= PARALLEL_EXPR_THRESHOLD);
+
+        let run = |slots: Slots| {
+            let mut program = base.clone();
+            let mut built = built_literals(&program);
+            let mut top = Vec::new();
+            flatten(&program, program.root, &mut top);
+            let facts = ProgramFacts::new_light(&program, &top);
+            let shapes = call_shapes::analyze(&program, None, &[]);
+            let mut growth = growth_budget(program.exprs.len());
+            let inlined = inline_with_facts_with_slots(
+                &mut program,
+                &shapes,
+                &mut growth,
+                &mut built,
+                &facts,
+                slots,
+            );
+            (inlined, growth)
+        };
+
+        let expected = run(Slots::ONE);
+        assert!(
+            expected.0 > 160,
+            "expected eligible calls to inline: {expected:?}"
+        );
+        for n in [2, 4, 8] {
+            assert_eq!(
+                run(Slots::new(n).unwrap()),
+                expected,
+                "eligibility mismatch at slots={n}"
+            );
+        }
     }
 }
