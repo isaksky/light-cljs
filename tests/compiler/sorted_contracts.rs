@@ -314,12 +314,56 @@ fn compare_fast_paths_preserve_protocol_extensions_and_edge_cases() {
         (pr-str [(compare :a :b) (compare 'a 'b) (compare "a" "b") (compare #js {} #js {})])"#),
         "\"[9 9 9 9]\"\n"
     );
+
+    // Mixed string-left comparisons keep the existing error path without
+    // stringifying named operands (including a Keyword. whose spelling is a JS Symbol).
+    assert_eq!(
+        run(r#"
+        (let [err-msg (fn [f] (try (f) :ok (catch :default e (.-message e))))
+              sym-kw (Keyword. nil "y" js/Symbol.iterator nil)]
+          (pr-str
+            [(err-msg #(compare "x" :y))
+             (err-msg #(compare "x" sym-kw))
+             (err-msg #(compare "x" 'y))
+             (err-msg #(compare "x" 1))]))"#),
+        "\"[\\\"Cannot compare different types\\\" \\\"Cannot compare different types\\\" \\\"Cannot compare different types\\\" \\\"Cannot compare x to 1\\\"]\"\n"
+    );
+
+    // Re-entrant namespace comparison that installs a string IComparable
+    // extension must be observed by the subsequent name comparison.
+    assert_eq!(
+        run(r#"
+        (deftype NsBox [tag]
+          IComparable
+          (-compare [_ _]
+            (extend-type string IComparable (-compare [_ _] 42))
+            0))
+        (let [k1 (Keyword. (NsBox. 1) "a" "x/a" nil)
+              k2 (Keyword. (NsBox. 2) "b" "y/b" nil)]
+          (pr-str [(compare k1 k2)]))"#),
+        "\"[42]\"\n"
+    );
+
+    // Getter-backed -compare slot on a named value uses the first read.
+    assert_eq!(
+        run(r#"
+        (extend-type Atom ICounted (-count [_] 1))
+        (let [k (keyword "a")
+              reads (atom 0)
+              slot (js* "'cljs$core$IComparable$_compare$arity$2$LKEY'")]
+          (js/Object.defineProperty k slot
+            #js {:configurable true
+                 :get (fn [] (when (= 1 (swap! reads inc)) (fn [_ _] 42)))})
+          (pr-str [(compare k :b) @reads]))"#),
+        "\"[42 1]\"\n"
+    );
 }
 
 /// light-cljs-1086: `into` onto a sorted map and `conj` of map entries onto a
 /// sorted map preserve metadata and respect `extend-type`/`specify!` overrides
 /// on `MapEntry` (`IIndexed`), `PersistentTreeMap` (`IAssociative`,
-/// `IEditableCollection`), and re-entrant comparators.
+/// `IEditableCollection`, `IMeta`), getter-backed slots, and constructor values
+/// whose native editability depends on instance fields.
 #[test]
 fn sorted_map_into_and_conj_respect_protocol_overrides() {
     let run = |source: &str| super::optimization::json_at_every_level(source);
@@ -338,6 +382,59 @@ fn sorted_map_into_and_conj_respect_protocol_overrides() {
              (vec (keys m2)) (get m2 :b) (meta m2)
              (vec (keys m3)) (count @side)]))"#),
         "\"[[:a :b :c] [1 2 3] {:tag :meta} [:a :b :c :d] 20 {:tag :meta} [:a :b :c] 2]\"\n"
+    );
+
+    // specify! IMeta on a sorted map preserves mapConjSlot's outer preserveMeta call.
+    assert_eq!(
+        run(r#"
+        (let [calls (atom 0)
+              target (specify! (sorted-map)
+                       IMeta
+                       (-meta [_] {:calls (swap! calls inc)}))
+              res (into target {:a 1})]
+          (pr-str [@calls (meta res) (get res :a)]))"#),
+        "\"[2 {:calls 2} 1]\"\n"
+    );
+
+    // Getter-backed -nth on a real MapEntry and -assoc on a sorted map are each
+    // read once in dispatch order (-nth 0, -nth 1, then -assoc).
+    assert_eq!(
+        run(r#"
+        (extend-type Atom ICounted (-count [_] 1))
+        (let [order (atom [])
+              nth-slot (js* "'cljs$core$IIndexed$_nth$arity$2$LKEY'")
+              assoc-slot (js* "'cljs$core$IAssociative$_assoc$arity$3$LKEY'")
+              orig-nth (aget (.-prototype MapEntry) nth-slot)
+              orig-assoc (aget (.-prototype PersistentTreeMap) assoc-slot)
+              entry (first {:a 1})
+              nth-reads (atom 0)
+              m (sorted-map)
+              assoc-reads (atom 0)]
+          (js/Object.defineProperty entry nth-slot
+            #js {:configurable true
+                 :get (fn []
+                        (let [n (swap! nth-reads inc)]
+                          (swap! order conj [:nth n])
+                          (if (= n 1) (fn [_ _] :rewritten) orig-nth)))})
+          (js/Object.defineProperty m assoc-slot
+            #js {:configurable true
+                 :get (fn []
+                        (let [n (swap! assoc-reads inc)]
+                          (swap! order conj [:assoc n])
+                          orig-assoc))})
+          (let [res (conj m entry)]
+            (pr-str [(vec (keys res)) (get res :rewritten) @nth-reads @assoc-reads @order])))"#),
+        "\"[[:rewritten] 1 2 1 [[:nth 1] [:nth 2] [:assoc 1]]]\"\n"
+    );
+
+    // Constructor values whose native editability depends on instance fields
+    // (source-less Subvec and comparator-less PersistentTreeMap) stay editable.
+    assert_eq!(
+        run(r#"
+        (let [s (Subvec. nil js/undefined 0 0 nil)
+              r (into s [])]
+          (pr-str [(identical? s r) (instance? PersistentVector r) (vec r)]))"#),
+        "\"[false true []]\"\n"
     );
 
     // extend-type MapEntry IIndexed is respected by (into (sorted-map) m).
@@ -395,5 +492,59 @@ fn sorted_map_into_and_conj_respect_protocol_overrides() {
           (let [m (into (sorted-map) {:b 2 :a 1})]
             (pr-str [@used (vec (keys m))])))"#),
         "\"[true [:a :b]]\"\n"
+    );
+}
+
+/// light-cljs-1086: in `:advanced` output with protocol machinery retained,
+/// ordinary number, string, keyword, symbol, and sorted-map comparisons skip
+/// `protocolHooks.builtin` `IComparable` lookups, while custom `IComparable`
+/// receivers still dispatch through `builtin`.
+#[test]
+fn compare_of_builtin_keys_skips_protocol_lookup() {
+    use light_cljs::{ApplicationOptions, OptimizationLevel, analyze, prepare_application};
+
+    let source = r#"
+    (extend-type Atom ICounted (-count [_] 1))
+    (deftype CustomCmp [v] IComparable (-compare [_ o] (compare v (.-v o))))
+    (let [probes #(aget js/globalThis "__cmp_probes")
+          measure (fn [f] (let [before (probes) r (f)] [(- (probes) before) r]))]
+      (pr-str
+        [(measure #(compare 1 2))
+         (measure #(compare "alpha" "beta"))
+         (measure #(compare :a/x :a/y))
+         (measure #(compare :a :b))
+         (measure #(compare 'a/x 'b/y))
+         (measure #(count (into (sorted-map) {:g 7 :b 2 :e 5 :a 1 :f 6 :c 3 :d 4})))
+         (measure #(compare (CustomCmp. 1) (CustomCmp. 2)))]))"#;
+
+    let mut options = ApplicationOptions::new(OptimizationLevel::Advanced);
+    options.pseudo_names = true;
+    let parsed = parse(source).expect("parse program");
+    let program = analyze(source, &parsed).expect("analyze program");
+    let mut js = prepare_application(&program, options).emit_js();
+    let head = "function builtin(value, key, arity) {";
+    assert!(
+        js.contains(head),
+        "expected retained builtin in pseudo-names output"
+    );
+    js = js.replace(
+        head,
+        &format!("{head} if (key && key.name === \"IComparable\") globalThis.__cmp_probes++;"),
+    );
+    let output = Command::new("node")
+        .args([
+            "-e",
+            &format!("globalThis.__cmp_probes = 0; console.log({js});"),
+        ])
+        .output()
+        .expect("run node");
+    assert!(
+        output.status.success(),
+        "node failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "[[0 -1] [0 -1] [0 -1] [0 -1] [0 -1] [0 7] [1 -1]]\n"
     );
 }

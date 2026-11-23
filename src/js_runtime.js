@@ -6960,20 +6960,33 @@
   //@ conjOwn, conjSite, treeMapSeqConstructor requires: builtinSlot, mapConjSlot,
   //@ PersistentHashMapValue
   PersistentHashMapValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = builtinSlot(function (self, item) { return mapConjSlot(self, item); });
-  //@unit treeMapConjSlot requires: entryNthSlot, mapConjSlot, slotFirst, treeMapAssoc,
-  //@ treeMapAssocSlot
+  //@unit treeMapConjSlot requires: assoc, assocOf, entryNth, entryNthRead, entryNthSlot, mapConjSlot,
+  //@ nth, nthOf, preserveMeta, protocolHooks, slotFirst, treeMapAssoc, treeMapAssocSlot
   // `conj` of a sorted map with a map entry whose `-nth` slot is the runtime's
   // own (`entryNthSlot`), when the map's `-assoc` slot is its own
   // (`treeMapAssocSlot`): insert directly into the tree without `mapConj`'s
-  // `IVector` check, `-nth` dispatches, `assoc` wrapper or duplicate metadata
-  // copy. Any other item or extended slot takes `mapConjSlot`.
+  // `IVector` check or `assoc` wrapper, while reading `-nth` (for 0 then 1)
+  // and `-assoc` once each in dispatch order and preserving `mapConjSlot`'s
+  // outer `preserveMeta`. Any other item or extended slot takes the exact
+  // corresponding dispatch or `mapConjSlot`.
   function treeMapConjSlot(self, item) {
     if (item != null && slotFirst.on && item.cljs$lang$kind$$LKEY === 3 && item.cnt$LKEY !== undefined
-      && item.cljs$core$IIndexed$_nth$arity$2$LKEY === entryNthSlot
-      && self.cljs$lang$kind$$LKEY === 30 && self.cnt$LKEY !== undefined
-      && self.cljs$core$IAssociative$_assoc$arity$3$LKEY === treeMapAssocSlot) {
-      const tail = item.tail$LKEY;
-      return treeMapAssoc(self, tail[0], tail[1]);
+      && self.cljs$lang$kind$$LKEY === 30 && self.cnt$LKEY !== undefined) {
+      const m0 = item.cljs$core$IIndexed$_nth$arity$2$LKEY;
+      const k = m0 === entryNthSlot ? item.tail$LKEY[0]
+        : m0 ? m0.call(item, item, 0)
+        : protocolHooks.nthProtocol ? entryNthRead(item, 0, m0) : nthOf(item, 0, undefined, 2);
+      const m1 = slotFirst.on ? item.cljs$core$IIndexed$_nth$arity$2$LKEY : undefined;
+      const v = m1 === entryNthSlot ? item.tail$LKEY[1]
+        : slotFirst.on ? (m1 ? m1.call(item, item, 1)
+          : protocolHooks.nthProtocol ? entryNthRead(item, 1, m1) : nthOf(item, 1, undefined, 2))
+        : (protocolHooks.nthProtocol ? entryNth(item, 1) : nth(item, 1));
+      if (slotFirst.on) {
+        const am = self.cljs$core$IAssociative$_assoc$arity$3$LKEY;
+        if (am === treeMapAssocSlot) return preserveMeta(self, treeMapAssoc(self, k, v));
+        return preserveMeta(self, am ? am.call(self, self, k, v) : assocOf(self, k, v));
+      }
+      return preserveMeta(self, assoc(self, k, v));
     }
     return mapConjSlot(self, item);
   }
@@ -10146,8 +10159,8 @@
     const start = seq(collection);
     return start === null ? emptyList : cycleNode(start, null, start);
   }
-  //@unit compareKeys requires: displayStr, holdsVector, hostExt, keywordOf, methodKeys, namedOf,
-  //@ protocolHooks, slotFirst, uuids, vectorItems
+  //@unit compareKeys requires: builtinSlots, displayStr, holdsVector, hostExt, keywordOf,
+  //@ methodKeys, namedOf, protocolHooks, slotFirst, uuids, vectorItems
   function compareKeys(a, b) {
     if (a === b) return 0;
     if (a == null) return -1;
@@ -10155,31 +10168,38 @@
     const ta = typeof a;
     if (ta === "number") return typeof b === "number" ? (a < b ? -1 : a > b ? 1 : 0) : cannotCompare(a, b);
     if (ta === "string") {
-      if (slotFirst.on && !(hostExt.p1 & 2048)) return typeof b === "string" ? (a < b ? -1 : 1) : cannotCompare(a, b);
-    } else if (ta === "object" && slotFirst.on) {
+      if (typeof b === "string" && slotFirst.on && !(hostExt.p1 & 2048)) return a < b ? -1 : 1;
+    } else if (ta === "object" && slotFirst.on && typeof b === "object") {
       const ka = a.cljs$lang$kind$$LKEY;
-      if (ka === 20 && a.fqn$LKEY !== undefined && typeof b === "object" && b.cljs$lang$kind$$LKEY === 20 && b.fqn$LKEY !== undefined
-        && a.cljs$core$IComparable$_compare$arity$2$LKEY == null)
+      if ((ka === 20 && a.fqn$LKEY !== undefined && b.cljs$lang$kind$$LKEY === 20 && b.fqn$LKEY !== undefined)
+        || (ka === 21 && a.str$LKEY !== undefined && b.cljs$lang$kind$$LKEY === 21 && b.str$LKEY !== undefined)) {
+        const cmp = a.cljs$core$IComparable$_compare$arity$2$LKEY;
+        if (cmp == null) return compareNamed(a, b);
+        if (protocolHooks.builtin) {
+          if (cmp && !builtinSlots.has(cmp)) return cmp.call(a, a, b);
+          if (!cmp || !(a.cljs$lang$protocol_mask$partition1$$LKEY & 2048)) {
+            const ext = protocolHooks.externalMethod?.(a, methodKeys[9], 2);
+            if (ext) return ext.call(a, a, b);
+          }
+        }
         return compareNamed(a, b);
-      if (ka === 21 && a.str$LKEY !== undefined && typeof b === "object" && b.cljs$lang$kind$$LKEY === 21 && b.str$LKEY !== undefined
-        && a.cljs$core$IComparable$_compare$arity$2$LKEY == null)
-        return compareNamed(a, b);
+      }
     }
     return compareKeysSlow(a, b);
   }
   function cannotCompare(a, b) { throw new Error("Cannot compare " + displayStr(a) + " to " + displayStr(b)); }
   function compareNamed(a, b) {
-    const an = a.ns$LKEY, bn = b.ns$LKEY, fastStr = !(hostExt.p1 & 2048);
+    const an = a.ns$LKEY, bn = b.ns$LKEY;
     if (an !== bn) {
       if (an == null) return -1;
       if (bn == null) return 1;
-      if (fastStr && typeof an === "string" && typeof bn === "string") return an < bn ? -1 : 1;
+      if (slotFirst.on && !(hostExt.p1 & 2048) && typeof an === "string" && typeof bn === "string") return an < bn ? -1 : 1;
       const c = compareKeys(an, bn);
       if (c) return c;
     }
     const am = a.name$LKEY, bm = b.name$LKEY;
     if (am === bm) return 0;
-    if (fastStr && typeof am === "string" && typeof bm === "string") return am < bm ? -1 : 1;
+    if (slotFirst.on && !(hostExt.p1 & 2048) && typeof am === "string" && typeof bm === "string") return am < bm ? -1 : 1;
     return compareKeys(am, bm);
   }
   function compareKeysSlow(a, b) {
@@ -14379,7 +14399,8 @@
       if (kind !== undefined) {
         const mask = to.cljs$lang$protocol_mask$partition1$$LKEY;
         if ((mask & 4) !== 0) return true;
-        if (kind < 64 && mask !== undefined && to.cljs$core$IEditableCollection$$LKEY === undefined) return false;
+        if (kind < 64 && mask !== undefined && to.cljs$core$IEditableCollection$$LKEY === undefined
+          && (kind === 30 ? to.comp$LKEY !== undefined : kind !== 2 && kind !== 33)) return false;
       }
     }
     return protocolHooks.implements?.(methodKeys[14], to) ?? editableValue(to);
@@ -16027,8 +16048,8 @@
   // `builtin`'s first half, which the keyword searches read a keyword key's
   // slot with (light-cljs-989, `keywordProgramEquiv`).
   protocolHooks.keyMethod = keyMethod;
-  //@unit protocolHooks.external effect: extendType when: builtin, conjOwn, disj, extendedDeclared,
-  //@ keywordLookupEquiv, mapConj, pop requires: externalMethod, protocolHooks
+  //@unit protocolHooks.external effect: extendType when: builtin, compareKeys, conjOwn, disj,
+  //@ extendedDeclared, keywordLookupEquiv, mapConj, pop requires: externalMethod, protocolHooks
   // Only `extend-type` gives implementations that are not the value's own.
   protocolHooks.externalMethod = externalMethod;
   //@unit protocolHooks.extend effect: extendType, extendInstance when: conjMeta, containsOf,
@@ -16162,8 +16183,8 @@
   //@ protocolHooks
   // One install per core dispatcher the generic operations call.
   protocolHooks.countProtocol = countProtocol;
-  //@unit protocolHooks.nthProtocol effect: installMethods when: mapConj, nthOf, nthPath requires: nthProtocol,
-  //@ protocolHooks
+  //@unit protocolHooks.nthProtocol effect: installMethods when: mapConj, nthOf, nthPath,
+  //@ treeMapConjSlot requires: nthProtocol, protocolHooks
   protocolHooks.nthProtocol = nthProtocol;
   //@unit protocolHooks.firstProtocol effect: installMethods when: KeySeqCell requires: firstProtocol,
   //@ protocolHooks
