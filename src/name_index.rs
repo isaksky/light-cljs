@@ -34,14 +34,26 @@ fn position(bitmap: u32, bit: u32) -> usize {
 
 impl NameIndex {
     pub fn get(&self, key: &Key) -> Option<&GlobalId> {
-        let hash = self.hash.hash_one(key);
+        self.get_str(&key.0, &key.1)
+    }
+
+    /// Borrowed lookup matching [`Self::get`] without allocating `(String, String)`.
+    pub fn get_str(&self, namespace: &str, name: &str) -> Option<&GlobalId> {
+        // In Rust stdlib, `(&str, &str)` hashes identically to `(String, String)`
+        // because both `String` and `&str` delegate `Hash::hash` to `str::hash`.
+        let hash = self.hash.hash_one(&(namespace, name));
         let mut node = self.root.as_deref()?;
         let mut shift = 0;
         loop {
             match node {
                 Node::Leaf { hash: old, entries } => {
                     return (*old == hash)
-                        .then(|| entries.iter().find(|(k, _)| k == key).map(|(_, v)| v))
+                        .then(|| {
+                            entries
+                                .iter()
+                                .find(|((ns, n), _)| ns == namespace && n == name)
+                                .map(|(_, v)| v)
+                        })
                         .flatten();
                 }
                 Node::Branch { bitmap, children } => {
@@ -188,9 +200,73 @@ mod tests {
         for (names, oracle) in snapshots {
             for (key, value) in oracle {
                 assert_eq!(names.get(&key), Some(&value));
+                assert_eq!(names.get_str(&key.0, &key.1), Some(&value));
             }
             assert_eq!(names.get(&("missing".into(), "missing".into())), None);
+            assert_eq!(names.get_str("missing", "missing"), None);
         }
+    }
+
+    #[test]
+    fn get_str_matches_get_including_hash_collisions() {
+        let mut index = NameIndex::default();
+        let target_hash = index.hash.hash_one(&("ns".to_owned(), "k0".to_owned()));
+        assert_eq!(index.hash.hash_one(&("ns", "k0")), target_hash);
+        // Place multiple distinct keys under the exact hash of ("ns", "k0")
+        // so both `get` and `get_str` traverse a multi-entry collision leaf.
+        let mut root = Arc::new(Node::Leaf {
+            hash: target_hash,
+            entries: vec![(("ns".into(), "k0".into()), GlobalId(10))],
+        });
+        for i in 1..6 {
+            assert_eq!(
+                insert(
+                    &mut root,
+                    target_hash,
+                    ("ns".into(), format!("k{i}")),
+                    GlobalId(10 + i),
+                    0
+                ),
+                None
+            );
+        }
+        // Also insert an unrelated key with a different hash to form branches.
+        let other_key = ("other".to_owned(), "sym".to_owned());
+        let other_hash = index.hash.hash_one(&other_key);
+        insert(&mut root, other_hash, other_key.clone(), GlobalId(99), 0);
+        index.root = Some(root);
+
+        assert_eq!(index.get(&("ns".into(), "k0".into())), Some(&GlobalId(10)));
+        assert_eq!(index.get_str("ns", "k0"), Some(&GlobalId(10)));
+        assert_eq!(index.get(&other_key), Some(&GlobalId(99)));
+        assert_eq!(index.get_str("other", "sym"), Some(&GlobalId(99)));
+        // Keys with different actual hashes must miss cleanly even when stored
+        // in the forced collision leaf, matching `get` identically.
+        for i in 1..6 {
+            let k = ("ns".to_owned(), format!("k{i}"));
+            assert_eq!(index.get_str(&k.0, &k.1), index.get(&k));
+        }
+        // Lookup of a colliding key placed after other entries in the same leaf.
+        let k3_hash = index.hash.hash_one(&("ns", "k3"));
+        let mut collision_root = Arc::new(Node::Leaf {
+            hash: k3_hash,
+            entries: vec![
+                (("fake".into(), "a".into()), GlobalId(1)),
+                (("ns".into(), "k3".into()), GlobalId(33)),
+                (("fake".into(), "b".into()), GlobalId(2)),
+            ],
+        });
+        insert(
+            &mut collision_root,
+            other_hash,
+            other_key.clone(),
+            GlobalId(99),
+            0,
+        );
+        index.root = Some(collision_root);
+        assert_eq!(index.get(&("ns".into(), "k3".into())), Some(&GlobalId(33)));
+        assert_eq!(index.get_str("ns", "k3"), Some(&GlobalId(33)));
+        assert_eq!(index.get_str("ns", "missing"), None);
     }
 
     #[test]

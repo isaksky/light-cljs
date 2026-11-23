@@ -150,6 +150,28 @@ pub(crate) fn install(
     source: &InstallSource<'_>,
     macro_host: &mut MacroHost,
 ) -> Result<ir::ExprId, InstallError> {
+    install_inner(target, artifact, source, macro_host, false)
+}
+
+/// [`install`] for a freshly decoded artifact that already passed
+/// [`NamespaceArtifact::validate_with_depth`], skipping the redundant
+/// structural validation walk.
+pub(crate) fn install_validated(
+    target: Target<'_>,
+    artifact: &NamespaceArtifact,
+    source: &InstallSource<'_>,
+    macro_host: &mut MacroHost,
+) -> Result<ir::ExprId, InstallError> {
+    install_inner(target, artifact, source, macro_host, true)
+}
+
+fn install_inner(
+    target: Target<'_>,
+    artifact: &NamespaceArtifact,
+    source: &InstallSource<'_>,
+    macro_host: &mut MacroHost,
+    validated: bool,
+) -> Result<ir::ExprId, InstallError> {
     let Target {
         program,
         names,
@@ -172,6 +194,7 @@ pub(crate) fn install(
         artifact,
         source,
         macro_host,
+        validated,
     )
     .map_err(InstallError::Refused)?;
     Installer {
@@ -236,12 +259,11 @@ pub(crate) fn install_bodies(
     let mut globals = Vec::with_capacity(bodies.references.globals.len());
     let mut metadata = Vec::with_capacity(bodies.references.globals.len());
     for external in &bodies.references.globals {
-        let key = (external.namespace.clone(), external.name.clone());
         // A global the namespaces between the parts created, which the
         // bodies' reference merged with when they were captured: when those
         // namespaces no longer create it, the reference reserves it, as
         // the merge would have appended the units' reservation.
-        let id = match names.get(&key) {
+        let id = match names.get_str(&external.namespace, &external.name) {
             Some(&id) => id,
             None => {
                 let id = GlobalId(program.globals.len());
@@ -257,7 +279,7 @@ pub(crate) fn install_bodies(
                     span: 0..0,
                     source_index,
                 });
-                names.insert(key, id);
+                names.insert((external.namespace.clone(), external.name.clone()), id);
                 id
             }
         };
@@ -349,6 +371,7 @@ struct Resolved {
     warning_kinds: Vec<&'static str>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn resolve(
     program: &Program,
     names: &crate::name_index::NameIndex,
@@ -357,8 +380,11 @@ fn resolve(
     artifact: &NamespaceArtifact,
     source: &InstallSource<'_>,
     macro_host: &MacroHost,
+    validated: bool,
 ) -> Result<Resolved, String> {
-    artifact.validate()?;
+    if !validated {
+        artifact.validate()?;
+    }
     // Warnings, errors and array checks depend on the analysis options, so
     // an artifact of other options would report what this build does not.
     let policy = crate::artifact_capture::analysis_policy(source.options);
@@ -425,7 +451,7 @@ fn resolve(
     let mut metadata = Vec::with_capacity(artifact.references.globals.len());
     for external in &artifact.references.globals {
         let id = *names
-            .get(&(external.namespace.clone(), external.name.clone()))
+            .get_str(&external.namespace, &external.name)
             .ok_or_else(|| format!("{}/{} is not declared", external.namespace, external.name))?;
         globals.push(id);
         metadata.push(program.globals[id.0].metadata);
@@ -451,8 +477,7 @@ fn resolve(
         }
     }
     for global in &artifact.declarations.globals {
-        let key = (global.namespace.clone(), global.name.clone());
-        if names.get(&key).is_some() {
+        if names.get_str(&global.namespace, &global.name).is_some() {
             return Err(format!(
                 "{}/{} is already a global of the program",
                 global.namespace, global.name
@@ -1128,10 +1153,7 @@ impl Installer<'_> {
         self.bases.js_globals = js_globals;
         let declarations = &bodies.declarations;
         for global in &declarations.globals {
-            if let Some(&id) = self
-                .names
-                .get(&(global.namespace.clone(), global.name.clone()))
-            {
+            if let Some(&id) = self.names.get_str(&global.namespace, &global.name) {
                 let metadata = self.optional(global.metadata);
                 let existing = &mut self.program.globals[id.0];
                 if global.flags.declared {

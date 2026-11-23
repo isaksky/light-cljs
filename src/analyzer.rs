@@ -5655,6 +5655,50 @@ impl NamespaceAnalysis {
         Ok(())
     }
 
+    /// Consuming counterpart of [`Self::install`] for freshly decoded cache
+    /// artifacts that already passed [`NamespaceArtifact::validate_with_depth`],
+    /// skipping redundant validation and moving `bodies` without cloning.
+    pub(crate) fn install_validated(
+        &mut self,
+        mut artifact: crate::namespace_artifact::NamespaceArtifact,
+        source: &crate::artifact_install::InstallSource<'_>,
+        macro_host: &mut MacroHost,
+    ) -> Result<(), crate::artifact_install::InstallError> {
+        let mut warnings = Vec::new();
+        let first_expr = self.program.exprs.len();
+        let first_lazy = self.program.lazy_targets.len();
+        let first_unit = macro_host.session_handle().map_or(0, |s| s.next_unit());
+        let source_index = self.roots.len();
+        let root = crate::artifact_install::install_validated(
+            crate::artifact_install::Target {
+                program: &mut self.program,
+                names: &mut self.globals,
+                index: &mut self.install_index,
+                source_index: self.roots.len(),
+                warnings: &mut warnings,
+            },
+            &artifact,
+            source,
+            macro_host,
+        )?;
+        // Its bodies' lazy references are read at its drain point.
+        self.last_lazy = self.lazy_namespaces_since(first_lazy);
+        self.roots.push(root);
+        self.requires
+            .push(std::mem::take(&mut artifact.declarations.requires));
+        self.pending.push_back(Pending::Installed {
+            artifact: Box::new(artifact.into_bodies_only()),
+            top: crate::artifact_install::InstalledTop {
+                exprs: first_expr,
+                first_unit,
+            },
+            source_index,
+            exprs: first_expr..self.program.exprs.len(),
+            warnings,
+        });
+        Ok(())
+    }
+
     /// Check the lazy targets and close the program. Its root runs every
     /// source in order. Its value is the value of source `entry`: when
     /// sources reached only through lazy references follow the entry, the

@@ -443,7 +443,7 @@ impl CompileCache {
             return Ok(None);
         };
         let started = Instant::now();
-        let decoded = artifact_codec::decode(&bytes, &self.limits, cancelled);
+        let decoded = artifact_codec::decode_verified(&bytes, &self.limits, cancelled);
         drop(bytes);
         self.counts.decode_time += started.elapsed();
         match decoded {

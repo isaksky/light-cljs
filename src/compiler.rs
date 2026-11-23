@@ -3325,65 +3325,105 @@ fn analyze_entry(
             };
             compile_stats::add(&mut cache_time, started);
             let mut mutated_foreign = false;
-            let installed = match cached
-                .as_ref()
-                .or_else(|| install.and_then(|lookup| lookup(&file.name)))
-                .filter(|_| !native_core_writes)
-            {
-                Some(artifact) => {
-                    let started = compile_stats::start(timed);
-                    let path = file.path.to_string_lossy();
-                    let globals_before = analysis.globals_len();
-                    let outcome = analysis.install(
-                        artifact,
-                        &crate::artifact_install::InstallSource {
-                            namespace: &file.name,
-                            path: &path,
-                            text: &file.source,
-                            entry: index == entry_index,
-                            options,
-                            control,
-                        },
-                        macros,
-                    );
-                    compile_stats::add(&mut install_counts.time, started);
-                    match outcome {
-                        Ok(()) => {
-                            if parallel_top.is_some() {
-                                mutated_foreign = !artifact.patches.is_empty()
-                                    || analysis
-                                        .program()
-                                        .globals
-                                        .range(globals_before..analysis.program().globals.len())
-                                        .any(|g| g.declared && g.namespace != file.name);
-                            }
-                            if let (Some(cache), Some(_)) = (cache.as_deref_mut(), &cached) {
-                                cache.installed(macros);
-                            }
-                            install_counts.installed.push(file.name.clone());
-                            crate::compile_trace::installed(index);
-                            true
+            let installed = if native_core_writes {
+                drop(cached);
+                false
+            } else if let Some(artifact) = cached {
+                let started = compile_stats::start(timed);
+                let path = file.path.to_string_lossy();
+                let globals_before = analysis.globals_len();
+                let has_patches = !artifact.patches.is_empty();
+                let outcome = analysis.install_validated(
+                    artifact,
+                    &crate::artifact_install::InstallSource {
+                        namespace: &file.name,
+                        path: &path,
+                        text: &file.source,
+                        entry: index == entry_index,
+                        options,
+                        control,
+                    },
+                    macros,
+                );
+                compile_stats::add(&mut install_counts.time, started);
+                match outcome {
+                    Ok(()) => {
+                        if parallel_top.is_some() {
+                            mutated_foreign = has_patches
+                                || analysis
+                                    .program()
+                                    .globals
+                                    .range(globals_before..analysis.program().globals.len())
+                                    .any(|g| g.declared && g.namespace != file.name);
                         }
-                        Err(crate::artifact_install::InstallError::Refused(reason)) => {
-                            if let (Some(cache), Some(_)) = (cache.as_deref_mut(), &cached) {
-                                cache.refused(&reason);
-                            }
-                            install_counts.refused.push((file.name.clone(), reason));
-                            false
+                        if let Some(cache) = cache.as_deref_mut() {
+                            cache.installed(macros);
                         }
-                        Err(crate::artifact_install::InstallError::Failed(message)) => {
-                            return Err(NamespaceCompileError::new(format!(
-                                "installing {}: {message}",
-                                file.name
-                            ))
-                            .at(&file.path, &file.source, 0..0));
+                        install_counts.installed.push(file.name.clone());
+                        crate::compile_trace::installed(index);
+                        true
+                    }
+                    Err(crate::artifact_install::InstallError::Refused(reason)) => {
+                        if let Some(cache) = cache.as_deref_mut() {
+                            cache.refused(&reason);
                         }
+                        install_counts.refused.push((file.name.clone(), reason));
+                        false
+                    }
+                    Err(crate::artifact_install::InstallError::Failed(message)) => {
+                        return Err(NamespaceCompileError::new(format!(
+                            "installing {}: {message}",
+                            file.name
+                        ))
+                        .at(&file.path, &file.source, 0..0));
                     }
                 }
-                None => false,
+            } else if let Some(artifact) = install.and_then(|lookup| lookup(&file.name)) {
+                let started = compile_stats::start(timed);
+                let path = file.path.to_string_lossy();
+                let globals_before = analysis.globals_len();
+                let outcome = analysis.install(
+                    artifact,
+                    &crate::artifact_install::InstallSource {
+                        namespace: &file.name,
+                        path: &path,
+                        text: &file.source,
+                        entry: index == entry_index,
+                        options,
+                        control,
+                    },
+                    macros,
+                );
+                compile_stats::add(&mut install_counts.time, started);
+                match outcome {
+                    Ok(()) => {
+                        if parallel_top.is_some() {
+                            mutated_foreign = !artifact.patches.is_empty()
+                                || analysis
+                                    .program()
+                                    .globals
+                                    .range(globals_before..analysis.program().globals.len())
+                                    .any(|g| g.declared && g.namespace != file.name);
+                        }
+                        install_counts.installed.push(file.name.clone());
+                        crate::compile_trace::installed(index);
+                        true
+                    }
+                    Err(crate::artifact_install::InstallError::Refused(reason)) => {
+                        install_counts.refused.push((file.name.clone(), reason));
+                        false
+                    }
+                    Err(crate::artifact_install::InstallError::Failed(message)) => {
+                        return Err(NamespaceCompileError::new(format!(
+                            "installing {}: {message}",
+                            file.name
+                        ))
+                        .at(&file.path, &file.source, 0..0));
+                    }
+                }
+            } else {
+                false
             };
-            // A decoded artifact is released once installed.
-            drop(cached);
             if installed {
                 captures.push_back(None);
                 lazy_marks.push_back((mark, index));

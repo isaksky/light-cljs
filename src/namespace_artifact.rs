@@ -1254,7 +1254,7 @@ fn validate_tables(
     patches: &[GlobalPatch],
     units: usize,
     roots: &[ExprRef],
-) -> Result<(), String> {
+) -> Result<u32, String> {
     let fits = |what: &str, index: u32, len: usize| {
         if (index as usize) < len {
             Ok(())
@@ -1309,7 +1309,7 @@ fn validate_tables(
         string(literal.name)?;
     }
     roots.iter().try_for_each(|&root| expr(root))?;
-    ir_depth(&ir.exprs)?;
+    let depth = ir_depth(&ir.exprs)?;
     for entry in &declarations.globals {
         source(entry.source)?;
         entry.metadata.iter().try_for_each(|&id| expr(id))?;
@@ -1344,7 +1344,7 @@ fn validate_tables(
         global(patch.global)?;
         patch.metadata.iter().try_for_each(|&id| expr(id))?;
     }
-    Ok(())
+    Ok(depth)
 }
 
 impl NamespaceArtifact {
@@ -1363,6 +1363,25 @@ impl NamespaceArtifact {
             accounting: None,
             registry: Vec::new(),
             bodies: self.bodies.clone(),
+            live: Live::default(),
+        }
+    }
+
+    /// Consuming counterpart of [`Self::bodies_only`], moving `header` and
+    /// `bodies` without cloning.
+    pub(crate) fn into_bodies_only(self) -> Self {
+        Self {
+            header: self.header,
+            declarations: Default::default(),
+            ir: Default::default(),
+            patches: Vec::new(),
+            units: Default::default(),
+            diagnostics: Default::default(),
+            references: Default::default(),
+            names: Default::default(),
+            accounting: None,
+            registry: Vec::new(),
+            bodies: self.bodies,
             live: Live::default(),
         }
     }
@@ -1454,10 +1473,17 @@ impl NamespaceArtifact {
     /// own tables, and that its expressions form no cycle, so installing it
     /// needs nothing but the artifact and the identities it names.
     pub fn validate(&self) -> Result<(), String> {
+        self.validate_with_depth().map(|_| ())
+    }
+
+    /// [`Self::validate`], also returning the exact expression depth
+    /// ([`Self::ir_depth`]) computed during the validation walk so callers
+    /// do not walk the IR a second time.
+    pub fn validate_with_depth(&self) -> Result<u32, String> {
         self.names.validate()?;
         let ir = &self.ir;
         let units = self.units.units.len();
-        validate_tables(
+        let top_depth = validate_tables(
             ir,
             &self.declarations,
             &self.references,
@@ -1465,7 +1491,7 @@ impl NamespaceArtifact {
             units,
             &[self.header.root],
         )?;
-        if let Some(bodies) = &self.bodies {
+        let body_depth = if let Some(bodies) = &self.bodies {
             let roots = bodies
                 .placeholders
                 .iter()
@@ -1487,8 +1513,10 @@ impl NamespaceArtifact {
                 &bodies.patches,
                 units,
                 &roots,
-            )?;
-        }
+            )?
+        } else {
+            0
+        };
         let fits = |what: &str, index: u32, len: usize| {
             if (index as usize) < len {
                 Ok(())
@@ -1579,7 +1607,8 @@ impl NamespaceArtifact {
                 return Err("its bodies charge more than its accounting".into());
             }
         }
-        self.bounds()
+        self.bounds()?;
+        Ok(top_depth.saturating_add(body_depth))
     }
 
     /// The expansions and generated nodes of [`Self::accounting`] outside

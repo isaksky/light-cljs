@@ -2236,11 +2236,32 @@ fn read_manifest_charged(
 
 /// Decode encoded bytes into an owned artifact: the manifest, each
 /// section's integrity, then the sections, polling `cancelled` through long
-/// tables, and finally [`NamespaceArtifact::validate`].
+/// tables, and finally [`NamespaceArtifact::validate_with_depth`].
 pub fn decode(
     bytes: &[u8],
     limits: &DecodeLimits,
     cancelled: &dyn Fn() -> bool,
+) -> Result<(Manifest, NamespaceArtifact), DecodeError> {
+    decode_inner(bytes, limits, cancelled, true)
+}
+
+/// [`decode`] for callers that have already verified the full-file content
+/// address (`sha256(bytes) == entry.artifact`), skipping the redundant
+/// per-section SHA-256 pass while keeping manifest parsing, budget checks,
+/// cancellation polling, and structural/depth validation intact.
+pub(crate) fn decode_verified(
+    bytes: &[u8],
+    limits: &DecodeLimits,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<(Manifest, NamespaceArtifact), DecodeError> {
+    decode_inner(bytes, limits, cancelled, false)
+}
+
+fn decode_inner(
+    bytes: &[u8],
+    limits: &DecodeLimits,
+    cancelled: &dyn Fn() -> bool,
+    verify_sections: bool,
 ) -> Result<(Manifest, NamespaceArtifact), DecodeError> {
     if cancelled() {
         return Err(DecodeError::Cancelled);
@@ -2254,7 +2275,7 @@ pub fn decode(
         let bounds = &manifest.sections[index];
         let start = bounds.offset as usize;
         let content = &bytes[start..start + bounds.length as usize];
-        if polled_digest(content, cancelled)? != bounds.sha256 {
+        if verify_sections && polled_digest(content, cancelled)? != bounds.sha256 {
             return Err(DecodeError::Integrity(bounds.section.name()));
         }
         Ok(content)
@@ -2394,8 +2415,9 @@ pub fn decode(
     if cancelled() {
         return Err(DecodeError::Cancelled);
     }
-    artifact.validate().map_err(DecodeError::Invalid)?;
-    let depth = artifact.ir_depth().map_err(DecodeError::Invalid)?;
+    let depth = artifact
+        .validate_with_depth()
+        .map_err(DecodeError::Invalid)?;
     if depth > limits.max_ir_depth {
         return Err(DecodeError::Limit {
             what: "expression nesting",
