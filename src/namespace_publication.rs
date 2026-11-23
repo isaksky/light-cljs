@@ -238,21 +238,22 @@ impl NamespaceJob {
         }
         let captures_namespaces =
             logs_capture && engine.is_some_and(|engine| !engine.has_native_bridge());
-        let pending_capture = (engine.is_some() && (logs_capture || captures_namespaces)).then(|| {
-            crate::macro_host::PendingCaptureGuard::install(
-                host.engine.work_cache.clone(),
-                crate::macro_host::PendingUnitCapture {
-                    on_worker: true,
-                    logs_gensyms: logs_capture,
-                    logs_namespaces: captures_namespaces,
-                    pooled: false,
-                    session: None,
-                    gensym_error: false,
-                    namespace_error: false,
-                    entered: false,
-                },
-            )
-        });
+        let pending_capture =
+            (engine.is_some() && (logs_capture || captures_namespaces)).then(|| {
+                crate::macro_host::PendingCaptureGuard::install(
+                    host.engine.work_cache.clone(),
+                    crate::macro_host::PendingUnitCapture {
+                        on_worker: true,
+                        logs_gensyms: logs_capture,
+                        logs_namespaces: captures_namespaces,
+                        pooled: false,
+                        session: None,
+                        gensym_error: false,
+                        namespace_error: false,
+                        entered: false,
+                    },
+                )
+            });
         let recording = crate::macro_host::MacroFreeUnit::enter(
             input.name.to_owned(),
             false,
@@ -369,7 +370,11 @@ impl NamespacePublication {
         self.drained.dispatched.iter().map(|unit| unit.unit)
     }
     pub(crate) fn dispatched_local_ids(&self) -> Vec<usize> {
-        self.drained.dispatched.iter().map(|unit| unit.unit).collect()
+        self.drained
+            .dispatched
+            .iter()
+            .map(|unit| unit.unit)
+            .collect()
     }
     pub(crate) fn any_may_enter_engine(&self) -> bool {
         self.drained.dispatched.iter().any(|u| u.may_enter_engine)

@@ -4715,9 +4715,9 @@ impl NamespaceAnalysis {
         let Some(session) = macro_host.session_handle() else {
             return Ok(());
         };
-        let Some(Pending::Analyzed(drained)) = self.pending.iter().find(|pending| {
-            matches!(pending, Pending::Analyzed(d) if d.source_index == source_index)
-        }) else {
+        let Some(Pending::Analyzed(drained)) = self.pending.iter().find(
+            |pending| matches!(pending, Pending::Analyzed(d) if d.source_index == source_index),
+        ) else {
             return Ok(());
         };
         let mut pooled = drained.pooled.iter().copied().peekable();

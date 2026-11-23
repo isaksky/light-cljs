@@ -2507,7 +2507,7 @@ enum PendingPublication {
     /// No persistent cache is active (capture sink only).
     None,
     /// Already keyed at a miss->hit barrier; `None` means bypassed or skipped.
-    Keyed(Option<crate::compile_cache::Publication>),
+    Keyed(Option<Box<crate::compile_cache::Publication>>),
     /// Deferred until `merge_namespace` or the next miss->hit barrier.
     Unkeyed(DeferredKeying),
 }
@@ -2731,21 +2731,13 @@ fn merge_namespace(
     match (cache, publication) {
         (Some(cache), PendingPublication::Keyed(publication)) => {
             if let Some(publication) = publication {
-                cache.publish(publication, &file.source, sources, capture.artifact);
+                cache.publish(*publication, &file.source, sources, capture.artifact);
             }
         }
         (Some(cache), PendingPublication::Unkeyed(deferred)) => {
             if let Some(record) = record {
                 let publication = key_pending_capture(
-                    &capture,
-                    deferred,
-                    true,
-                    analysis,
-                    ordered,
-                    record,
-                    sources,
-                    macros,
-                    control,
+                    &capture, deferred, true, analysis, ordered, record, sources, macros, control,
                     cache,
                 )?;
                 if let Some(publication) = publication {
@@ -3215,7 +3207,11 @@ fn analyze_entry(
                 // Its require closure, which bounds what its effect lanes wait
                 // for (light-cljs-672).
                 if let Some(session) = macros.session_handle() {
-                    (session.shared().lanes()).register_namespace(index, &file.name, &file.requires);
+                    (session.shared().lanes()).register_namespace(
+                        index,
+                        &file.name,
+                        &file.requires,
+                    );
                 }
                 macros.observe(|log| log.window = index as u32);
                 build.analyze(index, &file.name, file.path.to_str());
@@ -3285,7 +3281,7 @@ fn analyze_entry(
                         control,
                         cache_mut,
                     )?;
-                    pending.publication = PendingPublication::Keyed(publication);
+                    pending.publication = PendingPublication::Keyed(publication.map(Box::new));
                 }
                 if barrier_failed {
                     // Drain from the front to report the earliest

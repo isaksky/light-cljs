@@ -1049,3 +1049,55 @@ from `/usr/bin/time -l` (GB = 10^9 bytes).
   peak memory is 1.379 GB (`<= 1.45 GB` target). Warm no-op rebuilds also drop
   by 13.2% (plain) and 24.7% (re-frame) from the safe `sha256::compress`
   optimization alone.
+
+## Decoupled cache settling and `ParallelTopLevel` under capture (light-cljs-1103, November 23, 2026)
+
+Deferred cache keying (per-namespace observation indexing, a miss->hit
+soundness barrier gated on `CompileCache::has_candidates`, and skipping
+`macro_free` units in `settle_pending`) removes the per-namespace settling
+stall on cold cache-fill builds, and enabling `ParallelTopLevel` during
+artifact capture (with canonical `view_globals` relocation on overlay
+publication, `unit: None` namespace registry charging, and deferred
+`Unit::emitted` recording) moves cold-cache top-level analysis off the main
+thread while skipping speculation on namespaces with warm snapshot candidates.
+
+V8 build release binaries (`865f64ca2` base vs `de2f03113` candidate), Apple M3
+Ultra VM (24 vCPUs, 32 GiB), **unreserved** machine (1-minute `uptime` load
+3.34–5.93), medians of 3 alternating rounds at cold `--cache-dir --jobs 8` (1
+alternating pair for `--no-cache --jobs 8` and cold `--cache-dir --jobs 1`) on
+`workload-200k-seed42` and `re-frame-200k-seed42` (`release bench --optimize
+advanced --stats`). Peak memory is from `/usr/bin/time -l` (GB = 10^9 bytes).
+
+| Project | Mode | Binary | Wall (ms) | `trace.top-level-ms` | `trace.wait-ms` | `pool.utilization` | Peak memory |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `workload-200k-seed42` | `--no-cache --jobs 8` | base `865f64ca2` | 2,004.1 | 364.3 | 421.7 | 0.362 | 1.176 GB |
+| `workload-200k-seed42` | `--no-cache --jobs 8` | candidate `de2f03113` | 1,916.2 (-4.4%) | 355.8 | 420.4 | 0.360 | 1.162 GB |
+| `workload-200k-seed42` | cold `--cache-dir --jobs 1` | base `865f64ca2` | 6,857.5 | 1,391.2 | 0.0 | — | 0.933 GB |
+| `workload-200k-seed42` | cold `--cache-dir --jobs 1` | candidate `de2f03113` | 6,866.1 (+0.1%) | 1,400.1 | 0.0 | — | 0.934 GB |
+| `workload-200k-seed42` | cold `--cache-dir --jobs 8` (median of 3) | base `865f64ca2` | 4,905.9 (4,855.2–5,146.4) | 1,465.5 (1,461.2–1,533.4) | 901.3 (900.6–950.5) | 0.120 (0.120–0.121) | 1.151 GB (1.124–1.155) |
+| `workload-200k-seed42` | cold `--cache-dir --jobs 8` (median of 3) | candidate `de2f03113` | 2,878.7 (2,873.9–2,963.3) (-41.3%) | 347.0 (347.0–354.5) (-76.3%) | 11.7 (8.0–17.1) (-98.7%) | 0.208 (0.208–0.208) (+73%) | 1.168 GB (1.157–1.178) |
+| `re-frame-200k-seed42` | `--no-cache --jobs 8` | base `865f64ca2` | 3,040.4 | 752.3 | 330.0 | 0.260 | 1.348 GB |
+| `re-frame-200k-seed42` | `--no-cache --jobs 8` | candidate `de2f03113` | 2,821.3 (-7.2%) | 759.4 | 349.7 | 0.259 | 1.354 GB |
+| `re-frame-200k-seed42` | cold `--cache-dir --jobs 1` | base `865f64ca2` | 8,203.0 | 1,258.3 | 0.0 | — | 1.216 GB |
+| `re-frame-200k-seed42` | cold `--cache-dir --jobs 1` | candidate `de2f03113` | 8,207.0 (+0.0%) | 1,277.7 | 0.0 | — | 1.208 GB |
+| `re-frame-200k-seed42` | cold `--cache-dir --jobs 8` (median of 3) | base `865f64ca2` | 6,475.7 (6,307.0–6,529.8) | 1,345.0 (1,325.9–1,346.2) | 1,058.1 (1,042.0–1,062.3) | 0.096 (0.094–0.096) | 1.361 GB (1.317–1.379) |
+| `re-frame-200k-seed42` | cold `--cache-dir --jobs 8` (median of 3) | candidate `de2f03113` | 5,191.6 (4,960.5–5,331.7) (-19.8%) | 752.2 (739.4–759.7) (-44.1%) | 31.4 (23.1–39.6) (-97.0%) | 0.128 (0.128–0.130) (+33%) | 1.372 GB (1.305–1.383) |
+
+- *Parity and cross-`--jobs` reuse.* On both 200k projects, emitted
+  `out/light/workload.main.js` matches `--no-cache` and base at each `--jobs`
+  value, matches the oracle (`workload-200k-seed42`: `484264`, SHA-256
+  `4a4f9189a188`, raw `3,386,824` B, gzip-9 `825,152` B; `re-frame-200k-seed42`:
+  `714878 117718`, SHA-256 `e934a4528dc7`, raw `5,565,482` B, gzip-9 `1,039,480`
+  B), and passes `bb check-waste.bb --strict`. A warm `--jobs 1` rebuild against
+  the cache populated by cold `--jobs 8` achieves 100% cache hits (`569/569` in
+  `1,160.3 ms` on `workload-200k-seed42`; `3,073/3,073` in `2,292.3 ms` on
+  `re-frame-200k-seed42`) with byte-identical output and matching runtime results.
+- *Targets.* Every `trace.top-level-ms` (`347.0 <= 650 ms`, `752.2 <= 950 ms`),
+  `trace.wait-ms` (`11.7 <= 650 ms`, `31.4 <= 550 ms`), and peak-memory
+  (`1.168 <= 1.25 GB`, `1.372 <= 1.45 GB`) target passes with wide margins, and
+  `trace.top-level-ms` matches `--no-cache` on both workloads (`trace.top-level.wait-ms = 0.0 ms`).
+  `pool.utilization` on `workload-200k-seed42` rises +73% (`0.120 -> 0.208`) but
+  remains below the pre-1102 `>= 0.28` target: `light-cljs-1102` cut the
+  numerator `time.worker-units-ms` by 38% (`5,691 -> 3,468 ms`), while the
+  unlanded serial `cache.write-ms` (`1,113.5 ms`, 47.5% of `time.pool-ms = 2,344.5 ms`,
+  owned by `light-cljs-1104`) keeps workers idle during artifact publishing.

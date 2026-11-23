@@ -946,7 +946,10 @@ fn parallel_top_level_cache_cross_jobs_reuse_and_byte_identity() {
         let cache_8_to_1 = crate::temp_dir::TempDir::new("cljs-ptl-cache-8to1");
         let (cold_8, cold_8_counts) =
             build_cached(&sources, "app.main", 8, warning_mode, cache_8_to_1.path());
-        assert_eq!(cold_8.output, oracle.output, "cold j=8 warning_mode={warning_mode}");
+        assert_eq!(
+            cold_8.output, oracle.output,
+            "cold j=8 warning_mode={warning_mode}"
+        );
         assert_eq!(cold_8.warnings, oracle.warnings, "cold j=8 warnings");
         assert_eq!(cold_8_counts.hits, 0);
         assert_eq!(cold_8_counts.published, expected_namespaces);
@@ -960,7 +963,11 @@ fn parallel_top_level_cache_cross_jobs_reuse_and_byte_identity() {
 
         let (warm_1, warm_1_counts) =
             build_cached(&sources, "app.main", 1, warning_mode, cache_8_to_1.path());
-        assert_eq!(warm_1_counts.misses, Vec::new(), "j=8->j=1 misses (warning_mode={warning_mode})");
+        assert_eq!(
+            warm_1_counts.misses,
+            Vec::new(),
+            "j=8->j=1 misses (warning_mode={warning_mode})"
+        );
         assert_eq!(warm_1_counts.hits, expected_namespaces);
         assert_eq!(warm_1.output, oracle.output, "j=8->j=1 output");
         assert_eq!(warm_1.warnings, oracle.warnings, "j=8->j=1 warnings");
@@ -969,13 +976,20 @@ fn parallel_top_level_cache_cross_jobs_reuse_and_byte_identity() {
         let cache_1_to_8 = crate::temp_dir::TempDir::new("cljs-ptl-cache-1to8");
         let (cold_1, cold_1_counts) =
             build_cached(&sources, "app.main", 1, warning_mode, cache_1_to_8.path());
-        assert_eq!(cold_1.output, oracle.output, "cold j=1 warning_mode={warning_mode}");
+        assert_eq!(
+            cold_1.output, oracle.output,
+            "cold j=1 warning_mode={warning_mode}"
+        );
         assert_eq!(cold_1_counts.hits, 0);
         assert_eq!(cold_1_counts.published, expected_namespaces);
 
         let (warm_8, warm_8_counts) =
             build_cached(&sources, "app.main", 8, warning_mode, cache_1_to_8.path());
-        assert_eq!(warm_8_counts.misses, Vec::new(), "j=1->j=8 misses (warning_mode={warning_mode})");
+        assert_eq!(
+            warm_8_counts.misses,
+            Vec::new(),
+            "j=1->j=8 misses (warning_mode={warning_mode})"
+        );
         assert_eq!(warm_8_counts.hits, expected_namespaces);
         assert_eq!(warm_8.output, oracle.output, "j=1->j=8 output");
         assert_eq!(warm_8.warnings, oracle.warnings, "j=1->j=8 warnings");
@@ -1000,18 +1014,40 @@ fn parallel_top_level_mixed_miss_hit_barrier_and_error_precedence() {
         let (warm_1, counts_1) = build_cached(sources, "app.main", 1, false, cache_1.path());
         let (warm_8, counts_8) = build_cached(sources, "app.main", 8, false, cache_8.path());
 
-        assert_eq!(warm_1.output, oracle.output, "{label}: j=1 cached vs uncached");
-        assert_eq!(warm_8.output, oracle.output, "{label}: j=8 cached vs uncached");
+        assert_eq!(
+            warm_1.output, oracle.output,
+            "{label}: j=1 cached vs uncached"
+        );
+        assert_eq!(
+            warm_8.output, oracle.output,
+            "{label}: j=8 cached vs uncached"
+        );
         assert_eq!(warm_8.output, warm_1.output, "{label}: j=8 vs j=1 output");
         assert_eq!(counts_8.hits, counts_1.hits, "{label}: hit count mismatch");
-        assert_eq!(counts_8.misses, counts_1.misses, "{label}: miss set mismatch");
-        assert_eq!(counts_8.bypasses, counts_1.bypasses, "{label}: bypass set mismatch");
-        assert!(counts_8.hits > 0 && !counts_8.misses.is_empty(), "{label}: expected mixed hits+misses");
+        assert_eq!(
+            counts_8.misses, counts_1.misses,
+            "{label}: miss set mismatch"
+        );
+        assert_eq!(
+            counts_8.bypasses, counts_1.bypasses,
+            "{label}: bypass set mismatch"
+        );
+        assert!(
+            counts_8.hits > 0 && !counts_8.misses.is_empty(),
+            "{label}: expected mixed hits+misses"
+        );
 
         // Second rebuild on the updated cache must be 100% hits at both j=1 and j=8.
         let (after_8, after_8_counts) = build_cached(sources, "app.main", 8, false, cache_8.path());
-        assert_eq!(after_8_counts.misses, Vec::new(), "{label}: post-edit warm j=8 misses");
-        assert_eq!(after_8.output, oracle.output, "{label}: post-edit warm j=8 output");
+        assert_eq!(
+            after_8_counts.misses,
+            Vec::new(),
+            "{label}: post-edit warm j=8 misses"
+        );
+        assert_eq!(
+            after_8.output, oracle.output,
+            "{label}: post-edit warm j=8 output"
+        );
     };
 
     // 1. Edit mid-graph non-macro provider (including deferred `def` shadowing a core name).
@@ -1052,7 +1088,10 @@ fn parallel_top_level_mixed_miss_hit_barrier_and_error_precedence() {
     let (err_1, _) = build_cached(&sources, "app.main", 1, false, cache_err_1.path());
     let (err_8, _) = build_cached(&sources, "app.main", 8, false, cache_err_8.path());
     assert!(err_1.output.is_err());
-    assert_eq!(err_8.output, err_1.output, "mixed miss->hit failure error mismatch");
+    assert_eq!(
+        err_8.output, err_1.output,
+        "mixed miss->hit failure error mismatch"
+    );
 }
 
 #[test]
