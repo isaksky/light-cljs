@@ -1837,3 +1837,52 @@ fn requested_namespace_views_stay_guarded_in_cached_macro_helpers() {
     assert_eq!(printed, expected);
     assert_eq!(reused.stat("cache.hits"), 3);
 }
+
+#[test]
+fn cached_unit_registry_drain_ignores_icounted_extensions() {
+    let consumer = "(ns consumer (:require [producer] [m :refer [probe]])) (def found (probe))";
+    let project = Project::new(&[
+        (
+            "m.cljs",
+            "(ns m)
+             (extend-type PersistentVector
+               ICounted
+               (-count [_] 0))
+             (defmacro make-extra []
+               (create-ns 'unit.extra)
+               1)
+             (defmacro probe []
+               (some? (find-ns 'unit.extra)))",
+        ),
+        (
+            "producer.cljs",
+            "(ns producer (:require [m :refer [make-extra]]))
+             (def produced (make-extra))",
+        ),
+        ("consumer.cljs", consumer),
+        (
+            "main.cljs",
+            "(ns main (:require [producer] [consumer]))
+             (js/console.log (pr-str [producer/produced consumer/found]))",
+        ),
+    ]);
+    let (cold, printed) = project.checked("main", &["--jobs", "1"]);
+    assert_eq!(printed, "[1 true]\n");
+    assert_eq!(cold.stat("cache.hits"), 0);
+    // Warm build hits everything.
+    project.cached("main", &["--jobs", "1"]).assert_all_hits(4);
+    // Recompile only consumer while producer hits the cache: producer's
+    // artifact must retain the `unit.extra` registry entry despite the
+    // compile-time PersistentVector ICounted override.
+    project.write(
+        "consumer.cljs",
+        &format!("{consumer}\n; recompile consumer"),
+    );
+    let (mixed, printed) = project.checked("main", &["--jobs", "1"]);
+    assert_eq!(printed, "[1 true]\n");
+    assert!(
+        mixed.stat("cache.hits") >= 2,
+        "expected producer and macro namespace to hit cache:\n{}",
+        mixed.stats
+    );
+}

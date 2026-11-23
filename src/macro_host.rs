@@ -3995,6 +3995,130 @@ mod compiler_pure_tests {
         assert_eq!(host.engine.work_cache.namespace_pool_mode.get(), None);
         assert!(host.engine.work_cache.sizes.borrow().is_empty());
     }
+
+    #[test]
+    fn encode_peak_cache_reuses_handle_and_excludes_prior_registry_drain() {
+        use crate::compiler_data::{DataBuilder, DatumKind, ExpansionOrigin, Source};
+
+        let mut host = MacroHost::new();
+        // Materialize an evaluator on `host`.
+        crate::compile_with_macros("(defmacro seed [] 1) (def a (seed))", &mut host).unwrap();
+        let evaluator = host
+            .engine
+            .bootstrap
+            .as_ref()
+            .expect("evaluator materialized")
+            .evaluator
+            .clone();
+        if evaluator.has_native_bridge() {
+            return;
+        }
+        let tiny_fn = evaluator
+            .evaluate_unit("rt => (_form, _env) => \"ok\"")
+            .unwrap();
+        let call = host
+            .read_compiler_form(&Source::new("call.cljs", "(peak/tiny)"))
+            .unwrap()
+            .unwrap();
+        let env = DataBuilder.map(&[]).unwrap();
+        let origin = ExpansionOrigin {
+            macro_name: Name::new(Some("peak"), "tiny"),
+            call: call.span(),
+            definition: None,
+            helpers: Vec::new(),
+        };
+
+        // First measured unit: populates the cached takeEncodePeak handle and leaves
+        // encode_peak_clean = true after taking the peak.
+        host.begin_namespace_work();
+        host.reset_unit_work();
+        host.engine.work.measuring.set(true);
+        host.engine.generated_nodes.set(0);
+        let expanded1 = host
+            .expand_javascript(evaluator.as_ref(), tiny_fn, &call, &env, origin.clone())
+            .unwrap();
+        assert!(matches!(expanded1.data().kind(), DatumKind::String(_)));
+        let handle_after_first = host
+            .engine
+            .work_cache
+            .encode_peak
+            .get()
+            .expect("takeEncodePeak handle cached");
+        assert!(host.engine.work_cache.encode_peak_clean.get());
+        let first_peak = host.engine.work.node_peak.get();
+        assert!(
+            first_peak > 0 && first_peak < 20,
+            "first peak should be small: {first_peak}"
+        );
+
+        // Enable namespace logging via the cached wrapper, create 40 namespaces on the
+        // same evaluator, drain them (reusing the cached wrapper), and mark encode_peak
+        // dirty as analyze_unit does after a non-empty drain.
+        let _ = crate::compilation_session::CompilationSession::take_namespaces_from_cached(
+            evaluator.as_ref(),
+            true,
+            host.engine.work_cache.take_namespaces_handle(true),
+        )
+        .unwrap();
+        let created = evaluator
+            .evaluate_unit(
+                "rt => { for (let i = 0; i < 40; i++) rt.core.createNs(rt.symbol(null, 'peak.extra-' + i)); return null; }",
+            )
+            .unwrap();
+        let _ = evaluator.release(created);
+        let entries = crate::compilation_session::CompilationSession::take_namespaces_from_cached(
+            evaluator.as_ref(),
+            true,
+            host.engine.work_cache.take_namespaces_handle(true),
+        )
+        .unwrap();
+        assert!(
+            entries.len() >= 40,
+            "expected >= 40 registry entries, got {}",
+            entries.len()
+        );
+        host.engine.work_cache.encode_peak_clean.set(false);
+
+        // Second measured unit: reset_unit_work preserves the cached handle, and
+        // the pre-expansion reset clears the large prior registry export's peak.
+        host.reset_unit_work();
+        host.engine.work.measuring.set(true);
+        host.engine.generated_nodes.set(0);
+        assert_eq!(
+            host.engine.work_cache.encode_peak.get(),
+            Some(handle_after_first)
+        );
+        let expanded2 = host
+            .expand_javascript(evaluator.as_ref(), tiny_fn, &call, &env, origin.clone())
+            .unwrap();
+        assert!(matches!(expanded2.data().kind(), DatumKind::String(_)));
+        assert_eq!(
+            host.engine.work_cache.encode_peak.get(),
+            Some(handle_after_first)
+        );
+        assert!(host.engine.work_cache.encode_peak_clean.get());
+        let second_peak = host.engine.work.node_peak.get();
+        assert!(
+            second_peak < 20,
+            "second unit peak ({second_peak}) must exclude the 40-entry prior registry drain"
+        );
+
+        // Third measured unit with clean encode_peak: exercises the clean-reset
+        // shortcut and keeps the same cached handle and small peak.
+        host.reset_unit_work();
+        host.engine.work.measuring.set(true);
+        host.engine.generated_nodes.set(0);
+        let expanded3 = host
+            .expand_javascript(evaluator.as_ref(), tiny_fn, &call, &env, origin)
+            .unwrap();
+        assert!(matches!(expanded3.data().kind(), DatumKind::String(_)));
+        assert_eq!(
+            host.engine.work_cache.encode_peak.get(),
+            Some(handle_after_first)
+        );
+        assert_eq!(host.engine.work.node_peak.get(), second_peak);
+        let _ = evaluator.release(tiny_fn);
+    }
 }
 
 impl MacroHost {

@@ -3722,29 +3722,32 @@ impl CompilationSession {
     }
     /// Like [`Self::take_namespaces_from`], caching the per-isolate JS wrapper
     /// in `cached` so repeated unit drains call the handle directly without
-    /// recompiling a JS function string, and returning `null` when the log is
-    /// empty (light-cljs-1102).
+    /// recompiling a JS function string. Returns the raw registry vector
+    /// without invoking user-overridable protocol methods like `ICounted`,
+    /// propagates errors from a cached handle instead of re-draining a cleared
+    /// log, and skips native-bridge evaluators that have no JS `takeNamespaces`
+    /// hook (light-cljs-1102).
     pub(crate) fn take_namespaces_from_cached(
         engine: &dyn MacroEvaluator,
         pooled: bool,
         cached: &std::cell::Cell<Option<crate::evaluator::ValueId>>,
     ) -> Result<Vec<crate::namespace_artifact::RegistryEntry>, String> {
-        let value = match cached.get().and_then(|f| engine.call(f, &[]).ok()) {
-            Some(value) => value,
+        if engine.has_native_bridge() {
+            return Ok(Vec::new());
+        }
+        let function = match cached.get() {
+            Some(function) => function,
             None => {
                 let source = match pooled {
-                    true => {
-                        "rt => { const f = rt.compilerForms.takeNamespaces, c = rt.core.count; return f ? () => { const v = f(true); return v == null || c(v) === 0 ? null : v; } : () => null; }"
-                    }
-                    false => {
-                        "rt => { const f = rt.compilerForms.takeNamespaces, c = rt.core.count; return f ? () => { const v = f(); return v == null || c(v) === 0 ? null : v; } : () => null; }"
-                    }
+                    true => "rt => () => rt.compilerForms.takeNamespaces?.(true) ?? null",
+                    false => "rt => () => rt.compilerForms.takeNamespaces?.() ?? null",
                 };
                 let function = engine.evaluate_unit(source).map_err(|e| e.to_string())?;
                 cached.set(Some(function));
-                engine.call(function, &[]).map_err(|e| e.to_string())?
+                function
             }
         };
+        let value = engine.call(function, &[]).map_err(|e| e.to_string())?;
         Self::export_namespaces(engine, value)
     }
     fn take_namespaces_from(
@@ -6330,7 +6333,9 @@ fn analyze_unit(
             // coordinator's log so far stays its own (light-cljs-1004).
             // A unit a pool may place logs, besides what it adds, what it
             // touches that only such units added (light-cljs-1006).
-            let logs_namespaces = recording.capture && !nested && scope_engine.is_some();
+            let logs_namespaces = recording.capture
+                && !nested
+                && scope_engine.is_some_and(|engine| !engine.has_native_bridge());
             let session = (!on_worker).then(|| host.session_handle()).flatten();
             let captures_namespaces = logs_namespaces && (on_worker || session.is_some());
             let pooled = captures_namespaces
@@ -8594,6 +8599,99 @@ mod retention_tests {
             }
         }
         assert!(released > 0);
+    }
+
+    #[test]
+    fn native_unit_capture_does_not_root_namespace_wrappers() {
+        use crate::evaluator::{EvalError, ExecutionControl, MacroEvaluator, ValueId};
+        use std::cell::Cell;
+
+        struct NativeStub {
+            evaluations: Cell<usize>,
+            calls: Cell<usize>,
+        }
+
+        impl MacroEvaluator for NativeStub {
+            fn has_native_bridge(&self) -> bool {
+                true
+            }
+            fn control(&self) -> ExecutionControl {
+                ExecutionControl::new(&crate::evaluator::EvaluatorOptions::default()).unwrap()
+            }
+            fn evaluate_unit(&self, _source: &str) -> Result<ValueId, EvalError> {
+                self.evaluations.set(self.evaluations.get() + 1);
+                Err(EvalError("native stub must not evaluate JS wrappers".into()))
+            }
+            fn call(&self, _function: ValueId, _arguments: &[ValueId]) -> Result<ValueId, EvalError> {
+                self.calls.set(self.calls.get() + 1);
+                Err(EvalError("native stub must not call JS wrappers".into()))
+            }
+            fn import_form(
+                &self,
+                _form: &Form,
+                _limits: crate::form_bridge::ConversionLimits,
+            ) -> Result<ValueId, EvalError> {
+                unreachable!()
+            }
+            fn import_data(
+                &self,
+                _data: &Datum,
+                _limits: crate::form_bridge::ConversionLimits,
+            ) -> Result<ValueId, EvalError> {
+                unreachable!()
+            }
+            fn export_form(
+                &self,
+                _id: ValueId,
+                _call: &Form,
+                _origin: crate::compiler_data::ExpansionOrigin,
+                _limits: crate::form_bridge::ConversionLimits,
+            ) -> Result<Form, EvalError> {
+                unreachable!()
+            }
+            fn release(&self, _id: ValueId) -> Result<(), EvalError> {
+                Ok(())
+            }
+        }
+
+        let host = MacroHost::new();
+        for handoff in 0..4 {
+            let stub = NativeStub {
+                evaluations: Cell::new(0),
+                calls: Cell::new(0),
+            };
+            let pooled = handoff % 2 == 0;
+            let entries = CompilationSession::take_namespaces_from_cached(
+                &stub,
+                pooled,
+                host.engine.work_cache.take_namespaces_handle(pooled),
+            )
+            .unwrap();
+            assert!(entries.is_empty());
+            let guard = crate::macro_host::PendingCaptureGuard::install(
+                host.engine.work_cache.clone(),
+                crate::macro_host::PendingUnitCapture {
+                    on_worker: true,
+                    logs_gensyms: true,
+                    logs_namespaces: true,
+                    pooled,
+                    session: None,
+                    gensym_error: false,
+                    namespace_error: false,
+                    entered: false,
+                },
+            );
+            host.engine.on_engine_entry(&stub);
+            let pending = guard.finish().expect("pending capture completed");
+            assert!(pending.entered);
+            assert!(!pending.gensym_error);
+            assert!(!pending.namespace_error);
+            assert_eq!(stub.evaluations.get(), 0);
+            assert_eq!(stub.calls.get(), 0);
+            assert!(host.engine.work_cache.gensym_log_enabled.get());
+            assert!(host.engine.work_cache.take_namespaces_handle(true).get().is_none());
+            assert!(host.engine.work_cache.take_namespaces_handle(false).get().is_none());
+        }
     }
 }
 
