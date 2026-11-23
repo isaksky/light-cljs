@@ -1015,10 +1015,8 @@ impl EngineBinding {
         };
         let mut gensym_error = false;
         if logs_gensyms && !self.work_cache.gensym_log_enabled.get() {
-            if engine.has_native_bridge() {
-                self.work_cache.gensym_log_enabled.set(true);
-            } else if crate::compilation_session::CompilationSession::enable_gensym_log(engine)
-                .is_ok()
+            if engine.has_native_bridge()
+                || crate::compilation_session::CompilationSession::enable_gensym_log(engine).is_ok()
             {
                 self.work_cache.gensym_log_enabled.set(true);
             } else {
