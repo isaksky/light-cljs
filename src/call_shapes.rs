@@ -866,7 +866,8 @@ pub fn closed_functions_with_slots(
                 .parent_of(read)
                 .is_some_and(|call| atom_use(program, call, read))
         };
-        for &id in &order[range] {
+        for &id_raw in &order[range] {
+            let id = ExprId(id_raw as usize);
             let kind = &program.exprs[id.0].kind;
             let (atom_proto, proto_inherits, has_arity) = scan_closed_texts(program, kind);
             chunk.has_atom_prototypes |= atom_proto;
@@ -1178,7 +1179,8 @@ fn finish_closed_atoms(
         return;
     }
     if slots == Slots::ONE || scan.order.len() < PARALLEL_ATOM_SLOTS_THRESHOLD {
-        for &id in &scan.order {
+        for &id_raw in &scan.order {
+            let id = ExprId(id_raw as usize);
             let atom = match program.exprs[id.0].kind {
                 ExprKind::Local(local) => local_atoms[local.0],
                 ExprKind::Global(global) => global_atoms[global.0],
@@ -1203,7 +1205,8 @@ fn finish_closed_atoms(
         let global_atoms_ref = global_atoms.as_slice();
         let updates = crate::scheduler::map(slots, jobs, |range| {
             let mut found = Vec::new();
-            for &id in &order[range] {
+            for &id_raw in &order[range] {
+                let id = ExprId(id_raw as usize);
                 let atom = match program.exprs[id.0].kind {
                     ExprKind::Local(local) => local_atoms_ref[local.0],
                     ExprKind::Global(global) => global_atoms_ref[global.0],
@@ -1456,14 +1459,21 @@ enum ScanMode {
     Closed,
 }
 
+/// Sentinel parent values in [`Scan::parent`]: expression unreached / root
+/// (`NO_PARENT`) or reached from two or more parents (`MULTI_PARENT`).
+const NO_PARENT: u32 = u32::MAX;
+const MULTI_PARENT: u32 = u32::MAX - 1;
+
 /// What [`analyze`] and [`closed_functions`] decide without inference: the
 /// known functions and their shapes, which values escape, and the calls of
 /// known globals and of locals.
 struct Scan {
-    parent: Vec<Option<ExprId>>,
-    parents: Vec<u8>,
-    /// Every expression emission can reach, each after its parent.
-    order: Vec<ExprId>,
+    /// By `ExprId`: the unique parent `ExprId` as `u32`, [`NO_PARENT`] if none,
+    /// or [`MULTI_PARENT`] if reached from more than one parent.
+    parent: Vec<u32>,
+    /// Every expression emission can reach, each after its parent, stored as
+    /// compact `u32` `ExprId`s.
+    order: Vec<u32>,
     functions: Vec<FunctionShape>,
     /// By global: the function is known and does not escape.
     closed: Vec<bool>,
@@ -1518,6 +1528,7 @@ impl Scan {
         const PARALLEL_SCAN_THRESHOLD: usize = 4_096;
 
         let count = program.exprs.len();
+        assert!(count < MULTI_PARENT as usize, "fewer than 2^32 - 1 exprs");
         if slots == Slots::ONE || count < PARALLEL_SCAN_THRESHOLD {
             return Self::new_serial(program, exports, mode);
         }
@@ -1525,7 +1536,7 @@ impl Scan {
         // Collect the top-level `Do` spine in exact DFS pop order. If the spine
         // shares any node or has fewer than 2 top-level forms, fall back to the
         // serial DFS.
-        let mut spine_dos: Vec<ExprId> = Vec::new();
+        let mut spine_dos: Vec<u32> = Vec::new();
         let mut top_forms: Vec<ExprId> = Vec::new();
         let mut spine_parent: HashMap<ExprId, ExprId> = HashMap::new();
         let mut spine_seen = BitSet::new(count);
@@ -1534,7 +1545,7 @@ impl Scan {
         let mut stack = vec![program.root];
         while let Some(id) = stack.pop() {
             if let ExprKind::Do(items) = &program.exprs[id.0].kind {
-                spine_dos.push(id);
+                spine_dos.push(id.0 as u32);
                 for &child in items {
                     spine_parent.insert(child, id);
                     if spine_seen.set(child.0) {
@@ -1558,8 +1569,8 @@ impl Scan {
         struct ScanSlice {
             touched_spine: bool,
             visited: BitSet,
-            /// `(expr_id, parent_id, multi_parent)` in exact DFS order.
-            nodes: Vec<(u32, u32, bool)>,
+            /// `(expr_id, parent_id_or_MULTI_PARENT)` in exact DFS order.
+            nodes: Vec<(u32, u32)>,
             defs: Vec<(GlobalId, ExprId)>,
             unfixed: Vec<GlobalId>,
             global_escaped: Vec<GlobalId>,
@@ -1588,10 +1599,10 @@ impl Scan {
         let spine_parent_ref = &spine_parent;
         let spine_seen_ref = &spine_seen;
 
-        let slices = crate::scheduler::map(slots, jobs, |range| {
+        let mut slices = crate::scheduler::map(slots, jobs, |range| {
             let mut visited = BitSet::new(count);
             let mut multi_parent = BitSet::new(count);
-            let mut nodes: Vec<(u32, u32, bool)> = Vec::new();
+            let mut nodes: Vec<(u32, u32)> = Vec::new();
             let mut pending: Vec<(ExprId, ExprId)> = Vec::new();
             let mut touched_spine = false;
 
@@ -1600,7 +1611,7 @@ impl Scan {
                 visited.set(form.0);
                 pending.push((form, par));
                 while let Some((id, id_par)) = pending.pop() {
-                    nodes.push((id.0 as u32, id_par.0 as u32, false));
+                    nodes.push((id.0 as u32, id_par.0 as u32));
                     visit_children(&program.exprs[id.0].kind, |child| {
                         if spine_seen_ref.get(child.0) {
                             touched_spine = true;
@@ -1643,14 +1654,14 @@ impl Scan {
             }
             for node in &mut slice.nodes {
                 if multi_parent.get(node.0 as usize) {
-                    node.2 = true;
+                    node.1 = MULTI_PARENT;
                 }
             }
             drop(multi_parent);
 
-            for &(id_raw, par_raw, is_multi) in &slice.nodes {
+            for &(id_raw, par_raw) in &slice.nodes {
                 let id = ExprId(id_raw as usize);
-                let parent_of = (!is_multi).then_some(ExprId(par_raw as usize));
+                let parent_of = (par_raw < MULTI_PARENT).then_some(ExprId(par_raw as usize));
                 let callee_of = parent_of.filter(|call| {
                     matches!(
                         program.exprs[call.0].kind,
@@ -1761,23 +1772,24 @@ impl Scan {
         // Verify slices are completely disjoint from each other and from the spine.
         let mut global_visited = BitSet::new(count);
         for &id in &spine_dos {
-            global_visited.set(id.0);
+            global_visited.set(id as usize);
         }
-        for slice in &slices {
+        for slice in &mut slices {
             if slice.touched_spine || global_visited.intersects(&slice.visited) {
                 return Self::new_serial(program, exports, mode);
             }
             global_visited.union_with(&slice.visited);
+            // Release per-slice bitsets before allocating merged tables.
+            slice.visited.words = Vec::new();
         }
         drop(global_visited);
+        drop(spine_seen);
 
         let globals = program.globals.len();
         let locals = program.locals.len();
-        let mut parent: Vec<Option<ExprId>> = vec![None; count];
-        let mut parents = vec![0u8; count];
+        let mut parent = vec![NO_PARENT; count];
         for (&child, &par) in &spine_parent {
-            parent[child.0] = Some(par);
-            parents[child.0] = 1;
+            parent[child.0] = par.0 as u32;
         }
         let total_nodes: usize = slices.iter().map(|s| s.nodes.len()).sum();
         let mut order = if keep_order {
@@ -1823,12 +1835,10 @@ impl Scan {
         };
 
         for slice in slices {
-            for (id_raw, par_raw, is_multi) in slice.nodes {
-                let id = id_raw as usize;
-                parent[id] = Some(ExprId(par_raw as usize));
-                parents[id] = if is_multi { 2 } else { 1 };
+            for (id_raw, par_raw) in slice.nodes {
+                parent[id_raw as usize] = par_raw;
                 if keep_order {
-                    order.push(ExprId(id));
+                    order.push(id_raw);
                 }
             }
             for (global, def_id) in slice.defs {
@@ -1875,7 +1885,6 @@ impl Scan {
             exports,
             mode,
             parent,
-            parents,
             order,
             top,
             definitions,
@@ -1896,28 +1905,36 @@ impl Scan {
 
     fn new_serial(program: &Program, exports: &[GlobalId], mode: ScanMode) -> Self {
         let count = program.exprs.len();
+        assert!(count < MULTI_PARENT as usize, "fewer than 2^32 - 1 exprs");
         let track_callbacks = mode == ScanMode::Closed;
         let track_inferred = mode == ScanMode::Full;
         // Every expression emission can reach, each with its parent; an
         // expression reached from two places has no single parent and counts as
         // read.
-        let mut parent: Vec<Option<ExprId>> = vec![None; count];
-        let mut parents = vec![0u8; count];
-        let mut order = Vec::new();
-        let mut visited = vec![false; count];
-        visited[program.root.0] = true;
+        let mut parent = vec![NO_PARENT; count];
+        let mut order: Vec<u32> = Vec::new();
+        let mut visited = BitSet::new(count);
+        visited.set(program.root.0);
         let mut pending = vec![program.root];
         while let Some(id) = pending.pop() {
-            order.push(id);
+            order.push(id.0 as u32);
             visit_children(&program.exprs[id.0].kind, |child| {
-                parents[child.0] = parents[child.0].saturating_add(1);
-                parent[child.0] = Some(id);
-                if !std::mem::replace(&mut visited[child.0], true) {
+                let slot = &mut parent[child.0];
+                *slot = if *slot == NO_PARENT {
+                    id.0 as u32
+                } else {
+                    MULTI_PARENT
+                };
+                if !visited.set(child.0) {
                     pending.push(child);
                 }
             });
         }
-        let parent_of = |id: ExprId| parent[id.0].filter(|_| parents[id.0] == 1);
+        drop(visited);
+        let parent_of = |id: ExprId| {
+            let p = parent[id.0];
+            (p < MULTI_PARENT).then_some(ExprId(p as usize))
+        };
         let callee_of = |id: ExprId| {
             parent_of(id).filter(|call| {
                 matches!(program.exprs[call.0].kind, ExprKind::Call { callee, .. } if callee == id)
@@ -1970,7 +1987,8 @@ impl Scan {
             let call = parent_of(id)?;
             callback_index(program, call, id).map(|index| (call, index))
         };
-        for &id in &order {
+        for &id_raw in &order {
+            let id = ExprId(id_raw as usize);
             let mut assign = |target: &ExprId| {
                 if let ExprKind::Global(global) = program.exprs[target.0].kind {
                     fixed[global.0] = false;
@@ -2070,7 +2088,6 @@ impl Scan {
             exports,
             mode,
             parent,
-            parents,
             order,
             top,
             definitions,
@@ -2094,9 +2111,8 @@ impl Scan {
         program: &Program,
         exports: &[GlobalId],
         mode: ScanMode,
-        parent: Vec<Option<ExprId>>,
-        parents: Vec<u8>,
-        order: Vec<ExprId>,
+        parent: Vec<u32>,
+        order: Vec<u32>,
         top: Vec<bool>,
         definitions: Vec<u32>,
         definition: Vec<Option<ExprId>>,
@@ -2122,7 +2138,6 @@ impl Scan {
         let mut scan = Self {
             global_reads,
             parent,
-            parents,
             order,
             functions: vec![FunctionShape::Generic; globals],
             closed: vec![false; globals],
@@ -2274,7 +2289,12 @@ impl Scan {
     }
 
     fn parent_of(&self, id: ExprId) -> Option<ExprId> {
-        self.parent[id.0].filter(|_| self.parents[id.0] == 1)
+        let p = self.parent[id.0];
+        (p < MULTI_PARENT).then_some(ExprId(p as usize))
+    }
+
+    fn has_multiple_parents(&self, id: ExprId) -> bool {
+        self.parent[id.0] == MULTI_PARENT
     }
 
     /// Where the value of `id` goes: the expression that receives it and its
@@ -2325,7 +2345,8 @@ impl LocalFunctions {
             functions: Vec::new(),
             calls: Vec::new(),
         };
-        for &id in &scan.order {
+        for &id_raw in &scan.order {
+            let id = ExprId(id_raw as usize);
             let (ExprKind::Let { bindings, .. } | ExprKind::LetFn { bindings, .. }) =
                 &program.exprs[id.0].kind
             else {
@@ -2468,7 +2489,7 @@ impl LocalFunctions {
                             for (offset, method) in methods.iter().enumerate().rev() {
                                 let number = first[index as usize] + offset;
                                 if std::mem::replace(&mut visited[method.body.0], true)
-                                    || scan.parents[method.body.0] > 1
+                                    || scan.has_multiple_parents(method.body)
                                 {
                                     walk.scoped[number] = true;
                                 }
@@ -2504,7 +2525,7 @@ impl LocalFunctions {
                 }
                 visit_children(&program.exprs[id.0].kind, |child| {
                     // An expression with two parents is emitted in both places.
-                    if scan.parents[child.0] > 1 {
+                    if scan.has_multiple_parents(child) {
                         walk.scope_frames();
                     }
                     if !std::mem::replace(&mut visited[child.0], true) {
