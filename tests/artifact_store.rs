@@ -1446,8 +1446,119 @@ fn trim_preserves_a_live_staged_batch_and_cleans_up_after_writer_exit() {
         "trim must remove abandoned staged files after writer exit: {trim_after_exit}"
     );
     assert!(temporaries(&objects).is_empty());
+    let lingering_leases: Vec<PathBuf> = fs::read_dir(store.root())
+        .unwrap()
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with(".lease-"))
+        .map(|entry| entry.path())
+        .collect();
+    assert!(
+        lingering_leases.is_empty(),
+        "dead lease files must be removed by trim: {lingering_leases:?}"
+    );
     for namespace in namespaces("leased", false) {
         assert_eq!(check_candidates(&store, &namespace), Ok(1), "{namespace}");
     }
     assert_eq!(object_count(&store), LEAVES + 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn large_staged_batch_publishes_under_low_nofile_limit() {
+    let dir = TempDir::new("store-batch-low-nofile");
+    let cache = dir.join("cache");
+    // 10 variants x 7 namespaces = 70 staged artifacts held simultaneously in
+    // one `publish_batch` child under a soft NOFILE cap of 32.
+    let variants: Vec<PathBuf> = (1..=10)
+        .map(|variant| source_root(&dir, "lowfd", variant, false))
+        .collect();
+    let exe = std::env::current_exe().unwrap();
+    let mut command = Command::new("sh");
+    command
+        .args([
+            "-c",
+            "ulimit -n 32 && exec \"$0\" \"$@\"",
+            exe.to_str().unwrap(),
+            "child",
+            "--exact",
+            "--ignored",
+            "--nocapture",
+            "--quiet",
+        ])
+        .env(CHILD, "publish_batch")
+        .env("STORE", path(&cache))
+        .env("ROOTS", roots(&variants.iter().collect::<Vec<_>>()))
+        .env("ENTRY", "lowfd.main")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let (stdout, stderr) = finish(command.spawn().unwrap());
+    assert_eq!(
+        lines(&stdout, "published").len(),
+        10 * (LEAVES + 1),
+        "all 70 staged artifacts must publish under ulimit -n 32: {stdout}\n{stderr}"
+    );
+    assert!(
+        lines(&stderr, "warning:").is_empty(),
+        "unexpected cache warning under low NOFILE: {stderr}"
+    );
+    let store = Store::open(&cache);
+    assert!(temporaries(&store.root().join("objects")).is_empty());
+    assert!(temporaries(&store.root().join("index")).is_empty());
+    for namespace in namespaces("lowfd", false) {
+        assert_eq!(check_candidates(&store, &namespace), Ok(10), "{namespace}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn trim_removes_a_stale_fifo_without_blocking() {
+    let dir = TempDir::new("store-trim-fifo");
+    let cache = dir.join("cache");
+    let root = source_root(&dir, "fifo", 1, false);
+    run(
+        "publish_batch",
+        &[
+            ("STORE", path(&cache)),
+            ("ROOTS", path(&root)),
+            ("ENTRY", "fifo.main".into()),
+        ],
+    );
+    let store = Store::open(&cache);
+    let temp_fifo = store.root().join("objects").join(".tmp-stale-fifo");
+    let lease_fifo = store.root().join(".lease-stale-fifo");
+    for fifo in [&temp_fifo, &lease_fifo] {
+        let status = Command::new("mkfifo").arg(fifo).status().unwrap();
+        assert!(status.success(), "mkfifo failed for {}", fifo.display());
+    }
+    std::thread::sleep(Duration::from_millis(20));
+
+    let mut trimmer = spawn(
+        "trim",
+        &[
+            ("STORE", path(&cache)),
+            ("PER_NAMESPACE", "3".into()),
+            ("MAX_BYTES", (1u64 << 30).to_string()),
+            ("GRACE_MS", "0".into()),
+        ],
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if trimmer.try_wait().unwrap().is_some() {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = trimmer.kill();
+            let _ = trimmer.wait();
+            panic!("trimmer hung on stale FIFO");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let (stdout, stderr) = finish(trimmer);
+    assert!(
+        stdout.contains("temporaries: 1,"),
+        "stale temporary FIFO must be counted as removed: {stdout}\n{stderr}"
+    );
+    assert!(!temp_fifo.exists(), "stale temporary FIFO must be removed");
+    assert!(!lease_fifo.exists(), "stale lease FIFO must be removed");
 }
