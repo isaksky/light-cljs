@@ -1729,6 +1729,109 @@ where
         .collect()
 }
 
+struct MapPoolState {
+    tasks: VecDeque<Box<dyn FnOnce() + Send>>,
+    shutdown: bool,
+}
+
+struct MapPoolShared {
+    mu: Mutex<MapPoolState>,
+    cv: Condvar,
+}
+
+/// Persistent pure-Rust worker threads for repeated parallel batches (such as
+/// sliding-window cache lookup before the build's [`crate::compilation_session::UnitPool`]
+/// starts), avoiding repeated OS thread spawn/join and allocator thread-heap churn.
+pub(crate) struct MapPool {
+    shared: Arc<MapPoolShared>,
+    workers: Vec<thread::JoinHandle<()>>,
+}
+
+impl MapPool {
+    /// Start `slots.workers()` persistent worker threads. With [`Slots::ONE`],
+    /// spawns no threads.
+    pub(crate) fn new(slots: Slots) -> Self {
+        let count = slots.workers();
+        let shared = Arc::new(MapPoolShared {
+            mu: Mutex::new(MapPoolState {
+                tasks: VecDeque::new(),
+                shutdown: false,
+            }),
+            cv: Condvar::new(),
+        });
+        let mut workers = Vec::with_capacity(count);
+        for index in 0..count {
+            let worker_shared = Arc::clone(&shared);
+            if let Ok(handle) = thread::Builder::new()
+                .name(format!("light-cljs-map-{}", index + 1))
+                .stack_size(MAP_WORKER_STACK)
+                .spawn(move || {
+                    loop {
+                        let task = {
+                            let mut state = worker_shared
+                                .mu
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            while state.tasks.is_empty() && !state.shutdown {
+                                state = worker_shared
+                                    .cv
+                                    .wait(state)
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            }
+                            if let Some(task) = state.tasks.pop_front() {
+                                task
+                            } else {
+                                break;
+                            }
+                        };
+                        task();
+                    }
+                })
+            {
+                workers.push(handle);
+            }
+        }
+        Self { shared, workers }
+    }
+
+    /// Enqueue a task for one of this pool's workers. Returns `false` if no
+    /// worker threads were spawned.
+    pub(crate) fn submit(&self, task: Box<dyn FnOnce() + Send>) -> bool {
+        if self.workers.is_empty() {
+            return false;
+        }
+        let mut state = self
+            .shared
+            .mu
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.shutdown {
+            return false;
+        }
+        state.tasks.push_back(task);
+        drop(state);
+        self.shared.cv.notify_one();
+        true
+    }
+}
+
+impl Drop for MapPool {
+    fn drop(&mut self) {
+        {
+            let mut state = self
+                .shared
+                .mu
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.shutdown = true;
+            self.shared.cv.notify_all();
+        }
+        for handle in self.workers.drain(..) {
+            let _ = handle.join();
+        }
+    }
+}
+
 /// How many of `deques` workers serve each phase ([`Config::servers`]):
 /// all of them on the inline path or when none are configured.
 fn servers(config: &Config, deques: usize) -> Vec<usize> {

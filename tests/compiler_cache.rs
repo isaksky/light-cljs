@@ -2656,6 +2656,11 @@ fn sliding_window_batch_lookup_recovers_from_mid_window_corruption() {
     seal(&mut bytes).unwrap();
     fs::write(&n3_object, &bytes).unwrap();
 
+    let recovered_whole: u64 = project
+        .objects()
+        .iter()
+        .map(|path| fs::metadata(path).unwrap().len())
+        .sum();
     let recovered = project.cached("main", &["--jobs", "8"]);
     assert_eq!(recovered.js, oracle.js);
     assert_eq!(recovered.run(), "28\n");
@@ -2663,6 +2668,12 @@ fn sliding_window_batch_lookup_recovers_from_mid_window_corruption() {
         recovered.stat("cache.miss.unreadable"),
         1,
         "{}",
+        recovered.stats
+    );
+    assert_eq!(
+        recovered.stat("cache.bytes-read"),
+        recovered_whole,
+        "mid-window corruption must count completed Stage C reads once and reuse matching later prefetched hits without re-reading:\n{}",
         recovered.stats
     );
     assert!(
@@ -2797,5 +2808,532 @@ fn warm_batch_trims_missing_candidate_before_older_hit() {
         store.candidates("plain").len(),
         1,
         "missing newer candidate before older hit must still trigger trim to drop the dangling index entry"
+    );
+}
+
+#[test]
+fn batched_config_wide_miss_counts_and_reuses_lookahead_reads() {
+    use light_cljs::artifact_codec::manifest_end;
+
+    let files = [
+        ("n0.cljs", "(ns n0) (def v0 1)"),
+        ("n1.cljs", "(ns n1 (:require [n0])) (def v1 (+ n0/v0 2))"),
+        ("n2.cljs", "(ns n2 (:require [n1])) (def v2 (+ n1/v1 3))"),
+        ("n3.cljs", "(ns n3 (:require [n2])) (def v3 (+ n2/v2 4))"),
+        (
+            "main.cljs",
+            "(ns main (:require [n3])) (js/console.log n3/v3)",
+        ),
+    ];
+    let project = Project::new(&files);
+    let cold = project.cached("main", &["--jobs", "4"]);
+    assert_eq!(cold.stat("cache.published"), 5, "{}", cold.stats);
+
+    let manifests: u64 = project
+        .objects()
+        .iter()
+        .map(|path| manifest_end(&fs::read(path).unwrap()).unwrap())
+        .sum();
+
+    // Change a build option so every namespace misses on candidate 0.
+    // Stage A lookahead reads each namespace's manifest prefix once and
+    // retains unread lookahead entries across misses so total `bytes-read`
+    // matches the exact sum of one manifest prefix per namespace.
+    let changed = project.cached("main", &["--jobs", "4", "--elide-asserts"]);
+    assert_eq!(changed.stat("cache.hits"), 0, "{}", changed.stats);
+    assert_eq!(changed.stat("cache.misses"), 5, "{}", changed.stats);
+    assert_eq!(
+        changed.stat("cache.bytes-read"),
+        manifests,
+        "config-wide miss must count and reuse lookahead prefix reads exactly once:\n{}",
+        changed.stats
+    );
+}
+
+#[test]
+fn lookup_window_bounds_older_candidate_working_set() {
+    use light_cljs::analyzer::AnalysisOptions;
+    use light_cljs::artifact_codec::{DecodeLimits, manifest_end, read_manifest};
+    use light_cljs::compile_cache::{CacheOptions, CompileCache};
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded_with_provider};
+    use light_cljs::macro_host::MacroHost;
+    use light_cljs::scheduler::Slots;
+    use light_cljs::source_provider::FileSourceProvider;
+    use std::sync::{Arc, Mutex};
+
+    let dir = TempDir::new("lookup-window-older-working-set");
+    let src_dir = dir.join("src");
+    let cache_dir = dir.join("cache");
+    fs::create_dir_all(&src_dir).unwrap();
+
+    let payload = "x".repeat(4096);
+    let write_rev = |large: bool| {
+        for i in 0..7usize {
+            let req = if i == 0 {
+                String::new()
+            } else {
+                format!(" (:require [n{}])", i - 1)
+            };
+            let body = if large {
+                format!("(ns n{i}{req}) (def s \"{payload}-{i}\") (def v {i})")
+            } else {
+                format!("(ns n{i}{req}) (def v {i})")
+            };
+            fs::write(src_dir.join(format!("n{i}.cljs")), body).unwrap();
+        }
+        let main_body = if large {
+            format!("(ns main (:require [n6])) (def s \"{payload}-main\") (def out n6/v)")
+        } else {
+            "(ns main (:require [n6])) (def out n6/v)".to_owned()
+        };
+        fs::write(src_dir.join("main.cljs"), main_body).unwrap();
+    };
+
+    let run_build = |cache: &mut CompileCache| {
+        let provider = FileSourceProvider::new(vec![src_dir.clone()]);
+        let mut host = MacroHost::new();
+        let mut warnings = Vec::new();
+        analyze_namespace_entry_recorded_with_provider(
+            "main",
+            &provider,
+            &mut host,
+            AnalysisOptions::default(),
+            &mut warnings,
+            EntryRecorders {
+                cache: Some(cache),
+                slots: Slots::new(4).unwrap(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    };
+
+    let cache_opts = CacheOptions {
+        dir: cache_dir.clone(),
+        ..CacheOptions::default()
+    };
+
+    // Revision 1: 8 large namespaces.
+    write_rev(true);
+    {
+        let host = MacroHost::new();
+        let mut cache = CompileCache::open_with_slots(
+            &cache_opts,
+            &host,
+            AnalysisOptions::default(),
+            "main",
+            Slots::new(4).unwrap(),
+        );
+        run_build(&mut cache);
+        cache.finish();
+        assert_eq!(cache.take_counts().published, 8);
+    }
+    let large_objects: Vec<PathBuf> = fs::read_dir(cache_dir.join("v1/objects"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| !name_of(p).starts_with(".tmp"))
+        .collect();
+    assert_eq!(large_objects.len(), 8);
+    let large_whole: u64 = large_objects
+        .iter()
+        .map(|p| fs::metadata(p).unwrap().len())
+        .sum();
+    let max_large_len: u64 = large_objects
+        .iter()
+        .map(|p| fs::metadata(p).unwrap().len())
+        .max()
+        .unwrap();
+
+    // Revision 2: 8 small namespaces (newest index entries).
+    write_rev(false);
+    {
+        let host = MacroHost::new();
+        let mut cache = CompileCache::open_with_slots(
+            &cache_opts,
+            &host,
+            AnalysisOptions::default(),
+            "main",
+            Slots::new(4).unwrap(),
+        );
+        run_build(&mut cache);
+        cache.finish();
+        assert_eq!(cache.take_counts().published, 8);
+    }
+    let small_objects: Vec<PathBuf> = fs::read_dir(cache_dir.join("v1/objects"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| !name_of(p).starts_with(".tmp") && !large_objects.contains(p))
+        .collect();
+    assert_eq!(small_objects.len(), 8);
+    let small_total: u64 = small_objects
+        .iter()
+        .map(|p| fs::metadata(p).unwrap().len())
+        .sum();
+    let small_manifests: u64 = small_objects
+        .iter()
+        .map(|p| manifest_end(&fs::read(p).unwrap()).unwrap())
+        .sum();
+
+    // Revert to revision 1 (large older candidates behind small newest entries).
+    write_rev(true);
+
+    // Case 1: encoded cap admits all 8 small newest entries in Stage A, while
+    // Stage B charges the selected older Reading::length() and splits Stage C
+    // into bounded batches; tight shared decoded cap also exercises deferred
+    // single-artifact fallback without spurious undecodable misses.
+    let encoded_cap = (max_large_len * 2 + 512).max(small_total + 1024);
+    assert!(
+        large_whole > encoded_cap,
+        "large_whole ({large_whole}) must exceed encoded_cap ({encoded_cap})"
+    );
+    let batches: Arc<Mutex<Vec<(usize, u64)>>> = Arc::new(Mutex::new(Vec::new()));
+    let batches_hook = Arc::clone(&batches);
+    {
+        let host = MacroHost::new();
+        let mut cache = CompileCache::open_with_slots(
+            &cache_opts,
+            &host,
+            AnalysisOptions::default(),
+            "main",
+            Slots::new(4).unwrap(),
+        );
+        cache.set_lookup_window_limits(encoded_cap, 12 * 1024);
+        cache.set_stage_c_batch_hook(Some(Arc::new(move |len, bytes| {
+            batches_hook.lock().unwrap().push((len, bytes));
+        })));
+        run_build(&mut cache);
+        cache.finish();
+        let counts = cache.take_counts();
+        assert_eq!(counts.hits, 8);
+        assert_eq!(counts.published, 0);
+        assert_eq!(counts.bytes_read, small_manifests + large_whole);
+    }
+    let recorded = batches.lock().unwrap().clone();
+    assert!(
+        recorded.len() >= 2,
+        "expected older large candidates to split into multiple Stage C batches, got {recorded:?}"
+    );
+    for &(len, bytes) in &recorded {
+        if len > 1 {
+            assert!(
+                bytes <= encoded_cap,
+                "multi-item Stage C batch exceeded encoded cap: len={len}, bytes={bytes}, cap={encoded_cap}"
+            );
+        }
+    }
+
+    // Case 2: an oversized older candidate (> encoded_cap, while multiple
+    // small newest entries still fit within encoded_cap for Stage A) runs
+    // alone in Stage C under the existing per-artifact DecodeLimits and still
+    // hits cleanly.
+    let single_cap = (max_large_len - 1).max(small_total + 512);
+    assert!(
+        small_total < single_cap && max_large_len > single_cap,
+        "small_total ({small_total}) < single_cap ({single_cap}) < max_large_len ({max_large_len})"
+    );
+    let single_batches: Arc<Mutex<Vec<(usize, u64)>>> = Arc::new(Mutex::new(Vec::new()));
+    let single_hook = Arc::clone(&single_batches);
+    {
+        let host = MacroHost::new();
+        let mut cache = CompileCache::open_with_slots(
+            &cache_opts,
+            &host,
+            AnalysisOptions::default(),
+            "main",
+            Slots::new(4).unwrap(),
+        );
+        cache.set_lookup_window_limits(single_cap, 1024);
+        cache.set_stage_c_batch_hook(Some(Arc::new(move |len, bytes| {
+            single_hook.lock().unwrap().push((len, bytes));
+        })));
+        run_build(&mut cache);
+        cache.finish();
+        let counts = cache.take_counts();
+        assert_eq!(counts.hits, 8);
+        assert_eq!(counts.published, 0);
+        assert_eq!(counts.bytes_read, small_manifests + large_whole);
+    }
+    let recorded_single = single_batches.lock().unwrap().clone();
+    assert_eq!(
+        recorded_single.len(),
+        8,
+        "every oversized older candidate must run alone in Stage C, got {recorded_single:?}"
+    );
+    assert!(
+        recorded_single.iter().all(|&(len, _)| len == 1),
+        "oversized candidates must run alone in Stage C, got {recorded_single:?}"
+    );
+    // Keep unused import check clean when reading manifest metadata.
+    assert_eq!(
+        read_manifest(
+            &fs::read(&large_objects[0]).unwrap(),
+            &DecodeLimits::default()
+        )
+        .unwrap()
+        .length,
+        fs::metadata(&large_objects[0]).unwrap().len()
+    );
+}
+
+#[test]
+fn cache_lookup_respects_two_cpu_slots() {
+    use light_cljs::analyzer::AnalysisOptions;
+    use light_cljs::compile_cache::{CacheOptions, CompileCache};
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded_with_provider};
+    use light_cljs::macro_host::MacroHost;
+    use light_cljs::scheduler::Slots;
+    use light_cljs::source_provider::FileSourceProvider;
+    use std::collections::HashSet;
+    use std::sync::{Arc, Mutex};
+
+    let dir = TempDir::new("cache-lookup-two-slots");
+    let src_dir = dir.join("src");
+    let cache_dir = dir.join("cache");
+    fs::create_dir_all(&src_dir).unwrap();
+
+    // `m0` is required before `h1..h4` by `main` and has macro-free deferred
+    // units; `h1..h4` do not depend on `m0`, so modifying `m0` triggers a miss
+    // that starts the `--jobs 2` UnitPool followed by a 4-namespace cache hit
+    // window.
+    let write_sources = |m0_val: i32| {
+        fs::write(
+            src_dir.join("m0.cljs"),
+            format!(
+                "(ns m0)\n(defn f0 [x] (+ x {m0_val}))\n(defn f1 [x] (* x 2))\n(defn f2 [x] (- x 1))"
+            ),
+        )
+        .unwrap();
+        for i in 1..=4usize {
+            fs::write(
+                src_dir.join(format!("h{i}.cljs")),
+                format!("(ns h{i}) (defn g{i} [x] (+ x {i}))"),
+            )
+            .unwrap();
+        }
+        fs::write(
+            src_dir.join("main.cljs"),
+            "(ns main (:require [m0] [h1] [h2] [h3] [h4])) (def out (+ (m0/f0 1) (h1/g1 1) (h2/g2 1) (h3/g3 1) (h4/g4 1)))",
+        )
+        .unwrap();
+    };
+
+    let cache_opts = CacheOptions {
+        dir: cache_dir,
+        ..CacheOptions::default()
+    };
+
+    // Cold fill.
+    write_sources(10);
+    {
+        let provider = FileSourceProvider::new(vec![src_dir.clone()]);
+        let mut host = MacroHost::new();
+        let mut cache = CompileCache::open_with_slots(
+            &cache_opts,
+            &host,
+            AnalysisOptions::default(),
+            "main",
+            Slots::new(2).unwrap(),
+        );
+        analyze_namespace_entry_recorded_with_provider(
+            "main",
+            &provider,
+            &mut host,
+            AnalysisOptions::default(),
+            &mut Vec::new(),
+            EntryRecorders {
+                cache: Some(&mut cache),
+                slots: Slots::new(2).unwrap(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        cache.finish();
+        assert_eq!(cache.take_counts().published, 6);
+    }
+
+    // Mutate `m0` so it misses and boots the `--jobs 2` UnitPool, followed by
+    // the cached hit window `h1..h4`. Track Stage A and Stage C threads
+    // separately: Stage A for `m0..` runs before `UnitPool` starts (using the
+    // pre-pool MapPool, which is shut down before `UnitPool` starts), while
+    // Stage C for `h1..h4` runs after `UnitPool` starts and must use only the
+    // active `UnitPool` worker plus coordinator (<= 2 slots, no `light-cljs-map-*`).
+    write_sources(20);
+    let stage_c_threads: Arc<Mutex<HashSet<(std::thread::ThreadId, Option<String>)>>> =
+        Arc::new(Mutex::new(HashSet::new()));
+    let hook_threads = Arc::clone(&stage_c_threads);
+    {
+        let provider = FileSourceProvider::new(vec![src_dir.clone()]);
+        let mut host = MacroHost::new();
+        let mut cache = CompileCache::open_with_slots(
+            &cache_opts,
+            &host,
+            AnalysisOptions::default(),
+            "main",
+            Slots::new(2).unwrap(),
+        );
+        cache.set_lookup_work_hook(Some(Arc::new(move |stage| {
+            if stage == "stage-c" {
+                let cur = std::thread::current();
+                hook_threads
+                    .lock()
+                    .unwrap()
+                    .insert((cur.id(), cur.name().map(str::to_owned)));
+            }
+        })));
+        analyze_namespace_entry_recorded_with_provider(
+            "main",
+            &provider,
+            &mut host,
+            AnalysisOptions::default(),
+            &mut Vec::new(),
+            EntryRecorders {
+                cache: Some(&mut cache),
+                slots: Slots::new(2).unwrap(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        cache.finish();
+        let counts = cache.take_counts();
+        assert_eq!(counts.hits, 4);
+        assert_eq!(counts.misses.len(), 2);
+    }
+
+    let threads = stage_c_threads.lock().unwrap();
+    assert!(!threads.is_empty(), "Stage C must have executed for h1..h4");
+    assert!(
+        threads.len() <= 2,
+        "at --jobs 2, Stage C after UnitPool startup must run on at most 2 CPU slots, saw {threads:?}"
+    );
+    for (_, name) in threads.iter() {
+        assert!(
+            !name
+                .as_deref()
+                .is_some_and(|n| n.starts_with("light-cljs-map-")),
+            "after UnitPool starts, cache lookup must share UnitPool slots rather than MapPool: {threads:?}"
+        );
+    }
+}
+
+#[test]
+fn batched_cache_decode_cancellation_stops_the_build() {
+    use light_cljs::analyzer::AnalysisOptions;
+    use light_cljs::compile_cache::{CacheOptions, CompileCache};
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded_with_provider};
+    use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
+    use light_cljs::macro_host::MacroHost;
+    use light_cljs::scheduler::Slots;
+    use light_cljs::source_provider::FileSourceProvider;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    let dir = TempDir::new("batched-stage-c-cancel");
+    let src_dir = dir.join("src");
+    let cache_dir = dir.join("cache");
+    fs::create_dir_all(&src_dir).unwrap();
+    for i in 0..5usize {
+        let req = if i == 0 {
+            String::new()
+        } else {
+            format!(" (:require [n{}])", i - 1)
+        };
+        fs::write(
+            src_dir.join(format!("n{i}.cljs")),
+            format!("(ns n{i}{req}) (def v {i})"),
+        )
+        .unwrap();
+    }
+    fs::write(
+        src_dir.join("main.cljs"),
+        "(ns main (:require [n4])) (def out n4/v)",
+    )
+    .unwrap();
+
+    let cache_opts = CacheOptions {
+        dir: cache_dir,
+        ..CacheOptions::default()
+    };
+
+    // Cold fill.
+    {
+        let provider = FileSourceProvider::new(vec![src_dir.clone()]);
+        let mut host = MacroHost::new();
+        let mut cache = CompileCache::open_with_slots(
+            &cache_opts,
+            &host,
+            AnalysisOptions::default(),
+            "main",
+            Slots::new(4).unwrap(),
+        );
+        analyze_namespace_entry_recorded_with_provider(
+            "main",
+            &provider,
+            &mut host,
+            AnalysisOptions::default(),
+            &mut Vec::new(),
+            EntryRecorders {
+                cache: Some(&mut cache),
+                slots: Slots::new(4).unwrap(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        cache.finish();
+        assert_eq!(cache.take_counts().published, 6);
+    }
+
+    // Cancel as soon as Stage C starts decoding the batched warm hits.
+    let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+    let control = evaluator.control();
+    let cancel_handle = control.clone();
+    let fired = Arc::new(AtomicBool::new(false));
+    let fired_hook = Arc::clone(&fired);
+
+    let provider = FileSourceProvider::new(vec![src_dir.clone()]);
+    let mut host = MacroHost::new();
+    let mut cache = CompileCache::open_with_slots(
+        &cache_opts,
+        &host,
+        AnalysisOptions::default(),
+        "main",
+        Slots::new(4).unwrap(),
+    );
+    cache.set_lookup_work_hook(Some(Arc::new(move |stage| {
+        if stage == "stage-c" && !fired_hook.swap(true, Ordering::SeqCst) {
+            cancel_handle.cancel();
+        }
+    })));
+    let result = analyze_namespace_entry_recorded_with_provider(
+        "main",
+        &provider,
+        &mut host,
+        AnalysisOptions::default(),
+        &mut Vec::new(),
+        EntryRecorders {
+            control: Some(&control),
+            cache: Some(&mut cache),
+            slots: Slots::new(4).unwrap(),
+            ..Default::default()
+        },
+    );
+    let err = result.expect_err("Stage C cancellation must stop the build");
+    assert!(
+        err.to_string().to_lowercase().contains("cancel"),
+        "expected cancellation error, got: {err}"
+    );
+    assert!(fired.load(Ordering::SeqCst), "Stage C hook must have fired");
+    let counts = cache.take_counts();
+    assert_eq!(counts.published, 0, "cancelled build must publish nothing");
+    assert!(
+        !counts
+            .misses
+            .iter()
+            .any(|(_, kind, _)| *kind == "undecodable" || *kind == "unreadable"),
+        "cancellation must not record a corruption miss: {:?}",
+        counts.misses
     );
 }

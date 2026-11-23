@@ -828,18 +828,21 @@ impl NamespaceKeys {
 
 /// Precompute [`Component::Source`] for `source_rec` (matching
 /// [`NamespaceKeys::next`]) without touching [`ManifestPrefix`].
-pub(crate) fn source_digest_from_loader(
-    source_rec: &crate::dependency_manifest::LoadedSource,
+pub(crate) fn source_digest_parts(
+    name: &str,
+    file: &str,
+    kind: SourceKind,
+    origin: SourceOrigin,
     text: &str,
     entry: &str,
 ) -> Digest {
     let mut source = Fingerprint::new("light-cljs source");
     source
-        .text(&source_rec.name)
-        .flag(source_rec.name == entry)
-        .text(&source_rec.file)
-        .flag(source_rec.kind == SourceKind::Cljc)
-        .flag(source_rec.origin == SourceOrigin::Bundled)
+        .text(name)
+        .flag(name == entry)
+        .text(file)
+        .flag(kind == SourceKind::Cljc)
+        .flag(origin == SourceOrigin::Bundled)
         .digest(&digest(text.as_bytes()));
     source.finish()
 }

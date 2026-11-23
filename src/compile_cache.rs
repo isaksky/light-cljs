@@ -98,10 +98,43 @@ pub enum CacheCpuKind {
 /// Upper bound on consecutive candidate-bearing namespaces prefetched in one
 /// sliding-window cache lookup batch.
 const LOOKUP_WINDOW_MAX_NS: usize = 64;
-/// Upper bound on total encoded artifact bytes prefetched in one sliding-window
-/// cache lookup batch (3 MiB), bounding in-flight decoded memory to keep peak
-/// memory below the single-threaded/baseline budget.
+/// Upper bound on total encoded artifact bytes admitted into one Stage C
+/// parallel verify/decode batch (3 MiB), bounding in-flight encoded and
+/// decoded working set to keep peak memory within budget.
 const LOOKUP_WINDOW_MAX_BYTES: u64 = 3 * 1024 * 1024;
+/// Shared upper bound on decoded allocation bytes (in-flight plus retained
+/// results) across a multi-artifact Stage C batch (24 MiB). An oversized
+/// single artifact runs alone under its per-artifact [`DecodeLimits`].
+const LOOKUP_WINDOW_MAX_DECODED_BYTES: u64 = 24 * 1024 * 1024;
+
+enum CandidateRead {
+    BeginErr(crate::artifact_store::ReadError),
+    ManifestErr {
+        reading: crate::artifact_store::Reading,
+        error: artifact_codec::DecodeError,
+    },
+    ManifestOk {
+        reading: crate::artifact_store::Reading,
+        manifest: Box<artifact_codec::Manifest>,
+        inputs_check: Option<Result<(), Mismatch>>,
+    },
+    /// A `ManifestErr` whose `Reading::finish` has already run and had its
+    /// bytes accounted for, retained so a later re-check never re-reads it.
+    FinishedErr {
+        kind: &'static str,
+        message: String,
+    },
+}
+
+/// Completed Stage A (and any Stage B extra-candidate) manifest reads retained
+/// in bounded lookahead order so a miss or window-budget split never discards
+/// or re-reads already completed reads.
+struct LookaheadEntry {
+    id: NamespaceId,
+    source_digest: Digest,
+    resolution_digest: Digest,
+    reads: Vec<Option<CandidateRead>>,
+}
 
 /// A candidate matched and verified/decoded ahead of time during a sliding-window
 /// parallel cache lookup, waiting for serial deterministic install in Stage D.
@@ -110,7 +143,8 @@ struct PrefetchedHit {
     fields: ManifestFields,
     key: Box<FrontEndKey>,
     artifact_digest: Digest,
-    prefix_bytes_read: u64,
+    source_digest: Digest,
+    resolution_digest: Digest,
     body: PrefetchedBody,
     candidate_index: usize,
     prior_miss: Option<(&'static str, String)>,
@@ -120,15 +154,18 @@ struct PrefetchedHit {
 enum PrefetchedBody {
     Decoded {
         artifact: Box<NamespaceArtifact>,
-        body_bytes_read: u64,
+    },
+    /// Content-hash verified bytes whose parallel Stage C decode hit the
+    /// shared batch decoded-byte budget; decoded alone under full per-artifact
+    /// [`DecodeLimits`] once earlier batch items have been installed and dropped.
+    DeferredVerified {
+        bytes: Vec<u8>,
     },
     ReadError {
         error: crate::artifact_store::ReadError,
-        body_bytes_read: u64,
     },
     DecodeError {
         error: artifact_codec::DecodeError,
-        body_bytes_read: u64,
     },
 }
 
@@ -167,15 +204,30 @@ pub struct CompileCache {
     /// Incrementally maintained `namespace -> source index` table over
     /// `loader.sources` so sliding-window lookup avoids rebuilding it per batch.
     ns_positions: std::collections::HashMap<String, usize>,
+    /// Bounded lookahead of completed Stage A/B manifest prefix reads waiting
+    /// to be matched or reused at their frontier.
+    lookahead: VecDeque<LookaheadEntry>,
     /// Prefetched decoded hits from the current sliding window, consumed in
     /// strict source order by [`Self::lookup_batched`].
     prefetched: VecDeque<PrefetchedHit>,
+    /// True when an earlier item in the current Stage C batch failed or was
+    /// refused, so later retained `prefetched` items must revalidate their
+    /// key against the real frontier before being reused.
+    prefetched_speculative: bool,
+    /// Per-batch encoded-byte limit for Stage C admission.
+    lookup_window_max_bytes: u64,
+    /// Shared per-batch decoded-byte limit for multi-artifact Stage C batches.
+    lookup_window_max_decoded_bytes: u64,
     /// CPU slots available to this compilation, detected from the session's
     /// unit pool policy when `--jobs > 1`.
     slots: Slots,
+    /// Persistent pure-Rust worker threads used for Stage A/C lookup batches
+    /// before the build's `UnitPool` starts, avoiding repeated thread spawn
+    /// and allocator thread-heap churn; shut down as soon as `UnitPool` starts.
+    lookup_pool: Option<crate::scheduler::MapPool>,
     /// `Send + Sync` submitter into the active compilation session's unit pool,
-    /// keeping cache staging and index encoding/hashing within `--jobs` while
-    /// preserving `CompileCache: Send`.
+    /// keeping cache lookup/decode/staging and index encoding/hashing within
+    /// `--jobs` while preserving `CompileCache: Send`.
     pool: Option<PoolTaskSubmitter>,
     /// Staged artifacts awaiting a batched commit on the inline (`Slots::ONE`)
     /// path, flushed every `PUBLISH_BATCH_SIZE` namespaces and on flush/finish.
@@ -188,6 +240,10 @@ pub struct CompileCache {
     pipeline_failed: bool,
     #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
     cpu_work_hook: Option<Arc<dyn Fn(CacheCpuKind) + Send + Sync>>,
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+    stage_c_batch_hook: Option<Arc<dyn Fn(usize, u64) + Send + Sync>>,
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+    lookup_work_hook: Option<Arc<dyn Fn(&'static str) + Send + Sync>>,
 }
 
 impl CompileCache {
@@ -235,14 +291,23 @@ impl CompileCache {
             saw_damage: false,
             any_propagated: false,
             ns_positions: std::collections::HashMap::new(),
+            lookahead: VecDeque::new(),
             prefetched: VecDeque::new(),
+            prefetched_speculative: false,
+            lookup_window_max_bytes: LOOKUP_WINDOW_MAX_BYTES,
+            lookup_window_max_decoded_bytes: LOOKUP_WINDOW_MAX_DECODED_BYTES,
             slots,
+            lookup_pool: None,
             pool: None,
             inline_batch: Vec::new(),
             pipeline: None,
             pipeline_failed: false,
             #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
             cpu_work_hook: None,
+            #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+            stage_c_batch_hook: None,
+            #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+            lookup_work_hook: None,
         }
     }
 
@@ -250,6 +315,25 @@ impl CompileCache {
     #[doc(hidden)]
     pub fn set_cpu_work_hook(&mut self, hook: Option<Arc<dyn Fn(CacheCpuKind) + Send + Sync>>) {
         self.cpu_work_hook = hook;
+    }
+
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+    #[doc(hidden)]
+    pub fn set_lookup_window_limits(&mut self, max_encoded_bytes: u64, max_decoded_bytes: u64) {
+        self.lookup_window_max_bytes = max_encoded_bytes.max(1);
+        self.lookup_window_max_decoded_bytes = max_decoded_bytes.max(1);
+    }
+
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+    #[doc(hidden)]
+    pub fn set_stage_c_batch_hook(&mut self, hook: Option<Arc<dyn Fn(usize, u64) + Send + Sync>>) {
+        self.stage_c_batch_hook = hook;
+    }
+
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+    #[doc(hidden)]
+    pub fn set_lookup_work_hook(&mut self, hook: Option<Arc<dyn Fn(&'static str) + Send + Sync>>) {
+        self.lookup_work_hook = hook;
     }
 
     #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
@@ -267,6 +351,22 @@ impl CompileCache {
         if slots.get() > self.slots.get() {
             self.slots = slots;
         }
+    }
+
+    /// Stop any pre-unit-pool lookup workers so they never overlap with the
+    /// compilation session's [`crate::compilation_session::UnitPool`].
+    pub(crate) fn shutdown_lookup_pool(&mut self) {
+        self.lookup_pool = None;
+    }
+
+    /// Hand cache lookup/decode and staging CPU work to the active build's
+    /// [`crate::compilation_session::UnitPool`], shutting down any pre-pool
+    /// lookup workers first so total CPU slots stay within `--jobs`.
+    pub(crate) fn set_pool(&mut self, pool: Option<PoolTaskSubmitter>) {
+        if pool.is_some() {
+            self.lookup_pool = None;
+        }
+        self.pool = pool;
     }
 
     /// The generated names of every candidate this compilation may install.
@@ -323,6 +423,9 @@ impl CompileCache {
     /// Bound the cache directory after the build succeeded, keeping what it
     /// used and published.
     pub fn finish(&mut self) {
+        self.lookup_pool = None;
+        self.lookahead.clear();
+        self.prefetched.clear();
         self.flush_publishes();
         if self.store.write_failure().is_some() {
             return;
@@ -346,6 +449,9 @@ impl CompileCache {
     /// ended: the store, and the digest of the assembled program when every
     /// namespace was installed from or published as an artifact.
     pub fn into_output(mut self) -> OutputCache {
+        self.lookup_pool = None;
+        self.lookahead.clear();
+        self.prefetched.clear();
         self.flush_publishes();
         self.pipeline = None;
         let complete =
@@ -550,40 +656,194 @@ impl CompileCache {
         }
     }
 
+    /// Run `jobs` (each `(cost, payload)`, largest cost first) in parallel
+    /// across up to `self.slots` CPU slots, returning results in original order.
+    ///
+    /// - With [`Slots::ONE`] or at most one job: runs inline.
+    /// - When the build's `UnitPool` is active (`self.pool` is `Some`): submits
+    ///   pure-Rust helper tasks through [`PoolTaskSubmitter::submit_plain`] and
+    ///   helps inline on the coordinator, strictly sharing `--jobs` CPU slots
+    ///   without spawning extra threads or deadlocking when pool workers are busy.
+    /// - Before `UnitPool` starts: lazily starts a persistent [`MapPool`] of
+    ///   `self.slots.workers()` threads and helps inline on the coordinator,
+    ///   avoiding per-window OS thread spawn and allocator thread-heap churn.
+    fn run_parallel<T, O>(
+        &mut self,
+        jobs: Vec<(u64, T)>,
+        execute: Arc<dyn Fn(T) -> O + Send + Sync>,
+    ) -> Vec<O>
+    where
+        T: Send + 'static,
+        O: Send + 'static,
+    {
+        let len = jobs.len();
+        if self.slots == Slots::ONE || len <= 1 {
+            return jobs.into_iter().map(|(_, job)| execute(job)).collect();
+        }
+        let mut indexed: Vec<(usize, u64, T)> = jobs
+            .into_iter()
+            .enumerate()
+            .map(|(index, (cost, job))| (index, cost, job))
+            .collect();
+        indexed.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+        struct BatchState<T, O> {
+            queue: VecDeque<(usize, T)>,
+            results: Vec<Option<O>>,
+            remaining: usize,
+            panic: Option<String>,
+        }
+
+        let shared = Arc::new((
+            Mutex::new(BatchState {
+                queue: indexed
+                    .into_iter()
+                    .map(|(index, _, job)| (index, job))
+                    .collect(),
+                results: (0..len).map(|_| None).collect(),
+                remaining: len,
+                panic: None,
+            }),
+            Condvar::new(),
+        ));
+
+        let run_loop = move |state_pair: Arc<(Mutex<BatchState<T, O>>, Condvar)>,
+                             exec: Arc<dyn Fn(T) -> O + Send + Sync>| {
+            let (mu, cv) = &*state_pair;
+            loop {
+                let next = {
+                    let mut st = mu.lock().unwrap_or_else(|e| e.into_inner());
+                    if st.panic.is_some() {
+                        break;
+                    }
+                    st.queue.pop_front()
+                };
+                let Some((index, job)) = next else {
+                    break;
+                };
+                match panic::catch_unwind(AssertUnwindSafe(|| exec(job))) {
+                    Ok(outcome) => {
+                        let mut st = mu.lock().unwrap_or_else(|e| e.into_inner());
+                        st.results[index] = Some(outcome);
+                        st.remaining -= 1;
+                        if st.remaining == 0 {
+                            cv.notify_all();
+                        }
+                    }
+                    Err(payload) => {
+                        let message = payload
+                            .downcast_ref::<&str>()
+                            .map(|s| (*s).to_owned())
+                            .or_else(|| payload.downcast_ref::<String>().cloned())
+                            .unwrap_or_else(|| "a cache lookup worker panicked".to_owned());
+                        let mut st = mu.lock().unwrap_or_else(|e| e.into_inner());
+                        let dropped = st.queue.len();
+                        st.queue.clear();
+                        st.remaining = st.remaining.saturating_sub(1 + dropped);
+                        if st.panic.is_none() {
+                            st.panic = Some(message);
+                        }
+                        if st.remaining == 0 {
+                            cv.notify_all();
+                        }
+                        break;
+                    }
+                }
+            }
+        };
+
+        let workers = self.slots.get().min(len) - 1;
+        if let Some(pool) = self.pool.clone() {
+            for worker in 0..workers {
+                let st = Arc::clone(&shared);
+                let exec = Arc::clone(&execute);
+                if !pool.submit_plain(worker, Box::new(move || run_loop(st, exec))) {
+                    break;
+                }
+            }
+        } else {
+            let slots = self.slots;
+            let map_pool = self
+                .lookup_pool
+                .get_or_insert_with(|| crate::scheduler::MapPool::new(slots));
+            for _ in 0..workers {
+                let st = Arc::clone(&shared);
+                let exec = Arc::clone(&execute);
+                if !map_pool.submit(Box::new(move || run_loop(st, exec))) {
+                    break;
+                }
+            }
+        }
+
+        // Coordinator helps inline so we never deadlock if pool workers are
+        // busy with deferred units or waiting on the coordinator.
+        run_loop(Arc::clone(&shared), execute);
+
+        let (mu, cv) = &*shared;
+        let mut st = mu.lock().unwrap_or_else(|e| e.into_inner());
+        while st.remaining > 0 {
+            st = cv.wait(st).unwrap_or_else(|e| e.into_inner());
+        }
+        if let Some(message) = st.panic.take() {
+            panic!("a compiler worker panicked: {message}");
+        }
+        st.results
+            .drain(..)
+            .map(|outcome| outcome.expect("every lookup job completed"))
+            .collect()
+    }
+
     /// Sliding-window parallel cache lookup for namespace `index`, prefetching
     /// up to `LOOKUP_WINDOW_MAX_NS` consecutive candidate-bearing namespaces
-    /// (bounded by `LOOKUP_WINDOW_MAX_BYTES`) across `self.slots`:
+    /// (bounded by encoded and shared decoded working-set limits) across
+    /// `self.slots`:
     /// - Stage A (parallel): `begin_read` + `read_manifest_prefix` of each
-    ///   namespace's newest candidate, plus `source_digest`, `resolution_digest`,
-    ///   and concurrent `inputs_unchanged`.
-    /// - Stage B (serial in-memory): chain-walk `ManifestPrefix` and
-    ///   `NamespaceKeys` in topological order to confirm the contiguous hit
-    ///   prefix, stopping at the first miss or bypass so stale candidates only
-    ///   read their manifest prefix.
+    ///   uncovered namespace's newest candidate, plus `source_digest` and
+    ///   concurrent `inputs_unchanged`, charging every completed prefix read
+    ///   once on arrival and retaining entries in `self.lookahead`.
+    /// - Stage B (serial in-memory): chain-walk `NamespaceKeys` in topological
+    ///   order over `self.lookahead` to confirm the contiguous hit prefix,
+    ///   charging the actual selected `Reading::length()` against the batch
+    ///   encoded-byte budget before admitting each Stage C job and leaving
+    ///   unread lookahead entries intact on miss, bypass, or budget split.
     /// - Stage C (parallel): `Reading::finish` (content-hash verify) and
-    ///   `artifact_codec::decode_verified` (with fused `validate_with_depth`),
-    ///   dropping raw bytes immediately on workers.
+    ///   `artifact_codec::decode_verified_with_budget` (with fused
+    ///   `validate_with_depth` and a shared decoded-byte budget for
+    ///   multi-artifact batches), charging every completed body read once on
+    ///   arrival and dropping raw bytes immediately on workers.
     /// - Stage D (delivered here one by one): return each decoded artifact in
-    ///   order, falling back cleanly on corruption or cancellation with exact
-    ///   `bytes_read` and miss reporting.
+    ///   order, revalidating and reusing later prefetched hits after a read or
+    ///   decode error whenever their keys still match at the frontier.
     pub(crate) fn lookup_batched<'a>(
         &mut self,
         loader: &LoaderRecord,
         index: usize,
         text_of: &(dyn Fn(usize) -> &'a str + Sync),
         sources: &dyn SourceProvider,
-        cancelled: &(dyn Fn() -> bool + Sync),
+        cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
     ) -> Result<Option<NamespaceArtifact>, String> {
         self.pending = None;
         let id = NamespaceId(self.prefix.len() as u32);
         debug_assert_eq!(id.0 as usize, index);
         if self.slots == Slots::ONE {
-            return self.lookup(loader, text_of(index), sources, cancelled);
+            return self.lookup(loader, text_of(index), sources, &*cancelled);
+        }
+        while self.prefetched.front().is_some_and(|item| item.id.0 < id.0) {
+            self.prefetched.pop_front();
         }
         if self.prefetched.front().is_some_and(|item| item.id != id) {
             self.prefetched.clear();
+            self.prefetched_speculative = false;
+        }
+        while self
+            .lookahead
+            .front()
+            .is_some_and(|entry| entry.id.0 < id.0)
+        {
+            self.lookahead.pop_front();
         }
         if self.prefetched.is_empty() {
+            self.prefetched_speculative = false;
             let mut window_end = index;
             let mut window_bytes = 0u64;
             while window_end < loader.sources.len()
@@ -597,17 +857,25 @@ impl CompileCache {
                     .and_then(|entries| entries.first())
                     .map_or(0, |entry| entry.bytes);
                 if window_end > index
-                    && window_bytes.saturating_add(first_bytes) > LOOKUP_WINDOW_MAX_BYTES
+                    && window_bytes.saturating_add(first_bytes) > self.lookup_window_max_bytes
                 {
                     break;
                 }
                 window_bytes = window_bytes.saturating_add(first_bytes);
                 window_end += 1;
             }
-            if window_end <= index + 1 {
-                return self.lookup(loader, text_of(index), sources, cancelled);
+            let has_lookahead = self.lookahead.front().is_some_and(|entry| entry.id == id);
+            if window_end <= index + 1 && !has_lookahead {
+                return self.lookup(loader, text_of(index), sources, &*cancelled);
             }
-            if !self.fill_prefetch_window(loader, index, window_end, text_of, sources, cancelled) {
+            if !self.fill_prefetch_window(
+                loader,
+                index,
+                window_end.max(index + 1),
+                text_of,
+                sources,
+                Arc::clone(&cancelled),
+            ) {
                 return Ok(None);
             }
         }
@@ -616,16 +884,69 @@ impl CompileCache {
             .pop_front()
             .expect("prefetch window populated or returned early");
         debug_assert_eq!(item.id, id);
-        self.counts.bytes_read += item.prefix_bytes_read;
-        match item.body {
-            PrefetchedBody::Decoded {
-                artifact,
-                body_bytes_read,
-            } => {
+
+        if self.prefetched_speculative {
+            let name = loader.sources[index].name.as_str();
+            let reaches_bypass = self.any_propagated
+                && (item.fields.coarse
+                    || item.fields.dependencies.iter().any(|dep| {
+                        EdgeKinds(dep.kinds).intersects(EdgeKinds::COMPILATION)
+                            && self
+                                .ns_positions
+                                .get(dep.namespace.as_str())
+                                .is_some_and(|&pos| {
+                                    pos < self.propagated.len() && self.propagated[pos].is_some()
+                                })
+                    }));
+            let blocked = self.blockers.iter().any(|blocker| blocker == name);
+            let actual_key = self.keys.next_stored(
+                &self.environment,
+                loader,
+                &item.fields,
+                &self.ns_positions,
+                id,
+                (item.source_digest, item.resolution_digest),
+            );
+            let key_matches = actual_key.digest == item.key.digest
+                && item.fields.front_end_key.digest == actual_key.digest;
+            if !key_matches {
                 if item.saw_damage {
                     self.saw_damage = true;
                 }
-                self.counts.bytes_read += body_bytes_read;
+                if item.candidate_index == 0 {
+                    let mismatch = match item.fields.front_end_key.mismatch(&actual_key) {
+                        Some(Mismatch::View) => {
+                            crate::cache_key::inputs_unchanged(&item.fields.inputs, sources)
+                                .and::<()>(Err(Mismatch::View))
+                                .unwrap_err()
+                        }
+                        mismatch => mismatch.unwrap_or(Mismatch::Inconsistent),
+                    };
+                    self.miss(kind(&mismatch), mismatch.to_string());
+                    return self.lookup_remaining_candidates(
+                        loader,
+                        id,
+                        text_of(index),
+                        sources,
+                        &*cancelled,
+                        1,
+                    );
+                }
+                return self.lookup(loader, text_of(index), sources, &*cancelled);
+            }
+            if item.fields.no_cache || item.fields.always || reaches_bypass || blocked {
+                if item.saw_damage {
+                    self.saw_damage = true;
+                }
+                return Ok(None);
+            }
+        }
+
+        match item.body {
+            PrefetchedBody::Decoded { artifact } => {
+                if item.saw_damage {
+                    self.saw_damage = true;
+                }
                 self.prefix.push_stored(loader, &item.fields, false);
                 self.pending = Some(Pending::Hit {
                     key: item.key,
@@ -633,15 +954,44 @@ impl CompileCache {
                 });
                 Ok(Some(*artifact))
             }
-            PrefetchedBody::ReadError {
-                error,
-                body_bytes_read,
-            } => {
+            PrefetchedBody::DeferredVerified { bytes } => {
+                let started = Instant::now();
+                let decoded = artifact_codec::decode_verified(&bytes, &self.limits, &*cancelled);
+                drop(bytes);
+                self.counts.decode_time += started.elapsed();
+                match decoded {
+                    Ok((_, artifact)) => {
+                        if item.saw_damage {
+                            self.saw_damage = true;
+                        }
+                        self.prefix.push_stored(loader, &item.fields, false);
+                        self.pending = Some(Pending::Hit {
+                            key: item.key,
+                            artifact: item.artifact_digest,
+                        });
+                        Ok(Some(artifact))
+                    }
+                    Err(error) => {
+                        if error == artifact_codec::DecodeError::Cancelled {
+                            self.prefetched.clear();
+                            self.lookahead.clear();
+                            self.prefetched_speculative = false;
+                            return Err(error.to_string());
+                        }
+                        if item.saw_damage {
+                            self.saw_damage = true;
+                        }
+                        self.prefetched_speculative = true;
+                        self.miss("undecodable", error.to_string());
+                        Ok(None)
+                    }
+                }
+            }
+            PrefetchedBody::ReadError { error } => {
                 if item.saw_damage {
                     self.saw_damage = true;
                 }
-                self.counts.bytes_read += body_bytes_read;
-                self.prefetched.clear();
+                self.prefetched_speculative = true;
                 if let Some((kind, description)) = item.prior_miss {
                     self.miss(kind, description);
                 }
@@ -651,32 +1001,32 @@ impl CompileCache {
                     id,
                     text_of(index),
                     sources,
-                    cancelled,
+                    &*cancelled,
                     item.candidate_index + 1,
                 )
             }
-            PrefetchedBody::DecodeError {
-                error,
-                body_bytes_read,
-            } => {
-                self.counts.bytes_read += body_bytes_read;
-                self.prefetched.clear();
+            PrefetchedBody::DecodeError { error } => {
                 if error == artifact_codec::DecodeError::Cancelled {
+                    self.prefetched.clear();
+                    self.lookahead.clear();
+                    self.prefetched_speculative = false;
                     return Err(error.to_string());
                 }
                 if item.saw_damage {
                     self.saw_damage = true;
                 }
+                self.prefetched_speculative = true;
                 self.miss("undecodable", error.to_string());
                 Ok(None)
             }
         }
     }
 
-    /// Run Stages A, B, and C for `index..window_end`. Returns `true` when at
-    /// least namespace `index` entered `self.prefetched`; returns `false` when
-    /// namespace `index` itself missed or bypassed (having already recorded its
-    /// `bytes_read` and miss reason).
+    /// Run Stages A, B, and C for `index..window_end`, reusing any entries
+    /// already present in `self.lookahead`. Returns `true` when at least
+    /// namespace `index` entered `self.prefetched`; returns `false` when
+    /// namespace `index` itself missed or bypassed (having already recorded
+    /// its completed read bytes and miss reason).
     fn fill_prefetch_window<'a>(
         &mut self,
         loader: &LoaderRecord,
@@ -684,24 +1034,23 @@ impl CompileCache {
         window_end: usize,
         text_of: &(dyn Fn(usize) -> &'a str + Sync),
         sources: &dyn SourceProvider,
-        cancelled: &(dyn Fn() -> bool + Sync),
+        cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
     ) -> bool {
-        enum FirstCandidateRead {
-            BeginErr(crate::artifact_store::ReadError),
-            ManifestErr {
-                reading: crate::artifact_store::Reading,
-                error: artifact_codec::DecodeError,
-            },
-            ManifestOk {
-                reading: crate::artifact_store::Reading,
-                manifest: Box<artifact_codec::Manifest>,
-                inputs_check: Option<Result<(), Mismatch>>,
-            },
+        struct StageAJob {
+            ns_idx: usize,
+            name: String,
+            file: String,
+            kind: crate::dependency_manifest::SourceKind,
+            origin: crate::dependency_manifest::SourceOrigin,
+            text: String,
+            resolution_digest: Digest,
+            first_entry: crate::artifact_store::Entry,
         }
         struct StageAOutcome {
+            id: NamespaceId,
             source_digest: Digest,
             resolution_digest: Digest,
-            first_read: FirstCandidateRead,
+            first_read: CandidateRead,
         }
         struct StageCJob {
             id: NamespaceId,
@@ -709,7 +1058,8 @@ impl CompileCache {
             fields: ManifestFields,
             key: Box<FrontEndKey>,
             artifact_digest: Digest,
-            prefix_bytes_read: u64,
+            source_digest: Digest,
+            resolution_digest: Digest,
             candidate_index: usize,
             prior_miss: Option<(&'static str, String)>,
             saw_damage: bool,
@@ -723,93 +1073,156 @@ impl CompileCache {
                 self.ns_positions.insert(src.name.clone(), pos);
             }
         }
-        let ns_positions = &self.ns_positions;
-        let concurrent_sources = sources.concurrent();
-        let store = &self.store;
-        let snapshot = &self.snapshot;
-        let limits = &self.limits;
-        let entry = &self.entry;
-        let stage_a_jobs: Vec<(u64, usize)> = (index..window_end)
-            .map(|ns_idx| {
-                let first_bytes = snapshot
-                    .candidates(&loader.sources[ns_idx].name)
-                    .ok()
-                    .and_then(|c| c.first())
-                    .map_or(0, |e| e.bytes);
-                let cost = text_of(ns_idx).len() as u64 + first_bytes.min(65536);
-                (cost, ns_idx)
-            })
-            .collect();
 
-        // Stage A: parallel manifest prefix reads + source/resolution digests.
-        let stage_a = crate::scheduler::map(self.slots, stage_a_jobs, |ns_idx| {
-            let src = &loader.sources[ns_idx];
-            let text = text_of(ns_idx);
-            let source_digest = crate::cache_key::source_digest_from_loader(src, text, entry);
-            let resolution_digest =
-                crate::cache_key::resolution_digest_from_loader(loader, ns_idx, ns_positions);
-            let first = &snapshot
-                .candidates(&src.name)
-                .expect("window entries have candidates")[0];
-            let first_read = match store.begin_read(first, limits) {
-                Err(error) => FirstCandidateRead::BeginErr(error),
-                Ok(reading) => match artifact_codec::read_manifest_prefix(
-                    reading.prefix(),
-                    reading.length(),
-                    limits,
-                ) {
-                    Err(error) => FirstCandidateRead::ManifestErr { reading, error },
-                    Ok(manifest) => {
-                        let inputs_check = if manifest.namespace == src.name {
-                            let has_resources = manifest
-                                .fields
-                                .inputs
-                                .iter()
-                                .any(|input| matches!(input, ExternalInput::Resource(_)));
-                            if !has_resources {
-                                Some(Ok(()))
-                            } else {
-                                concurrent_sources.map(|cs| {
-                                    crate::cache_key::inputs_unchanged(&manifest.fields.inputs, cs)
-                                })
-                            }
-                        } else {
-                            None
-                        };
-                        FirstCandidateRead::ManifestOk {
-                            reading,
-                            manifest: Box::new(manifest),
-                            inputs_check,
-                        }
-                    }
-                },
-            };
-            StageAOutcome {
-                source_digest,
-                resolution_digest,
-                first_read,
+        // Determine how many namespaces from `index` forward are already
+        // present in `self.lookahead` so Stage A never re-reads them.
+        let mut covered_end = index;
+        for entry in &self.lookahead {
+            if entry.id.0 as usize == covered_end && covered_end < window_end {
+                covered_end += 1;
+            } else {
+                break;
             }
-        });
+        }
 
-        // Stage B: fast in-memory serial chain walk in topological order without
-        // mutating `ManifestPrefix` (avoiding duplicate coarse-edge expansion).
+        if covered_end < window_end && self.lookahead.len() == covered_end - index {
+            let store = self.store.clone();
+            let limits = self.limits;
+            let entry_ns = Arc::<str>::from(self.entry.as_str());
+            let owned_sources = sources.owned_concurrent();
+            #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+            let work_hook = self.lookup_work_hook.clone();
+
+            let stage_a_jobs: Vec<(u64, StageAJob)> = (covered_end..window_end)
+                .map(|ns_idx| {
+                    let src = &loader.sources[ns_idx];
+                    let text = text_of(ns_idx);
+                    let first_entry = self
+                        .snapshot
+                        .candidates(&src.name)
+                        .expect("window entries have candidates")[0]
+                        .clone();
+                    let resolution_digest = crate::cache_key::resolution_digest_from_loader(
+                        loader,
+                        ns_idx,
+                        &self.ns_positions,
+                    );
+                    let cost = text.len() as u64 + first_entry.bytes.min(65536);
+                    (
+                        cost,
+                        StageAJob {
+                            ns_idx,
+                            name: src.name.clone(),
+                            file: src.file.clone(),
+                            kind: src.kind,
+                            origin: src.origin,
+                            text: text.to_owned(),
+                            resolution_digest,
+                            first_entry,
+                        },
+                    )
+                })
+                .collect();
+
+            // Stage A: parallel manifest prefix reads + source digests.
+            let stage_a = self.run_parallel(
+                stage_a_jobs,
+                Arc::new(move |job: StageAJob| {
+                    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+                    if let Some(hook) = &work_hook {
+                        hook("stage-a");
+                    }
+                    let source_digest = crate::cache_key::source_digest_parts(
+                        &job.name, &job.file, job.kind, job.origin, &job.text, &entry_ns,
+                    );
+                    let first_read = match store.begin_read(&job.first_entry, &limits) {
+                        Err(error) => CandidateRead::BeginErr(error),
+                        Ok(reading) => match artifact_codec::read_manifest_prefix(
+                            reading.prefix(),
+                            reading.length(),
+                            &limits,
+                        ) {
+                            Err(error) => CandidateRead::ManifestErr { reading, error },
+                            Ok(manifest) => {
+                                let inputs_check = if manifest.namespace == job.name {
+                                    let has_resources =
+                                        manifest.fields.inputs.iter().any(|input| {
+                                            matches!(input, ExternalInput::Resource(_))
+                                        });
+                                    if !has_resources {
+                                        Some(Ok(()))
+                                    } else {
+                                        owned_sources.as_deref().map(|cs| {
+                                            crate::cache_key::inputs_unchanged(
+                                                &manifest.fields.inputs,
+                                                cs,
+                                            )
+                                        })
+                                    }
+                                } else {
+                                    None
+                                };
+                                CandidateRead::ManifestOk {
+                                    reading,
+                                    manifest: Box::new(manifest),
+                                    inputs_check,
+                                }
+                            }
+                        },
+                    };
+                    StageAOutcome {
+                        id: NamespaceId(job.ns_idx as u32),
+                        source_digest,
+                        resolution_digest: job.resolution_digest,
+                        first_read,
+                    }
+                }),
+            );
+
+            // Account for every completed Stage A prefix read once on arrival
+            // and retain it in bounded lookahead order.
+            for outcome in stage_a {
+                match &outcome.first_read {
+                    CandidateRead::ManifestOk { reading, .. }
+                    | CandidateRead::ManifestErr { reading, .. } => {
+                        self.counts.bytes_read += reading.prefix().len() as u64;
+                    }
+                    CandidateRead::BeginErr(_) | CandidateRead::FinishedErr { .. } => {}
+                }
+                self.lookahead.push_back(LookaheadEntry {
+                    id: outcome.id,
+                    source_digest: outcome.source_digest,
+                    resolution_digest: outcome.resolution_digest,
+                    reads: vec![Some(outcome.first_read)],
+                });
+            }
+        }
+
+        // Stage B: fast in-memory serial chain walk in topological order over
+        // `self.lookahead` without mutating `ManifestPrefix`. Charge the actual
+        // selected candidate's encoded length before admitting each Stage C job.
         let mut pushed_keys = 0usize;
-        let mut stage_c_jobs: Vec<StageCJob> = Vec::with_capacity(stage_a.len());
+        let mut stage_c_jobs: Vec<StageCJob> = Vec::with_capacity(window_end - index);
+        let mut stage_c_encoded_bytes = 0u64;
         let mut first_ns_miss: Option<(&'static str, String)> = None;
         let mut first_ns_bypass = false;
-        let mut first_ns_prefix_bytes = 0u64;
         let mut first_ns_saw_damage = false;
+        let mut offset = 0usize;
 
-        'window: for (offset, outcome) in stage_a.into_iter().enumerate() {
+        'window: while let Some(mut entry) = self.lookahead.pop_front() {
             let ns_idx = index + offset;
-            let ns_id = NamespaceId(ns_idx as u32);
+            if entry.id.0 as usize != ns_idx || ns_idx >= window_end {
+                self.lookahead.push_front(entry);
+                break;
+            }
+            let ns_id = entry.id;
             let src = &loader.sources[ns_idx];
             let name = src.name.as_str();
-            let candidates = self
+            let candidates_len = self
                 .snapshot
                 .candidates(name)
-                .expect("window entries have candidates");
-            let mut prefix_bytes_read = 0u64;
+                .expect("window entries have candidates")
+                .len();
             let mut prior_miss: Option<(&'static str, String)> = None;
             let mut ns_saw_damage = false;
             let mut note_miss = |kind: &'static str, description: String| {
@@ -820,153 +1233,204 @@ impl CompileCache {
                     prior_miss = Some((kind, description));
                 }
             };
-            let mut first_read = Some(outcome.first_read);
             let mut matched_hit = false;
 
-            for (cand_idx, candidate) in candidates.iter().enumerate() {
-                let (reading, manifest, inputs_check) = if cand_idx == 0 {
-                    match first_read.take().expect("cand 0 read once") {
-                        FirstCandidateRead::BeginErr(error) => {
-                            note_miss("unreadable", error.to_string());
-                            continue;
-                        }
-                        FirstCandidateRead::ManifestErr { reading, error } => {
-                            prefix_bytes_read += reading.prefix().len() as u64;
-                            let rest = reading.length() - reading.prefix().len() as u64;
-                            let finished = reading.finish();
-                            if matches!(
-                                finished,
-                                Ok(_) | Err(crate::artifact_store::ReadError::Integrity)
+            for cand_idx in 0..candidates_len {
+                let candidate = &self
+                    .snapshot
+                    .candidates(name)
+                    .expect("window entries have candidates")[cand_idx];
+                let candidate_key = candidate.key;
+                let candidate_artifact = candidate.artifact;
+                if entry.reads.len() <= cand_idx {
+                    entry.reads.resize_with(cand_idx + 1, || None);
+                }
+                if entry.reads[cand_idx].is_none() {
+                    let read = match self.store.begin_read(candidate, &self.limits) {
+                        Err(error) => CandidateRead::BeginErr(error),
+                        Ok(reading) => {
+                            self.counts.bytes_read += reading.prefix().len() as u64;
+                            match artifact_codec::read_manifest_prefix(
+                                reading.prefix(),
+                                reading.length(),
+                                &self.limits,
                             ) {
-                                prefix_bytes_read += rest;
+                                Ok(manifest) => CandidateRead::ManifestOk {
+                                    reading,
+                                    manifest: Box::new(manifest),
+                                    inputs_check: None,
+                                },
+                                Err(error) => CandidateRead::ManifestErr { reading, error },
                             }
-                            match finished {
-                                Ok(_) => note_miss("undecodable", error.to_string()),
-                                Err(read) => note_miss("unreadable", read.to_string()),
-                            }
-                            continue;
-                        }
-                        FirstCandidateRead::ManifestOk {
-                            reading,
-                            manifest,
-                            inputs_check,
-                        } => {
-                            prefix_bytes_read += reading.prefix().len() as u64;
-                            (reading, *manifest, inputs_check)
-                        }
-                    }
-                } else {
-                    let reading = match self.store.begin_read(candidate, &self.limits) {
-                        Ok(reading) => reading,
-                        Err(error) => {
-                            note_miss("unreadable", error.to_string());
-                            continue;
                         }
                     };
-                    prefix_bytes_read += reading.prefix().len() as u64;
-                    match artifact_codec::read_manifest_prefix(
-                        reading.prefix(),
-                        reading.length(),
-                        &self.limits,
+                    entry.reads[cand_idx] = Some(read);
+                }
+
+                // Resolve `ManifestErr` once by finishing its read and caching
+                // the resulting error so a pushed-back entry never re-reads it.
+                if matches!(
+                    entry.reads[cand_idx],
+                    Some(CandidateRead::ManifestErr { .. })
+                ) {
+                    let Some(CandidateRead::ManifestErr { reading, error }) =
+                        entry.reads[cand_idx].take()
+                    else {
+                        unreachable!()
+                    };
+                    let rest = reading.length() - reading.prefix().len() as u64;
+                    let finished = reading.finish();
+                    if matches!(
+                        finished,
+                        Ok(_) | Err(crate::artifact_store::ReadError::Integrity)
                     ) {
-                        Ok(manifest) => (reading, manifest, None),
-                        Err(error) => {
-                            let rest = reading.length() - reading.prefix().len() as u64;
-                            let finished = reading.finish();
-                            if matches!(
-                                finished,
-                                Ok(_) | Err(crate::artifact_store::ReadError::Integrity)
-                            ) {
-                                prefix_bytes_read += rest;
-                            }
-                            match finished {
-                                Ok(_) => note_miss("undecodable", error.to_string()),
-                                Err(read) => note_miss("unreadable", read.to_string()),
-                            }
+                        self.counts.bytes_read += rest;
+                    }
+                    let (kind, message) = match finished {
+                        Ok(_) => ("undecodable", error.to_string()),
+                        Err(read) => ("unreadable", read.to_string()),
+                    };
+                    entry.reads[cand_idx] = Some(CandidateRead::FinishedErr {
+                        kind,
+                        message: message.clone(),
+                    });
+                    note_miss(kind, message);
+                    continue;
+                }
+
+                match entry.reads[cand_idx]
+                    .as_mut()
+                    .expect("candidate read present")
+                {
+                    CandidateRead::BeginErr(error) => {
+                        note_miss("unreadable", error.to_string());
+                        continue;
+                    }
+                    CandidateRead::FinishedErr { kind, message } => {
+                        note_miss(kind, message.clone());
+                        continue;
+                    }
+                    CandidateRead::ManifestErr { .. } => unreachable!(),
+                    CandidateRead::ManifestOk {
+                        reading,
+                        manifest,
+                        inputs_check,
+                    } => {
+                        if manifest.namespace != name {
+                            note_miss(
+                                "undecodable",
+                                format!("the artifact is {}'s", manifest.namespace),
+                            );
                             continue;
                         }
-                    }
-                };
-                if manifest.namespace != name {
-                    note_miss(
-                        "undecodable",
-                        format!("the artifact is {}'s", manifest.namespace),
-                    );
-                    continue;
-                }
-                let fields = &manifest.fields;
-                let key = self.keys.next_stored(
-                    &self.environment,
-                    loader,
-                    fields,
-                    &self.ns_positions,
-                    ns_id,
-                    (outcome.source_digest, outcome.resolution_digest),
-                );
-                let check_inputs = || match &inputs_check {
-                    Some(res) => res.clone(),
-                    None => crate::cache_key::inputs_unchanged(&fields.inputs, sources),
-                };
-                let matched =
-                    if key.digest != candidate.key || fields.front_end_key.digest != key.digest {
-                        match fields.front_end_key.mismatch(&key) {
-                            Some(Mismatch::View) => check_inputs().and(Err(Mismatch::View)),
-                            mismatch => Err(mismatch.unwrap_or(Mismatch::Inconsistent)),
+                        let fields = &manifest.fields;
+                        let key = self.keys.next_stored(
+                            &self.environment,
+                            loader,
+                            fields,
+                            &self.ns_positions,
+                            ns_id,
+                            (entry.source_digest, entry.resolution_digest),
+                        );
+                        let matched = if key.digest != candidate_key
+                            || fields.front_end_key.digest != key.digest
+                        {
+                            match fields.front_end_key.mismatch(&key) {
+                                Some(Mismatch::View) => {
+                                    let res = inputs_check.get_or_insert_with(|| {
+                                        crate::cache_key::inputs_unchanged(&fields.inputs, sources)
+                                    });
+                                    res.clone().and(Err(Mismatch::View))
+                                }
+                                mismatch => Err(mismatch.unwrap_or(Mismatch::Inconsistent)),
+                            }
+                        } else {
+                            inputs_check
+                                .get_or_insert_with(|| {
+                                    crate::cache_key::inputs_unchanged(&fields.inputs, sources)
+                                })
+                                .clone()
+                        };
+                        if let Err(mismatch) = matched {
+                            note_miss(kind(&mismatch), mismatch.to_string());
+                            continue;
                         }
-                    } else {
-                        check_inputs()
-                    };
-                if let Err(mismatch) = matched {
-                    note_miss(kind(&mismatch), mismatch.to_string());
-                    continue;
-                }
-                let reaches_bypass = self.any_propagated
-                    && (fields.coarse
-                        || fields.dependencies.iter().any(|dep| {
-                            EdgeKinds(dep.kinds).intersects(EdgeKinds::COMPILATION)
-                                && self.ns_positions.get(dep.namespace.as_str()).is_some_and(
-                                    |&pos| {
-                                        pos < self.propagated.len()
-                                            && self.propagated[pos].is_some()
-                                    },
-                                )
-                        }));
-                if fields.no_cache
-                    || fields.always
-                    || reaches_bypass
-                    || self.blockers.iter().any(|blocker| blocker == name)
-                {
-                    if offset == 0 {
-                        first_ns_bypass = true;
-                        first_ns_prefix_bytes = prefix_bytes_read;
-                        first_ns_saw_damage = ns_saw_damage;
+                        let reaches_bypass = self.any_propagated
+                            && (fields.coarse
+                                || fields.dependencies.iter().any(|dep| {
+                                    EdgeKinds(dep.kinds).intersects(EdgeKinds::COMPILATION)
+                                        && self
+                                            .ns_positions
+                                            .get(dep.namespace.as_str())
+                                            .is_some_and(|&pos| {
+                                                pos < self.propagated.len()
+                                                    && self.propagated[pos].is_some()
+                                            })
+                                }));
+                        if fields.no_cache
+                            || fields.always
+                            || reaches_bypass
+                            || self.blockers.iter().any(|blocker| blocker == name)
+                        {
+                            if offset == 0 {
+                                first_ns_bypass = true;
+                                first_ns_saw_damage = ns_saw_damage;
+                            } else {
+                                self.lookahead.push_front(entry);
+                            }
+                            break 'window;
+                        }
+
+                        // Bound the working set of the candidates ACTUALLY
+                        // selected for Stage C (including larger older entries).
+                        // An oversized candidate runs alone when `stage_c_jobs`
+                        // is empty.
+                        let selected_bytes = reading.length();
+                        if !stage_c_jobs.is_empty()
+                            && stage_c_encoded_bytes.saturating_add(selected_bytes)
+                                > self.lookup_window_max_bytes
+                        {
+                            self.lookahead.push_front(entry);
+                            break 'window;
+                        }
+
+                        let Some(CandidateRead::ManifestOk {
+                            reading, manifest, ..
+                        }) = entry.reads[cand_idx].take()
+                        else {
+                            unreachable!()
+                        };
+                        stage_c_encoded_bytes =
+                            stage_c_encoded_bytes.saturating_add(selected_bytes);
+                        self.keys.append_stored(src, &manifest.fields, key.clone());
+                        pushed_keys += 1;
+                        stage_c_jobs.push(StageCJob {
+                            id: ns_id,
+                            reading,
+                            fields: manifest.fields,
+                            key: Box::new(key),
+                            artifact_digest: candidate_artifact,
+                            source_digest: entry.source_digest,
+                            resolution_digest: entry.resolution_digest,
+                            candidate_index: cand_idx,
+                            prior_miss: prior_miss.take(),
+                            saw_damage: ns_saw_damage,
+                        });
+                        matched_hit = true;
+                        break;
                     }
-                    break 'window;
                 }
-                self.keys.append_stored(src, fields, key.clone());
-                pushed_keys += 1;
-                stage_c_jobs.push(StageCJob {
-                    id: ns_id,
-                    reading,
-                    fields: manifest.fields,
-                    key: Box::new(key),
-                    artifact_digest: candidate.artifact,
-                    prefix_bytes_read,
-                    candidate_index: cand_idx,
-                    prior_miss: prior_miss.take(),
-                    saw_damage: ns_saw_damage,
-                });
-                matched_hit = true;
-                break;
             }
             if !matched_hit {
                 if offset == 0 {
                     first_ns_miss = prior_miss;
-                    first_ns_prefix_bytes = prefix_bytes_read;
                     first_ns_saw_damage = ns_saw_damage;
+                } else {
+                    self.lookahead.push_front(entry);
                 }
                 break;
             }
+            offset += 1;
         }
 
         // Unwind speculative key chain before Stage C/D so any mid-window
@@ -977,7 +1441,6 @@ impl CompileCache {
         self.counts.validate_time += validate_started.elapsed();
 
         if stage_c_jobs.is_empty() {
-            self.counts.bytes_read += first_ns_prefix_bytes;
             if first_ns_saw_damage {
                 self.saw_damage = true;
             }
@@ -987,109 +1450,142 @@ impl CompileCache {
             return false;
         }
 
-        // Stage C: parallel body read + full-file SHA-256 verify + decode_verified.
+        #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+        if let Some(hook) = &self.stage_c_batch_hook {
+            hook(stage_c_jobs.len(), stage_c_encoded_bytes);
+        }
+
+        // Stage C: parallel body read + full-file SHA-256 verify + decode_verified
+        // under a shared decoded-byte budget for multi-artifact batches.
         let stage_c_started = Instant::now();
-        let limits = &self.limits;
+        let limits = self.limits;
+        let shared_budget = (stage_c_jobs.len() > 1).then(|| {
+            Arc::new(artifact_codec::SharedDecodeBudget::new(
+                self.lookup_window_max_decoded_bytes
+                    .min(self.limits.max_decoded_bytes),
+            ))
+        });
+        #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+        let work_hook = self.lookup_work_hook.clone();
         let jobs: Vec<(u64, StageCJob)> = stage_c_jobs
             .into_iter()
             .map(|job| (job.reading.length(), job))
             .collect();
-        let decoded = crate::scheduler::map(self.slots, jobs, |job| {
-            let StageCJob {
-                id,
-                reading,
-                fields,
-                key,
-                artifact_digest,
-                prefix_bytes_read,
-                candidate_index,
-                prior_miss,
-                saw_damage,
-            } = job;
-            if cancelled() {
-                drop(reading);
-                return (
+        let decoded = self.run_parallel(
+            jobs,
+            Arc::new(move |job: StageCJob| {
+                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+                if let Some(hook) = &work_hook {
+                    hook("stage-c");
+                }
+                let StageCJob {
+                    id,
+                    reading,
+                    fields,
+                    key,
+                    artifact_digest,
+                    source_digest,
+                    resolution_digest,
+                    candidate_index,
+                    prior_miss,
+                    saw_damage,
+                } = job;
+                if cancelled() {
+                    drop(reading);
+                    return (
+                        PrefetchedHit {
+                            id,
+                            fields,
+                            key,
+                            artifact_digest,
+                            source_digest,
+                            resolution_digest,
+                            body: PrefetchedBody::DecodeError {
+                                error: artifact_codec::DecodeError::Cancelled,
+                            },
+                            candidate_index,
+                            prior_miss,
+                            saw_damage,
+                        },
+                        0u64,
+                        0u64,
+                        0u64,
+                    );
+                }
+                let rest = reading.length() - reading.prefix().len() as u64;
+                let t0 = Instant::now();
+                let read_res = reading.finish();
+                let read_ns = t0.elapsed().as_nanos() as u64;
+                let (body, body_bytes_read, decode_ns) = match read_res {
+                    Err(error) => {
+                        let body_bytes_read =
+                            if matches!(error, crate::artifact_store::ReadError::Integrity) {
+                                rest
+                            } else {
+                                0
+                            };
+                        (PrefetchedBody::ReadError { error }, body_bytes_read, 0u64)
+                    }
+                    Ok(bytes) => {
+                        let t1 = Instant::now();
+                        let decoded = artifact_codec::decode_verified_with_budget(
+                            &bytes,
+                            &limits,
+                            &*cancelled,
+                            shared_budget.as_deref(),
+                        );
+                        let decode_ns = t1.elapsed().as_nanos() as u64;
+                        let body = match decoded {
+                            Ok((_, artifact)) => {
+                                // Drop raw artifact bytes immediately on the worker thread.
+                                drop(bytes);
+                                PrefetchedBody::Decoded {
+                                    artifact: Box::new(artifact),
+                                }
+                            }
+                            Err(artifact_codec::VerifiedDecodeError::BatchBudget) => {
+                                // Retain the already-verified encoded bytes (bounded by
+                                // `lookup_window_max_bytes`) to decode alone in Stage D.
+                                PrefetchedBody::DeferredVerified { bytes }
+                            }
+                            Err(artifact_codec::VerifiedDecodeError::Decode(error)) => {
+                                drop(bytes);
+                                PrefetchedBody::DecodeError { error }
+                            }
+                        };
+                        (body, rest, decode_ns)
+                    }
+                };
+                (
                     PrefetchedHit {
                         id,
                         fields,
                         key,
                         artifact_digest,
-                        prefix_bytes_read,
-                        body: PrefetchedBody::DecodeError {
-                            error: artifact_codec::DecodeError::Cancelled,
-                            body_bytes_read: 0,
-                        },
+                        source_digest,
+                        resolution_digest,
+                        body,
                         candidate_index,
                         prior_miss,
                         saw_damage,
                     },
-                    0u64,
-                    0u64,
-                );
-            }
-            let rest = reading.length() - reading.prefix().len() as u64;
-            let t0 = Instant::now();
-            let read_res = reading.finish();
-            let read_ns = t0.elapsed().as_nanos() as u64;
-            let (body, decode_ns) = match read_res {
-                Err(error) => {
-                    let body_bytes_read =
-                        if matches!(error, crate::artifact_store::ReadError::Integrity) {
-                            rest
-                        } else {
-                            0
-                        };
-                    (
-                        PrefetchedBody::ReadError {
-                            error,
-                            body_bytes_read,
-                        },
-                        0u64,
-                    )
-                }
-                Ok(bytes) => {
-                    let t1 = Instant::now();
-                    let decoded = artifact_codec::decode_verified(&bytes, limits, cancelled);
-                    // Drop raw artifact bytes immediately on the worker thread.
-                    drop(bytes);
-                    let decode_ns = t1.elapsed().as_nanos() as u64;
-                    let body = match decoded {
-                        Ok((_, artifact)) => PrefetchedBody::Decoded {
-                            artifact: Box::new(artifact),
-                            body_bytes_read: rest,
-                        },
-                        Err(error) => PrefetchedBody::DecodeError {
-                            error,
-                            body_bytes_read: rest,
-                        },
-                    };
-                    (body, decode_ns)
-                }
-            };
-            (
-                PrefetchedHit {
-                    id,
-                    fields,
-                    key,
-                    artifact_digest,
-                    prefix_bytes_read,
-                    body,
-                    candidate_index,
-                    prior_miss,
-                    saw_damage,
-                },
-                read_ns,
-                decode_ns,
-            )
-        });
+                    body_bytes_read,
+                    read_ns,
+                    decode_ns,
+                )
+            }),
+        );
         let stage_c_wall = stage_c_started.elapsed();
         let mut total_read_ns = 0u128;
         let mut total_decode_ns = 0u128;
-        for (hit, read_ns, decode_ns) in decoded {
+        for (hit, body_bytes_read, read_ns, decode_ns) in decoded {
+            // Account for every completed Stage C body read once on arrival.
+            self.counts.bytes_read += body_bytes_read;
             total_read_ns += u128::from(read_ns);
             total_decode_ns += u128::from(decode_ns);
             self.prefetched.push_back(hit);
         }
+        self.prefetched_speculative = false;
         let total_cpu_ns = total_read_ns + total_decode_ns;
         if let Some(read_wall_ns) =
             (stage_c_wall.as_nanos() * total_read_ns).checked_div(total_cpu_ns)
@@ -1229,6 +1725,8 @@ impl CompileCache {
     /// only write what no identical rebuild reads.
     pub(crate) fn core_write(&mut self, description: String) {
         self.prefetched.clear();
+        self.lookahead.clear();
+        self.prefetched_speculative = false;
         self.pending = Some(Pending::Miss(CORE_WRITE, description));
     }
 
@@ -1254,7 +1752,7 @@ impl CompileCache {
     /// The artifact [`Self::lookup`] returned was refused; its namespace is
     /// analyzed instead.
     pub(crate) fn refused(&mut self, reason: &str) {
-        self.prefetched.clear();
+        self.prefetched_speculative = true;
         self.prefix.pop();
         self.pending = None;
         self.miss("refused", reason.to_owned());
@@ -1280,7 +1778,7 @@ impl CompileCache {
                 self.slots = slots;
             }
             if self.pool.is_none() {
-                self.pool = session.pool_task_submitter();
+                self.set_pool(session.pool_task_submitter());
             }
         }
         let index = self.prefix.len();
@@ -3713,6 +4211,213 @@ mod tests {
             cv.notify_all();
         }
         session.finish_pool();
+    }
+
+    #[test]
+    fn lookup_batched_shares_unit_pool_without_deadlocking_blocked_worker() {
+        use crate::compilation_session::{CompilationSession, PoolEngines};
+        use crate::dependency_manifest::{
+            LoadedSource, LoaderRecord, Lookup, LookupId, SourceKind, SourceOrigin,
+        };
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::Duration;
+
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let dir = std::env::temp_dir().join(format!(
+            "light-cljs-lookup-pool-slot-{}-{nanos}",
+            std::process::id()
+        ));
+        let host = MacroHost::new();
+        let options = CacheOptions {
+            dir: dir.clone(),
+            ..CacheOptions::default()
+        };
+        let store = Store::open(&dir);
+        let texts = [
+            "(ns app.a) (def a 1)",
+            "(ns app.b) (def b 2)",
+            "(ns app.c) (def c 3)",
+            "(ns app.d) (def d 4)",
+        ];
+        let names = ["app.a", "app.b", "app.c", "app.d"];
+        let loader = LoaderRecord {
+            sources: names
+                .iter()
+                .enumerate()
+                .map(|(i, &name)| LoadedSource {
+                    name: name.to_owned(),
+                    file: format!("{name}.cljs"),
+                    kind: SourceKind::Cljs,
+                    origin: SourceOrigin::Provider,
+                    lookup: LookupId(i as u32),
+                    requires: Vec::new(),
+                })
+                .collect(),
+            lookups: names
+                .iter()
+                .map(|&name| Lookup {
+                    namespace: name.to_owned(),
+                    requester: String::new(),
+                    candidates: Vec::new(),
+                    found: Some(format!("{name}.cljs")),
+                })
+                .collect(),
+            lazy: Vec::new(),
+        };
+        let env = KeyEnvironment::new(&host, Default::default());
+        let mut prefix = ManifestPrefix::default();
+        let mut keys = NamespaceKeys::default();
+        for i in 0..names.len() {
+            let mut fields = ManifestFields::default();
+            let id = prefix.push_stored(&loader, &fields, false);
+            let key = keys.next(&env, &prefix, id, texts[i], "app.d");
+            fields.front_end_key = key.clone();
+            keys.append(prefix.record(id), key.clone());
+            let mut artifact = minimal_artifact(names[i]);
+            artifact.header.path = format!("{}.cljs", names[i]);
+            artifact.header.source_length = texts[i].len() as u32;
+            artifact.header.entry = i == names.len() - 1;
+            let bytes = artifact_codec::encode(&artifact, &fields).unwrap();
+            let staged = store
+                .stage_encoded(
+                    names[i].to_owned(),
+                    key.digest,
+                    GeneratedNames::default(),
+                    bytes,
+                )
+                .unwrap();
+            assert!(matches!(
+                store.commit_batch(vec![staged])[0],
+                Publish::Published(_)
+            ));
+        }
+
+        let session = CompilationSession::new();
+        session
+            .start_pool(
+                Slots::new(2).unwrap(),
+                PoolEngines::None,
+                1,
+                host.environment(),
+                None,
+                Default::default(),
+            )
+            .unwrap();
+        let pool = session.pool_task_submitter().unwrap();
+
+        // Occupy the sole `--jobs 2` UnitPool worker with a gated task.
+        let gate = Arc::new((Mutex::new((false, false)), Condvar::new()));
+        let worker_gate = Arc::clone(&gate);
+        assert!(pool.submit_plain(
+            1,
+            Box::new(move || {
+                let (mu, cv) = &*worker_gate;
+                let mut st = mu.lock().unwrap();
+                st.0 = true;
+                cv.notify_all();
+                while !st.1 {
+                    st = cv.wait(st).unwrap();
+                }
+            }),
+        ));
+        {
+            let (mu, cv) = &*gate;
+            let mut st = mu.lock().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !st.0 && Instant::now() < deadline {
+                let (next, _) = cv.wait_timeout(st, Duration::from_millis(20)).unwrap();
+                st = next;
+            }
+            assert!(st.0, "sole pool worker did not reach gate");
+        }
+
+        let caller = thread::current().id();
+        let all_on_coordinator = Arc::new(AtomicBool::new(true));
+        let hook_flag = Arc::clone(&all_on_coordinator);
+        let mut cache = CompileCache::open_with_slots(
+            &options,
+            &host,
+            Default::default(),
+            "app.d",
+            Slots::new(2).unwrap(),
+        );
+        cache.set_pool(Some(pool));
+        cache.set_lookup_work_hook(Some(Arc::new(move |_| {
+            if thread::current().id() != caller {
+                hook_flag.store(false, Ordering::SeqCst);
+            }
+        })));
+
+        let sources = crate::source_provider::FileSourceProvider::new(vec![]);
+        let text_of = |i: usize| texts[i];
+        let cancel: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(|| false);
+
+        // Case 1: lookup_batched runs inline on the coordinator while the sole
+        // pool worker stays gated, never deadlocking and never spawning a 3rd slot.
+        for i in 0..names.len() {
+            let hit = cache
+                .lookup_batched(&loader, i, &text_of, &sources, Arc::clone(&cancel))
+                .unwrap();
+            assert!(hit.is_some(), "expected hit for {}", names[i]);
+            cache.installed(&host);
+        }
+        assert!(
+            all_on_coordinator.load(Ordering::SeqCst),
+            "with the sole --jobs 2 pool worker gated, Stage A/C must run on the coordinator"
+        );
+        assert!(cache.lookup_pool.is_none());
+
+        // Case 2: cancellation during Stage C returns Err(cancelled), clears
+        // all later prefetched entries, and records no corruption miss.
+        let mut cache_cancel = CompileCache::open_with_slots(
+            &options,
+            &host,
+            Default::default(),
+            "app.d",
+            Slots::new(2).unwrap(),
+        );
+        cache_cancel.set_pool(session.pool_task_submitter());
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let hook_cancel = Arc::clone(&cancel_flag);
+        cache_cancel.set_lookup_work_hook(Some(Arc::new(move |stage| {
+            if stage == "stage-c" {
+                hook_cancel.store(true, Ordering::SeqCst);
+            }
+        })));
+        let cancel_fn: Arc<dyn Fn() -> bool + Send + Sync> = {
+            let flag = Arc::clone(&cancel_flag);
+            Arc::new(move || flag.load(Ordering::SeqCst))
+        };
+        let err = cache_cancel
+            .lookup_batched(&loader, 0, &text_of, &sources, cancel_fn)
+            .expect_err("Stage C cancellation must return Err");
+        assert!(err.to_lowercase().contains("cancel"), "{err}");
+        assert!(
+            cache_cancel.prefetched.is_empty(),
+            "cancellation must clear all later prefetched hits"
+        );
+        assert!(
+            cache_cancel.lookahead.is_empty(),
+            "cancellation must clear lookahead"
+        );
+        assert!(
+            cache_cancel.counts.misses.is_empty(),
+            "cancellation must record no corruption miss: {:?}",
+            cache_cancel.counts.misses
+        );
+        assert_eq!(cache_cancel.counts.published, 0);
+
+        // Release the gated worker and shut down the pool.
+        {
+            let (mu, cv) = &*gate;
+            let mut st = mu.lock().unwrap();
+            st.1 = true;
+            cv.notify_all();
+        }
+        session.finish_pool();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn minimal_artifact(namespace: &str) -> NamespaceArtifact {

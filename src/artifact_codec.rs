@@ -641,7 +641,7 @@ fn external_inputs(
 
 fn read_external_inputs(
     input: &mut Input<'_>,
-    budget: &Budget,
+    budget: &Budget<'_>,
 ) -> Result<Vec<crate::dependency_manifest::ExternalInput>, DecodeError> {
     use crate::dependency_manifest::{
         BroadView, Candidate, ExternalInput, ResolvedResource, ResourceDependency,
@@ -2060,7 +2060,7 @@ pub fn read_manifest_prefix(
         prefix,
         length,
         limits,
-        &Budget(std::cell::Cell::new(limits.max_decoded_bytes)),
+        &Budget::local(limits.max_decoded_bytes),
     )
 }
 
@@ -2070,7 +2070,7 @@ fn read_manifest_charged(
     bytes: &[u8],
     length: u64,
     limits: &DecodeLimits,
-    budget: &Budget,
+    budget: &Budget<'_>,
 ) -> Result<Manifest, DecodeError> {
     assert!(bytes.len() as u64 <= length, "a prefix of the artifact");
     if length > limits.max_bytes {
@@ -2242,7 +2242,10 @@ pub fn decode(
     limits: &DecodeLimits,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<(Manifest, NamespaceArtifact), DecodeError> {
-    decode_inner(bytes, limits, cancelled, true)
+    decode_inner(bytes, limits, cancelled, true, None).map_err(|err| match err {
+        VerifiedDecodeError::Decode(e) => e,
+        VerifiedDecodeError::BatchBudget => unreachable!("no shared batch budget"),
+    })
 }
 
 /// [`decode`] for callers that have already verified the full-file content
@@ -2254,7 +2257,73 @@ pub(crate) fn decode_verified(
     limits: &DecodeLimits,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<(Manifest, NamespaceArtifact), DecodeError> {
-    decode_inner(bytes, limits, cancelled, false)
+    decode_inner(bytes, limits, cancelled, false, None).map_err(|err| match err {
+        VerifiedDecodeError::Decode(e) => e,
+        VerifiedDecodeError::BatchBudget => unreachable!("no shared batch budget"),
+    })
+}
+
+/// Shared decoded-byte budget enforced across a parallel batch of Stage C
+/// artifact decodes so in-flight allocations plus retained decoded artifacts
+/// stay bounded.
+pub(crate) struct SharedDecodeBudget {
+    remaining: std::sync::atomic::AtomicU64,
+}
+
+impl SharedDecodeBudget {
+    pub(crate) fn new(limit: u64) -> Self {
+        Self {
+            remaining: std::sync::atomic::AtomicU64::new(limit),
+        }
+    }
+
+    fn try_reserve(&self, min_bytes: u64, want_bytes: u64) -> Option<u64> {
+        use std::sync::atomic::Ordering;
+        let mut cur = self.remaining.load(Ordering::Acquire);
+        loop {
+            if cur < min_bytes {
+                return None;
+            }
+            let take = cur.min(want_bytes);
+            match self.remaining.compare_exchange_weak(
+                cur,
+                cur - take,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Some(take),
+                Err(actual) => cur = actual,
+            }
+        }
+    }
+
+    fn release(&self, bytes: u64) {
+        if bytes > 0 {
+            self.remaining
+                .fetch_add(bytes, std::sync::atomic::Ordering::Release);
+        }
+    }
+}
+
+/// Outcome error of [`decode_verified_with_budget`], distinguishing a shared
+/// batch-budget deferment from a genuine per-artifact [`DecodeError`].
+pub(crate) enum VerifiedDecodeError {
+    Decode(DecodeError),
+    BatchBudget,
+}
+
+/// [`decode_verified`], additionally charging decoded allocations (and the
+/// retained decoded artifact on success) against `shared_budget` when present.
+/// Returns [`VerifiedDecodeError::BatchBudget`] if the shared batch budget is
+/// exhausted before the per-artifact limit, allowing the caller to defer
+/// decoding this artifact alone under its full per-artifact [`DecodeLimits`].
+pub(crate) fn decode_verified_with_budget(
+    bytes: &[u8],
+    limits: &DecodeLimits,
+    cancelled: &dyn Fn() -> bool,
+    shared_budget: Option<&SharedDecodeBudget>,
+) -> Result<(Manifest, NamespaceArtifact), VerifiedDecodeError> {
+    decode_inner(bytes, limits, cancelled, false, shared_budget)
 }
 
 fn decode_inner(
@@ -2262,12 +2331,35 @@ fn decode_inner(
     limits: &DecodeLimits,
     cancelled: &dyn Fn() -> bool,
     verify_sections: bool,
+    shared_budget: Option<&SharedDecodeBudget>,
+) -> Result<(Manifest, NamespaceArtifact), VerifiedDecodeError> {
+    let budget = Budget::with_shared(limits.max_decoded_bytes, shared_budget);
+    match decode_inner_with_budget(bytes, limits, cancelled, verify_sections, &budget) {
+        Ok(result) => {
+            budget.commit();
+            Ok(result)
+        }
+        Err(error) => {
+            if budget.shared_exhausted.get() {
+                Err(VerifiedDecodeError::BatchBudget)
+            } else {
+                Err(VerifiedDecodeError::Decode(error))
+            }
+        }
+    }
+}
+
+fn decode_inner_with_budget(
+    bytes: &[u8],
+    limits: &DecodeLimits,
+    cancelled: &dyn Fn() -> bool,
+    verify_sections: bool,
+    budget: &Budget<'_>,
 ) -> Result<(Manifest, NamespaceArtifact), DecodeError> {
     if cancelled() {
         return Err(DecodeError::Cancelled);
     }
-    let budget = Budget(std::cell::Cell::new(limits.max_decoded_bytes));
-    let manifest = read_manifest_charged(bytes, bytes.len() as u64, limits, &budget)?;
+    let manifest = read_manifest_charged(bytes, bytes.len() as u64, limits, budget)?;
     if manifest.core_table != core_table() {
         return Err(DecodeError::CoreTable);
     }
@@ -2286,7 +2378,7 @@ fn decode_inner(
         part: "strings",
         limits,
     };
-    let strings = strings_input.string_table(cancelled, &budget)?;
+    let strings = strings_input.string_table(cancelled, budget)?;
     let reader = |index: usize| -> Result<Reader<'_>, DecodeError> {
         Ok(Reader {
             input: Input {
@@ -2299,7 +2391,7 @@ fn decode_inner(
             cancelled,
             polled: 0,
             polled_at: 0,
-            budget: &budget,
+            budget,
         })
     };
 
@@ -2444,22 +2536,80 @@ fn polled_digest(content: &[u8], cancelled: &dyn Fn() -> bool) -> Result<[u8; 32
     Ok(hash.finish())
 }
 
-/// What decoding may still allocate ([`DecodeLimits::max_decoded_bytes`]).
-struct Budget(std::cell::Cell<u64>);
+/// Chunk size reserved per atomic step from [`SharedDecodeBudget`] so
+/// parallel Stage C workers avoid atomic contention on every small charge.
+const SHARED_BUDGET_CHUNK: u64 = 64 * 1024;
 
-impl Budget {
-    fn charge(&self, bytes: u64) -> Result<(), DecodeError> {
-        match self.0.get().checked_sub(bytes) {
-            Some(left) => {
-                self.0.set(left);
-                Ok(())
-            }
-            None => Err(DecodeError::Limit {
-                what: "decoded bytes",
-                value: bytes,
-                limit: self.0.get(),
-            }),
+/// What decoding may still allocate ([`DecodeLimits::max_decoded_bytes`]),
+/// optionally coupled to a [`SharedDecodeBudget`] across a parallel batch.
+struct Budget<'a> {
+    remaining: std::cell::Cell<u64>,
+    shared: Option<&'a SharedDecodeBudget>,
+    shared_stash: std::cell::Cell<u64>,
+    shared_claimed: std::cell::Cell<u64>,
+    shared_exhausted: std::cell::Cell<bool>,
+    committed: std::cell::Cell<bool>,
+}
+
+impl<'a> Budget<'a> {
+    fn local(limit: u64) -> Self {
+        Self::with_shared(limit, None)
+    }
+
+    fn with_shared(limit: u64, shared: Option<&'a SharedDecodeBudget>) -> Self {
+        Self {
+            remaining: std::cell::Cell::new(limit),
+            shared,
+            shared_stash: std::cell::Cell::new(0),
+            shared_claimed: std::cell::Cell::new(0),
+            shared_exhausted: std::cell::Cell::new(false),
+            committed: std::cell::Cell::new(false),
         }
+    }
+
+    /// Commit spent bytes to the shared batch budget (leaving them charged
+    /// while the decoded artifact is retained), returning only unused stash.
+    fn commit(&self) {
+        self.committed.set(true);
+    }
+
+    fn charge(&self, bytes: u64) -> Result<(), DecodeError> {
+        let left = match self.remaining.get().checked_sub(bytes) {
+            Some(left) => left,
+            None => {
+                return Err(DecodeError::Limit {
+                    what: "decoded bytes",
+                    value: bytes,
+                    limit: self.remaining.get(),
+                });
+            }
+        };
+        if let Some(shared) = self.shared {
+            let stash = self.shared_stash.get();
+            if bytes <= stash {
+                self.shared_stash.set(stash - bytes);
+            } else {
+                let need = bytes - stash;
+                let want = need.max(SHARED_BUDGET_CHUNK);
+                match shared.try_reserve(need, want) {
+                    Some(taken) => {
+                        self.shared_claimed
+                            .set(self.shared_claimed.get().saturating_add(taken));
+                        self.shared_stash.set(stash + taken - bytes);
+                    }
+                    None => {
+                        self.shared_exhausted.set(true);
+                        return Err(DecodeError::Limit {
+                            what: "batch decoded bytes",
+                            value: bytes,
+                            limit: 0,
+                        });
+                    }
+                }
+            }
+        }
+        self.remaining.set(left);
+        Ok(())
     }
 
     /// A copy of `text`, charged first.
@@ -2486,9 +2636,21 @@ impl Budget {
             .map_err(|_| DecodeError::Limit {
                 what: "decoded bytes",
                 value: count as u64,
-                limit: self.0.get(),
+                limit: self.remaining.get(),
             })?;
         Ok(items)
+    }
+}
+
+impl Drop for Budget<'_> {
+    fn drop(&mut self) {
+        if let Some(shared) = self.shared {
+            if self.committed.get() {
+                shared.release(self.shared_stash.get());
+            } else {
+                shared.release(self.shared_claimed.get());
+            }
+        }
     }
 }
 
@@ -2554,7 +2716,7 @@ impl<'a> Input<'a> {
         Ok(self.take(32)?.try_into().unwrap())
     }
     /// [`Self::utf8`], its bytes charged to `budget` before they are copied.
-    fn utf8_charged(&mut self, budget: &Budget) -> Result<String, DecodeError> {
+    fn utf8_charged(&mut self, budget: &Budget<'_>) -> Result<String, DecodeError> {
         let start = self.position;
         let length = self.uint()?;
         if length > self.remaining() as u64 {
@@ -2582,7 +2744,7 @@ impl<'a> Input<'a> {
     fn string_table(
         &mut self,
         cancelled: &dyn Fn() -> bool,
-        budget: &Budget,
+        budget: &Budget<'_>,
     ) -> Result<Vec<Vec<u16>>, DecodeError> {
         let count = self.count()?;
         let mut table = budget.vec(count)?;
@@ -2631,7 +2793,7 @@ struct Reader<'a> {
     polled: usize,
     /// The input position at the last poll.
     polled_at: usize,
-    budget: &'a Budget,
+    budget: &'a Budget<'a>,
 }
 
 impl<'a> Reader<'a> {
@@ -4216,7 +4378,7 @@ mod tests {
             limits: &DecodeLimits::default(),
         };
         input
-            .string_table(&|| false, &Budget(std::cell::Cell::new(u64::MAX)))
+            .string_table(&|| false, &Budget::local(u64::MAX))
             .unwrap()
     }
 

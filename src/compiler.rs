@@ -3055,6 +3055,9 @@ fn analyze_entry(
                             .map_err(|e| NamespaceCompileError::new(e.0))?,
                         );
                     }
+                    if let Some(cache) = cache.as_deref_mut() {
+                        cache.shutdown_lookup_pool();
+                    }
                     let started = session.start_pool(
                         analysis.unit_slots,
                         engines,
@@ -3068,6 +3071,9 @@ fn analyze_entry(
                     if let Err(error) = started {
                         macros.evaluator_options.memory_limit = memory_limit;
                         return Err(NamespaceCompileError::new(error));
+                    }
+                    if let Some(cache) = cache.as_deref_mut() {
+                        cache.set_pool(session.pool_task_submitter());
                     }
                 }
                 analysis
@@ -3360,6 +3366,7 @@ fn analyze_entry(
                 }
                 (Some(cache), Some(record)) if has_candidates => {
                     looked_up = true;
+                    let build_control = control.cloned();
                     let session_control = macros.engine.interactive_control.clone().or_else(|| {
                         macros
                             .engine
@@ -3367,13 +3374,14 @@ fn analyze_entry(
                             .as_ref()
                             .map(|b| b.evaluator.control())
                     });
-                    let cancelled = || {
-                        control.is_some_and(|c| c.check().is_err())
-                            || session_control.as_ref().is_some_and(|c| c.check().is_err())
-                    };
+                    let cancelled: std::sync::Arc<dyn Fn() -> bool + Send + Sync> =
+                        std::sync::Arc::new(move || {
+                            build_control.as_ref().is_some_and(|c| c.check().is_err())
+                                || session_control.as_ref().is_some_and(|c| c.check().is_err())
+                        });
                     let text_of = |i: usize| loader.ordered[i].source.as_str();
                     cache
-                        .lookup_batched(record, index, &text_of, sources, &cancelled)
+                        .lookup_batched(record, index, &text_of, sources, cancelled)
                         .map_err(|message| {
                             NamespaceCompileError::new(format!("loading {}: {message}", file.name))
                         })?
