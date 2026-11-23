@@ -1534,6 +1534,23 @@ build is a supported debugging and comparison path.
   Nothing is synced to disk: after a crash a file can at worst fail its
   hash, a miss that the next publish replaces, and on macOS a sync is a
   full flush per file, two per namespace.
+
+  *As built (light-cljs-1104):* publication splits into lock-free staging
+  (`Store::stage` / `Store::stage_encoded`) and batched locking commits
+  (`Store::commit_batch`, 64 staged artifacts per lock acquisition and on
+  flush, deduplicating object renames and coalescing index rewrites per
+  namespace). When `--jobs > 1`, `CompileCache` runs staging (including
+  revalidation for `FileSourceProvider` via `SourceProvider::owned_concurrent`)
+  on up to 4 background worker threads behind a bounded queue (`(slots * 2).min(16)`
+  in-flight jobs and 32 MiB estimated bytes) feeding a single background
+  committer thread that orders outcomes by submission sequence; `flush_publishes`
+  drains before `finish`, `take_counts`, and `into_output`, and `Slots::ONE`
+  stages inline with batched commits and no background threads. In
+  `cache_key::revalidate`, required-namespace lookups use metadata-only
+  `SourceProvider::locate_traced` instead of re-reading dependency source
+  files, `src/sha256.rs::compress` uses a safe 16-word rolling message
+  schedule with 8-round unrolled blocks, and `artifact_codec::Interner` uses
+  a contiguous UTF-16 pool with an open-addressed table and an ASCII fast path.
 - **Failure.** The first failed write (a read-only directory, a full disk)
   prints one `warning:` line and turns writing off for the store's
   lifetime. A failed write leaves at most a temporary file, so what the

@@ -1278,9 +1278,11 @@ fn commit_worker_loop(shared: Arc<PublishShared>) {
                         return;
                     }
                     // Drain contiguous completed staging outcomes in submission order.
+                    let mut io_barrier = false;
                     while let Some(entry) = commit.pending.get(&commit.next_seq) {
                         if !batch.is_empty() && matches!(entry.2, StageOutcome::Io(_)) {
                             // Commit earlier valid staged items before marking the store failed.
+                            io_barrier = true;
                             break;
                         }
                         let seq = commit.next_seq;
@@ -1349,7 +1351,9 @@ fn commit_worker_loop(shared: Arc<PublishShared>) {
 
                     let flush_ready = (commit.flush_requested || commit.shutdown)
                         && commit.next_seq == commit.submitted;
-                    if batch.len() >= PUBLISH_BATCH_SIZE || (!batch.is_empty() && flush_ready) {
+                    if batch.len() >= PUBLISH_BATCH_SIZE
+                        || (!batch.is_empty() && (flush_ready || io_barrier))
+                    {
                         break std::mem::take(&mut batch);
                     }
                     if commit.flush_requested && commit.completed == commit.submitted {
@@ -1681,5 +1685,133 @@ impl OutputCache {
     /// What this build did with outputs, for `--stats`.
     pub fn counts(&self) -> OutputCounts {
         self.counts.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::generated_names::GeneratedNames;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn publish_pipeline_io_barrier_commits_earlier_staged_items_without_deadlock() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let dir = std::env::temp_dir().join(format!(
+            "light-cljs-pipeline-io-barrier-{}-{nanos}",
+            std::process::id()
+        ));
+        let store = Store::open(&dir);
+        let mut pipeline = PublishPipeline::start(store.clone(), Slots::new(4).unwrap()).unwrap();
+
+        // Stage two valid artifacts directly and inject them out-of-order
+        // alongside an Io error at seq 2 and a third staged artifact at seq 3
+        // to verify the committer commits seq 0..=1 before handling seq 2's
+        // Io error, never deadlocks, and returns outcomes in deterministic seq
+        // order.
+        let staged0 = store
+            .stage_encoded(
+                "app.a".into(),
+                [1u8; 32],
+                GeneratedNames::default(),
+                b"artifact-0".to_vec(),
+            )
+            .unwrap();
+        let staged1 = store
+            .stage_encoded(
+                "app.b".into(),
+                [2u8; 32],
+                GeneratedNames::default(),
+                b"artifact-1".to_vec(),
+            )
+            .unwrap();
+        let staged3 = store
+            .stage_encoded(
+                "app.d".into(),
+                [4u8; 32],
+                GeneratedNames::default(),
+                b"artifact-3".to_vec(),
+            )
+            .unwrap();
+
+        pipeline.submitted = 4;
+        {
+            let mut commit = pipeline.shared.commit_mu.lock().unwrap();
+            commit.pending.insert(
+                3,
+                (
+                    NamespaceId(3),
+                    "app.d".into(),
+                    StageOutcome::Staged(staged3),
+                ),
+            );
+            commit.pending.insert(
+                2,
+                (
+                    NamespaceId(2),
+                    "app.c".into(),
+                    StageOutcome::Io(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "simulated mid-batch io error",
+                    )),
+                ),
+            );
+            commit.pending.insert(
+                1,
+                (
+                    NamespaceId(1),
+                    "app.b".into(),
+                    StageOutcome::Staged(staged1),
+                ),
+            );
+            commit.pending.insert(
+                0,
+                (
+                    NamespaceId(0),
+                    "app.a".into(),
+                    StageOutcome::Staged(staged0),
+                ),
+            );
+            pipeline.shared.commit_cv.notify_one();
+        }
+
+        let finished = pipeline.flush();
+        assert_eq!(finished.len(), 4);
+        assert_eq!(
+            finished
+                .iter()
+                .map(|f| (f.seq, f.name.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(0, "app.a"), (1, "app.b"), (2, "app.c"), (3, "app.d")]
+        );
+        assert!(matches!(
+            finished[0].result,
+            FinishedResult::Published { .. }
+        ));
+        assert!(matches!(
+            finished[1].result,
+            FinishedResult::Published { .. }
+        ));
+        assert!(matches!(finished[2].result, FinishedResult::Unwritable));
+        assert!(matches!(finished[3].result, FinishedResult::Unwritable));
+        assert!(store.write_failure().is_some());
+        assert_eq!(store.candidates("app.a").len(), 1);
+        assert_eq!(store.candidates("app.b").len(), 1);
+        assert!(store.candidates("app.d").is_empty());
+
+        // Zero leaked temporary files in objects/ or index/.
+        for sub in ["objects", "index"] {
+            let temps: Vec<_> = std::fs::read_dir(store.root().join(sub))
+                .unwrap()
+                .flatten()
+                .filter(|e| e.file_name().to_string_lossy().starts_with(".tmp-"))
+                .collect();
+            assert!(temps.is_empty(), "leaked temporaries in {sub}: {temps:?}");
+        }
+
+        drop(pipeline);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -998,3 +998,54 @@ memory is from `/usr/bin/time -l` (GB = 10^9 bytes, MiB in parentheses).
   of `--no-cache`), `trace.units.host` drops to 2,436 (`j=1` drops from 17,136
   to 4,642, matching `--no-cache`), and peak memory drops 40 MB to 1.331 GB
   (<= 1.42 GB target).
+
+## Parallel cache publishing, batched store commits, metadata-only `revalidate`, and safe `sha256` + `Interner` (light-cljs-1104, November 23, 2026)
+
+Splitting `Store::publish` into lock-free staging (`Store::stage` /
+`Store::stage_encoded`) and batched locking commits (`Store::commit_batch`, 64
+staged artifacts per lock acquisition), driving staging on up to 4 bounded
+background workers (`(slots * 2).min(16)` jobs, 32 MiB estimated bytes) plus a
+sequence-ordered background committer at `--jobs > 1`, switching `:require`
+revalidation to metadata-only `SourceProvider::locate_traced`, optimizing safe
+`sha256::compress` (rolling 16-word schedule, 8-round unrolled blocks), and
+replacing `artifact_codec::Interner`'s double-cloned `HashMap<Box<[u16]>, u32>`
+with a contiguous UTF-16 pool and open-addressed table eliminate the serial
+publish bottleneck on cold cache-fill and speed up warm rebuilds.
+
+V8 build release binaries (`d85b00cc` base vs `640f0a85` candidate), Apple M3
+Ultra VM (24 vCPUs, 32 GiB), **unreserved** machine (1-minute `uptime` load
+3.01–4.55), medians of 3 alternating rounds at `--jobs 8` (cold fill followed
+by warm no-op rebuild) and 1 alternating pair at `--jobs 1` on
+`workload-200k-seed42` and `re-frame-200k-seed42`
+(`release bench --optimize advanced --cache-dir ... --stats`). Peak memory is
+from `/usr/bin/time -l` (GB = 10^9 bytes).
+
+| Project | Mode | Binary | Wall (ms) | `cache.write-ms` | `cache.validate-ms` | `cache.decode-ms` | Peak memory |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `workload-200k-seed42` | cold `--jobs 1` | base `d85b00cc` | 6,447.9 | 1,098.5 | 4.1 | 0.0 | 0.928 GB |
+| `workload-200k-seed42` | cold `--jobs 1` | candidate `640f0a85` | 6,155.4 (-4.5%) | 787.0 (-28.4%) | 5.1 | 0.0 | 0.914 GB |
+| `workload-200k-seed42` | cold `--jobs 8` (median of 3) | base `d85b00cc` | 5,041.0 (4,949.9–5,158.3) | 1,148.1 (1,110.3–1,230.9) | 4.4 (4.2–4.5) | 0.0 | 1.152 GB (1.147–1.159) |
+| `workload-200k-seed42` | cold `--jobs 8` (median of 3) | candidate `640f0a85` | 3,982.2 (3,864.5–3,996.5) (-21.0%) | 14.5 (14.1–14.7) (-98.7%) | 13.8 (13.5–20.6) | 0.0 | 1.189 GB (1.176–1.191) |
+| `workload-200k-seed42` | warm `--jobs 8` (median of 3) | base `d85b00cc` | 1,059.7 (1,026.0–1,244.4) | 0.0 | 368.0 (356.1–435.2) | 418.8 (405.8–506.9) | 0.520 GB (0.515–0.541) |
+| `workload-200k-seed42` | warm `--jobs 8` (median of 3) | candidate `640f0a85` | 919.9 (891.3–921.2) (-13.2%) | 0.0 | 275.5 (275.5–276.3) (-25.1%) | 342.2 (341.5–342.3) (-18.3%) | 0.539 GB (0.537–0.544) |
+| `re-frame-200k-seed42` | cold `--jobs 1` | base `d85b00cc` | 8,556.5 | 1,965.8 | 21.3 | 0.0 | 1.198 GB |
+| `re-frame-200k-seed42` | cold `--jobs 1` | candidate `640f0a85` | 7,801.6 (-8.8%) | 1,423.6 (-27.6%) | 22.4 | 0.0 | 1.216 GB |
+| `re-frame-200k-seed42` | cold `--jobs 8` (median of 3) | base `d85b00cc` | 6,893.2 (6,702.5–6,959.5) | 1,940.4 (1,856.3–2,024.6) | 21.6 (21.1–21.7) | 0.0 | 1.339 GB (1.335–1.347) |
+| `re-frame-200k-seed42` | cold `--jobs 8` (median of 3) | candidate `640f0a85` | 4,933.3 (4,824.1–5,138.6) (-28.4%) | 27.3 (27.3–32.1) (-98.6%) | 68.9 (62.6–87.1) | 0.0 | 1.379 GB (1.357–1.387) |
+| `re-frame-200k-seed42` | warm `--jobs 8` (median of 3) | base `d85b00cc` | 1,519.1 (1,503.5–1,534.4) | 0.0 | 621.5 (615.2–624.0) | 455.4 (423.3–458.4) | 0.658 GB (0.655–0.660) |
+| `re-frame-200k-seed42` | warm `--jobs 8` (median of 3) | candidate `640f0a85` | 1,144.0 (1,128.2–1,163.3) (-24.7%) | 0.0 | 380.7 (371.9–381.6) (-38.7%) | 339.7 (338.9–341.0) (-25.4%) | 0.684 GB (0.660–0.699) |
+
+- *Parity.* `bb oracle.bb 42 3` matches `node run-light.mjs 42 3`, and
+  `bb check-waste.bb --strict out/light/workload.main.js` passes at both
+  `--jobs 1` and `--jobs 8` with identical bundle sizes to `d85b00cc`:
+  `workload-200k-seed42` (`484264`, raw 3,386,878 B / gzip-9 824,796 B at
+  `j=1`, raw 3,386,824 B / gzip-9 825,152 B at `j=8`); `re-frame-200k-seed42`
+  (`714878 117718`, raw 5,565,520 B / gzip-9 1,039,448 B at `j=1`, raw
+  5,565,482 B / gzip-9 1,039,480 B at `j=8`).
+- *Targets.* On `workload-200k-seed42` cold `--jobs 8`, `cache.write-ms` drops
+  from 1,148.1 ms to 14.5 ms (`<= 300 ms` target) and peak memory is 1.189 GB
+  (`<= 1.25 GB` target). On `re-frame-200k-seed42` cold `--jobs 8`,
+  `cache.write-ms` drops from 1,940.4 ms to 27.3 ms (`<= 450 ms` target) and
+  peak memory is 1.379 GB (`<= 1.45 GB` target). Warm no-op rebuilds also drop
+  by 13.2% (plain) and 24.7% (re-frame) from the safe `sha256::compress`
+  optimization alone.
