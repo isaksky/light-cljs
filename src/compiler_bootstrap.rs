@@ -1318,6 +1318,7 @@ impl MacroHost {
             );
             if result.is_err() {
                 self.engine.bootstrap = None;
+                self.engine.work_cache.clear_engine_state();
             }
             return result;
         }
@@ -1330,6 +1331,7 @@ impl MacroHost {
         );
         if result.is_err() {
             self.engine.bootstrap = None;
+            self.engine.work_cache.clear_engine_state();
         }
         result
     }
@@ -1478,6 +1480,7 @@ impl CompiledMacro {
             return Ok(function.id);
         }
         let (tables, unit) = installed.lock().expect("installed macro").parts();
+        binding.on_engine_entry(engine);
         crate::reader_registration::register(engine, &tables).map_err(|e| e.to_string())?;
         let function = engine
             .evaluate_unit(&format!(
@@ -1505,12 +1508,14 @@ impl CompiledMacro {
         let key = match &self.function {
             #[cfg(feature = "bbp-macros")]
             MacroFunction::NativeJsObj(identity) => {
+                binding.on_engine_entry(engine);
                 return engine
                     .source_macro_function(identity.0, "rt => rt.compilerForms.jsObj")
                     .map_err(|e| e.to_string());
             }
             #[cfg(feature = "bbp-macros")]
             MacroFunction::NativeDefinition(identity, source) => {
+                binding.on_engine_entry(engine);
                 return engine
                     .source_macro_function(identity.0, source)
                     .map_err(|e| e.to_string());
@@ -1546,6 +1551,7 @@ impl CompiledMacro {
             #[cfg(feature = "bbp-macros")]
             MacroFunction::NativeDefinition(..) => unreachable!("native bootstrap returned above"),
         };
+        binding.on_engine_entry(engine);
         crate::reader_registration::register(engine, tables).map_err(|e| e.to_string())?;
         let source = format!("rt => rt.core.macroReaderFunction(({})(rt))", unit);
         let function = engine
@@ -1731,6 +1737,7 @@ impl MacroHost {
             );
         }
         let tables = crate::reader_registration::ReaderTables::take(&mut program);
+        self.engine.on_engine_entry(engine);
         crate::reader_registration::register(engine, &tables).map_err(|e| e.to_string())?;
         let function = engine
             .evaluate_unit(&format!(
@@ -1862,25 +1869,24 @@ impl MacroHost {
         let engine = engine.unwrap_or(bootstrap.evaluator.as_ref());
         let function = declaration.function(engine, &self.engine)?;
         let reader_view;
-        let env = match self.reader_view(&declaration, env, engine) {
+        let (env, env_measured) = match self.reader_view(&declaration, env, engine) {
             Some(view) => {
                 reader_view = view;
-                &reader_view
+                (&reader_view, true)
             }
-            None => env,
+            None => (env, false),
         };
-        self.expand_javascript(
-            engine,
-            function,
-            call,
-            env,
-            ExpansionOrigin {
-                macro_name: Name::new(Some(ns), name),
-                call: call.span(),
-                definition: Some(declaration.definition),
-                helpers: vec![],
-            },
-        )
+        let origin = ExpansionOrigin {
+            macro_name: Name::new(Some(ns), name),
+            call: call.span(),
+            definition: Some(declaration.definition),
+            helpers: vec![],
+        };
+        if env_measured {
+            self.expand_javascript_with_measured_env(engine, function, call, env, origin)
+        } else {
+            self.expand_javascript(engine, function, call, env, origin)
+        }
     }
     /// The environment a source macro that reads only some keys of its
     /// `&env`, or none, is given instead of `env` (light-cljs-427): only
@@ -1892,13 +1898,12 @@ impl MacroHost {
     /// ([`source_environment_keys`]). `None` keeps `env`: when the macro may
     /// read all of it, when it would not fit the conversion budget whole, so
     /// that leaving the rest out cannot hide a conversion failure
-    /// ([`elidable_map_environment`]), or while the compilation measures
-    /// each expansion's conversions for the cache
-    /// ([`MacroHost::measures_work`]), whose work marks count what the whole
-    /// environment's conversion charged, or once the compilation registered
+    /// ([`elidable_map_environment`]), or once the compilation registered
     /// an extension bundle that converting the rest could demand or call
     /// ([`crate::compilation_session::reaches_environment_data`],
-    /// light-cljs-433).
+    /// light-cljs-433). When [`MacroHost::measures_work`] is active, the full
+    /// environment's sound node budget is charged before returning the
+    /// projected view, matching core-macro elision (light-cljs-1102).
     fn reader_view(
         &self,
         declaration: &CompiledMacro,
@@ -1911,8 +1916,7 @@ impl MacroHost {
         // frontier, or one compile-time code installed outside a
         // declaration; while environment data can reach neither, nothing it
         // does is observable.
-        if self.measures_work()
-            || self.engine.environment_bundles() != 0
+        if self.engine.environment_bundles() != 0
             || engine.environment_extensions().is_none_or(|tracking| {
                 tracking.get() != crate::evaluator::EnvironmentExtensions::None
             })
@@ -1922,6 +1926,7 @@ impl MacroHost {
         // Half the node limit, as each conversion takes at most the limit
         // ([`MacroHost::expand_javascript`]).
         let mut remaining = self.limits.generated_nodes / 2;
+        let budget = remaining;
         if !elidable_map_environment(
             env,
             &mut remaining,
@@ -1948,7 +1953,15 @@ impl MacroHost {
                 entries.push((key, value));
             }
         }
-        c.map(&entries).ok()
+        let view = c.map(&entries).ok()?;
+        // With less budget the full environment is converted instead, which
+        // can cost more, so a namespace needs the budget that elision needed:
+        // twice the full environment's nodes ([`crate::macro_host::WorkMarks`]).
+        if self.measures_work() {
+            let declared = crate::macro_host::WorkMarks::declared_elsewhere(env);
+            self.note_node_room(2 * (budget - remaining + declared));
+        }
+        Some(view)
     }
 }
 
@@ -2393,6 +2406,71 @@ mod tests {
             let expected = expected.map(|keys| keys.into_iter().map(String::from).collect());
             assert_eq!(keys, expected, "{body}");
         }
+    }
+
+    #[cfg(any(feature = "quickjs", feature = "v8-macros"))]
+    #[test]
+    fn reader_view_projects_under_work_measurement_and_charges_full_env_budget() {
+        let mut host = MacroHost::new();
+        crate::compile_with_macros("(defmacro id [x] x)", &mut host).unwrap();
+        let declaration = host.tables.javascript_macros["cljs.user/id"].clone();
+        assert!(declaration.environment_keys.is_some());
+        let evaluator = host.engine.bootstrap.as_ref().unwrap().evaluator.clone();
+        if let Some(tracking) = evaluator.environment_extensions() {
+            tracking.set(crate::evaluator::EnvironmentExtensions::None);
+        }
+        let c = DataBuilder;
+        let locals: Vec<(Datum, Datum)> = (0..30)
+            .map(|i| (c.symbol(Name::new(None, &format!("x{i}"))), c.integer(i)))
+            .collect();
+        let macros: Vec<(Datum, Datum)> = (0..30)
+            .map(|i| {
+                (
+                    c.symbol(Name::new(Some("m"), &format!("f{i}"))),
+                    c.integer(i),
+                )
+            })
+            .collect();
+        let ns_key = c.keyword(Name::new(None, "ns"));
+        let rc_key = c.keyword(Name::new(Some("light-cljs"), "reader-context"));
+        let locals_key = c.keyword(Name::new(None, "locals"));
+        let macros_key = c.keyword(Name::new(Some("light-cljs"), "macros"));
+        let env = c
+            .map(&[
+                (ns_key.clone(), c.map(&[]).unwrap()),
+                (
+                    rc_key.clone(),
+                    c.map(&[(
+                        c.keyword(Name::new(None, "declared")),
+                        c.map(&[(c.keyword(Name::new(None, "from")), c.integer(7))])
+                            .unwrap(),
+                    )])
+                    .unwrap(),
+                ),
+                (locals_key.clone(), c.map(&locals).unwrap()),
+                (macros_key.clone(), c.map(&macros).unwrap()),
+            ])
+            .unwrap();
+        host.begin_namespace_work();
+        assert!(host.measures_work());
+        let before = host.engine.generated_nodes.get();
+        let view = host
+            .reader_view(&declaration, &env, evaluator.as_ref())
+            .expect("reader_view should project when measures_work() is true");
+        assert!(view.get(&ns_key).unwrap().is_some());
+        assert!(view.get(&rc_key).unwrap().is_some());
+        assert!(view.get(&locals_key).unwrap().is_none());
+        assert!(view.get(&macros_key).unwrap().is_none());
+        let expected_room = 2
+            * (crate::macro_host::WorkMarks::nodes(&env)
+                + crate::macro_host::WorkMarks::declared_elsewhere(&env));
+        assert!(
+            host.engine.work.node_peak.get() >= before + expected_room,
+            "node_peak {} < before {} + expected_room {}",
+            host.engine.work.node_peak.get(),
+            before,
+            expected_room
+        );
     }
 
     #[test]

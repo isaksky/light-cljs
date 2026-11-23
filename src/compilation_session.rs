@@ -3470,6 +3470,15 @@ impl CompilationSession {
         }
         Ok(())
     }
+    /// Enable permanent `__lightGensym` logging in `engine`'s runtime once per
+    /// isolate without decoding the returned vector (`build.rs` keeps
+    /// `gensymLog = true` permanently once `takeGensyms()` runs).
+    pub(crate) fn enable_gensym_log(engine: &dyn MacroEvaluator) -> Result<(), String> {
+        let value = engine
+            .evaluate_unit("rt => { rt.compilerForms.takeGensyms(); return null; }")
+            .map_err(|e| e.to_string())?;
+        engine.release(value).map_err(|e| e.to_string())
+    }
     pub(crate) fn take_gensyms_from_engine(
         engine: &dyn MacroEvaluator,
     ) -> Result<(u64, Vec<Vec<u16>>), String> {
@@ -6219,7 +6228,7 @@ fn analyze_unit(
         host.engine.expansions = std::rc::Rc::new(std::cell::Cell::new(expansions));
         host.engine.generated_nodes = std::rc::Rc::new(std::cell::Cell::new(nodes));
         if !records {
-            host.engine.work = Default::default();
+            host.reset_unit_work();
         }
     }
     let (analysis, charges) = {
@@ -6266,7 +6275,7 @@ fn analyze_unit(
         let _gensyms = crate::generated_names::RestoreGensymScope(scope_engine);
         if records {
             let started = crate::evaluator::Instant::now();
-            host.engine.work = Default::default();
+            host.reset_unit_work();
             let loc = crate::compiler_data::DiagnosticLocation::from_span(&form.span());
             let location = format!("{}:{}:{}: {name}", loc.source, loc.line, loc.column);
             let recording = shared.recording();
@@ -6276,35 +6285,39 @@ fn analyze_unit(
             // up or installing the catalog's registrations, is its own.
             // The log is this thread's: the engine logs into it, and so do
             // the core macros the unit expands natively, with or without an
-            // engine (light-cljs-432).
+            // engine (light-cljs-432). Engine-side gensym logging is enabled
+            // lazily once per isolate on its first engine entry, and namespace
+            // capture is gated on actual engine entry (light-cljs-1102).
             let logs_gensyms = on_worker && recording.capture && !nested;
-            let started_log = if logs_gensyms {
+            if logs_gensyms {
                 crate::generated_names::start_log();
-                match engine {
-                    Some(engine) => CompilationSession::take_gensyms_from(engine).map(drop),
-                    None => Ok(()),
-                }
-            } else {
-                Ok(())
-            };
+            }
             // And what the unit adds to its engine's registry, on any thread,
             // which the coordinator logs where it charges the unit: the
             // coordinator's log so far stays its own (light-cljs-1004).
             // A unit a pool may place logs, besides what it adds, what it
             // touches that only such units added (light-cljs-1006).
-            let logs_namespaces = recording.capture && !nested;
+            let logs_namespaces = recording.capture && !nested && scope_engine.is_some();
             let session = (!on_worker).then(|| host.session_handle()).flatten();
-            let pooled = logs_namespaces
+            let captures_namespaces = logs_namespaces && (on_worker || session.is_some());
+            let pooled = captures_namespaces
                 && placement_rank(Some(shared.lock().units[id].dispatch)) < COORDINATOR_RANK;
-            let started_namespaces = match (engine, &session) {
-                (Some(engine), Some(session)) if logs_namespaces => {
-                    session.flush_namespaces(engine, pooled)
-                }
-                (Some(engine), None) if logs_namespaces && on_worker => {
-                    CompilationSession::take_namespaces_from(engine, pooled).map(drop)
-                }
-                _ => Ok(()),
-            };
+            let pending_capture = (scope_engine.is_some() && (logs_gensyms || captures_namespaces))
+                .then(|| {
+                    crate::macro_host::PendingCaptureGuard::install(
+                        host.engine.work_cache.clone(),
+                        crate::macro_host::PendingUnitCapture {
+                            on_worker,
+                            logs_gensyms,
+                            logs_namespaces: captures_namespaces,
+                            pooled,
+                            session: session.clone(),
+                            gensym_error: false,
+                            namespace_error: false,
+                            entered: false,
+                        },
+                    )
+                });
             // A unit recorded on its own inside another's recording, on any
             // thread, logs into a log of its own, if the thread logs, and
             // the other's goes on after it, so that its names are its own
@@ -6322,6 +6335,18 @@ fn analyze_unit(
             let analysis =
                 crate::analyzer::analyze_deferred_form(&form, &mut host, &snapshot, engine);
             let recorded = free.finish();
+            let capture = pending_capture.and_then(|guard| guard.finish());
+            let unit_entered = capture.as_ref().is_some_and(|c| c.entered);
+            let started_log = if capture.as_ref().is_some_and(|c| c.gensym_error) {
+                Err(String::new())
+            } else {
+                Ok(())
+            };
+            let started_namespaces = if capture.as_ref().is_some_and(|c| c.namespace_error) {
+                Err(String::new())
+            } else {
+                Ok(())
+            };
             // What `gensym` gave on this worker, for the artifact
             // ([`CompilationSession::take_gensyms`]).
             let gensyms = if let Some(log) = nested_log {
@@ -6339,10 +6364,24 @@ fn analyze_unit(
                 events.push(crate::macro_host::UnitEvent::Unmeasured);
                 Vec::new()
             });
-            let namespaces = match engine {
-                Some(engine) if logs_namespaces && (on_worker || session.is_some()) => {
-                    started_namespaces
-                        .and_then(|()| CompilationSession::take_namespaces_from(engine, false))
+            let namespaces = match scope_engine {
+                Some(engine) if captures_namespaces && unit_entered => {
+                    let next_pooled = if on_worker { pooled } else { false };
+                    match started_namespaces.and_then(|()| {
+                        CompilationSession::take_namespaces_from(engine, next_pooled)
+                    }) {
+                        Ok(entries) => {
+                            host.engine
+                                .work_cache
+                                .namespace_pool_mode
+                                .set(Some(next_pooled));
+                            Ok(entries)
+                        }
+                        Err(error) => {
+                            host.engine.work_cache.namespace_pool_mode.set(None);
+                            Err(error)
+                        }
+                    }
                 }
                 _ => Ok(Vec::new()),
             };

@@ -1036,6 +1036,125 @@ fn a_cold_parallel_build_expands_units_on_workers_and_publishes_the_one_job_arti
     assert!(isolates > 1, "{isolates} worker isolates");
 }
 
+/// Cold cache-fill capture must not enter the compile-time macro engine for
+/// units that never invoke a JavaScript macro (pure/macro-free units and units
+/// expanding only native core macros), while still capturing `gensym` and
+/// namespace-registry side effects identically across `--jobs 1` and `--jobs 4`
+/// (light-cljs-1102).
+#[test]
+fn cold_cache_capture_gates_host_entries_on_actual_engine_use() {
+    let project = Project::new(&[
+        (
+            "macros.cljs",
+            r#"(ns macros)
+(defmacro named [x]
+  (let [s (gensym "g")]
+    `(let [~s ~x] (+ ~s 1))))
+(defmacro with-ns [sym x]
+  (create-ns sym)
+  `[~(some? (find-ns sym)) ~x])"#,
+        ),
+        (
+            "app.cljs",
+            r#"(ns app (:require [macros :refer [named with-ns]]))
+(defn p0 [x] (+ x 1))
+(defn p1 [x] (+ x 2))
+(defn p2 [x] (+ x 3))
+(defn p3 [x] (+ x 4))
+(defn p4 [x] (+ x 5))
+(defn p5 [x] (+ x 6))
+(defn n0 [x] (when x (and true x)))
+(defn n1 [x] (when x (or false x)))
+(defn n2 [x] (cond (pos? x) x :else 0))
+(defn m0 [x] (named x))
+(defn m1 [x] (with-ns app.dyn.one x))
+(defn m2 [x] (named (m0 x)))
+(defn m3 [x] (with-ns app.dyn.two (named x)))"#,
+        ),
+        (
+            "main.cljs",
+            r#"(ns main (:require [app]))
+(js/console.log (app/p0 1) (app/p5 1) (app/n0 3) (app/n2 4) (app/m0 5) (pr-str (app/m1 6)) (app/m2 7) (pr-str (app/m3 8)))"#,
+        ),
+    ]);
+    let nocache_j1 = project.uncached("main");
+    assert_eq!(nocache_j1.run(), "2 7 3 4 6 [true 6] 9 [true 9]\n");
+    let nocache_j4 = Project::finish(
+        project
+            .command(
+                "main",
+                &["--jobs", "4", "--macro-memory-limit", "268435456"],
+                false,
+            )
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(nocache_j4.js, nocache_j1.js);
+
+    let build = |cache: &Path, jobs: &str| {
+        let cache = cache.to_str().unwrap();
+        let extra = [
+            "--jobs",
+            jobs,
+            "--macro-memory-limit",
+            "268435456",
+            "--cache-dir",
+            cache,
+        ];
+        Project::finish(project.command("main", &extra, false).output().unwrap())
+    };
+    let objects = |cache: &Path| {
+        let mut objects: Vec<(String, Vec<u8>)> = fs::read_dir(cache.join("v1/objects"))
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| !name_of(path).starts_with(".tmp"))
+            .map(|path| (name_of(&path), fs::read(&path).unwrap()))
+            .collect();
+        objects.sort();
+        objects
+    };
+
+    let c1 = project.dir.join("cache-j1");
+    let cold_j1 = build(&c1, "1");
+    assert_eq!(cold_j1.js, nocache_j1.js);
+    let c4 = project.dir.join("cache-j4");
+    let cold_j4 = build(&c4, "4");
+    assert_eq!(cold_j4.js, nocache_j1.js);
+    assert_eq!(objects(&c4), objects(&c1));
+
+    if !PANTS_BUILD {
+        let nc1_host = nocache_j1.stat("trace.units.host");
+        let nc4_host = nocache_j4.stat("trace.units.host");
+        let j1_host = cold_j1.stat("trace.units.host");
+        let j4_host = cold_j4.stat("trace.units.host");
+        let analyzed = cold_j1.stat("deferred-units.analyzed");
+        assert!(
+            nc1_host > 0 && nc1_host < analyzed,
+            "expected subset of units to enter host: nc1_host={nc1_host} analyzed={analyzed}"
+        );
+        assert_eq!(
+            j1_host, nc1_host,
+            "cold --jobs 1 should only enter host for macro-invoking units:\n{}",
+            cold_j1.stats
+        );
+        assert_eq!(
+            j4_host, nc4_host,
+            "cold --jobs 4 should only enter host for macro-invoking units:\n{}",
+            cold_j4.stats
+        );
+        assert_eq!(
+            j4_host, 4,
+            "only m0..m3 invoke JS macros:\n{}",
+            cold_j4.stats
+        );
+    }
+
+    let warm_j4 = build(&c4, "4");
+    assert_eq!(warm_j4.stat("cache.hits"), 3, "{}", warm_j4.stats);
+    assert_eq!(warm_j4.js, nocache_j1.js);
+}
+
 #[test]
 fn policy_changes_with_an_existing_artifact() {
     let project = Project::new(FIXTURE);

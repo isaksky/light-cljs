@@ -1736,6 +1736,31 @@ fn elided_list_environments_preserve_node_limits() {
     assert!(a.node_peak >= 2000, "{a:?}");
 }
 
+/// A source macro whose `&env` is projected via `reader_view` under work
+/// measurement still charges twice the full environment's nodes so lowered
+/// `--macro-nodes` limits match uncached builds (light-cljs-1102).
+#[test]
+fn projected_source_macro_environments_preserve_node_limits() {
+    let zeros = vec!["0"; 1000].join(" ");
+    let a = format!(
+        "(ns lib.a {{:padding ({zeros})}} (:require [lib.macros :refer [id]])) (def a (id 1))"
+    );
+    let files = [
+        ("lib/macros.cljs", "(ns lib.macros) (defmacro id [x] x)"),
+        ("lib/b.cljs", "(ns lib.b) (def b 2)"),
+        ("lib/a.cljs", a.as_str()),
+        (
+            "app/main.cljs",
+            "(ns app.main (:require [lib.b :as b] [lib.a :as a])) (js/console.log a/a b/b)",
+        ),
+    ];
+    let sources = Sources::new(&files);
+    let roots = sources.roots();
+    let captured = check_lowered_limits(Input::Roots(&roots), "1 2\n");
+    let a = captured.artifacts["lib.a"].accounting.unwrap();
+    assert!(a.node_peak >= 2000, "{a:?}");
+}
+
 /// The analysis options with each static and runtime array-check mode.
 fn array_policies() -> Vec<AnalysisOptions> {
     let mut policies = Vec::new();

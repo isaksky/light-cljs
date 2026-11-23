@@ -392,11 +392,123 @@ pub(crate) struct WorkMarks {
     /// A measurement failed, so the namespace's accounting is not recorded
     /// and its artifact is never installed.
     pub unmeasured: std::cell::Cell<bool>,
+}
+
+/// Maximum number of large environment entries whose node counts are kept
+/// across units on one isolate ([`WorkCache::environment_nodes`]).
+const WORK_SIZE_CACHE_CAP: usize = 16;
+
+/// Pending per-unit capture preparation executed lazily on the unit's first
+/// entry into the compile-time macro engine, so units that never enter the
+/// engine perform zero engine round-trips for gensym or namespace capture.
+pub(crate) struct PendingUnitCapture {
+    pub(crate) on_worker: bool,
+    pub(crate) logs_gensyms: bool,
+    pub(crate) logs_namespaces: bool,
+    pub(crate) pooled: bool,
+    pub(crate) session: Option<std::rc::Rc<crate::compilation_session::CompilationSession>>,
+    pub(crate) gensym_error: bool,
+    pub(crate) namespace_error: bool,
+    pub(crate) entered: bool,
+}
+
+/// Persistent per-engine/per-isolate caches kept across units while per-unit
+/// [`WorkMarks`] counters reset (light-cljs-1102).
+#[derive(Default)]
+pub(crate) struct WorkCache {
     /// The macro evaluator's `takeEncodePeak` ([`take_encode_peak`]).
-    encode_peak: std::cell::Cell<Option<crate::evaluator::ValueId>>,
-    /// The node counts of recent large environment entries, by identity;
-    /// holding the datum keeps its address from being reused.
-    sizes: std::cell::RefCell<Vec<(crate::compiler_data::Datum, usize)>>,
+    pub(crate) encode_peak: std::cell::Cell<Option<crate::evaluator::ValueId>>,
+    /// The node counts of recent large environment entries, by identity, most
+    /// recently used last; holding the datum keeps its address from being
+    /// reused.
+    sizes: std::cell::RefCell<Vec<(usize, crate::compiler_data::Datum, usize)>>,
+    /// Whether this isolate's runtime has already enabled permanent
+    /// `__lightGensym` logging via a one-time `takeGensyms()` call.
+    pub(crate) gensym_log_enabled: std::cell::Cell<bool>,
+    /// The `pooled` mode currently active on this isolate's `namespaceLog`
+    /// (`None` until initialized or after an error/reset).
+    pub(crate) namespace_pool_mode: std::cell::Cell<Option<bool>>,
+    /// Lazy pre-entry capture hook for the currently executing recorded unit.
+    pub(crate) pending_capture: std::cell::RefCell<Option<PendingUnitCapture>>,
+}
+
+/// RAII guard for [`WorkCache::pending_capture`]: clears the pending slot on
+/// drop and invalidates `namespace_pool_mode` if unwinding after engine entry.
+pub(crate) struct PendingCaptureGuard {
+    cache: std::rc::Rc<WorkCache>,
+    active: bool,
+}
+
+impl PendingCaptureGuard {
+    pub(crate) fn install(cache: std::rc::Rc<WorkCache>, pending: PendingUnitCapture) -> Self {
+        *cache.pending_capture.borrow_mut() = Some(pending);
+        Self {
+            cache,
+            active: true,
+        }
+    }
+
+    pub(crate) fn finish(mut self) -> Option<PendingUnitCapture> {
+        self.active = false;
+        self.cache.pending_capture.borrow_mut().take()
+    }
+}
+
+impl Drop for PendingCaptureGuard {
+    fn drop(&mut self) {
+        if self.active
+            && let Some(pending) = self.cache.pending_capture.borrow_mut().take()
+            && pending.entered
+        {
+            self.cache.namespace_pool_mode.set(None);
+        }
+    }
+}
+
+impl WorkCache {
+    pub(crate) fn environment_nodes(&self, environment: &crate::compiler_data::Datum) -> usize {
+        use crate::compiler_data::DatumKind;
+        let DatumKind::Collection { children, .. } = environment.kind() else {
+            return WorkMarks::nodes(environment);
+        };
+        if environment.metadata().is_some() {
+            return WorkMarks::nodes(environment);
+        }
+        let mut sizes = self.sizes.borrow_mut();
+        let mut count = 1;
+        for child in children {
+            let identity = child.identity();
+            let hit = sizes.iter().rposition(|(id, _, _)| *id == identity);
+            count += match hit {
+                Some(pos) => {
+                    let size = sizes[pos].2;
+                    let last = sizes.len() - 1;
+                    if pos != last {
+                        let entry = sizes.remove(pos);
+                        sizes.push(entry);
+                    }
+                    size
+                }
+                None => {
+                    let size = WorkMarks::nodes(child);
+                    if size >= 64 {
+                        if sizes.len() == WORK_SIZE_CACHE_CAP {
+                            sizes.remove(0);
+                        }
+                        sizes.push((identity, child.clone(), size));
+                    }
+                    size
+                }
+            };
+        }
+        count
+    }
+
+    pub(crate) fn clear_engine_state(&self) {
+        self.encode_peak.set(None);
+        self.gensym_log_enabled.set(false);
+        self.namespace_pool_mode.set(None);
+    }
 }
 
 /// The compilation's counters where a namespace's work began
@@ -405,6 +517,32 @@ pub(crate) struct WorkMarks {
 pub(crate) struct WorkStart {
     pub expansions: usize,
     pub generated_nodes: usize,
+}
+
+/// Reset the JavaScript side's `encode.peak` before an outermost expansion
+/// without decoding the discarded return value through `export_form`.
+fn reset_encode_peak(
+    evaluator: &dyn crate::evaluator::MacroEvaluator,
+    cached: &std::cell::Cell<Option<crate::evaluator::ValueId>>,
+) -> bool {
+    if evaluator.has_native_bridge() {
+        return true;
+    }
+    let reset = |function| -> Result<(), crate::evaluator::EvalError> {
+        let value = evaluator.call(function, &[])?;
+        let _ = evaluator.release(value);
+        Ok(())
+    };
+    if let Some(function) = cached.get()
+        && reset(function).is_ok()
+    {
+        return true;
+    }
+    let Ok(function) = evaluator.evaluate_unit("rt => rt.compilerForms.takeEncodePeak") else {
+        return false;
+    };
+    cached.set(Some(function));
+    reset(function).is_ok()
 }
 
 /// The most nodes that any encoding of compile-time data on `evaluator`
@@ -511,35 +649,6 @@ impl WorkMarks {
                 _ => None,
             })
             .unwrap_or(0)
-    }
-
-    fn environment_nodes(&self, environment: &crate::compiler_data::Datum) -> usize {
-        use crate::compiler_data::DatumKind;
-        let DatumKind::Collection { children, .. } = environment.kind() else {
-            return Self::nodes(environment);
-        };
-        if environment.metadata().is_some() {
-            return Self::nodes(environment);
-        }
-        let mut sizes = self.sizes.borrow_mut();
-        let mut count = 1;
-        for child in children {
-            let identity = child.identity();
-            count += match sizes.iter().find(|(data, _)| data.identity() == identity) {
-                Some(&(_, size)) => size,
-                None => {
-                    let size = Self::nodes(child);
-                    if size >= 64 {
-                        if sizes.len() == 16 {
-                            sizes.remove(0);
-                        }
-                        sizes.push((child.clone(), size));
-                    }
-                    size
-                }
-            };
-        }
-        count
     }
 }
 
@@ -721,6 +830,9 @@ pub(crate) struct EngineBinding {
     /// The compilation's high-water marks and charges, shared like the
     /// counters ([`WorkMarks`]).
     pub(crate) work: std::rc::Rc<WorkMarks>,
+    /// Persistent per-isolate caches (`takeEncodePeak`, environment sizes,
+    /// and lazy capture state) kept across per-unit [`WorkMarks`] resets.
+    pub(crate) work_cache: std::rc::Rc<WorkCache>,
     /// The engine clean compilations run their macros in instead of the
     /// built-in ones ([`MacroHost::set_script_host`]).
     pub(crate) script_host: Option<std::rc::Rc<dyn crate::host_evaluator::ScriptHost>>,
@@ -814,6 +926,7 @@ impl EngineBinding {
             expansions: self.expansions.clone(),
             generated_nodes: self.generated_nodes.clone(),
             work: self.work.clone(),
+            work_cache: self.work_cache.clone(),
             script_host: self.script_host.clone(),
             reader_declared: self.reader_declared.clone(),
             dependency_log: self.dependency_log.clone(),
@@ -851,6 +964,73 @@ impl EngineBinding {
             (_, Some(session)) => session.environment_bundles(),
             (Some(catalog), None) => catalog.environment_bundles(),
             (None, None) => 0,
+        }
+    }
+    /// Record that this analysis frame entered the compile-time macro engine
+    /// and, on a recorded unit's first engine entry, lazily initialize capture
+    /// logging on `engine` (one-time gensym-log enable and namespace-log
+    /// flush/mode switch).
+    pub(crate) fn on_engine_entry(&self, engine: &dyn crate::evaluator::MacroEvaluator) {
+        self.entered_engine.set(true);
+        let action = {
+            let mut slot = self.work_cache.pending_capture.borrow_mut();
+            match slot.as_mut() {
+                Some(pending) if !pending.entered => {
+                    pending.entered = true;
+                    Some((
+                        pending.on_worker,
+                        pending.logs_gensyms,
+                        pending.logs_namespaces,
+                        pending.pooled,
+                        pending.session.clone(),
+                    ))
+                }
+                _ => None,
+            }
+        };
+        let Some((on_worker, logs_gensyms, logs_namespaces, pooled, session)) = action else {
+            return;
+        };
+        let mut gensym_error = false;
+        if logs_gensyms && !self.work_cache.gensym_log_enabled.get() {
+            if engine.has_native_bridge() {
+                self.work_cache.gensym_log_enabled.set(true);
+            } else if crate::compilation_session::CompilationSession::enable_gensym_log(engine)
+                .is_ok()
+            {
+                self.work_cache.gensym_log_enabled.set(true);
+            } else {
+                gensym_error = true;
+            }
+        }
+        let mut namespace_error = false;
+        if logs_namespaces {
+            if let Some(session) = session {
+                match session.flush_namespaces(engine, pooled) {
+                    Ok(()) => self.work_cache.namespace_pool_mode.set(Some(pooled)),
+                    Err(_) => {
+                        self.work_cache.namespace_pool_mode.set(None);
+                        namespace_error = true;
+                    }
+                }
+            } else if on_worker && self.work_cache.namespace_pool_mode.get() != Some(pooled) {
+                match crate::compilation_session::CompilationSession::take_namespaces_from_engine(
+                    engine, pooled,
+                ) {
+                    Ok(_) => self.work_cache.namespace_pool_mode.set(Some(pooled)),
+                    Err(_) => {
+                        self.work_cache.namespace_pool_mode.set(None);
+                        namespace_error = true;
+                    }
+                }
+            }
+        }
+        if gensym_error || namespace_error {
+            let mut slot = self.work_cache.pending_capture.borrow_mut();
+            if let Some(pending) = slot.as_mut() {
+                pending.gensym_error |= gensym_error;
+                pending.namespace_error |= namespace_error;
+            }
         }
     }
 }
@@ -1118,7 +1298,33 @@ impl MacroHost {
         environment: &crate::compiler_data::Datum,
         origin: crate::compiler_data::ExpansionOrigin,
     ) -> Result<Form, String> {
-        self.expand_javascript_arguments::<true>(evaluator, function, call, environment, origin)
+        self.expand_javascript_arguments::<true, false>(
+            evaluator,
+            function,
+            call,
+            environment,
+            origin,
+        )
+    }
+    /// Like [`Self::expand_javascript`], when the caller (`reader_view` or
+    /// core-macro elision) has already charged the full `&env`'s sound node
+    /// room (`2 * (nodes + declared)`), avoiding a redundant walk of the
+    /// projected environment.
+    pub(crate) fn expand_javascript_with_measured_env(
+        &mut self,
+        evaluator: &dyn crate::evaluator::MacroEvaluator,
+        function: crate::evaluator::ValueId,
+        call: &Form,
+        environment: &crate::compiler_data::Datum,
+        origin: crate::compiler_data::ExpansionOrigin,
+    ) -> Result<Form, String> {
+        self.expand_javascript_arguments::<true, true>(
+            evaluator,
+            function,
+            call,
+            environment,
+            origin,
+        )
     }
     /// Native bootstrap builders consume the rooted &form directly. Do not
     /// also spread its operands into a call frame with a bounded VM stack.
@@ -1131,9 +1337,15 @@ impl MacroHost {
         environment: &crate::compiler_data::Datum,
         origin: crate::compiler_data::ExpansionOrigin,
     ) -> Result<Form, String> {
-        self.expand_javascript_arguments::<false>(evaluator, function, call, environment, origin)
+        self.expand_javascript_arguments::<false, false>(
+            evaluator,
+            function,
+            call,
+            environment,
+            origin,
+        )
     }
-    fn expand_javascript_arguments<const ARGUMENTS: bool>(
+    fn expand_javascript_arguments<const ARGUMENTS: bool, const ENV_MEASURED: bool>(
         &mut self,
         evaluator: &dyn crate::evaluator::MacroEvaluator,
         function: crate::evaluator::ValueId,
@@ -1141,7 +1353,7 @@ impl MacroHost {
         environment: &crate::compiler_data::Datum,
         origin: crate::compiler_data::ExpansionOrigin,
     ) -> Result<Form, String> {
-        self.engine.entered_engine.set(true);
+        self.engine.on_engine_entry(evaluator);
         let native_before = evaluator.native_bridge_stats();
         if self.engine.expansions.get() >= self.limits.expansions {
             return Err("compiler macro expansion limit exceeded".into());
@@ -1156,16 +1368,20 @@ impl MacroHost {
         // needs room for the largest of its inputs too.
         let measuring = self.measures_work();
         if measuring {
-            let input = WorkMarks::nodes(&call.data()).max(
-                self.engine.work.environment_nodes(environment)
-                    + WorkMarks::declared_elsewhere(environment),
-            );
+            let input = if ENV_MEASURED {
+                WorkMarks::nodes(&call.data())
+            } else {
+                WorkMarks::nodes(&call.data()).max(
+                    self.engine.work_cache.environment_nodes(environment)
+                        + WorkMarks::declared_elsewhere(environment),
+                )
+            };
             self.note_node_room(input);
             // What the engine's conversions charged before this expansion,
             // outside every other one, is not its own: the engine's history,
             // which differs by isolate (light-cljs-374).
             if EXPANDING.get() == 0
-                && take_encode_peak(evaluator, &self.engine.work.encode_peak).is_none()
+                && !reset_encode_peak(evaluator, &self.engine.work_cache.encode_peak)
             {
                 self.note_unmeasured();
             }
@@ -1239,7 +1455,7 @@ impl MacroHost {
         // What the conversions charged on the JavaScript side, which bounds
         // them by the same remaining budget.
         if measuring && expanded.is_ok() {
-            match take_encode_peak(evaluator, &self.engine.work.encode_peak) {
+            match take_encode_peak(evaluator, &self.engine.work_cache.encode_peak) {
                 Some(peak) => self.note_node_room(peak),
                 None => self.note_unmeasured(),
             }
@@ -2258,6 +2474,11 @@ impl MacroHost {
     pub(crate) fn defers_source_units(&self) -> bool {
         !self.tables.bootstrap_seed
     }
+    /// Reset only this analysis frame's per-unit [`WorkMarks`] counters while
+    /// preserving persistent per-isolate caches ([`WorkCache`]).
+    pub(crate) fn reset_unit_work(&mut self) {
+        self.engine.work = Default::default();
+    }
     /// Begin measuring the next namespace's logical work
     /// ([`WorkMarks`]): its counts start here, and its marks from nothing.
     pub(crate) fn begin_namespace_work(&self) -> WorkStart {
@@ -2323,6 +2544,7 @@ impl MacroHost {
             self.engine.local_environment = Default::default();
             self.engine.reader_environment = Default::default();
             self.engine.elidable_sizes = Default::default();
+            self.engine.work_cache = Default::default();
             self.tables.source_bindings.clear();
             self.engine.session = Some(crate::compilation_session::CompilationSession::new());
             #[cfg(feature = "bbp-macros")]
@@ -3671,6 +3893,66 @@ mod compiler_pure_tests {
         let form = host.read_compiler_form(&source).unwrap().unwrap();
         assert_eq!(form.children()[0].span().text(), ":z");
         assert!(form.metadata().is_some());
+    }
+
+    #[test]
+    fn work_cache_persists_across_reset_unit_work_and_evicts_lru() {
+        use crate::compiler_data::{DataBuilder, Datum};
+        let c = DataBuilder;
+        let big_vec = |seed: i64| -> Datum {
+            let items: Vec<Datum> = (0..70).map(|i| c.integer(seed * 100 + i)).collect();
+            c.vector(&items).unwrap()
+        };
+        let mut host = MacroHost::new();
+        host.engine.work.node_peak.set(999);
+        host.engine.work.macro_depth.set(4);
+        host.engine.work.analysis_depth.set(7);
+        host.engine.work.unmeasured.set(true);
+        host.engine.work_cache.gensym_log_enabled.set(true);
+        host.engine.work_cache.namespace_pool_mode.set(Some(true));
+        let hot = big_vec(0);
+        let env = c
+            .map(&[(c.keyword(Name::new(None, "hot")), hot.clone())])
+            .unwrap();
+        let expected = WorkMarks::nodes(&env);
+        assert_eq!(host.engine.work_cache.environment_nodes(&env), expected);
+        assert_eq!(host.engine.work_cache.sizes.borrow().len(), 1);
+
+        // Per-unit reset clears WorkMarks counters without wiping WorkCache.
+        host.reset_unit_work();
+        assert_eq!(host.engine.work.node_peak.get(), 0);
+        assert_eq!(host.engine.work.macro_depth.get(), 0);
+        assert_eq!(host.engine.work.analysis_depth.get(), 0);
+        assert!(!host.engine.work.unmeasured.get());
+        assert!(host.engine.work_cache.gensym_log_enabled.get());
+        assert_eq!(host.engine.work_cache.namespace_pool_mode.get(), Some(true));
+        assert_eq!(host.engine.work_cache.sizes.borrow().len(), 1);
+
+        // LRU cap bounds memory while keeping hot shared entries resident.
+        let hot_id = hot.identity();
+        for i in 1..=(WORK_SIZE_CACHE_CAP as i64 + 10) {
+            let transient = big_vec(i);
+            let map = c
+                .map(&[
+                    (c.keyword(Name::new(None, "hot")), hot.clone()),
+                    (c.keyword(Name::new(None, "tmp")), transient),
+                ])
+                .unwrap();
+            assert_eq!(
+                host.engine.work_cache.environment_nodes(&map),
+                WorkMarks::nodes(&map)
+            );
+        }
+        let sizes = host.engine.work_cache.sizes.borrow();
+        assert_eq!(sizes.len(), WORK_SIZE_CACHE_CAP);
+        assert!(sizes.iter().any(|(id, _, _)| *id == hot_id));
+        drop(sizes);
+
+        // Starting a fresh compilation clears WorkCache cleanly.
+        host.begin_compilation();
+        assert!(!host.engine.work_cache.gensym_log_enabled.get());
+        assert_eq!(host.engine.work_cache.namespace_pool_mode.get(), None);
+        assert!(host.engine.work_cache.sizes.borrow().is_empty());
     }
 }
 
