@@ -1226,3 +1226,107 @@ fn commit_batch_read_only_store_warns_once_and_cleans_up_staged_temporaries() {
     }
     assert_eq!(object_count(&store), before);
 }
+
+#[cfg(unix)]
+#[test]
+fn commit_batch_index_write_failure_leaves_no_new_orphans() {
+    let dir = TempDir::new("store-batch-index-ro");
+    let cache = dir.join("cache");
+    let first = source_root(&dir, "idxro", 1, false);
+    let second = source_root(&dir, "idxro", 2, false);
+
+    run(
+        "publish_batch",
+        &[
+            ("STORE", path(&cache)),
+            ("ROOTS", path(&first)),
+            ("ENTRY", "idxro.main".into()),
+        ],
+    );
+    let store = Store::open(&cache);
+    let before = object_count(&store);
+
+    // Keep v1/objects and v1/lock writable while making v1/index read-only.
+    // Staging succeeds, then commit_batch must fail on index temp creation
+    // before renaming any object into objects/, leaving zero new orphans.
+    let after_stage = dir.join("after-stage");
+    let commit_go = dir.join("commit-go");
+    let child = spawn(
+        "publish_batch",
+        &[
+            ("STORE", path(&cache)),
+            ("ROOTS", path(&second)),
+            ("ENTRY", "idxro.main".into()),
+            ("AFTER_STAGE_READY", path(&after_stage)),
+            ("COMMIT_GO", path(&commit_go)),
+        ],
+    );
+    wait_for(&after_stage);
+    let (stdout, stderr) = {
+        let _read_only = ReadOnly::new(vec![store.root().join("index")]);
+        fs::write(&commit_go, "").unwrap();
+        finish(child)
+    };
+    assert_eq!(lines(&stdout, "unwritable").len(), LEAVES + 1, "{stdout}");
+    assert_eq!(lines(&stderr, "warning:").len(), 1, "{stderr}");
+    assert!(temporaries(&store.root().join("objects")).is_empty());
+    assert!(temporaries(&store.root().join("index")).is_empty());
+    assert_eq!(
+        object_count(&store),
+        before,
+        "index write failure must not leave newly introduced object orphans"
+    );
+    for namespace in namespaces("idxro", false) {
+        assert_eq!(check_candidates(&store, &namespace), Ok(1), "{namespace}");
+    }
+}
+
+#[test]
+fn a_required_source_that_becomes_invalid_utf8_refuses_publication() {
+    let dir = TempDir::new("store-invalid-utf8-req");
+    let root = dir.join("src");
+    fs::create_dir_all(root.join("goog")).unwrap();
+    fs::create_dir_all(root.join("app")).unwrap();
+    let explicit = root.join("goog/explicit.cljs");
+    fs::write(&explicit, "(ns goog.explicit)\n(def value 42)\n").unwrap();
+    fs::write(
+        root.join("app/main.cljs"),
+        "(ns app.main (:require [goog.explicit :as g]))\ng/value\n",
+    )
+    .unwrap();
+
+    let built = compile(&root, "app.main");
+    let store = Store::open(dir.join("cache"));
+    let main_id = built.manifest.id("app.main").unwrap();
+    let main_capture = built
+        .captures
+        .iter()
+        .find(|c| c.namespace == "app.main")
+        .unwrap();
+    let artifact = main_capture.artifact.as_ref().unwrap();
+    let fields = ManifestFields::of(
+        &built.manifest,
+        main_id,
+        built.metadata[main_id.0 as usize],
+        built.keys.key(main_id).clone(),
+        [0; 32],
+    );
+
+    // Replace the required `goog.explicit` file with invalid UTF-8 at the same
+    // path before publishing `app.main`.
+    fs::write(&explicit, [0xff, 0xfe, 0xfd]).unwrap();
+    let outcome = store.publish(
+        artifact,
+        &fields,
+        Inputs {
+            manifest: &built.manifest,
+            id: main_id,
+            text: &built.files[main_id.0 as usize].1,
+            sources: &built.provider,
+        },
+    );
+    assert_eq!(
+        outcome,
+        Publish::Refused(light_cljs::cache_key::Mismatch::Resolution)
+    );
+}

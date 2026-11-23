@@ -1846,3 +1846,183 @@ fn parallel_cache_publishing_populates_warms_and_handles_read_only() {
         assert_eq!(warnings.len(), 1, "expected 1 warning:\n{}", build.stats);
     }
 }
+
+/// Verify that with `--jobs > 1`, an `owned_concurrent` provider runs publish
+/// revalidation off the caller thread (on a cache staging worker), whereas a
+/// serial provider (`owned_concurrent() == None`) runs revalidation on the
+/// caller thread and still refuses changed inputs.
+#[test]
+fn parallel_publish_revalidates_only_owned_concurrent_providers_off_thread() {
+    use light_cljs::MacroHost;
+    use light_cljs::analyzer::AnalysisOptions;
+    use light_cljs::compile_cache::{CacheOptions, CompileCache};
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded_with_provider};
+    use light_cljs::dependency_manifest::Candidate;
+    use light_cljs::scheduler::Slots;
+    use light_cljs::source_provider::{LoadError, LoadRequest, SourceInput, SourceProvider};
+    use std::sync::{Arc, Mutex};
+    use std::thread::ThreadId;
+
+    #[derive(Clone)]
+    struct TrackedConcurrent {
+        sources: Arc<Vec<(String, String)>>,
+        caller: ThreadId,
+        off_thread_revalidations: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl SourceProvider for TrackedConcurrent {
+        fn load(&self, request: &LoadRequest) -> Result<Option<SourceInput>, LoadError> {
+            let name = String::from_utf16_lossy(request.namespace.name());
+            if std::thread::current().id() != self.caller
+                && std::thread::current()
+                    .name()
+                    .is_some_and(|n| n.starts_with("light-cljs-cache-stage-"))
+            {
+                self.off_thread_revalidations
+                    .lock()
+                    .unwrap()
+                    .push(name.clone());
+            }
+            Ok(self
+                .sources
+                .iter()
+                .find(|(n, _)| n == &name)
+                .map(|(n, s)| SourceInput::new(format!("{n}.cljs"), s.clone())))
+        }
+        fn load_traced(
+            &self,
+            request: &LoadRequest,
+            _tried: &mut Vec<Candidate>,
+        ) -> Result<Option<SourceInput>, LoadError> {
+            self.load(request)
+        }
+        fn concurrent(&self) -> Option<&(dyn SourceProvider + Send + Sync)> {
+            Some(self)
+        }
+        fn owned_concurrent(&self) -> Option<Arc<dyn SourceProvider + Send + Sync>> {
+            Some(Arc::new(self.clone()))
+        }
+    }
+
+    struct TrackedSerial {
+        sources: Vec<(String, String)>,
+        caller: ThreadId,
+        loads_seen: std::cell::RefCell<usize>,
+        caller_revalidations: std::cell::RefCell<usize>,
+        mutate_after_first_load: bool,
+    }
+
+    impl SourceProvider for TrackedSerial {
+        fn load(&self, request: &LoadRequest) -> Result<Option<SourceInput>, LoadError> {
+            assert_eq!(
+                std::thread::current().id(),
+                self.caller,
+                "serial provider must only be called on caller thread"
+            );
+            let name = String::from_utf16_lossy(request.namespace.name());
+            let mut count = self.loads_seen.borrow_mut();
+            *count += 1;
+            let is_revalidation = *count > self.sources.len();
+            if is_revalidation {
+                *self.caller_revalidations.borrow_mut() += 1;
+            }
+            Ok(self.sources.iter().find(|(n, _)| n == &name).map(|(n, s)| {
+                let text = if is_revalidation && self.mutate_after_first_load && n == "app.leaf" {
+                    "(ns app.leaf) (def v 999)".to_owned()
+                } else {
+                    s.clone()
+                };
+                SourceInput::new(format!("{n}.cljs"), text)
+            }))
+        }
+    }
+
+    let sources = vec![
+        ("app.leaf".to_owned(), "(ns app.leaf) (def v 1)".to_owned()),
+        (
+            "app.main".to_owned(),
+            "(ns app.main (:require [app.leaf :as l])) (+ l/v 1)".to_owned(),
+        ),
+    ];
+    let caller = std::thread::current().id();
+    let slots = Slots::new(4).unwrap();
+
+    // 1. Owned concurrent provider: revalidation runs off-thread on a cache
+    //    staging worker and publishes both namespaces.
+    let dir1 = TempDir::new("parallel-reval-concurrent");
+    let concurrent = TrackedConcurrent {
+        sources: Arc::new(sources.clone()),
+        caller,
+        off_thread_revalidations: Arc::new(Mutex::new(Vec::new())),
+    };
+    let mut host = MacroHost::new();
+    let options = AnalysisOptions::default();
+    let cache_opts = CacheOptions {
+        dir: dir1.join("cache"),
+        ..CacheOptions::default()
+    };
+    let mut cache = CompileCache::open(&cache_opts, &host, options, "app.main");
+    analyze_namespace_entry_recorded_with_provider(
+        "app.main",
+        &concurrent,
+        &mut host,
+        options,
+        &mut Vec::new(),
+        EntryRecorders {
+            cache: Some(&mut cache),
+            slots,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    cache.finish();
+    let counts = cache.take_counts();
+    assert_eq!(counts.published, 2);
+    assert!(counts.unpublished.is_empty());
+    let off_thread = concurrent.off_thread_revalidations.lock().unwrap();
+    assert!(
+        off_thread.contains(&"app.leaf".to_owned()) && off_thread.contains(&"app.main".to_owned()),
+        "expected off-thread revalidation on staging workers, got: {off_thread:?}"
+    );
+
+    // 2. Serial provider: revalidation runs on the caller thread and refuses
+    //    `app.leaf` when its source changes between compile and publish.
+    let dir2 = TempDir::new("parallel-reval-serial");
+    let serial = TrackedSerial {
+        sources,
+        caller,
+        loads_seen: std::cell::RefCell::new(0),
+        caller_revalidations: std::cell::RefCell::new(0),
+        mutate_after_first_load: true,
+    };
+    let mut host = MacroHost::new();
+    let cache_opts = CacheOptions {
+        dir: dir2.join("cache"),
+        ..CacheOptions::default()
+    };
+    let mut cache = CompileCache::open(&cache_opts, &host, options, "app.main");
+    analyze_namespace_entry_recorded_with_provider(
+        "app.main",
+        &serial,
+        &mut host,
+        options,
+        &mut Vec::new(),
+        EntryRecorders {
+            cache: Some(&mut cache),
+            slots,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    cache.finish();
+    let counts = cache.take_counts();
+    assert!(*serial.caller_revalidations.borrow() >= 2);
+    assert_eq!(counts.published, 1, "only unchanged app.main publishes");
+    assert_eq!(counts.unpublished.len(), 1);
+    assert_eq!(counts.unpublished[0].0, "app.leaf");
+    assert!(
+        counts.unpublished[0].1.contains("source changed"),
+        "{:?}",
+        counts.unpublished
+    );
+}

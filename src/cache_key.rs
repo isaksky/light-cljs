@@ -918,7 +918,10 @@ fn revalidate_parts<'a>(
     let locate_unchanged = |lookup: &crate::dependency_manifest::Lookup| {
         let request = request_for(lookup);
         let mut tried = Vec::new();
-        let found = sources.locate_traced(&request, &mut tried).ok().flatten();
+        let found = sources
+            .revalidate_locate_traced(&request, &mut tried)
+            .ok()
+            .flatten();
         tried == lookup.candidates && found.as_deref() == lookup.found.as_deref()
     };
     if origin == SourceOrigin::Provider {

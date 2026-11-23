@@ -29,7 +29,7 @@
 
 use crate::artifact_codec::{self, DecodeLimits, ManifestFields};
 use crate::artifact_store::{
-    Inputs, MAX_OUTPUT_BYTES, Publish, Retention, Snapshot, Stage, StagedArtifact, Store,
+    Inputs, MAX_OUTPUT_BYTES, Publish, Retention, Snapshot, StageAttempt, StagedArtifact, Store,
 };
 use crate::cache_key::{
     Digest, FrontEndKey, KeyEnvironment, Mismatch, NamespaceKeys, RevalidateInputs,
@@ -240,7 +240,7 @@ impl CompileCache {
             .flatten();
         OutputCache {
             store: self.store.clone(),
-            environment: self.environment.clone(),
+            environment: self.environment,
             program,
             retention: self.retention,
             counts: OutputCounts::default(),
@@ -545,54 +545,65 @@ impl CompileCache {
             let artifact = match artifact {
                 Ok(artifact) => artifact,
                 Err(reason) => {
-                    self.pipeline
-                        .as_mut()
-                        .unwrap()
-                        .submit_unpublished(id, name, reason);
+                    if let Some(pipeline) = &mut self.pipeline {
+                        pipeline.submit_capture_failed(id, name, reason);
+                    }
                     self.counts.write_time += started.elapsed();
                     return;
                 }
             };
             if self.store.write_failure().is_some() {
                 drop(artifact);
-                self.pipeline.as_mut().unwrap().submit_unwritable(id, name);
+                if let Some(pipeline) = &mut self.pipeline {
+                    pipeline.submit_unwritable(id, name);
+                }
                 self.counts.write_time += started.elapsed();
                 return;
             }
             let fields = self.manifest_fields(id, key);
-            let revalidate = match sources.owned_concurrent() {
-                Some(owned) => {
-                    let inputs =
-                        RevalidateInputs::from_manifest(&self.prefix, id, fields.inputs.clone());
-                    Some((inputs, text.to_owned(), owned))
-                }
-                None => {
-                    if let Err(mismatch) =
-                        crate::cache_key::revalidate(&self.prefix, id, text, sources)
-                    {
-                        drop(artifact);
-                        self.pipeline.as_mut().unwrap().submit_unpublished(
-                            id,
-                            name,
-                            format!("its inputs changed while it compiled: {mismatch}"),
-                        );
-                        self.counts.write_time += started.elapsed();
-                        return;
-                    }
-                    None
-                }
+            let owned_sources = sources.owned_concurrent();
+            let rev_text_len = if owned_sources.is_some() {
+                text.len()
+            } else {
+                0
             };
-            let estimated_bytes = artifact
-                .approximate_bytes()
-                .saturating_add(if revalidate.is_some() { text.len() } else { 0 });
-            self.pipeline.as_mut().unwrap().enqueue(
-                id,
-                name,
-                estimated_bytes,
-                artifact,
-                fields,
-                revalidate,
-            );
+            let estimated_bytes = publish_estimated_bytes(&artifact, &fields, rev_text_len);
+            if estimated_bytes <= PUBLISH_MAX_INFLIGHT_BYTES {
+                let revalidate = match owned_sources {
+                    Some(owned) => {
+                        let inputs = RevalidateInputs::from_manifest(
+                            &self.prefix,
+                            id,
+                            fields.inputs.clone(),
+                        );
+                        Some((inputs, text.to_owned(), owned))
+                    }
+                    None => {
+                        if let Err(mismatch) =
+                            crate::cache_key::revalidate(&self.prefix, id, text, sources)
+                        {
+                            drop(artifact);
+                            if let Some(pipeline) = &mut self.pipeline {
+                                pipeline.submit_refused(id, name, mismatch);
+                            }
+                            self.counts.write_time += started.elapsed();
+                            return;
+                        }
+                        None
+                    }
+                };
+                if let Some(pipeline) = &mut self.pipeline {
+                    pipeline.enqueue(id, name, estimated_bytes, artifact, fields, revalidate);
+                }
+                self.counts.write_time += started.elapsed();
+                return;
+            }
+            // Oversized artifact (> 32 MiB working set): drain background
+            // staging/commits first so peak memory stays bounded and submission
+            // order is preserved, then stage and commit inline.
+            self.flush_publishes();
+            self.publish_inline_artifact(id, name, text, sources, artifact, fields);
+            self.commit_inline_batch();
             self.counts.write_time += started.elapsed();
             return;
         }
@@ -604,7 +615,20 @@ impl CompileCache {
             }
         };
         let fields = self.manifest_fields(id, key);
-        let staged = self.store.stage(
+        self.publish_inline_artifact(id, name, text, sources, artifact, fields);
+        self.counts.write_time += started.elapsed();
+    }
+
+    fn publish_inline_artifact(
+        &mut self,
+        id: NamespaceId,
+        name: String,
+        text: &str,
+        sources: &dyn SourceProvider,
+        artifact: NamespaceArtifact,
+        fields: ManifestFields,
+    ) {
+        let attempt = self.store.stage_attempt(
             &artifact,
             &fields,
             Inputs {
@@ -615,24 +639,50 @@ impl CompileCache {
             },
         );
         drop(artifact);
-        match staged {
-            Stage::Staged(staged) => {
+        match attempt {
+            StageAttempt::Staged(staged) => {
                 self.inline_batch.push((id, name, staged));
                 if self.inline_batch.len() >= PUBLISH_BATCH_SIZE {
                     self.commit_inline_batch();
                 }
             }
-            Stage::Refused(mismatch) => self.counts.unpublished.push((
-                name,
-                format!("its inputs changed while it compiled: {mismatch}"),
-            )),
-            Stage::Unencodable(reason) => self.counts.unpublished.push((name, reason)),
-            Stage::Unwritable => self
+            StageAttempt::Refused(mismatch) => {
+                self.commit_inline_batch();
+                if self.store.write_failure().is_some() {
+                    self.counts
+                        .unpublished
+                        .push((name, "the cache cannot be written".into()));
+                } else {
+                    self.counts.unpublished.push((
+                        name,
+                        format!("its inputs changed while it compiled: {mismatch}"),
+                    ));
+                }
+            }
+            StageAttempt::Unencodable(reason) => {
+                self.commit_inline_batch();
+                if self.store.write_failure().is_some() {
+                    self.counts
+                        .unpublished
+                        .push((name, "the cache cannot be written".into()));
+                } else {
+                    self.counts.unpublished.push((name, reason));
+                }
+            }
+            StageAttempt::Io(error) => {
+                // Commit earlier valid staged items before latching the store
+                // failure so they are not discarded by a later staging error.
+                self.commit_inline_batch();
+                self.store.fail(&error);
+                self.counts
+                    .unpublished
+                    .push((name, "the cache cannot be written".into()));
+            }
+            StageAttempt::Unwritable => self
                 .counts
                 .unpublished
                 .push((name, "the cache cannot be written".into())),
         }
-        self.counts.write_time += started.elapsed();
     }
 
     fn manifest_fields(&self, id: NamespaceId, key: FrontEndKey) -> ManifestFields {
@@ -807,6 +857,136 @@ const PUBLISH_MAX_WORKERS: usize = 4;
 const PUBLISH_MAX_INFLIGHT_JOBS: usize = 16;
 /// Upper bound on estimated bytes held by in-flight publish jobs (32 MiB).
 const PUBLISH_MAX_INFLIGHT_BYTES: usize = 32 * 1024 * 1024;
+/// Upper bound on uncommitted publish jobs waiting for commit.
+const PUBLISH_MAX_PENDING_COMMIT_JOBS: usize = PUBLISH_BATCH_SIZE * 2;
+/// Upper bound on estimated heap bytes retained by staged artifacts awaiting
+/// commit (8 MiB).
+const PUBLISH_MAX_PENDING_COMMIT_BYTES: usize = 8 * 1024 * 1024;
+
+/// Conservative estimate of the peak memory working set held while staging one
+/// artifact: `artifact.approximate_bytes()`, deferred `bodies` (which
+/// `approximate_bytes()` omits), owned manifest metadata, the concurrent
+/// revalidation source copy, and simultaneous encoder buffers.
+fn publish_estimated_bytes(
+    artifact: &NamespaceArtifact,
+    fields: &ManifestFields,
+    rev_text_len: usize,
+) -> usize {
+    use crate::namespace_artifact::{
+        Expr, ExprRef, ExternalGlobal, Global, GlobalPatch, LocalBinding, NamedLiteral,
+        RecurTarget, UnitCharge,
+    };
+    use std::mem::{size_of, size_of_val};
+
+    let mut artifact_bytes = artifact.approximate_bytes();
+    if let Some(bodies) = &artifact.bodies {
+        let ir = &bodies.ir;
+        artifact_bytes = artifact_bytes
+            .saturating_add(ir.exprs.len().saturating_mul(size_of::<Expr>()))
+            .saturating_add(
+                ir.locals
+                    .iter()
+                    .map(|l| size_of::<LocalBinding>().saturating_add(l.name.len()))
+                    .sum::<usize>(),
+            )
+            .saturating_add(
+                ir.recur_targets
+                    .len()
+                    .saturating_mul(size_of::<RecurTarget>()),
+            )
+            .saturating_add(
+                ir.strings
+                    .iter()
+                    .map(|s| size_of::<Vec<u16>>().saturating_add(s.len().saturating_mul(2)))
+                    .sum::<usize>(),
+            )
+            .saturating_add(
+                ir.named_literals
+                    .len()
+                    .saturating_mul(size_of::<NamedLiteral>()),
+            )
+            .saturating_add(size_of_val(ir.js_globals.as_slice()))
+            .saturating_add(
+                bodies
+                    .declarations
+                    .globals
+                    .iter()
+                    .map(|g| {
+                        size_of::<Global>()
+                            .saturating_add(g.namespace.len())
+                            .saturating_add(g.name.len())
+                    })
+                    .sum::<usize>(),
+            )
+            .saturating_add(
+                bodies
+                    .declarations
+                    .macros
+                    .iter()
+                    .map(|m| m.code.text.len().saturating_add(m.code.units.len() * 12))
+                    .sum::<usize>(),
+            )
+            .saturating_add(
+                bodies
+                    .patches
+                    .len()
+                    .saturating_mul(size_of::<GlobalPatch>()),
+            )
+            .saturating_add(
+                bodies
+                    .references
+                    .globals
+                    .iter()
+                    .map(|g| {
+                        size_of::<ExternalGlobal>()
+                            .saturating_add(g.namespace.len())
+                            .saturating_add(g.name.len())
+                    })
+                    .sum::<usize>(),
+            )
+            .saturating_add(
+                bodies
+                    .references
+                    .namespaces
+                    .iter()
+                    .map(String::len)
+                    .sum::<usize>(),
+            )
+            .saturating_add(
+                bodies
+                    .placeholders
+                    .len()
+                    .saturating_mul(size_of::<(ExprRef, ExprRef)>()),
+            )
+            .saturating_add(bodies.charges.len().saturating_mul(size_of::<UnitCharge>()));
+    }
+    let fields_bytes = size_of::<ManifestFields>()
+        .saturating_add(
+            fields
+                .dependencies
+                .iter()
+                .map(|d| size_of::<artifact_codec::Dependency>().saturating_add(d.namespace.len()))
+                .sum::<usize>(),
+        )
+        .saturating_add(
+            fields
+                .front_end_key
+                .dependencies
+                .iter()
+                .map(|d| 48usize.saturating_add(d.namespace.len()))
+                .sum::<usize>(),
+        )
+        .saturating_add(fields.absent.iter().map(String::len).sum::<usize>())
+        .saturating_add(fields.inputs.len().saturating_mul(96));
+    // Factor of 2x on artifact_bytes accounts for the simultaneous Interner,
+    // section buffers, and final encoded Vec<u8> during artifact_codec::encode;
+    // 2x on rev_text_len accounts for the owned text and re-read copy during
+    // revalidate.
+    artifact_bytes
+        .saturating_mul(2)
+        .saturating_add(fields_bytes)
+        .saturating_add(rev_text_len.saturating_mul(2))
+}
 
 struct StageJob {
     seq: usize,
@@ -823,10 +1003,10 @@ struct StageJob {
 }
 
 enum StageOutcome {
-    Staged(StagedArtifact),
+    Staged(StagedArtifact, usize),
     Refused(Mismatch),
     Unencodable(String),
-    PreUnpublished(String),
+    CaptureFailed(String),
     Io(std::io::Error),
     Unwritable,
 }
@@ -856,6 +1036,8 @@ struct CommitQueue {
     next_seq: usize,
     submitted: usize,
     pending: BTreeMap<usize, (NamespaceId, String, StageOutcome)>,
+    staged_count: usize,
+    staged_bytes: usize,
     finished: Vec<FinishedPublish>,
     completed: usize,
     flush_requested: bool,
@@ -868,6 +1050,8 @@ struct PublishShared {
     store: Store,
     max_inflight_jobs: usize,
     max_inflight_bytes: usize,
+    max_pending_commit_jobs: usize,
+    max_pending_commit_bytes: usize,
     stage_mu: Mutex<StageQueue>,
     stage_work_cv: Condvar,
     stage_space_cv: Condvar,
@@ -912,12 +1096,30 @@ struct PublishPipeline {
 
 impl PublishPipeline {
     fn start(store: Store, slots: Slots) -> std::io::Result<Self> {
+        Self::start_with_limits(
+            store,
+            slots,
+            PUBLISH_MAX_INFLIGHT_BYTES,
+            PUBLISH_MAX_PENDING_COMMIT_JOBS,
+            PUBLISH_MAX_PENDING_COMMIT_BYTES,
+        )
+    }
+
+    fn start_with_limits(
+        store: Store,
+        slots: Slots,
+        max_inflight_bytes: usize,
+        max_pending_commit_jobs: usize,
+        max_pending_commit_bytes: usize,
+    ) -> std::io::Result<Self> {
         let worker_count = slots.workers().clamp(1, PUBLISH_MAX_WORKERS);
         let max_inflight_jobs = (slots.get() * 2).min(PUBLISH_MAX_INFLIGHT_JOBS);
         let shared = Arc::new(PublishShared {
             store,
             max_inflight_jobs,
-            max_inflight_bytes: PUBLISH_MAX_INFLIGHT_BYTES,
+            max_inflight_bytes,
+            max_pending_commit_jobs: max_pending_commit_jobs.max(1),
+            max_pending_commit_bytes: max_pending_commit_bytes.max(1),
             stage_mu: Mutex::new(StageQueue {
                 jobs: VecDeque::new(),
                 inflight_jobs: 0,
@@ -931,6 +1133,8 @@ impl PublishPipeline {
                 next_seq: 0,
                 submitted: 0,
                 pending: BTreeMap::new(),
+                staged_count: 0,
+                staged_bytes: 0,
                 finished: Vec::new(),
                 completed: 0,
                 flush_requested: false,
@@ -988,6 +1192,35 @@ impl PublishPipeline {
             Arc<dyn SourceProvider + Send + Sync>,
         )>,
     ) {
+        // Bound uncommitted staged work waiting on the committer (count and
+        // bytes) so a blocked store lock cannot cause unbounded staged file
+        // and heap accumulation.
+        {
+            let mut commit = self
+                .shared
+                .commit_mu
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            while !commit.cancelled
+                && ((self.submitted.saturating_sub(commit.completed)
+                    >= self.shared.max_pending_commit_jobs
+                    && self.submitted > commit.completed)
+                    || (commit.staged_count > 0
+                        && commit.staged_bytes >= self.shared.max_pending_commit_bytes))
+            {
+                self.shared.commit_cv.notify_one();
+                commit = self
+                    .shared
+                    .done_cv
+                    .wait(commit)
+                    .unwrap_or_else(|e| e.into_inner());
+            }
+            if commit.cancelled {
+                drop(commit);
+                drop(artifact);
+                return;
+            }
+        }
         let seq = self.submitted;
         self.submitted += 1;
         let mut stage = self
@@ -1027,26 +1260,19 @@ impl PublishPipeline {
         self.shared.stage_work_cv.notify_one();
     }
 
-    fn submit_unpublished(&mut self, id: NamespaceId, name: String, reason: String) {
-        let seq = self.submitted;
-        self.submitted += 1;
-        let mut commit = self
-            .shared
-            .commit_mu
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if commit.cancelled {
-            return;
-        }
-        commit
-            .pending
-            .insert(seq, (id, name, StageOutcome::PreUnpublished(reason)));
-        if seq == commit.next_seq {
-            self.shared.commit_cv.notify_one();
-        }
+    fn submit_capture_failed(&mut self, id: NamespaceId, name: String, reason: String) {
+        self.submit_immediate(id, name, StageOutcome::CaptureFailed(reason));
+    }
+
+    fn submit_refused(&mut self, id: NamespaceId, name: String, mismatch: Mismatch) {
+        self.submit_immediate(id, name, StageOutcome::Refused(mismatch));
     }
 
     fn submit_unwritable(&mut self, id: NamespaceId, name: String) {
+        self.submit_immediate(id, name, StageOutcome::Unwritable);
+    }
+
+    fn submit_immediate(&mut self, id: NamespaceId, name: String, outcome: StageOutcome) {
         let seq = self.submitted;
         self.submitted += 1;
         let mut commit = self
@@ -1057,9 +1283,7 @@ impl PublishPipeline {
         if commit.cancelled {
             return;
         }
-        commit
-            .pending
-            .insert(seq, (id, name, StageOutcome::Unwritable));
+        commit.pending.insert(seq, (id, name, outcome));
         if seq == commit.next_seq {
             self.shared.commit_cv.notify_one();
         }
@@ -1213,8 +1437,14 @@ fn stage_worker_loop(shared: Arc<PublishShared>) {
             drop(outcome);
             return;
         }
+        if let StageOutcome::Staged(_, staged_bytes) = &outcome {
+            commit.staged_count += 1;
+            commit.staged_bytes = commit.staged_bytes.saturating_add(*staged_bytes);
+        }
+        let pressure = commit.staged_count >= shared.max_pending_commit_jobs
+            || commit.staged_bytes >= shared.max_pending_commit_bytes;
         commit.pending.insert(seq, (id, name, outcome));
-        if seq == commit.next_seq {
+        if seq == commit.next_seq || pressure {
             shared.commit_cv.notify_one();
         }
     }
@@ -1258,14 +1488,17 @@ fn run_stage(
         Err(reason) => return StageOutcome::Unencodable(reason),
     };
     match store.stage_encoded(name.to_owned(), key, names, bytes) {
-        Ok(staged) => StageOutcome::Staged(staged),
+        Ok(staged) => {
+            let staged_bytes = staged.approximate_bytes();
+            StageOutcome::Staged(staged, staged_bytes)
+        }
         Err(error) => StageOutcome::Io(error),
     }
 }
 
 fn commit_worker_loop(shared: Arc<PublishShared>) {
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
-        let mut batch: Vec<(usize, NamespaceId, String, StagedArtifact)> =
+        let mut batch: Vec<(usize, NamespaceId, String, StagedArtifact, usize)> =
             Vec::with_capacity(PUBLISH_BATCH_SIZE);
         loop {
             let to_commit = {
@@ -1274,24 +1507,38 @@ fn commit_worker_loop(shared: Arc<PublishShared>) {
                     if commit.cancelled {
                         drop(batch);
                         commit.pending.clear();
+                        commit.staged_count = 0;
+                        commit.staged_bytes = 0;
                         shared.done_cv.notify_all();
                         return;
                     }
                     // Drain contiguous completed staging outcomes in submission order.
-                    let mut io_barrier = false;
+                    let mut barrier = false;
+                    let mut completed_any = false;
                     while let Some(entry) = commit.pending.get(&commit.next_seq) {
-                        if !batch.is_empty() && matches!(entry.2, StageOutcome::Io(_)) {
-                            // Commit earlier valid staged items before marking the store failed.
-                            io_barrier = true;
+                        if !batch.is_empty()
+                            && matches!(
+                                entry.2,
+                                StageOutcome::Io(_)
+                                    | StageOutcome::Refused(_)
+                                    | StageOutcome::Unencodable(_)
+                            )
+                        {
+                            // Commit earlier valid staged items before deciding
+                            // store-failure precedence for this outcome.
+                            barrier = true;
                             break;
                         }
                         let seq = commit.next_seq;
                         let (id, name, outcome) = commit.pending.remove(&seq).unwrap();
                         commit.next_seq += 1;
                         match outcome {
-                            StageOutcome::Staged(staged) => {
+                            StageOutcome::Staged(staged, staged_bytes) => {
                                 if shared.store.write_failure().is_some() {
                                     drop(staged);
+                                    commit.staged_count = commit.staged_count.saturating_sub(1);
+                                    commit.staged_bytes =
+                                        commit.staged_bytes.saturating_sub(staged_bytes);
                                     commit.finished.push(FinishedPublish {
                                         seq,
                                         id,
@@ -1299,26 +1546,15 @@ fn commit_worker_loop(shared: Arc<PublishShared>) {
                                         result: FinishedResult::Unwritable,
                                     });
                                     commit.completed += 1;
+                                    completed_any = true;
                                 } else {
-                                    batch.push((seq, id, name, staged));
+                                    batch.push((seq, id, name, staged, staged_bytes));
                                     if batch.len() >= PUBLISH_BATCH_SIZE {
                                         break;
                                     }
                                 }
                             }
-                            StageOutcome::Refused(mismatch) => {
-                                commit.finished.push(FinishedPublish {
-                                    seq,
-                                    id,
-                                    name,
-                                    result: FinishedResult::Unpublished(format!(
-                                        "its inputs changed while it compiled: {mismatch}"
-                                    )),
-                                });
-                                commit.completed += 1;
-                            }
-                            StageOutcome::Unencodable(reason)
-                            | StageOutcome::PreUnpublished(reason) => {
+                            StageOutcome::CaptureFailed(reason) => {
                                 commit.finished.push(FinishedPublish {
                                     seq,
                                     id,
@@ -1326,6 +1562,39 @@ fn commit_worker_loop(shared: Arc<PublishShared>) {
                                     result: FinishedResult::Unpublished(reason),
                                 });
                                 commit.completed += 1;
+                                completed_any = true;
+                            }
+                            StageOutcome::Refused(mismatch) => {
+                                let result = if shared.store.write_failure().is_some() {
+                                    FinishedResult::Unwritable
+                                } else {
+                                    FinishedResult::Unpublished(format!(
+                                        "its inputs changed while it compiled: {mismatch}"
+                                    ))
+                                };
+                                commit.finished.push(FinishedPublish {
+                                    seq,
+                                    id,
+                                    name,
+                                    result,
+                                });
+                                commit.completed += 1;
+                                completed_any = true;
+                            }
+                            StageOutcome::Unencodable(reason) => {
+                                let result = if shared.store.write_failure().is_some() {
+                                    FinishedResult::Unwritable
+                                } else {
+                                    FinishedResult::Unpublished(reason)
+                                };
+                                commit.finished.push(FinishedPublish {
+                                    seq,
+                                    id,
+                                    name,
+                                    result,
+                                });
+                                commit.completed += 1;
+                                completed_any = true;
                             }
                             StageOutcome::Io(error) => {
                                 shared.store.fail(&error);
@@ -1336,6 +1605,7 @@ fn commit_worker_loop(shared: Arc<PublishShared>) {
                                     result: FinishedResult::Unwritable,
                                 });
                                 commit.completed += 1;
+                                completed_any = true;
                             }
                             StageOutcome::Unwritable => {
                                 commit.finished.push(FinishedPublish {
@@ -1345,16 +1615,22 @@ fn commit_worker_loop(shared: Arc<PublishShared>) {
                                     result: FinishedResult::Unwritable,
                                 });
                                 commit.completed += 1;
+                                completed_any = true;
                             }
                         }
                     }
 
                     let flush_ready = (commit.flush_requested || commit.shutdown)
                         && commit.next_seq == commit.submitted;
+                    let pressure_commit = commit.staged_count >= shared.max_pending_commit_jobs
+                        || commit.staged_bytes >= shared.max_pending_commit_bytes;
                     if batch.len() >= PUBLISH_BATCH_SIZE
-                        || (!batch.is_empty() && (flush_ready || io_barrier))
+                        || (!batch.is_empty() && (flush_ready || barrier || pressure_commit))
                     {
                         break std::mem::take(&mut batch);
+                    }
+                    if completed_any {
+                        shared.done_cv.notify_all();
                     }
                     if commit.flush_requested && commit.completed == commit.submitted {
                         commit.flush_requested = false;
@@ -1373,13 +1649,18 @@ fn commit_worker_loop(shared: Arc<PublishShared>) {
 
             let mut meta = Vec::with_capacity(to_commit.len());
             let mut artifacts = Vec::with_capacity(to_commit.len());
-            for (seq, id, name, staged) in to_commit {
+            let mut batch_staged_bytes = 0usize;
+            for (seq, id, name, staged, staged_bytes) in to_commit {
                 meta.push((seq, id, name));
                 artifacts.push(staged);
+                batch_staged_bytes = batch_staged_bytes.saturating_add(staged_bytes);
             }
+            let batch_len = artifacts.len();
             let results = shared.store.commit_batch(artifacts);
 
             let mut commit = shared.commit_mu.lock().unwrap_or_else(|e| e.into_inner());
+            commit.staged_count = commit.staged_count.saturating_sub(batch_len);
+            commit.staged_bytes = commit.staged_bytes.saturating_sub(batch_staged_bytes);
             for ((seq, id, name), published) in meta.into_iter().zip(results) {
                 let result = match published {
                     Publish::Published(entry) => FinishedResult::Published {
@@ -1402,8 +1683,8 @@ fn commit_worker_loop(shared: Arc<PublishShared>) {
             }
             if commit.flush_requested && commit.completed == commit.submitted && batch.is_empty() {
                 commit.flush_requested = false;
-                shared.done_cv.notify_all();
             }
+            shared.done_cv.notify_all();
         }
     }));
     if let Err(payload) = result {
@@ -1736,15 +2017,46 @@ mod tests {
             )
             .unwrap();
 
-        pipeline.submitted = 4;
+        pipeline.submitted = 7;
         {
             let mut commit = pipeline.shared.commit_mu.lock().unwrap();
+            let b0 = staged0.approximate_bytes();
+            let b1 = staged1.approximate_bytes();
+            let b3 = staged3.approximate_bytes();
+            commit.staged_count = 3;
+            commit.staged_bytes = b0 + b1 + b3;
+            // Capture failure after store failure keeps its capture reason;
+            // refusal and unencodable after store failure report unwritable.
+            commit.pending.insert(
+                6,
+                (
+                    NamespaceId(6),
+                    "app.g".into(),
+                    StageOutcome::CaptureFailed("capture declined".into()),
+                ),
+            );
+            commit.pending.insert(
+                5,
+                (
+                    NamespaceId(5),
+                    "app.f".into(),
+                    StageOutcome::Unencodable("too deep".into()),
+                ),
+            );
+            commit.pending.insert(
+                4,
+                (
+                    NamespaceId(4),
+                    "app.e".into(),
+                    StageOutcome::Refused(Mismatch::Resolution),
+                ),
+            );
             commit.pending.insert(
                 3,
                 (
                     NamespaceId(3),
                     "app.d".into(),
-                    StageOutcome::Staged(staged3),
+                    StageOutcome::Staged(staged3, b3),
                 ),
             );
             commit.pending.insert(
@@ -1763,7 +2075,7 @@ mod tests {
                 (
                     NamespaceId(1),
                     "app.b".into(),
-                    StageOutcome::Staged(staged1),
+                    StageOutcome::Staged(staged1, b1),
                 ),
             );
             commit.pending.insert(
@@ -1771,20 +2083,28 @@ mod tests {
                 (
                     NamespaceId(0),
                     "app.a".into(),
-                    StageOutcome::Staged(staged0),
+                    StageOutcome::Staged(staged0, b0),
                 ),
             );
             pipeline.shared.commit_cv.notify_one();
         }
 
         let finished = pipeline.flush();
-        assert_eq!(finished.len(), 4);
+        assert_eq!(finished.len(), 7);
         assert_eq!(
             finished
                 .iter()
                 .map(|f| (f.seq, f.name.as_str()))
                 .collect::<Vec<_>>(),
-            vec![(0, "app.a"), (1, "app.b"), (2, "app.c"), (3, "app.d")]
+            vec![
+                (0, "app.a"),
+                (1, "app.b"),
+                (2, "app.c"),
+                (3, "app.d"),
+                (4, "app.e"),
+                (5, "app.f"),
+                (6, "app.g"),
+            ]
         );
         assert!(matches!(
             finished[0].result,
@@ -1796,6 +2116,12 @@ mod tests {
         ));
         assert!(matches!(finished[2].result, FinishedResult::Unwritable));
         assert!(matches!(finished[3].result, FinishedResult::Unwritable));
+        assert!(matches!(finished[4].result, FinishedResult::Unwritable));
+        assert!(matches!(finished[5].result, FinishedResult::Unwritable));
+        assert!(matches!(
+            &finished[6].result,
+            FinishedResult::Unpublished(reason) if reason == "capture declined"
+        ));
         assert!(store.write_failure().is_some());
         assert_eq!(store.candidates("app.a").len(), 1);
         assert_eq!(store.candidates("app.b").len(), 1);
@@ -1813,5 +2139,180 @@ mod tests {
 
         drop(pipeline);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn publish_pipeline_backpressures_a_blocked_committer() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let dir = std::env::temp_dir().join(format!(
+            "light-cljs-pipeline-backpressure-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(dir.join("v1/objects")).unwrap();
+        std::fs::create_dir_all(dir.join("v1/index")).unwrap();
+        let lock_file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(dir.join("v1/lock"))
+            .unwrap();
+        // Hold the advisory lock so the committer blocks on its first commit.
+        lock_file.lock().unwrap();
+
+        let store = Store::open(&dir);
+        let mut pipeline = PublishPipeline::start_with_limits(
+            store.clone(),
+            Slots::new(4).unwrap(),
+            1 << 20,
+            3,
+            1 << 20,
+        )
+        .unwrap();
+        let submitted = Arc::new(AtomicUsize::new(0));
+        let submitted_producer = Arc::clone(&submitted);
+        let producer = thread::spawn(move || {
+            for i in 0..8usize {
+                let mut artifact = minimal_artifact(&format!("app.bp{i}"));
+                artifact.header.source_length = i as u32;
+                pipeline.enqueue(
+                    NamespaceId(i as u32),
+                    format!("app.bp{i}"),
+                    1024,
+                    artifact,
+                    ManifestFields::default(),
+                    None,
+                );
+                submitted_producer.fetch_add(1, Ordering::SeqCst);
+            }
+            pipeline.flush()
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while submitted.load(Ordering::SeqCst) < 3 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        thread::sleep(Duration::from_millis(80));
+        // While v1/lock is held, the producer must plateau at max_pending_commit_jobs = 3
+        // rather than admitting all 8 jobs unboundedly.
+        assert_eq!(submitted.load(Ordering::SeqCst), 3);
+
+        drop(lock_file);
+        let finished = producer.join().unwrap();
+        assert_eq!(finished.len(), 8);
+        assert!(
+            finished
+                .iter()
+                .all(|f| matches!(f.result, FinishedResult::Published { .. }))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn publish_pipeline_accounts_for_deferred_bodies_and_oversized_jobs() {
+        use crate::namespace_artifact::Bodies;
+
+        let base = minimal_artifact("app.small");
+        let small_est = publish_estimated_bytes(&base, &ManifestFields::default(), 0);
+        let mut with_bodies = minimal_artifact("app.big");
+        let mut bodies = Bodies::default();
+        // 10 MiB of UTF-16 code units inside deferred bodies (not counted by
+        // `NamespaceArtifact::approximate_bytes`).
+        bodies.ir.strings.push(vec![b'a' as u16; 10 * 1024 * 1024]);
+        with_bodies.bodies = Some(Box::new(bodies));
+        assert_eq!(
+            base.approximate_bytes(),
+            with_bodies.approximate_bytes(),
+            "approximate_bytes omits deferred bodies"
+        );
+        let big_est = publish_estimated_bytes(&with_bodies, &ManifestFields::default(), 0);
+        assert!(
+            big_est > PUBLISH_MAX_INFLIGHT_BYTES,
+            "deferred bodies push estimate ({big_est}) above 32 MiB cap (small={small_est})"
+        );
+    }
+
+    #[test]
+    fn inline_publish_io_barrier_commits_earlier_staged_items() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let dir = std::env::temp_dir().join(format!(
+            "light-cljs-inline-barrier-{}-{nanos}",
+            std::process::id()
+        ));
+        let store = Store::open(&dir);
+        let host = MacroHost::new();
+        let options = CacheOptions {
+            dir: dir.clone(),
+            ..CacheOptions::default()
+        };
+        let mut cache = CompileCache::open(&options, &host, Default::default(), "app.main");
+        cache.artifacts = vec![None, None];
+        let staged0 = store
+            .stage_encoded(
+                "app.a".into(),
+                [1u8; 32],
+                GeneratedNames::default(),
+                b"inline-0".to_vec(),
+            )
+            .unwrap();
+        cache
+            .inline_batch
+            .push((NamespaceId(0), "app.a".into(), staged0));
+        // Simulate the inline StageAttempt::Io path: commit earlier staged
+        // items before latching Store::fail.
+        cache.commit_inline_batch();
+        cache.store.fail(&std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "simulated inline io error",
+        ));
+        assert_eq!(cache.counts.published, 1);
+        assert!(cache.artifacts[0].is_some());
+        assert_eq!(store.candidates("app.a").len(), 1);
+        assert!(cache.store.write_failure().is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn minimal_artifact(namespace: &str) -> NamespaceArtifact {
+        use crate::namespace_artifact::{
+            Declarations, DeferredUnits, Diagnostics, Expr, ExprContext, ExprKind, ExprRef, Header,
+            Live, References, SemanticIr, SourceRef,
+        };
+        NamespaceArtifact {
+            header: Header {
+                namespace: namespace.to_owned(),
+                path: format!("{namespace}.cljs"),
+                source_length: 0,
+                cljc: false,
+                source_name: None,
+                entry: false,
+                root: ExprRef(0),
+                policy: Default::default(),
+            },
+            declarations: Declarations::default(),
+            ir: SemanticIr {
+                exprs: vec![Expr {
+                    kind: ExprKind::Nil,
+                    span: (0, 0),
+                    context: ExprContext::Value,
+                    source: SourceRef::Own,
+                }],
+                ..SemanticIr::default()
+            },
+            patches: Vec::new(),
+            units: DeferredUnits::default(),
+            diagnostics: Diagnostics::default(),
+            references: References::default(),
+            names: GeneratedNames::default(),
+            accounting: None,
+            registry: Vec::new(),
+            bodies: None,
+            live: Live::default(),
+        }
     }
 }

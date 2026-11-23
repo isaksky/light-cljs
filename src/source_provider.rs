@@ -1,9 +1,11 @@
 //! Owned source requests and provider results, independent of evaluation.
 use crate::compiler_data::Name;
 use std::{
+    collections::HashMap,
     fmt,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, RwLock},
+    time::SystemTime,
 };
 /// Whether a request reloads: not a loaded namespace, the namespace itself,
 /// or it and every namespace it requires, directly or not, each once. They
@@ -67,8 +69,7 @@ pub trait SourceProvider {
     }
     /// [`Self::load_traced`], returning only the resolved file identity
     /// (`SourceInput::file`) without reading the source text. Used when
-    /// revalidating resolution of required namespaces so unchanged dependency
-    /// files do not need to be opened and read again.
+    /// probing resolution without opening files.
     fn locate_traced(
         &self,
         request: &LoadRequest,
@@ -76,6 +77,18 @@ pub trait SourceProvider {
     ) -> Result<Option<String>, LoadError> {
         self.load_traced(request, tried)
             .map(|loaded| loaded.map(|input| input.file))
+    }
+    /// Resolution probe for [`crate::cache_key::revalidate`]: avoids re-reading
+    /// unchanged required source files whose metadata matches a prior
+    /// successful UTF-8 read, while falling back to [`Self::load_traced`] when
+    /// a resolved file has changed or was not previously verified so unreadable
+    /// or non-UTF-8 replacements still refuse publication.
+    fn revalidate_locate_traced(
+        &self,
+        request: &LoadRequest,
+        tried: &mut Vec<crate::dependency_manifest::Candidate>,
+    ) -> Result<Option<String>, LoadError> {
+        self.locate_traced(request, tried)
     }
     /// The resources `light.build/resource` reads while this provider's
     /// namespaces compile (docs/compiler.md, "Compile-time services:
@@ -153,15 +166,59 @@ where
     }
 }
 
+/// Metadata token recorded after a successful UTF-8 read so
+/// [`FileSourceProvider::revalidate_locate_traced`] can skip re-reading
+/// unchanged required files while still detecting unreadable or non-UTF-8
+/// replacements.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FileStamp {
+    len: u64,
+    modified: Option<SystemTime>,
+    #[cfg(unix)]
+    dev: u64,
+    #[cfg(unix)]
+    ino: u64,
+    #[cfg(unix)]
+    ctime: i64,
+    #[cfg(unix)]
+    ctime_nsec: i64,
+}
+
+impl FileStamp {
+    fn from_metadata(meta: &std::fs::Metadata) -> Self {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            Self {
+                len: meta.len(),
+                modified: meta.modified().ok(),
+                dev: meta.dev(),
+                ino: meta.ino(),
+                ctime: meta.ctime(),
+                ctime_nsec: meta.ctime_nsec(),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            Self {
+                len: meta.len(),
+                modified: meta.modified().ok(),
+            }
+        }
+    }
+}
+
 /// Explicit compiler source roots, with `.cljs` taking precedence over `.cljc`.
 #[derive(Clone, Debug)]
 pub struct FileSourceProvider {
     roots: Arc<[PathBuf]>,
+    verified: Arc<RwLock<HashMap<PathBuf, FileStamp>>>,
 }
 impl FileSourceProvider {
     pub fn new(roots: Vec<PathBuf>) -> Self {
         Self {
             roots: roots.into(),
+            verified: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 }
@@ -184,6 +241,39 @@ impl SourceProvider for FileSourceProvider {
         Ok(self
             .resolve(request, Some(tried))?
             .map(|path| path.to_string_lossy().into_owned()))
+    }
+    fn revalidate_locate_traced(
+        &self,
+        request: &LoadRequest,
+        tried: &mut Vec<crate::dependency_manifest::Candidate>,
+    ) -> Result<Option<String>, LoadError> {
+        let Some(path) = self.resolve(request, Some(tried))? else {
+            return Ok(None);
+        };
+        if let Ok(meta) = std::fs::metadata(&path) {
+            let stamp = FileStamp::from_metadata(&meta);
+            let matched = self
+                .verified
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&path)
+                .is_some_and(|recorded| *recorded == stamp);
+            if matched {
+                return Ok(Some(path.to_string_lossy().into_owned()));
+            }
+        }
+        // Unverified or metadata changed since the build read this path: verify
+        // that the file is still readable valid UTF-8 just as `load_traced` did.
+        let _ = std::fs::read_to_string(&path)
+            .map_err(|e| LoadError::Provider(format!("{}: {e}", path.display())))?;
+        if let Ok(meta) = std::fs::metadata(&path) {
+            let stamp = FileStamp::from_metadata(&meta);
+            self.verified
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(path.clone(), stamp);
+        }
+        Ok(Some(path.to_string_lossy().into_owned()))
     }
     fn resources(&self) -> Option<std::rc::Rc<dyn ResourceProvider>> {
         Some(std::rc::Rc::new(self.clone()))
@@ -311,6 +401,13 @@ impl FileSourceProvider {
         };
         let source = std::fs::read_to_string(&path)
             .map_err(|e| LoadError::Provider(format!("{}: {e}", path.display())))?;
+        if let Ok(meta) = std::fs::metadata(&path) {
+            let stamp = FileStamp::from_metadata(&meta);
+            self.verified
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(path.clone(), stamp);
+        }
         Ok(Some(SourceInput::new(path.to_string_lossy(), source)))
     }
 }

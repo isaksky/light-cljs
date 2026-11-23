@@ -4900,4 +4900,72 @@ mod tests {
         let (_, round_tripped) = decode(&first, &DecodeLimits::default(), &|| false).unwrap();
         assert_eq!(round_tripped, artifact);
     }
+
+    #[test]
+    fn full_artifact_matches_pre_interner_encoding() {
+        // Fixed artifact mixing ASCII, non-ASCII BMP, supplementary-plane
+        // Unicode, lone surrogates, and repeated string references.
+        let mut artifact = sample(0);
+        artifact.ir.strings.push("app.ünï".encode_utf16().collect());
+        artifact
+            .ir
+            .strings
+            .push("emoji-\u{1F600}-tail".encode_utf16().collect());
+        artifact.ir.strings.push(vec![0xD800, b'x' as u16]);
+        artifact.ir.strings.push("app.ünï".encode_utf16().collect());
+        let f = fields();
+        let encoded = encode(&artifact, &f).unwrap();
+        let manifest = read_manifest(&encoded, &DecodeLimits::default()).unwrap();
+        let strings_bounds = manifest.sections[0];
+        assert_eq!(strings_bounds.section, Section::Strings);
+
+        // Decode the string table entries and re-encode them with the exact
+        // pre-optimization HashMap<Box<[u16]>, u32> Interner to verify
+        // Section::Strings and the sealed full artifact are byte-for-byte
+        // identical.
+        let start = strings_bounds.offset as usize;
+        let end = start + strings_bounds.length as usize;
+        let string_section = &encoded[start..end];
+        let mut input = Input {
+            bytes: string_section,
+            position: 0,
+            part: "strings",
+            limits: &DecodeLimits::default(),
+        };
+        let count = input.count().unwrap();
+        let mut ref_ids: std::collections::HashMap<Box<[u16]>, u32> = Default::default();
+        let mut ref_order: Vec<Box<[u16]>> = Vec::with_capacity(count);
+        for expected_id in 0..count as u32 {
+            let len = input.count().unwrap();
+            let raw = input.take(len * 2).unwrap();
+            let units: Box<[u16]> = raw
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|pair| u16::from_le_bytes(*pair))
+                .collect();
+            // Every string in the encoded table must be distinct and ordered by first use.
+            assert!(ref_ids.insert(units.clone(), expected_id).is_none());
+            ref_order.push(units);
+        }
+        assert_eq!(input.position, input.bytes.len());
+
+        let mut ref_section = Vec::new();
+        varint(&mut ref_section, ref_order.len() as u64);
+        for text in &ref_order {
+            varint(&mut ref_section, text.len() as u64);
+            for unit in text.iter() {
+                ref_section.extend_from_slice(&unit.to_le_bytes());
+            }
+        }
+        assert_eq!(string_section, ref_section.as_slice());
+
+        // Rebuild the full artifact bytes with the reference string section and
+        // re-seal: the complete artifact digest must be bit-exact.
+        let mut rebuilt = encoded.clone();
+        rebuilt[start..end].copy_from_slice(&ref_section);
+        seal(&mut rebuilt).unwrap();
+        assert_eq!(digest(&encoded), digest(&rebuilt));
+        assert_eq!(encoded, rebuilt);
+    }
 }
