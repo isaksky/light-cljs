@@ -62,7 +62,7 @@
 //! emission and preparation look up.
 //!
 //! Literals keep what emission makes of them. Map keys and set members never
-//! become constants ([`fenced_positions`]): emission builds maps with
+//! become constants (fenced positions): emission builds maps with
 //! constant keys from key shapes and sets of scalars without a duplicate
 //! check, which rely on the distinct keys of source literals. A literal the
 //! program builds at each evaluation stays built when its items become
@@ -77,13 +77,166 @@
 //! the runtime's hashing could decide otherwise, and drops only constants
 //! and local reads.
 use crate::analyzer::{
-    CoreFnId, ExprId, ExprKind, GlobalId, LocalId, NamedLiteralId, Program, StringId,
+    CoreFnId, Expr, ExprId, ExprKind, GlobalId, LocalId, NamedLiteral, NamedLiteralId, Program,
+    StringId,
 };
+use crate::compiler_data::CompilerLiteralKind;
 use crate::core_operations::{Purity, Type};
-use crate::emitter::{ConstantClass, constant_nodes};
+use crate::emitter::ConstantClass;
 use crate::inference::ProgramFacts;
 use crate::program_fragment::visit_children;
-use std::collections::HashMap;
+use crate::scheduler::{self, Slots};
+use std::collections::{HashMap, HashSet};
+
+/// Minimum expression count before fanning out folding or lookup scans across
+/// worker threads on `scheduler::map`.
+const PARALLEL_EXPR_THRESHOLD: usize = 2048;
+
+/// Minimum top-level item count before slicing top-level traversals.
+const PARALLEL_FORM_THRESHOLD: usize = 16;
+
+/// Target slices per CPU slot for LPT balancing on `scheduler::map`.
+const SLICES_PER_SLOT: usize = 4;
+
+/// Compact dense bitset (1 bit per ID, ~62 KiB for 500k expressions) so
+/// parallel workers keep per-slice scratch tiny.
+#[derive(Clone)]
+pub(crate) struct BitSet {
+    words: Vec<u64>,
+}
+
+impl BitSet {
+    pub(crate) fn new(len: usize) -> Self {
+        Self {
+            words: vec![0u64; len.div_ceil(64)],
+        }
+    }
+
+    pub(crate) fn resize(&mut self, len: usize) {
+        let words = len.div_ceil(64);
+        if words > self.words.len() {
+            self.words.resize(words, 0);
+        }
+    }
+
+    #[inline]
+    pub(crate) fn get(&self, index: usize) -> bool {
+        let word = index >> 6;
+        word < self.words.len() && ((self.words[word] >> (index & 63)) & 1) != 0
+    }
+
+    /// Set bit `index` and return its previous value.
+    #[inline]
+    pub(crate) fn set(&mut self, index: usize) -> bool {
+        let word = index >> 6;
+        let mask = 1u64 << (index & 63);
+        let prev = (self.words[word] & mask) != 0;
+        self.words[word] |= mask;
+        prev
+    }
+
+    #[inline]
+    pub(crate) fn clear(&mut self, index: usize) {
+        let word = index >> 6;
+        if word < self.words.len() {
+            self.words[word] &= !(1u64 << (index & 63));
+        }
+    }
+
+    pub(crate) fn intersects(&self, other: &Self) -> bool {
+        self.words
+            .iter()
+            .zip(&other.words)
+            .any(|(&a, &b)| (a & b) != 0)
+    }
+
+    pub(crate) fn or_assign(&mut self, other: &Self) {
+        if other.words.len() > self.words.len() {
+            self.words.resize(other.words.len(), 0);
+        }
+        for (dst, &src) in self.words.iter_mut().zip(&other.words) {
+            *dst |= src;
+        }
+    }
+}
+
+/// Partition `weights` into up to `target_slices` contiguous, weight-balanced
+/// non-empty ranges covering `0..weights.len()`.
+pub(crate) fn partition_slices(
+    weights: &[u64],
+    target_slices: usize,
+) -> Vec<std::ops::Range<usize>> {
+    let n = weights.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let slices = target_slices.clamp(1, n);
+    if slices == 1 {
+        return std::iter::once(0..n).collect();
+    }
+    let mut remaining_weight: u64 = weights.iter().sum();
+    let mut ranges = Vec::with_capacity(slices);
+    let mut start = 0usize;
+    for remaining_slices in (1..=slices).rev() {
+        if start >= n {
+            break;
+        }
+        if remaining_slices == 1 {
+            ranges.push(start..n);
+            break;
+        }
+        let target = remaining_weight / remaining_slices as u64;
+        let limit = n - (remaining_slices - 1);
+        let mut acc = 0u64;
+        let mut end = start;
+        while end < limit {
+            let w = weights[end];
+            let next = acc + w;
+            if end > start && next > target && next - target > target.saturating_sub(acc) {
+                break;
+            }
+            acc = next;
+            end += 1;
+            if acc >= target && acc > 0 {
+                break;
+            }
+        }
+        if end == start {
+            acc = weights[end];
+            end += 1;
+        }
+        ranges.push(start..end);
+        remaining_weight = remaining_weight.saturating_sub(acc);
+        start = end;
+    }
+    ranges
+}
+
+/// Read-only view of expressions and strings: implemented directly by
+/// [`Program`] and by the sparse-delta overlay [`FolderView`] so read-only
+/// folding observes its own local rewrites without mutating [`Program`].
+trait ExprSource {
+    fn kind(&self, id: ExprId) -> &ExprKind;
+    fn string(&self, id: StringId) -> &[u16];
+    fn named_literal(&self, id: NamedLiteralId) -> &NamedLiteral;
+}
+
+impl ExprSource for Program {
+    #[inline]
+    fn kind(&self, id: ExprId) -> &ExprKind {
+        &self.exprs[id.0].kind
+    }
+
+    #[inline]
+    fn string(&self, id: StringId) -> &[u16] {
+        &self.strings[id.0]
+    }
+
+    #[inline]
+    fn named_literal(&self, id: NamedLiteralId) -> &NamedLiteral {
+        &self.named_literals[id.0]
+    }
+}
 
 /// A value the folder knows at compile time.
 #[derive(Clone, Debug, PartialEq)]
@@ -110,15 +263,19 @@ pub enum Constant {
 impl Constant {
     /// The scalar or symbol a literal expression evaluates to.
     pub fn of(program: &Program, id: ExprId) -> Option<Self> {
-        Self::of_kind(program, &program.exprs[id.0].kind)
+        Self::of_view(program, id)
     }
 
-    fn of_kind(program: &Program, kind: &ExprKind) -> Option<Self> {
+    fn of_view<S: ExprSource>(src: &S, id: ExprId) -> Option<Self> {
+        Self::of_kind_view(src, src.kind(id))
+    }
+
+    fn of_kind_view<S: ExprSource>(src: &S, kind: &ExprKind) -> Option<Self> {
         Some(match kind {
             ExprKind::Nil => Self::Nil,
             ExprKind::Bool(value) => Self::Bool(*value),
             ExprKind::Number(value) => Self::Number(*value),
-            ExprKind::String(string) => Self::String(program.strings[string.0].clone()),
+            ExprKind::String(string) => Self::String(src.string(*string).to_vec()),
             ExprKind::Keyword(literal) => Self::Keyword(*literal),
             ExprKind::Symbol(literal) => Self::Symbol(*literal),
             _ => return None,
@@ -127,12 +284,16 @@ impl Constant {
 
     /// The value of the item `id` of a constant collection: a scalar or
     /// symbol, or a nested collection, which is itself constant.
-    fn item(program: &Program, id: ExprId) -> Option<Self> {
-        Self::of(program, id).or_else(|| shape(program, id).map(|_| Self::Collection(id)))
+    fn item_view<S: ExprSource>(src: &S, id: ExprId) -> Option<Self> {
+        Self::of_view(src, id).or_else(|| shape_view(src, id).map(|_| Self::Collection(id)))
     }
 
     /// Its class in the core operation table's lattice.
     pub fn ty(&self, program: &Program) -> Type {
+        self.ty_view(program)
+    }
+
+    fn ty_view<S: ExprSource>(&self, src: &S) -> Type {
         match self {
             Self::Nil => Type::NIL,
             Self::Bool(_) => Type::BOOLEAN,
@@ -140,7 +301,7 @@ impl Constant {
             Self::String(_) => Type::STRING,
             Self::Keyword(_) => Type::KEYWORD,
             Self::Symbol(_) => Type::SYMBOL,
-            Self::Collection(id) => match shape(program, *id) {
+            Self::Collection(id) => match shape_view(src, *id) {
                 Some((Shape::Vector, _)) => Type::VECTOR,
                 Some((Shape::List, _)) => Type::LIST,
                 Some((Shape::Map { .. }, _)) => Type::MAP,
@@ -200,9 +361,13 @@ pub(crate) enum Shape {
 
 /// The shape and items (keys and values alternating for a map) of the
 /// collection literal `id`, under any reader metadata.
-pub(crate) fn shape(program: &Program, mut id: ExprId) -> Option<(Shape, &[ExprId])> {
+pub(crate) fn shape(program: &Program, id: ExprId) -> Option<(Shape, &[ExprId])> {
+    shape_view(program, id)
+}
+
+fn shape_view<S: ExprSource>(src: &S, mut id: ExprId) -> Option<(Shape, &[ExprId])> {
     loop {
-        return Some(match &program.exprs[id.0].kind {
+        return Some(match src.kind(id) {
             ExprKind::WithMeta { value, .. } => {
                 id = *value;
                 continue;
@@ -243,9 +408,14 @@ pub enum Folded {
 /// here); `None` when this cannot tell: a collection key, `NaN`, `0` against
 /// `-0` (`=` but hashed apart), and keywords or symbols spelled alike with
 /// another namespace split (`=` compares spellings, hashing the parts).
+#[cfg(test)]
 fn same_key(program: &Program, key: &Constant, item: ExprId) -> Option<bool> {
-    match Constant::of(program, item) {
-        Some(item) => scalar_equal(program, key, &item),
+    same_key_view(program, key, item)
+}
+
+fn same_key_view<S: ExprSource>(src: &S, key: &Constant, item: ExprId) -> Option<bool> {
+    match Constant::of_view(src, item) {
+        Some(item) => scalar_equal_view(src, key, &item),
         // A scalar is never `=` to a collection or `#uuid` while core
         // protocols are intact.
         None if !matches!(key, Constant::Collection(_)) => Some(false),
@@ -253,8 +423,8 @@ fn same_key(program: &Program, key: &Constant, item: ExprId) -> Option<bool> {
     }
 }
 
-/// `=` on two scalars or symbols, as [`same_key`] decides it.
-fn scalar_equal(program: &Program, a: &Constant, b: &Constant) -> Option<bool> {
+/// `=` on two scalars or symbols, as [`same_key_view`] decides it.
+fn scalar_equal_view<S: ExprSource>(src: &S, a: &Constant, b: &Constant) -> Option<bool> {
     use Constant::{Bool, Collection, Keyword, Nil, Number, String, Symbol};
     Some(match (a, b) {
         (Collection(_), _) | (_, Collection(_)) => return None,
@@ -271,16 +441,15 @@ fn scalar_equal(program: &Program, a: &Constant, b: &Constant) -> Option<bool> {
         (Bool(a), Bool(b)) => a == b,
         (Keyword(a), Keyword(b)) | (Symbol(a), Symbol(b)) => {
             let parts = |literal: NamedLiteralId| {
-                let name = &program.named_literals[literal.0];
+                let name = src.named_literal(literal);
                 (
-                    name.namespace
-                        .map(|namespace| &program.strings[namespace.0][..]),
-                    &program.strings[name.name.0][..],
+                    name.namespace.map(|namespace| src.string(namespace)),
+                    src.string(name.name),
                 )
             };
             if parts(*a) == parts(*b) {
                 true
-            } else if spelling(program, *a) == spelling(program, *b) {
+            } else if spelling_view(src, *a) == spelling_view(src, *b) {
                 return None;
             } else {
                 false
@@ -310,18 +479,21 @@ pub(crate) enum Members {
 /// numbers. The caller checks that core protocols are intact and that no
 /// program type implements `IEquiv`.
 pub(crate) fn members(program: &Program, members: &[ExprId]) -> Option<Members> {
+    members_view(program, members)
+}
+
+fn members_view<S: ExprSource>(src: &S, members: &[ExprId]) -> Option<Members> {
     if members.len() > 8 {
         return None;
     }
-    let kind = |member: &ExprId| &program.exprs[member.0].kind;
     if members
         .iter()
-        .all(|member| matches!(kind(member), ExprKind::Keyword(_)))
+        .all(|member| matches!(src.kind(*member), ExprKind::Keyword(_)))
     {
         Some(Members::Keywords)
     } else if members
         .iter()
-        .all(|member| matches!(kind(member), ExprKind::Number(_) | ExprKind::String(_)))
+        .all(|member| matches!(src.kind(*member), ExprKind::Number(_) | ExprKind::String(_)))
     {
         Some(Members::Primitives)
     } else {
@@ -332,13 +504,17 @@ pub(crate) fn members(program: &Program, members: &[ExprId]) -> Option<Members> 
 /// The spelling `ns/name` (or `name`) of a keyword or symbol literal, which
 /// the runtime's `=` compares.
 pub(crate) fn spelling(program: &Program, literal: NamedLiteralId) -> Vec<u16> {
-    let name = &program.named_literals[literal.0];
+    spelling_view(program, literal)
+}
+
+fn spelling_view<S: ExprSource>(src: &S, literal: NamedLiteralId) -> Vec<u16> {
+    let name = src.named_literal(literal);
     let mut units = Vec::new();
     if let Some(namespace) = name.namespace {
-        units.extend_from_slice(&program.strings[namespace.0]);
+        units.extend_from_slice(src.string(namespace));
         units.push(u16::from(b'/'));
     }
-    units.extend_from_slice(&program.strings[name.name.0]);
+    units.extend_from_slice(src.string(name.name));
     units
 }
 
@@ -355,8 +531,13 @@ enum Lookup {
 /// nothing. A map or set finds the value or member of the key `=` to `key`,
 /// and needs every other key to be provably unequal to it: a merging builder
 /// keeps one of several equal keys, and a positional one finds the first.
+#[cfg(test)]
 fn lookup(program: &Program, id: ExprId, key: &Constant) -> Option<Lookup> {
-    let (shape, items) = shape(program, id)?;
+    lookup_view(program, id, key)
+}
+
+fn lookup_view<S: ExprSource>(src: &S, id: ExprId, key: &Constant) -> Option<Lookup> {
+    let (shape, items) = shape_view(src, id)?;
     let (stride, positional) = match shape {
         Shape::Vector => {
             return Some(match key {
@@ -372,7 +553,7 @@ fn lookup(program: &Program, id: ExprId, key: &Constant) -> Option<Lookup> {
     };
     let mut found = None;
     for (index, item) in items.iter().step_by(stride).enumerate() {
-        if same_key(program, key, *item)? {
+        if same_key_view(src, key, *item)? {
             // A map finds the value after the key, a set the member.
             let result = items[index * stride + stride - 1];
             if positional {
@@ -388,26 +569,31 @@ fn lookup(program: &Program, id: ExprId, key: &Constant) -> Option<Lookup> {
 
 /// The count of the constant collection `id`: its items, or its entries when
 /// no two keys or members of a merging map or set may be `=`.
+#[cfg(test)]
 fn count(program: &Program, id: ExprId) -> Option<usize> {
-    let (shape, items) = shape(program, id)?;
+    count_view(program, id)
+}
+
+fn count_view<S: ExprSource>(src: &S, id: ExprId) -> Option<usize> {
+    let (shape, items) = shape_view(src, id)?;
     match shape {
         Shape::Vector | Shape::List | Shape::Set { positional: true } => Some(items.len()),
         Shape::Map { positional: true } => Some(items.len() / 2),
         Shape::Map { positional: false } => {
-            distinct(program, items.iter().step_by(2).copied()).then_some(items.len() / 2)
+            distinct_view(src, items.iter().step_by(2).copied()).then_some(items.len() / 2)
         }
         Shape::Set { positional: false } => {
-            distinct(program, items.iter().copied()).then_some(items.len())
+            distinct_view(src, items.iter().copied()).then_some(items.len())
         }
     }
 }
 
 /// Whether no two of `keys` may be `=`: scalars and symbols that are
-/// pairwise provably unequal ([`scalar_equal`]) and at most one collection.
+/// pairwise provably unequal ([`scalar_equal_view`]) and at most one collection.
 /// Linear, with a set of canonical forms: zeros of both signs share one, and
 /// keywords and symbols are their spellings, so `0` and `-0.0` or keywords
 /// spelled alike count as possibly equal, and `NaN` makes no key distinct.
-fn distinct(program: &Program, keys: impl Iterator<Item = ExprId>) -> bool {
+fn distinct_view<S: ExprSource>(src: &S, keys: impl Iterator<Item = ExprId>) -> bool {
     #[derive(Hash, PartialEq, Eq)]
     enum Canonical {
         Nil,
@@ -416,18 +602,20 @@ fn distinct(program: &Program, keys: impl Iterator<Item = ExprId>) -> bool {
         String(Vec<u16>),
         Named(bool, Vec<u16>),
     }
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::new();
     let mut collections = 0;
     for key in keys {
-        let canonical = match Constant::of(program, key) {
+        let canonical = match Constant::of_view(src, key) {
             Some(Constant::Nil) => Canonical::Nil,
             Some(Constant::Bool(value)) => Canonical::Bool(value),
             Some(Constant::Number(value)) if value.is_nan() => return false,
             Some(Constant::Number(0.0)) => Canonical::Number(0),
             Some(Constant::Number(value)) => Canonical::Number(value.to_bits()),
             Some(Constant::String(units)) => Canonical::String(units),
-            Some(Constant::Keyword(literal)) => Canonical::Named(false, spelling(program, literal)),
-            Some(Constant::Symbol(literal)) => Canonical::Named(true, spelling(program, literal)),
+            Some(Constant::Keyword(literal)) => {
+                Canonical::Named(false, spelling_view(src, literal))
+            }
+            Some(Constant::Symbol(literal)) => Canonical::Named(true, spelling_view(src, literal)),
             Some(Constant::Collection(_)) | None => {
                 collections += 1;
                 if collections > 1 {
@@ -462,6 +650,14 @@ fn collection_of(constant: &Constant) -> Option<ExprId> {
 /// The caller has checked that the operation is trusted and that core
 /// protocols are intact.
 pub fn select(program: &Program, core: CoreFnId, args: &[Option<Constant>]) -> Option<Folded> {
+    select_view(program, core, args)
+}
+
+fn select_view<S: ExprSource>(
+    src: &S,
+    core: CoreFnId,
+    args: &[Option<Constant>],
+) -> Option<Folded> {
     let found = |lookup: Lookup, default: Option<usize>| match (lookup, default) {
         (Lookup::Found(item), _) => Folded::Item(item),
         (Lookup::Missing, Some(index)) => Folded::Argument(index),
@@ -470,16 +666,16 @@ pub fn select(program: &Program, core: CoreFnId, args: &[Option<Constant>]) -> O
     match (core, args) {
         (CoreFnId::Get, [Some(collection), Some(key), rest @ ..]) if rest.len() <= 1 => {
             let default = (!rest.is_empty()).then_some(2);
-            Some(found(get(program, collection, key)?, default))
+            Some(found(get_view(src, collection, key)?, default))
         }
         (CoreFnId::GetIn, [Some(collection), Some(path), rest @ ..]) if rest.len() <= 1 => {
-            get_in(program, collection, path, !rest.is_empty())
+            get_in_view(src, collection, path, !rest.is_empty())
         }
         (CoreFnId::Nth, [Some(collection), Some(Constant::Number(index)), rest @ ..])
             if rest.len() <= 1 =>
         {
             let id = collection_of(collection)?;
-            let (shape, items) = shape(program, id)?;
+            let (shape, items) = shape_view(src, id)?;
             let index = *index;
             let item = match shape {
                 // `vectorNth`: a number in range, truncated.
@@ -506,7 +702,7 @@ pub fn select(program: &Program, core: CoreFnId, args: &[Option<Constant>]) -> O
             CoreFnId::First | CoreFnId::Second | CoreFnId::Last | CoreFnId::Peek,
             [Some(collection)],
         ) => {
-            let (shape, items) = shape(program, collection_of(collection)?)?;
+            let (shape, items) = shape_view(src, collection_of(collection)?)?;
             let item = match (core, shape) {
                 (CoreFnId::First, Shape::Vector | Shape::List) => items.first(),
                 (CoreFnId::Second, Shape::Vector | Shape::List) => items.get(1),
@@ -519,7 +715,7 @@ pub fn select(program: &Program, core: CoreFnId, args: &[Option<Constant>]) -> O
             Some(item.map_or(Folded::Value(Constant::Nil), |item| Folded::Item(*item)))
         }
         (CoreFnId::Rest | CoreFnId::Next, [Some(collection)]) => {
-            let (shape, items) = shape(program, collection_of(collection)?)?;
+            let (shape, items) = shape_view(src, collection_of(collection)?)?;
             match shape {
                 // The tail of a list, or the empty list.
                 Shape::List if items.len() > 1 => Some(Folded::List(items[1..].to_vec())),
@@ -535,7 +731,7 @@ pub fn select(program: &Program, core: CoreFnId, args: &[Option<Constant>]) -> O
             }
         }
         (CoreFnId::Seq | CoreFnId::NotEmpty, [Some(collection)]) => {
-            let (shape, items) = shape(program, collection_of(collection)?)?;
+            let (shape, items) = shape_view(src, collection_of(collection)?)?;
             if items.is_empty() {
                 Some(Folded::Value(Constant::Nil))
             } else if core == CoreFnId::NotEmpty || shape == Shape::List {
@@ -555,9 +751,9 @@ pub fn select(program: &Program, core: CoreFnId, args: &[Option<Constant>]) -> O
 /// them). A string finds a character at a key that compares as an index in
 /// range (`key > -1 && key < length`), which a keyword (`:k`) or `nil` never
 /// does; other keys are left alone.
-fn get(program: &Program, value: &Constant, key: &Constant) -> Option<Lookup> {
+fn get_view<S: ExprSource>(src: &S, value: &Constant, key: &Constant) -> Option<Lookup> {
     match value {
-        Constant::Collection(id) => lookup(program, *id, key),
+        Constant::Collection(id) => lookup_view(src, *id, key),
         Constant::String(_) if !matches!(key, Constant::Nil | Constant::Keyword(_)) => None,
         _ => Some(Lookup::Missing),
     }
@@ -566,17 +762,22 @@ fn get(program: &Program, value: &Constant, key: &Constant) -> Option<Lookup> {
 /// `get-in` of the constant `path` (a vector or list of keys) in `value`,
 /// with a default when `defaulted`: each step is a `get`, which with a
 /// default stops at the first missing key.
-fn get_in(program: &Program, value: &Constant, path: &Constant, defaulted: bool) -> Option<Folded> {
-    let keys = path_keys(program, path)?;
+fn get_in_view<S: ExprSource>(
+    src: &S,
+    value: &Constant,
+    path: &Constant,
+    defaulted: bool,
+) -> Option<Folded> {
+    let keys = path_keys_view(src, path)?;
     if keys.is_empty() {
         return Some(Folded::Argument(0));
     }
-    walk(program, value.clone(), None, keys, defaulted)
+    walk_view(src, value.clone(), None, keys, defaulted)
 }
 
 /// The keys of a constant `get-in` path: a vector or list.
-fn path_keys<'p>(program: &'p Program, path: &Constant) -> Option<&'p [ExprId]> {
-    match shape(program, collection_of(path)?)? {
+fn path_keys_view<'p, S: ExprSource>(src: &'p S, path: &Constant) -> Option<&'p [ExprId]> {
+    match shape_view(src, collection_of(path)?)? {
         (Shape::Vector | Shape::List, keys) => Some(keys),
         _ => None,
     }
@@ -584,18 +785,18 @@ fn path_keys<'p>(program: &'p Program, path: &Constant) -> Option<&'p [ExprId]> 
 
 /// The rest of a `get-in` from `current`, the constant item at `item` (or
 /// not an item), through `keys`.
-fn walk(
-    program: &Program,
+fn walk_view<S: ExprSource>(
+    src: &S,
     mut current: Constant,
     mut item: Option<ExprId>,
     keys: &[ExprId],
     defaulted: bool,
 ) -> Option<Folded> {
     for key in keys {
-        let key = Constant::of(program, *key)?;
-        match get(program, &current, &key)? {
+        let key = Constant::of_view(src, *key)?;
+        match get_view(src, &current, &key)? {
             Lookup::Found(found) => {
-                current = Constant::item(program, found)?;
+                current = Constant::item_view(src, found)?;
                 item = Some(found);
             }
             Lookup::Missing if defaulted => return Some(Folded::Argument(2)),
@@ -612,6 +813,10 @@ fn walk(
 /// reproduced here; the caller has checked that the call is `pure` for these
 /// arguments. `None` leaves the call alone.
 pub fn evaluate(program: &Program, core: CoreFnId, args: &[Constant]) -> Option<Constant> {
+    evaluate_view(program, core, args)
+}
+
+fn evaluate_view<S: ExprSource>(src: &S, core: CoreFnId, args: &[Constant]) -> Option<Constant> {
     use Constant::{Bool, Number};
     let numbers = || -> Option<Vec<f64>> {
         args.iter()
@@ -693,8 +898,8 @@ pub fn evaluate(program: &Program, core: CoreFnId, args: &[Constant]) -> Option<
         CoreFnId::GreaterEqual => chain(|a, b| a >= b)?,
         // `numericEqual` is `equal` on numbers, which is `===`.
         CoreFnId::NumericEqual => chain(|a, b| a == b)?,
-        CoreFnId::Equal => Bool(equal_all(program, args)?),
-        CoreFnId::NotEqual => Bool(!equal_all(program, args)?),
+        CoreFnId::Equal => Bool(equal_all_view(src, args)?),
+        CoreFnId::NotEqual => Bool(!equal_all_view(src, args)?),
         CoreFnId::Identical => match args {
             [a, b]
                 if [a, b].iter().all(|arg| {
@@ -704,7 +909,7 @@ pub fn evaluate(program: &Program, core: CoreFnId, args: &[Constant]) -> Option<
                     )
                 }) =>
             {
-                Bool(equal(program, a, b)?)
+                Bool(equal_view(src, a, b)?)
             }
             _ => return None,
         },
@@ -713,7 +918,7 @@ pub fn evaluate(program: &Program, core: CoreFnId, args: &[Constant]) -> Option<
         CoreFnId::Count => Number(match args {
             [Constant::Nil] => 0.0,
             [Constant::String(units)] => units.len() as f64,
-            [Constant::Collection(id)] => count(program, *id)? as f64,
+            [Constant::Collection(id)] => count_view(src, *id)? as f64,
             _ => return None,
         }),
         // Every constant collection is counted, and has entries exactly when
@@ -721,16 +926,16 @@ pub fn evaluate(program: &Program, core: CoreFnId, args: &[Constant]) -> Option<
         CoreFnId::IsEmpty => Bool(match args {
             [Constant::Nil] => true,
             [Constant::String(units)] => units.is_empty(),
-            [Constant::Collection(id)] => shape(program, *id)?.1.is_empty(),
+            [Constant::Collection(id)] => shape_view(src, *id)?.1.is_empty(),
             _ => return None,
         }),
         CoreFnId::Contains => match args {
-            [Constant::Collection(id), key] => match shape(program, *id)? {
+            [Constant::Collection(id), key] => match shape_view(src, *id)? {
                 // `contains` on a vector: an integer index in range.
                 (Shape::Vector, items) => Bool(matches!(key, Constant::Number(index)
                     if index.fract() == 0.0 && *index >= 0.0 && *index < items.len() as f64)),
                 (Shape::List, _) => return None,
-                _ => Bool(lookup(program, *id, key)? != Lookup::Missing),
+                _ => Bool(lookup_view(src, *id, key)? != Lookup::Missing),
             },
             _ => return None,
         },
@@ -748,7 +953,7 @@ pub fn evaluate(program: &Program, core: CoreFnId, args: &[Constant]) -> Option<
             let [Constant::Collection(id)] = args else {
                 return None;
             };
-            let (shape, _) = shape(program, *id)?;
+            let (shape, _) = shape_view(src, *id)?;
             let (vector, list) = (shape == Shape::Vector, shape == Shape::List);
             let map = matches!(shape, Shape::Map { .. });
             Bool(match core {
@@ -800,15 +1005,15 @@ pub fn evaluate(program: &Program, core: CoreFnId, args: &[Constant]) -> Option<
 /// `equal` on scalars and symbols: `nil` equals only `nil`, keywords and
 /// symbols compare by spelling and everything else with `===`; `None` for a
 /// collection, which this does not compare.
-fn equal(program: &Program, a: &Constant, b: &Constant) -> Option<bool> {
+fn equal_view<S: ExprSource>(src: &S, a: &Constant, b: &Constant) -> Option<bool> {
     Some(match (a, b) {
         (Constant::Collection(_), _) | (_, Constant::Collection(_)) => return None,
         (Constant::Keyword(a), Constant::Keyword(b))
         | (Constant::Symbol(a), Constant::Symbol(b)) => {
-            let (a, b) = (&program.named_literals[a.0], &program.named_literals[b.0]);
-            let spelling = |name: Option<StringId>| name.map(|name| &program.strings[name.0]);
+            let (a, b) = (src.named_literal(*a), src.named_literal(*b));
+            let spelling = |name: Option<StringId>| name.map(|name| src.string(name));
             spelling(a.namespace) == spelling(b.namespace)
-                && program.strings[a.name.0] == program.strings[b.name.0]
+                && src.string(a.name) == src.string(b.name)
         }
         (Constant::Number(a), Constant::Number(b)) => a == b,
         (a, b) => a == b,
@@ -816,13 +1021,13 @@ fn equal(program: &Program, a: &Constant, b: &Constant) -> Option<bool> {
 }
 
 /// `equal` over its arguments, pairwise.
-fn equal_all(program: &Program, args: &[Constant]) -> Option<bool> {
+fn equal_all_view<S: ExprSource>(src: &S, args: &[Constant]) -> Option<bool> {
     if args.is_empty() {
         return None;
     }
     // The runtime stops at the first unequal pair.
     for pair in args.windows(2) {
-        if !equal(program, &pair[0], &pair[1])? {
+        if !equal_view(src, &pair[0], &pair[1])? {
             return Some(false);
         }
     }
@@ -874,7 +1079,7 @@ pub fn fold(program: &mut Program, built: &mut Vec<bool>) -> usize {
     let mut top = Vec::new();
     flatten(program, program.root, &mut top);
     let facts = ProgramFacts::new_light(program, &top);
-    fold_with_facts(program, built, &facts)
+    fold_with_facts_with_slots(program, built, &facts, Slots::ONE)
 }
 
 /// Fold `program` in place using precomputed [`ProgramFacts`], returning how
@@ -884,22 +1089,809 @@ pub fn fold_with_facts(
     built: &mut Vec<bool>,
     facts: &ProgramFacts,
 ) -> usize {
-    let mut top = Vec::new();
-    flatten(program, program.root, &mut top);
-    let count = program.exprs.len();
-    built.resize(count, false);
+    fold_with_facts_with_slots(program, built, facts, Slots::ONE)
+}
 
-    // The first top-level form that reaches each expression.
+/// A top-level child of `program.root` (or `program.root` itself if not a `Do`),
+/// paired with the contiguous range of flattened `top` forms it contains.
+#[derive(Clone, Copy)]
+struct RootItem {
+    id: ExprId,
+    top_start: usize,
+    top_end: usize,
+}
+
+fn collect_root_items(program: &Program) -> (Vec<ExprId>, Vec<RootItem>, bool) {
+    let mut top = Vec::new();
+    if let ExprKind::Do(items) = &program.exprs[program.root.0].kind {
+        let mut root_items = Vec::with_capacity(items.len());
+        for &item in items {
+            let start = top.len();
+            flatten(program, item, &mut top);
+            root_items.push(RootItem {
+                id: item,
+                top_start: start,
+                top_end: top.len(),
+            });
+        }
+        (top, root_items, true)
+    } else {
+        flatten(program, program.root, &mut top);
+        let root_items = vec![RootItem {
+            id: program.root,
+            top_start: 0,
+            top_end: top.len(),
+        }];
+        (top, root_items, false)
+    }
+}
+
+struct ReachScanSlice {
+    reached: BitSet,
+    positions: Vec<(u32, u32)>,
+    multi_parents: Vec<(u32, u8)>,
+    local_reads: Vec<u32>,
+    item_weights: Vec<u64>,
+    inter_item_shared: bool,
+}
+
+fn scan_reach_slice(
+    program: &Program,
+    top: &[ExprId],
+    root_items: &[RootItem],
+    range: std::ops::Range<usize>,
+) -> ReachScanSlice {
+    let count = program.exprs.len();
+    let mut reached = BitSet::new(count);
+    let mut in_item = BitSet::new(count);
+    let mut item_nodes: Vec<u32> = Vec::new();
+    let mut positions: Vec<(u32, u32)> = Vec::new();
+    let mut parent_overflow: HashMap<u32, u8> = HashMap::new();
+    let mut local_reads: Vec<u32> = Vec::new();
+    let mut item_weights = Vec::with_capacity(range.len());
+    let mut inter_item_shared = false;
+    let mut pending: Vec<(ExprId, u32)> = Vec::new();
+
+    for item in &root_items[range] {
+        let mut weight = 0u64;
+        // Walk intermediate `Do` spine (if `item.id` is a nested `Do`) to count
+        // parents and mark reached without assigning `position` to spine `Do`s.
+        if item.top_end - item.top_start != 1 || top[item.top_start] != item.id {
+            let mut spine = vec![item.id];
+            while let Some(d) = spine.pop() {
+                let d32 = d.0 as u32;
+                if in_item.get(d.0) {
+                    let p = parent_overflow.entry(d32).or_insert(1);
+                    *p = p.saturating_add(1);
+                    continue;
+                }
+                if reached.get(d.0) {
+                    inter_item_shared = true;
+                    let p = parent_overflow.entry(d32).or_insert(1);
+                    *p = p.saturating_add(1);
+                    continue;
+                }
+                if let ExprKind::Do(children) = &program.exprs[d.0].kind {
+                    reached.set(d.0);
+                    in_item.set(d.0);
+                    item_nodes.push(d32);
+                    weight += 1;
+                    for &c in children {
+                        if matches!(program.exprs[c.0].kind, ExprKind::Do(_)) {
+                            spine.push(c);
+                        }
+                    }
+                }
+            }
+        }
+        for top_idx in item.top_start..item.top_end {
+            let form = top[top_idx];
+            let form32 = form.0 as u32;
+            if in_item.get(form.0) {
+                let p = parent_overflow.entry(form32).or_insert(1);
+                *p = p.saturating_add(1);
+                continue;
+            }
+            if reached.get(form.0) {
+                inter_item_shared = true;
+                let p = parent_overflow.entry(form32).or_insert(1);
+                *p = p.saturating_add(1);
+                continue;
+            }
+            reached.set(form.0);
+            in_item.set(form.0);
+            item_nodes.push(form32);
+            positions.push((form32, top_idx as u32));
+            pending.push((form, top_idx as u32));
+            while let Some((id, pos)) = pending.pop() {
+                weight += 1;
+                if let ExprKind::Local(local) = program.exprs[id.0].kind {
+                    local_reads.push(local.0 as u32);
+                }
+                visit_children(&program.exprs[id.0].kind, |child| {
+                    let c32 = child.0 as u32;
+                    if in_item.get(child.0) {
+                        let p = parent_overflow.entry(c32).or_insert(1);
+                        *p = p.saturating_add(1);
+                    } else if reached.get(child.0) {
+                        inter_item_shared = true;
+                        let p = parent_overflow.entry(c32).or_insert(1);
+                        *p = p.saturating_add(1);
+                    } else {
+                        reached.set(child.0);
+                        in_item.set(child.0);
+                        item_nodes.push(c32);
+                        positions.push((c32, pos));
+                        pending.push((child, pos));
+                    }
+                });
+            }
+        }
+        for node in item_nodes.drain(..) {
+            in_item.clear(node as usize);
+        }
+        item_weights.push(weight.max(1));
+    }
+
+    ReachScanSlice {
+        reached,
+        positions,
+        multi_parents: parent_overflow.into_iter().collect(),
+        local_reads,
+        item_weights,
+        inter_item_shared,
+    }
+}
+
+struct FoldReachData {
+    position: Vec<u32>,
+    parents: Vec<u8>,
+    reads: Vec<u32>,
+    item_weights: Vec<u64>,
+    can_parallel_fold: bool,
+}
+
+fn scan_fold_reachability_serial(
+    program: &Program,
+    top: &[ExprId],
+    root_items_len: usize,
+) -> FoldReachData {
+    let count = program.exprs.len();
     let mut position = vec![NOWHERE; count];
-    for (index, &form) in top.iter().enumerate() {
-        let mut pending = vec![form];
-        while let Some(id) = pending.pop() {
-            if position[id.0] == NOWHERE {
-                position[id.0] = index as u32;
-                visit_children(&program.exprs[id.0].kind, |child| pending.push(child));
+    let mut parents = vec![0u8; count];
+    let mut reads = vec![0u32; program.locals.len()];
+    let mut reached = BitSet::new(count);
+
+    // Single fused reachability pass: mark intermediate `Do` spine from
+    // `program.root`, then DFS each flattened `top` form once to fill
+    // `position`, `parents`, and `reads`.
+    if let ExprKind::Do(_) = &program.exprs[program.root.0].kind {
+        let mut spine = vec![program.root];
+        reached.set(program.root.0);
+        while let Some(d) = spine.pop() {
+            if let ExprKind::Do(children) = &program.exprs[d.0].kind {
+                for &c in children {
+                    parents[c.0] = parents[c.0].saturating_add(1);
+                    if matches!(program.exprs[c.0].kind, ExprKind::Do(_)) && !reached.set(c.0) {
+                        spine.push(c);
+                    }
+                }
             }
         }
     }
+
+    let mut pending = Vec::new();
+    for (index, &form) in top.iter().enumerate() {
+        let pos = index as u32;
+        if position[form.0] == NOWHERE {
+            position[form.0] = pos;
+            if !reached.set(form.0) {
+                pending.push(form);
+                while let Some(id) = pending.pop() {
+                    if let ExprKind::Local(local) = program.exprs[id.0].kind {
+                        reads[local.0] = reads[local.0].saturating_add(1);
+                    }
+                    visit_children(&program.exprs[id.0].kind, |child| {
+                        parents[child.0] = parents[child.0].saturating_add(1);
+                        if position[child.0] == NOWHERE {
+                            position[child.0] = pos;
+                        }
+                        if !reached.set(child.0) {
+                            pending.push(child);
+                        }
+                    });
+                }
+            }
+        }
+    }
+
+    FoldReachData {
+        position,
+        parents,
+        reads,
+        item_weights: vec![1; root_items_len],
+        can_parallel_fold: false,
+    }
+}
+
+fn scan_fold_reachability(
+    program: &Program,
+    top: &[ExprId],
+    root_items: &[RootItem],
+    root_is_do: bool,
+    slots: Slots,
+) -> FoldReachData {
+    let count = program.exprs.len();
+    let use_parallel = root_is_do
+        && slots.get() > 1
+        && count >= PARALLEL_EXPR_THRESHOLD
+        && root_items.len() >= PARALLEL_FORM_THRESHOLD;
+    if !use_parallel {
+        return scan_fold_reachability_serial(program, top, root_items.len());
+    }
+
+    let target_slices = (slots.get() * SLICES_PER_SLOT).min(root_items.len());
+    let est_weights: Vec<u64> = root_items
+        .iter()
+        .map(|item| (item.top_end - item.top_start).max(1) as u64)
+        .collect();
+    let ranges = partition_slices(&est_weights, target_slices);
+    let jobs: Vec<(u64, std::ops::Range<usize>)> = ranges
+        .into_iter()
+        .map(|r| {
+            let w: u64 = est_weights[r.clone()].iter().sum();
+            (w, r)
+        })
+        .collect();
+    let slices = scheduler::map(slots, jobs, |range| {
+        scan_reach_slice(program, top, root_items, range)
+    });
+
+    let mut global_reached = BitSet::new(count);
+    global_reached.set(program.root.0);
+    let mut any_overlap = false;
+    for slice in &slices {
+        if slice.inter_item_shared || global_reached.intersects(&slice.reached) {
+            any_overlap = true;
+            break;
+        }
+        global_reached.or_assign(&slice.reached);
+    }
+    if any_overlap {
+        drop(slices);
+        return scan_fold_reachability_serial(program, top, root_items.len());
+    }
+    drop(global_reached);
+
+    let mut position = vec![NOWHERE; count];
+    let mut parents = vec![0u8; count];
+    let mut reads = vec![0u32; program.locals.len()];
+    let mut item_weights = Vec::with_capacity(root_items.len());
+    for slice in slices {
+        for (id, pos) in slice.positions {
+            let idx = id as usize;
+            position[idx] = pos;
+            parents[idx] = 1;
+        }
+        for (id, p) in slice.multi_parents {
+            parents[id as usize] = p;
+        }
+        for local in slice.local_reads {
+            let l = local as usize;
+            reads[l] = reads[l].saturating_add(1);
+        }
+        item_weights.extend(slice.item_weights);
+    }
+    // Root's direct children have parent count at least 1 (including nested Do spines).
+    for item in root_items {
+        if parents[item.id.0] == 0 {
+            parents[item.id.0] = 1;
+        }
+    }
+    FoldReachData {
+        position,
+        parents,
+        reads,
+        item_weights,
+        can_parallel_fold: true,
+    }
+}
+
+/// Fused single-pass arena scan for `fold_with_facts_with_slots`: computes
+/// `sole_definitions`, `pinned`, `assignable`, and `fenced` in one pass over
+/// `program.exprs`, parallelized over chunks when `slots > Slots::ONE`.
+struct FoldArenaChunk {
+    defs: Vec<(GlobalId, ExprId)>,
+    assigned_globals: Vec<GlobalId>,
+    pinned_locals: Vec<LocalId>,
+    assignable_locals: Vec<LocalId>,
+    fenced_exprs: Vec<ExprId>,
+}
+
+fn scan_fold_arena_chunk(
+    program: &Program,
+    position: &[u32],
+    range: std::ops::Range<usize>,
+) -> FoldArenaChunk {
+    let mut defs = Vec::new();
+    let mut assigned_globals = Vec::new();
+    let mut pinned_locals = Vec::new();
+    let mut assignable_locals = Vec::new();
+    let mut fenced_exprs = Vec::new();
+
+    let mark_target_global = |mut target: ExprId, out: &mut Vec<GlobalId>| {
+        while let ExprKind::BooleanHint(inner) = program.exprs[target.0].kind {
+            target = inner;
+        }
+        if let ExprKind::Global(global) = program.exprs[target.0].kind {
+            out.push(global);
+        }
+    };
+
+    for index in range {
+        let kind = &program.exprs[index].kind;
+        match kind {
+            ExprKind::SetGlobal { target, .. } => {
+                mark_target_global(*target, &mut assigned_globals);
+                if let ExprKind::Local(local) = program.exprs[target.0].kind {
+                    pinned_locals.push(local);
+                    assignable_locals.push(local);
+                }
+            }
+            ExprKind::Binding { bindings, .. } => {
+                for &(target, _) in bindings {
+                    mark_target_global(target, &mut assigned_globals);
+                }
+            }
+            ExprKind::JsTemplate { args, .. } => {
+                for &arg in args {
+                    mark_target_global(arg, &mut assigned_globals);
+                    if let ExprKind::Local(local) = program.exprs[arg.0].kind {
+                        pinned_locals.push(local);
+                        assignable_locals.push(local);
+                    }
+                }
+            }
+            ExprKind::Def {
+                global, init, once, ..
+            } => {
+                if position[index] != NOWHERE && (init.is_some() || *once) {
+                    defs.push((*global, ExprId(index)));
+                }
+            }
+            ExprKind::Global(_) => (),
+            ExprKind::Fn { methods, .. } => {
+                for method in methods {
+                    pinned_locals.extend_from_slice(&method.captures);
+                }
+            }
+            ExprKind::Reify {
+                captures, methods, ..
+            } => {
+                pinned_locals.extend_from_slice(captures);
+                for (_, method) in methods {
+                    pinned_locals.extend_from_slice(&method.captures);
+                }
+            }
+            ExprKind::DefType { methods, .. } | ExprKind::ExtendType { methods, .. } => {
+                crate::application::visit_globals(kind, |global| {
+                    assigned_globals.push(global);
+                });
+                for (_, method) in methods {
+                    pinned_locals.extend_from_slice(&method.captures);
+                }
+            }
+            ExprKind::Map(items) | ExprKind::LiteralMap(items) => {
+                for &key in items.iter().step_by(2) {
+                    fenced_exprs.push(key);
+                    if let ExprKind::Local(local) = program.exprs[key.0].kind {
+                        pinned_locals.push(local);
+                    }
+                }
+            }
+            ExprKind::Set(items) | ExprKind::LiteralSet(items) => {
+                for &member in items {
+                    fenced_exprs.push(member);
+                    if let ExprKind::Local(local) = program.exprs[member.0].kind {
+                        pinned_locals.push(local);
+                    }
+                }
+            }
+            _ => {
+                crate::application::visit_globals(kind, |global| {
+                    assigned_globals.push(global);
+                });
+            }
+        }
+    }
+
+    FoldArenaChunk {
+        defs,
+        assigned_globals,
+        pinned_locals,
+        assignable_locals,
+        fenced_exprs,
+    }
+}
+
+struct FoldArenaFacts {
+    definitions: Vec<Option<ExprId>>,
+    pinned: BitSet,
+    assignable: BitSet,
+    fenced: BitSet,
+}
+
+fn scan_fold_arena(program: &Program, position: &[u32], slots: Slots) -> FoldArenaFacts {
+    let count = program.exprs.len();
+    let globals = program.globals.len();
+    let locals = program.locals.len();
+
+    let mut def_state: Vec<(u32, Option<ExprId>)> = vec![(0, None); globals];
+    let mut assigned = BitSet::new(globals);
+    let mut pinned = BitSet::new(locals);
+    let mut assignable = BitSet::new(locals);
+    let mut fenced = BitSet::new(count);
+
+    for local in program.field_bindings.keys() {
+        pinned.set(local.0);
+        assignable.set(local.0);
+    }
+
+    if slots.get() > 1 && count >= PARALLEL_EXPR_THRESHOLD {
+        let num_chunks = (slots.get() * SLICES_PER_SLOT).min(count);
+        let chunk_size = count.div_ceil(num_chunks);
+        let jobs: Vec<(u64, std::ops::Range<usize>)> = (0..count)
+            .step_by(chunk_size)
+            .map(|start| {
+                let end = (start + chunk_size).min(count);
+                ((end - start) as u64, start..end)
+            })
+            .collect();
+        let chunks = scheduler::map(slots, jobs, |range| {
+            scan_fold_arena_chunk(program, position, range)
+        });
+        for chunk in chunks {
+            for (global, expr_id) in chunk.defs {
+                let entry = &mut def_state[global.0];
+                entry.0 += 1;
+                entry.1 = Some(expr_id);
+            }
+            for global in chunk.assigned_globals {
+                assigned.set(global.0);
+            }
+            for local in chunk.pinned_locals {
+                pinned.set(local.0);
+            }
+            for local in chunk.assignable_locals {
+                assignable.set(local.0);
+            }
+            for expr_id in chunk.fenced_exprs {
+                fenced.set(expr_id.0);
+            }
+        }
+    } else {
+        let mark_target_global = |mut target: ExprId, assigned: &mut BitSet| {
+            while let ExprKind::BooleanHint(inner) = program.exprs[target.0].kind {
+                target = inner;
+            }
+            if let ExprKind::Global(global) = program.exprs[target.0].kind {
+                assigned.set(global.0);
+            }
+        };
+        for (index, expr) in program.exprs.iter().enumerate() {
+            let kind = &expr.kind;
+            match kind {
+                ExprKind::SetGlobal { target, .. } => {
+                    mark_target_global(*target, &mut assigned);
+                    if let ExprKind::Local(local) = program.exprs[target.0].kind {
+                        pinned.set(local.0);
+                        assignable.set(local.0);
+                    }
+                }
+                ExprKind::Binding { bindings, .. } => {
+                    for &(target, _) in bindings {
+                        mark_target_global(target, &mut assigned);
+                    }
+                }
+                ExprKind::JsTemplate { args, .. } => {
+                    for &arg in args {
+                        mark_target_global(arg, &mut assigned);
+                        if let ExprKind::Local(local) = program.exprs[arg.0].kind {
+                            pinned.set(local.0);
+                            assignable.set(local.0);
+                        }
+                    }
+                }
+                ExprKind::Def {
+                    global, init, once, ..
+                } => {
+                    if position[index] != NOWHERE && (init.is_some() || *once) {
+                        let entry = &mut def_state[global.0];
+                        entry.0 += 1;
+                        entry.1 = Some(ExprId(index));
+                    }
+                }
+                ExprKind::Global(_) => (),
+                ExprKind::Fn { methods, .. } => {
+                    for method in methods {
+                        for local in &method.captures {
+                            pinned.set(local.0);
+                        }
+                    }
+                }
+                ExprKind::Reify {
+                    captures, methods, ..
+                } => {
+                    for local in captures {
+                        pinned.set(local.0);
+                    }
+                    for (_, method) in methods {
+                        for local in &method.captures {
+                            pinned.set(local.0);
+                        }
+                    }
+                }
+                ExprKind::DefType { methods, .. } | ExprKind::ExtendType { methods, .. } => {
+                    crate::application::visit_globals(kind, |global| {
+                        assigned.set(global.0);
+                    });
+                    for (_, method) in methods {
+                        for local in &method.captures {
+                            pinned.set(local.0);
+                        }
+                    }
+                }
+                ExprKind::Map(items) | ExprKind::LiteralMap(items) => {
+                    for &key in items.iter().step_by(2) {
+                        fenced.set(key.0);
+                        if let ExprKind::Local(local) = program.exprs[key.0].kind {
+                            pinned.set(local.0);
+                        }
+                    }
+                }
+                ExprKind::Set(items) | ExprKind::LiteralSet(items) => {
+                    for &member in items {
+                        fenced.set(member.0);
+                        if let ExprKind::Local(local) = program.exprs[member.0].kind {
+                            pinned.set(local.0);
+                        }
+                    }
+                }
+                _ => {
+                    crate::application::visit_globals(kind, |global| {
+                        assigned.set(global.0);
+                    });
+                }
+            }
+        }
+    }
+
+    let definitions = def_state
+        .into_iter()
+        .enumerate()
+        .map(|(idx, def)| match def {
+            (1, definition) if !assigned.get(idx) => definition,
+            _ => None,
+        })
+        .collect();
+
+    FoldArenaFacts {
+        definitions,
+        pinned,
+        assignable,
+        fenced,
+    }
+}
+
+/// Fused single-pass `sole_definitions` + `fenced_positions` over
+/// `program.exprs` for [`crate::inlining`], parallelized via `scheduler::map`.
+pub(crate) fn sole_definitions_and_fenced_with_slots(
+    program: &Program,
+    reached: &BitSet,
+    slots: Slots,
+) -> (Vec<Option<ExprId>>, BitSet) {
+    let count = program.exprs.len();
+    let globals = program.globals.len();
+
+    let scan_chunk = |range: std::ops::Range<usize>| {
+        let mut defs: Vec<(GlobalId, ExprId)> = Vec::new();
+        let mut assigned_globals: Vec<GlobalId> = Vec::new();
+        let mut fenced_exprs: Vec<ExprId> = Vec::new();
+        let mark_target = |mut target: ExprId, out: &mut Vec<GlobalId>| {
+            while let ExprKind::BooleanHint(inner) = program.exprs[target.0].kind {
+                target = inner;
+            }
+            if let ExprKind::Global(global) = program.exprs[target.0].kind {
+                out.push(global);
+            }
+        };
+        for index in range {
+            let kind = &program.exprs[index].kind;
+            match kind {
+                ExprKind::SetGlobal { target, .. } => mark_target(*target, &mut assigned_globals),
+                ExprKind::Binding { bindings, .. } => {
+                    for &(target, _) in bindings {
+                        mark_target(target, &mut assigned_globals);
+                    }
+                }
+                ExprKind::JsTemplate { args, .. } => {
+                    for &arg in args {
+                        mark_target(arg, &mut assigned_globals);
+                    }
+                }
+                ExprKind::Def {
+                    global, init, once, ..
+                } => {
+                    if reached.get(index) && (init.is_some() || *once) {
+                        defs.push((*global, ExprId(index)));
+                    }
+                }
+                ExprKind::Global(_) => (),
+                ExprKind::Map(items) | ExprKind::LiteralMap(items) => {
+                    for &key in items.iter().step_by(2) {
+                        fenced_exprs.push(key);
+                    }
+                }
+                ExprKind::Set(items) | ExprKind::LiteralSet(items) => {
+                    fenced_exprs.extend_from_slice(items);
+                }
+                _ => {
+                    crate::application::visit_globals(kind, |global| {
+                        assigned_globals.push(global);
+                    });
+                }
+            }
+        }
+        (defs, assigned_globals, fenced_exprs)
+    };
+
+    let mut def_state: Vec<(u32, Option<ExprId>)> = vec![(0, None); globals];
+    let mut assigned = BitSet::new(globals);
+    let mut fenced = BitSet::new(count);
+
+    if slots.get() > 1 && count >= PARALLEL_EXPR_THRESHOLD {
+        let num_chunks = (slots.get() * SLICES_PER_SLOT).min(count);
+        let chunk_size = count.div_ceil(num_chunks);
+        let jobs: Vec<(u64, std::ops::Range<usize>)> = (0..count)
+            .step_by(chunk_size)
+            .map(|start| {
+                let end = (start + chunk_size).min(count);
+                ((end - start) as u64, start..end)
+            })
+            .collect();
+        for (defs, assigned_globals, fenced_exprs) in scheduler::map(slots, jobs, scan_chunk) {
+            for (global, expr_id) in defs {
+                let entry = &mut def_state[global.0];
+                entry.0 += 1;
+                entry.1 = Some(expr_id);
+            }
+            for global in assigned_globals {
+                assigned.set(global.0);
+            }
+            for expr_id in fenced_exprs {
+                fenced.set(expr_id.0);
+            }
+        }
+    } else {
+        let mark_target = |mut target: ExprId, assigned: &mut BitSet| {
+            while let ExprKind::BooleanHint(inner) = program.exprs[target.0].kind {
+                target = inner;
+            }
+            if let ExprKind::Global(global) = program.exprs[target.0].kind {
+                assigned.set(global.0);
+            }
+        };
+        for (index, expr) in program.exprs.iter().enumerate() {
+            let kind = &expr.kind;
+            match kind {
+                ExprKind::SetGlobal { target, .. } => mark_target(*target, &mut assigned),
+                ExprKind::Binding { bindings, .. } => {
+                    for &(target, _) in bindings {
+                        mark_target(target, &mut assigned);
+                    }
+                }
+                ExprKind::JsTemplate { args, .. } => {
+                    for &arg in args {
+                        mark_target(arg, &mut assigned);
+                    }
+                }
+                ExprKind::Def {
+                    global, init, once, ..
+                } => {
+                    if reached.get(index) && (init.is_some() || *once) {
+                        let entry = &mut def_state[global.0];
+                        entry.0 += 1;
+                        entry.1 = Some(ExprId(index));
+                    }
+                }
+                ExprKind::Global(_) => (),
+                ExprKind::Map(items) | ExprKind::LiteralMap(items) => {
+                    for &key in items.iter().step_by(2) {
+                        fenced.set(key.0);
+                    }
+                }
+                ExprKind::Set(items) | ExprKind::LiteralSet(items) => {
+                    for &member in items {
+                        fenced.set(member.0);
+                    }
+                }
+                _ => {
+                    crate::application::visit_globals(kind, |global| {
+                        assigned.set(global.0);
+                    });
+                }
+            }
+        }
+    }
+
+    let definitions = def_state
+        .into_iter()
+        .enumerate()
+        .map(|(idx, def)| match def {
+            (1, definition) if !assigned.get(idx) => definition,
+            _ => None,
+        })
+        .collect();
+    (definitions, fenced)
+}
+
+/// Whether `root` is a pure literal tree (scalars, symbols, collections,
+/// `with-meta`, reader literals) with no expression that [`Folder`] could
+/// rewrite or fold. Used to skip unnecessary serial pre-folding of already
+/// constant `^:const` collection definitions before parallel fan-out.
+fn is_pure_literal_tree(program: &Program, root: ExprId) -> bool {
+    let mut pending = vec![root];
+    while let Some(id) = pending.pop() {
+        match &program.exprs[id.0].kind {
+            ExprKind::Nil
+            | ExprKind::Bool(_)
+            | ExprKind::Number(_)
+            | ExprKind::String(_)
+            | ExprKind::Keyword(_)
+            | ExprKind::Symbol(_) => (),
+            ExprKind::Vector(items)
+            | ExprKind::List(items)
+            | ExprKind::Map(items)
+            | ExprKind::LiteralMap(items)
+            | ExprKind::Set(items)
+            | ExprKind::LiteralSet(items)
+            | ExprKind::ReaderLiteral { items, .. } => pending.extend_from_slice(items),
+            ExprKind::WithMeta { value, metadata } => {
+                pending.push(*value);
+                pending.push(*metadata);
+            }
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// Fold `program` in place using precomputed [`ProgramFacts`] and `slots` CPU
+/// work slots (`--jobs N`), returning how many expressions were rewritten.
+pub fn fold_with_facts_with_slots(
+    program: &mut Program,
+    built: &mut Vec<bool>,
+    facts: &ProgramFacts,
+    slots: Slots,
+) -> usize {
+    let (top, root_items, root_is_do) = collect_root_items(program);
+    let count = program.exprs.len();
+    built.resize(count, false);
+
+    let FoldReachData {
+        mut position,
+        mut parents,
+        reads,
+        item_weights,
+        can_parallel_fold,
+    } = scan_fold_reachability(program, &top, &root_items, root_is_do, slots);
+
+    let FoldArenaFacts {
+        definitions,
+        pinned,
+        assignable,
+        mut fenced,
+    } = scan_fold_arena(program, &position, slots);
 
     // Constant globals: defined by one `def` with a value that the root
     // reaches, a direct top-level form, and assigned or defined by nothing
@@ -909,152 +1901,253 @@ pub fn fold_with_facts(
         values: globals,
         collections,
         returns,
-    } = constant_globals(program, &top, &position);
+    } = constant_globals_from_defs(program, &top, &position, definitions);
 
-    // Locals that are never substituted, and those whose value may change
-    // after their binding (a type field, a `js*` hole, a `set!` target).
-    let mut pinned = vec![false; program.locals.len()];
-    let mut assignable = vec![false; program.locals.len()];
-    for local in program.field_bindings.keys() {
-        pinned[local.0] = true;
-        assignable[local.0] = true;
-    }
-    for expr in &program.exprs {
-        let methods: &[crate::analyzer::FnMethod] = match &expr.kind {
-            ExprKind::SetGlobal { target, .. } => {
-                if let ExprKind::Local(local) = program.exprs[target.0].kind {
-                    pinned[local.0] = true;
-                    assignable[local.0] = true;
-                }
-                continue;
-            }
-            ExprKind::Fn { methods, .. } => methods,
-            ExprKind::Reify {
-                captures, methods, ..
-            } => {
-                for local in captures {
-                    pinned[local.0] = true;
-                }
-                for (_, method) in methods {
-                    method.captures.iter().for_each(|l| pinned[l.0] = true);
-                }
-                continue;
-            }
-            ExprKind::DefType { methods, .. } | ExprKind::ExtendType { methods, .. } => {
-                for (_, method) in methods {
-                    method.captures.iter().for_each(|l| pinned[l.0] = true);
-                }
-                continue;
-            }
-            ExprKind::JsTemplate { args, .. } => {
-                for arg in args {
-                    if let ExprKind::Local(local) = program.exprs[arg.0].kind {
-                        pinned[local.0] = true;
-                        assignable[local.0] = true;
-                    }
-                }
-                continue;
-            }
-            _ => continue,
-        };
-        for method in methods {
-            method.captures.iter().for_each(|l| pinned[l.0] = true);
-        }
-    }
-
-    // Map keys and set members stay as they are (a local they read keeps its
-    // binding).
-    let fenced = fenced_positions(program);
-    for (index, expr) in program.exprs.iter().enumerate() {
-        if let ExprKind::Local(local) = expr.kind
-            && fenced[index]
-        {
-            pinned[local.0] = true;
-        }
-    }
-
-    // How many expressions the root reaches each one from, and how often the
-    // reachable code reads each local: earlier rounds leave the expressions
-    // they replaced in the arena, whose reads no longer count.
-    let mut parents = vec![0u8; count];
-    let mut reached = vec![false; count];
-    let mut reached_lets = Vec::new();
-    let reads = reachable_reads(
-        program,
-        Some(&mut parents),
-        &mut reached,
-        Some(&mut reached_lets),
-    );
-
-    let mut kept = vec![false; count];
-    kept[program.root.0] = true;
+    let mut kept = BitSet::new(count);
+    kept.set(program.root.0);
     for id in program.namespace_entries.keys() {
-        kept[id.0] = true;
+        kept.set(id.0);
     }
     for id in &program.macro_functions {
         if id.0 < count {
-            kept[id.0] = true;
+            kept.set(id.0);
         }
     }
     let replaced = facts.replaced_names();
-    let locals = program.locals.len();
-    let mut folder = Folder {
-        program,
-        facts,
-        replaced,
-        position,
-        globals,
-        collections,
-        returns,
-        pinned,
-        assignable,
-        reads,
-        kept,
-        fenced,
-        built,
-        parents,
-        discarded: vec![false; count],
-        locals: vec![None; locals],
-        truths: vec![false; locals],
-        bound: vec![None; locals],
-        classes: vec![ConstantClass::Unknown; count],
-        visited: vec![false; count],
-        folded: 0,
-        saw_shared_unread_let: false,
-    };
-    let root = folder.program.root;
-    folder.visit(root);
-    let has_skipped_unread_let = !(folder.folded > 0 || folder.saw_shared_unread_let)
-        && reached_lets.into_iter().any(|index| {
-            !folder.visited[index]
-                && matches!(
-                    &folder.program.exprs[index].kind,
-                    ExprKind::Let { bindings, .. }
-                        if bindings.iter().any(|(local, init)| {
-                            folder.reads[local.0] == 0
-                                && !folder.pinned[local.0]
-                                && effect_free(folder.program, &folder.program.exprs[init.0].kind)
-                        })
-                )
-        });
-    if folder.folded > 0 || folder.saw_shared_unread_let || has_skipped_unread_let {
-        folder.sweep();
+
+    let mut total_folded = 0usize;
+    let mut saw_shared_unread_let = false;
+
+    if can_parallel_fold {
+        // Pre-fold any `^:const` collection definitions serially in top-level
+        // order so every collection literal in `collections` is frozen and
+        // read-only before parallel fan-out.
+        let mut const_coll_positions: Vec<u32> = collections
+            .iter()
+            .filter_map(|entry| entry.map(|(at, _)| at))
+            .collect();
+        const_coll_positions.sort_unstable();
+        const_coll_positions.dedup();
+        let mut pre_folded_defs: HashSet<ExprId> = HashSet::new();
+        for at in const_coll_positions {
+            let def_id = top[at as usize];
+            if let ExprKind::Def {
+                init: Some(init),
+                test: None,
+                ..
+            } = program.exprs[def_id.0].kind
+                && is_pure_literal_tree(program, init)
+            {
+                continue;
+            }
+            let discarded = (at as usize) + 1 != top.len();
+            let shared = FoldContext {
+                program: &*program,
+                facts,
+                replaced: &replaced,
+                position: &position,
+                globals: &globals,
+                collections: &collections,
+                returns: &returns,
+                pinned: &pinned,
+                assignable: &assignable,
+                reads: &reads,
+                kept: &kept,
+                fenced: &fenced,
+                built: built.as_slice(),
+                parents: &parents,
+                pre_folded: &pre_folded_defs,
+            };
+            let mut folder = Folder::new(&shared);
+            folder.visit(def_id, discarded);
+            let delta = folder.into_delta();
+            total_folded += delta.folded;
+            saw_shared_unread_let |= delta.saw_shared_unread_let;
+            let added = delta.new_exprs.len();
+            apply_fold_delta(
+                program,
+                built,
+                delta,
+                shared.program.exprs.len(),
+                0,
+                shared.program.strings.len(),
+                0,
+            );
+            if added > 0 {
+                let new_len = program.exprs.len();
+                position.resize(new_len, at);
+                parents.resize(new_len, 1);
+                kept.resize(new_len);
+                fenced.resize(new_len);
+            }
+            pre_folded_defs.insert(def_id);
+        }
+
+        let base_exprs = program.exprs.len();
+        let base_strings = program.strings.len();
+        let target_slices = (slots.get() * SLICES_PER_SLOT).min(root_items.len());
+        let ranges = partition_slices(&item_weights, target_slices);
+        let jobs: Vec<(u64, std::ops::Range<usize>)> = ranges
+            .into_iter()
+            .map(|r| {
+                let w: u64 = item_weights[r.clone()].iter().sum();
+                (w, r)
+            })
+            .collect();
+        let last_root_item = root_items.len().saturating_sub(1);
+
+        let deltas: Vec<FoldDelta> = {
+            let shared = FoldContext {
+                program: &*program,
+                facts,
+                replaced: &replaced,
+                position: &position,
+                globals: &globals,
+                collections: &collections,
+                returns: &returns,
+                pinned: &pinned,
+                assignable: &assignable,
+                reads: &reads,
+                kept: &kept,
+                fenced: &fenced,
+                built: built.as_slice(),
+                parents: &parents,
+                pre_folded: &pre_folded_defs,
+            };
+            scheduler::map(slots, jobs, |range| {
+                let mut folder = Folder::new(&shared);
+                for index in range {
+                    folder.visit(root_items[index].id, index != last_root_item);
+                }
+                folder.into_delta()
+            })
+        };
+
+        let mut expr_offset = 0usize;
+        let mut string_offset = 0usize;
+        for delta in deltas {
+            total_folded += delta.folded;
+            saw_shared_unread_let |= delta.saw_shared_unread_let;
+            let added_exprs = delta.new_exprs.len();
+            let added_strings = delta.new_strings.len();
+            apply_fold_delta(
+                program,
+                built,
+                delta,
+                base_exprs,
+                expr_offset,
+                base_strings,
+                string_offset,
+            );
+            expr_offset += added_exprs;
+            string_offset += added_strings;
+        }
+        let final_len = program.exprs.len();
+        kept.resize(final_len);
+        fenced.resize(final_len);
+    } else if root_is_do && !root_items.is_empty() {
+        // Serial path over a `Do` root: flush deltas every small batch of
+        // top-level items while preserving a single `visited` BitSet so peak
+        // delta memory stays tiny and `delta_map` stays cache-hot.
+        const FLUSH_BATCH: usize = 64;
+        let last_root_item = root_items.len().saturating_sub(1);
+        let empty_pre = HashSet::new();
+        let mut visited = BitSet::new(program.exprs.len());
+        visited.set(program.root.0);
+        for batch_start in (0..root_items.len()).step_by(FLUSH_BATCH) {
+            let batch_end = (batch_start + FLUSH_BATCH).min(root_items.len());
+            let base_exprs = program.exprs.len();
+            let base_strings = program.strings.len();
+            visited.resize(base_exprs);
+            let (delta, returned_visited) = {
+                let shared = FoldContext {
+                    program: &*program,
+                    facts,
+                    replaced: &replaced,
+                    position: &position,
+                    globals: &globals,
+                    collections: &collections,
+                    returns: &returns,
+                    pinned: &pinned,
+                    assignable: &assignable,
+                    reads: &reads,
+                    kept: &kept,
+                    fenced: &fenced,
+                    built: built.as_slice(),
+                    parents: &parents,
+                    pre_folded: &empty_pre,
+                };
+                let mut folder = Folder::with_visited(&shared, visited);
+                for index in batch_start..batch_end {
+                    folder.visit(root_items[index].id, index != last_root_item);
+                }
+                folder.into_delta_and_visited()
+            };
+            visited = returned_visited;
+            total_folded += delta.folded;
+            saw_shared_unread_let |= delta.saw_shared_unread_let;
+            let added = delta.new_exprs.len();
+            apply_fold_delta(program, built, delta, base_exprs, 0, base_strings, 0);
+            if added > 0 {
+                let new_len = program.exprs.len();
+                position.resize(new_len, NOWHERE);
+                parents.resize(new_len, 1);
+                kept.resize(new_len);
+                fenced.resize(new_len);
+            }
+        }
+    } else {
+        let base_exprs = program.exprs.len();
+        let base_strings = program.strings.len();
+        let empty_pre = HashSet::new();
+        let delta = {
+            let shared = FoldContext {
+                program: &*program,
+                facts,
+                replaced: &replaced,
+                position: &position,
+                globals: &globals,
+                collections: &collections,
+                returns: &returns,
+                pinned: &pinned,
+                assignable: &assignable,
+                reads: &reads,
+                kept: &kept,
+                fenced: &fenced,
+                built: built.as_slice(),
+                parents: &parents,
+                pre_folded: &empty_pre,
+            };
+            let mut folder = Folder::new(&shared);
+            folder.visit(program.root, false);
+            folder.into_delta()
+        };
+        total_folded += delta.folded;
+        saw_shared_unread_let |= delta.saw_shared_unread_let;
+        apply_fold_delta(program, built, delta, base_exprs, 0, base_strings, 0);
+        let final_len = program.exprs.len();
+        kept.resize(final_len);
+        fenced.resize(final_len);
     }
-    folder.folded
+
+    if total_folded > 0 || saw_shared_unread_let {
+        total_folded += sweep_with_slots(program, built, &pinned, &kept, &fenced, slots);
+    }
+    total_folded
 }
 
 /// How often the code the root reaches reads each local, by local. Fills
 /// `reached` (by expression) and, when given, `parents`: how many reached
 /// expressions each one is a child of, and `lets`: reached `ExprKind::Let`
 /// indices.
-fn reachable_reads(
+fn reachable_reads_bits(
     program: &Program,
     mut parents: Option<&mut Vec<u8>>,
-    reached: &mut [bool],
+    reached: &mut BitSet,
     mut lets: Option<&mut Vec<usize>>,
 ) -> Vec<u32> {
     let mut reads = vec![0u32; program.locals.len()];
-    reached[program.root.0] = true;
+    reached.set(program.root.0);
     let mut pending = vec![program.root];
     while let Some(id) = pending.pop() {
         match program.exprs[id.0].kind {
@@ -1070,12 +2163,210 @@ fn reachable_reads(
             if let Some(parents) = parents.as_deref_mut() {
                 parents[child.0] = parents[child.0].saturating_add(1);
             }
-            if !std::mem::replace(&mut reached[child.0], true) {
+            if !reached.set(child.0) {
                 pending.push(child);
             }
         });
     }
     reads
+}
+
+/// Parallel reachability bitset from `program.root` via `scheduler::map`
+/// (without allocating or counting local reads).
+fn reachable_bitset_with_slots(program: &Program, slots: Slots) -> BitSet {
+    let count = program.exprs.len();
+    if let ExprKind::Do(items) = &program.exprs[program.root.0].kind
+        && slots.get() > 1
+        && count >= PARALLEL_EXPR_THRESHOLD
+        && items.len() >= PARALLEL_FORM_THRESHOLD
+    {
+        let target_slices = (slots.get() * SLICES_PER_SLOT).min(items.len());
+        let chunk_size = items.len().div_ceil(target_slices);
+        let jobs: Vec<(u64, std::ops::Range<usize>)> = (0..items.len())
+            .step_by(chunk_size)
+            .map(|start| {
+                let end = (start + chunk_size).min(items.len());
+                ((end - start) as u64, start..end)
+            })
+            .collect();
+        let bitsets = scheduler::map(slots, jobs, |range| {
+            let mut local = BitSet::new(count);
+            let mut pending = Vec::new();
+            for &item in &items[range] {
+                if !local.set(item.0) {
+                    pending.push(item);
+                }
+                while let Some(id) = pending.pop() {
+                    visit_children(&program.exprs[id.0].kind, |child| {
+                        if !local.set(child.0) {
+                            pending.push(child);
+                        }
+                    });
+                }
+            }
+            local
+        });
+        let mut reached = BitSet::new(count);
+        reached.set(program.root.0);
+        for bs in bitsets {
+            reached.or_assign(&bs);
+        }
+        return reached;
+    }
+
+    let mut reached = BitSet::new(count);
+    reached.set(program.root.0);
+    let mut pending = vec![program.root];
+    while let Some(id) = pending.pop() {
+        visit_children(&program.exprs[id.0].kind, |child| {
+            if !reached.set(child.0) {
+                pending.push(child);
+            }
+        });
+    }
+    reached
+}
+
+/// Parallel reachability + local read counts + reached `Let` indices for
+/// [`sweep_with_slots`].
+fn reachable_reads_and_lets_with_slots(program: &Program, slots: Slots) -> (Vec<u32>, Vec<usize>) {
+    let count = program.exprs.len();
+    if let ExprKind::Do(items) = &program.exprs[program.root.0].kind
+        && slots.get() > 1
+        && count >= PARALLEL_EXPR_THRESHOLD
+        && items.len() >= PARALLEL_FORM_THRESHOLD
+    {
+        let target_slices = (slots.get() * SLICES_PER_SLOT).min(items.len());
+        let chunk_size = items.len().div_ceil(target_slices);
+        let jobs: Vec<(u64, std::ops::Range<usize>)> = (0..items.len())
+            .step_by(chunk_size)
+            .map(|start| {
+                let end = (start + chunk_size).min(items.len());
+                ((end - start) as u64, start..end)
+            })
+            .collect();
+        let slices = scheduler::map(slots, jobs, |range| {
+            let mut reached = BitSet::new(count);
+            let mut local_reads = Vec::new();
+            let mut lets = Vec::new();
+            let mut pending = Vec::new();
+            for &item in &items[range] {
+                if !reached.set(item.0) {
+                    pending.push(item);
+                }
+                while let Some(id) = pending.pop() {
+                    match program.exprs[id.0].kind {
+                        ExprKind::Local(local) => local_reads.push(local),
+                        ExprKind::Let { .. } => lets.push(id.0),
+                        _ => (),
+                    }
+                    visit_children(&program.exprs[id.0].kind, |child| {
+                        if !reached.set(child.0) {
+                            pending.push(child);
+                        }
+                    });
+                }
+            }
+            (reached, local_reads, lets)
+        });
+
+        let mut global_reached = BitSet::new(count);
+        global_reached.set(program.root.0);
+        let mut overlaps = false;
+        for (reached, _, _) in &slices {
+            if global_reached.intersects(reached) {
+                overlaps = true;
+                break;
+            }
+            global_reached.or_assign(reached);
+        }
+        if !overlaps {
+            let mut reads = vec![0u32; program.locals.len()];
+            let mut lets = Vec::new();
+            for (_, local_reads, slice_lets) in slices {
+                for local in local_reads {
+                    reads[local.0] = reads[local.0].saturating_add(1);
+                }
+                lets.extend(slice_lets);
+            }
+            return (reads, lets);
+        }
+        drop(slices);
+    }
+
+    let mut reached = BitSet::new(count);
+    let mut lets = Vec::new();
+    let reads = reachable_reads_bits(program, None, &mut reached, Some(&mut lets));
+    (reads, lets)
+}
+
+/// Drop the bindings that nothing reads any more and whose initializers
+/// have no effect, which folding a lookup leaves behind: the local a
+/// destructuring binds its value to, and the locals bound to that one.
+/// A `let` left without bindings is its body. Repeats (at most
+/// [`SWEEPS`] times) while a binding goes, since an initializer may be
+/// the last read of an earlier binding.
+fn sweep_with_slots(
+    program: &mut Program,
+    built: &mut [bool],
+    pinned: &BitSet,
+    kept_ids: &BitSet,
+    fenced: &BitSet,
+    slots: Slots,
+) -> usize {
+    let mut total_folded = 0;
+    for _ in 0..SWEEPS {
+        let (reads, mut lets) = reachable_reads_and_lets_with_slots(program, slots);
+        lets.sort_unstable();
+        let mut dropped = 0;
+        for index in lets {
+            let ExprKind::Let { bindings, body } = &program.exprs[index].kind else {
+                continue;
+            };
+            let body = *body;
+            let mut kept: Option<Vec<(LocalId, ExprId)>> = None;
+            for (b_idx, &(local, init)) in bindings.iter().enumerate() {
+                let keep_binding = reads[local.0] > 0
+                    || pinned.get(local.0)
+                    || !effect_free(program, &program.exprs[init.0].kind);
+                if keep_binding {
+                    if let Some(ref mut k) = kept {
+                        k.push((local, init));
+                    }
+                } else if kept.is_none() {
+                    let mut k = Vec::with_capacity(bindings.len() - 1);
+                    k.extend_from_slice(&bindings[..b_idx]);
+                    kept = Some(k);
+                }
+            }
+            let Some(kept) = kept else {
+                continue;
+            };
+            dropped += bindings.len() - kept.len();
+            if kept.is_empty()
+                && !kept_ids.get(index)
+                && !scoped(program, body)
+                && !kept_ids.get(body.0)
+                && !(fenced.get(index) && constant_like(program, &program.exprs[body.0].kind))
+            {
+                if index < built.len() {
+                    built[index] = built.get(body.0).copied().unwrap_or(false);
+                }
+                program.exprs[index].kind = program.exprs[body.0].kind.clone();
+                total_folded += 1;
+                continue;
+            }
+            program.exprs[index].kind = ExprKind::Let {
+                bindings: kept,
+                body,
+            };
+        }
+        total_folded += dropped;
+        if dropped == 0 {
+            break;
+        }
+    }
+    total_folded
 }
 
 /// Lookups of a constant key in a map literal, or in a local a `let` binds to
@@ -1093,160 +2384,200 @@ fn reachable_reads(
 /// and provably unequal to the others ([`same_key`]). Needs core protocols
 /// intact and `get` not replaced, so that the runtime's own `lookup` runs.
 pub fn entry_lookups(program: &Program, facts: &ProgramFacts) -> HashMap<ExprId, usize> {
+    entry_lookups_with_slots(program, facts, Slots::ONE)
+}
+
+/// [`entry_lookups`] running its reachability, binding and lookup scans on
+/// `slots` CPU work slots (`--jobs N`).
+pub fn entry_lookups_with_slots(
+    program: &Program,
+    facts: &ProgramFacts,
+    slots: Slots,
+) -> HashMap<ExprId, usize> {
     let mut lookups = HashMap::new();
     if !facts.core_protocols_intact() || facts.replaced(CoreFnId::Get) {
         return lookups;
     }
-    let mut reached = vec![false; program.exprs.len()];
-    reachable_reads(program, None, &mut reached, None);
-    let mut assignable = vec![false; program.locals.len()];
+    let count = program.exprs.len();
+    let locals_len = program.locals.len();
+    let reached = reachable_bitset_with_slots(program, slots);
+
+    let mut assignable = BitSet::new(locals_len);
     for local in program.field_bindings.keys() {
-        assignable[local.0] = true;
+        assignable.set(local.0);
     }
-    let mut bound = vec![None; program.locals.len()];
-    for (index, expr) in program.exprs.iter().enumerate() {
-        let targets: &[ExprId] = match &expr.kind {
-            ExprKind::SetGlobal { target, .. } => std::slice::from_ref(target),
-            ExprKind::JsTemplate { args, .. } => args,
-            ExprKind::Let { bindings, .. } if reached[index] => {
-                for (local, init) in bindings {
-                    bound[local.0] = Some(*init);
+    let mut bound: Vec<u32> = vec![u32::MAX; locals_len];
+
+    if slots.get() > 1 && count >= PARALLEL_EXPR_THRESHOLD {
+        let scan_bindings = |range: std::ops::Range<usize>| {
+            let mut assignable_locals = Vec::new();
+            let mut bound_entries: Vec<(u32, u32)> = Vec::new();
+            for index in range {
+                let targets: &[ExprId] = match &program.exprs[index].kind {
+                    ExprKind::SetGlobal { target, .. } => std::slice::from_ref(target),
+                    ExprKind::JsTemplate { args, .. } => args,
+                    ExprKind::Let { bindings, .. } if reached.get(index) => {
+                        for &(local, init) in bindings {
+                            if matches!(
+                                program.exprs[init.0].kind,
+                                ExprKind::Local(_) | ExprKind::Map(_)
+                            ) {
+                                bound_entries.push((local.0 as u32, init.0 as u32));
+                            }
+                        }
+                        continue;
+                    }
+                    _ => continue,
+                };
+                for target in targets {
+                    if let ExprKind::Local(local) = program.exprs[target.0].kind {
+                        assignable_locals.push(local.0 as u32);
+                    }
                 }
+            }
+            (assignable_locals, bound_entries)
+        };
+        let num_chunks = (slots.get() * SLICES_PER_SLOT).min(count);
+        let chunk_size = count.div_ceil(num_chunks);
+        let jobs: Vec<(u64, std::ops::Range<usize>)> = (0..count)
+            .step_by(chunk_size)
+            .map(|start| {
+                let end = (start + chunk_size).min(count);
+                ((end - start) as u64, start..end)
+            })
+            .collect();
+        for (assignable_locals, bound_entries) in scheduler::map(slots, jobs, scan_bindings) {
+            for local in assignable_locals {
+                assignable.set(local as usize);
+            }
+            for (local, init) in bound_entries {
+                bound[local as usize] = init;
+            }
+        }
+    } else {
+        for (index, expr) in program.exprs.iter().enumerate() {
+            let targets: &[ExprId] = match &expr.kind {
+                ExprKind::SetGlobal { target, .. } => std::slice::from_ref(target),
+                ExprKind::JsTemplate { args, .. } => args,
+                ExprKind::Let { bindings, .. } if reached.get(index) => {
+                    for &(local, init) in bindings {
+                        if matches!(
+                            program.exprs[init.0].kind,
+                            ExprKind::Local(_) | ExprKind::Map(_)
+                        ) {
+                            bound[local.0] = init.0 as u32;
+                        }
+                    }
+                    continue;
+                }
+                _ => continue,
+            };
+            for target in targets {
+                if let ExprKind::Local(local) = program.exprs[target.0].kind {
+                    assignable.set(local.0);
+                }
+            }
+        }
+    }
+
+    let scan_calls = |range: std::ops::Range<usize>| -> Vec<(ExprId, usize)> {
+        let mut found_lookups = Vec::new();
+        let map = |mut id: ExprId| -> Option<&[ExprId]> {
+            for _ in 0..locals_len + 1 {
+                match &program.exprs[id.0].kind {
+                    ExprKind::Local(local) if !assignable.get(local.0) => {
+                        let next = bound[local.0];
+                        if next == u32::MAX {
+                            return None;
+                        }
+                        id = ExprId(next as usize);
+                    }
+                    ExprKind::Map(items) => return Some(items),
+                    _ => return None,
+                }
+            }
+            None
+        };
+        for index in range {
+            let ExprKind::Call { callee, args } = &program.exprs[index].kind else {
+                continue;
+            };
+            if !reached.get(index) {
                 continue;
             }
-            _ => continue,
-        };
-        for target in targets {
-            if let ExprKind::Local(local) = program.exprs[target.0].kind {
-                assignable[local.0] = true;
+            let (map_value, key, rest) = match (&program.exprs[callee.0].kind, &args[..]) {
+                (ExprKind::Keyword(literal), [map, rest @ ..]) => {
+                    (*map, Constant::Keyword(*literal), rest)
+                }
+                (ExprKind::Symbol(literal), [map, rest @ ..]) => {
+                    (*map, Constant::Symbol(*literal), rest)
+                }
+                (ExprKind::CoreFn(CoreFnId::Get), [map, key, rest @ ..]) => {
+                    let Some(key) = Constant::of(program, *key) else {
+                        continue;
+                    };
+                    (*map, key, rest)
+                }
+                (ExprKind::Local(_), [key, rest @ ..]) => {
+                    let Some(key) = Constant::of(program, *key) else {
+                        continue;
+                    };
+                    (*callee, key, rest)
+                }
+                _ => continue,
+            };
+            if rest.len() > 1
+                || !rest
+                    .iter()
+                    .all(|arg| effect_free(program, &program.exprs[arg.0].kind))
+            {
+                continue;
             }
-        }
-    }
-    // The items of the map literal a local is bound to.
-    let map = |mut id: ExprId| -> Option<&[ExprId]> {
-        for _ in 0..program.locals.len() + 1 {
-            match &program.exprs[id.0].kind {
-                ExprKind::Local(local) if !assignable[local.0] => id = bound[local.0]?,
-                ExprKind::Map(items) => return Some(items),
-                _ => return None,
+            let Some(items) = map(map_value) else {
+                continue;
+            };
+            let keys = || items.iter().step_by(2).copied();
+            // Every key a constant: a scalar, a symbol or a collection literal.
+            if !keys().all(|key| Constant::item_view(program, key).is_some())
+                || !distinct_view(program, keys())
+            {
+                continue;
             }
-        }
-        None
-    };
-    for (index, expr) in program.exprs.iter().enumerate() {
-        let ExprKind::Call { callee, args } = &expr.kind else {
-            continue;
-        };
-        if !reached[index] {
-            continue;
-        }
-        let (map_value, key, rest) = match (&program.exprs[callee.0].kind, &args[..]) {
-            (ExprKind::Keyword(literal), [map, rest @ ..]) => {
-                (*map, Constant::Keyword(*literal), rest)
-            }
-            (ExprKind::Symbol(literal), [map, rest @ ..]) => {
-                (*map, Constant::Symbol(*literal), rest)
-            }
-            (ExprKind::CoreFn(CoreFnId::Get), [map, key, rest @ ..]) => {
-                let Some(key) = Constant::of(program, *key) else {
-                    continue;
-                };
-                (*map, key, rest)
-            }
-            (ExprKind::Local(_), [key, rest @ ..]) => {
-                let Some(key) = Constant::of(program, *key) else {
-                    continue;
-                };
-                (*callee, key, rest)
-            }
-            _ => continue,
-        };
-        if rest.len() > 1
-            || !rest
-                .iter()
-                .all(|arg| effect_free(program, &program.exprs[arg.0].kind))
-        {
-            continue;
-        }
-        let Some(items) = map(map_value) else {
-            continue;
-        };
-        let keys = || items.iter().step_by(2).copied();
-        // Every key a constant: a scalar, a symbol or a collection literal.
-        if !keys().all(|key| Constant::item(program, key).is_some()) || !distinct(program, keys()) {
-            continue;
-        }
-        let mut found = None;
-        for (position, item) in keys().enumerate() {
-            match same_key(program, &key, item) {
-                Some(true) if found.is_none() => found = Some(position),
-                Some(false) => (),
-                _ => {
-                    found = None;
-                    break;
+            let mut found = None;
+            for (position, item) in keys().enumerate() {
+                match same_key_view(program, &key, item) {
+                    Some(true) if found.is_none() => found = Some(position),
+                    Some(false) => (),
+                    _ => {
+                        found = None;
+                        break;
+                    }
                 }
             }
+            if let Some(position) = found {
+                found_lookups.push((ExprId(index), position));
+            }
         }
-        if let Some(position) = found {
-            lookups.insert(ExprId(index), position);
+        found_lookups
+    };
+
+    if slots.get() > 1 && count >= PARALLEL_EXPR_THRESHOLD {
+        let num_chunks = (slots.get() * SLICES_PER_SLOT).min(count);
+        let chunk_size = count.div_ceil(num_chunks);
+        let jobs: Vec<(u64, std::ops::Range<usize>)> = (0..count)
+            .step_by(chunk_size)
+            .map(|start| {
+                let end = (start + chunk_size).min(count);
+                ((end - start) as u64, start..end)
+            })
+            .collect();
+        for chunk in scheduler::map(slots, jobs, scan_calls) {
+            lookups.extend(chunk);
         }
+    } else {
+        lookups.extend(scan_calls(0..count));
     }
     lookups
-}
-
-/// By global: the sole `def` with a value that defines it, when the root
-/// reaches it (`position` is not [`NOWHERE`]) and nothing else assigns or
-/// defines the global (`set!`, `binding`, `with-redefs`, a `js*` hole, a
-/// type or protocol). A `declare` defines no value and does not count.
-pub(crate) fn sole_definitions(program: &Program, position: &[u32]) -> Vec<Option<ExprId>> {
-    let count = program.globals.len();
-    let mut definitions: Vec<(u32, Option<ExprId>)> = vec![(0, None); count];
-    let mut assigned = vec![false; count];
-    for (index, expr) in program.exprs.iter().enumerate() {
-        let targets: Vec<ExprId> = match &expr.kind {
-            ExprKind::SetGlobal { target, .. } => vec![*target],
-            ExprKind::Binding { bindings, .. } => {
-                bindings.iter().map(|(target, _)| *target).collect()
-            }
-            // Raw text may assign its holes.
-            ExprKind::JsTemplate { args, .. } => args.clone(),
-            ExprKind::Def {
-                global, init, once, ..
-            } => {
-                if position[index] != NOWHERE && (init.is_some() || *once) {
-                    let definition = &mut definitions[global.0];
-                    definition.0 += 1;
-                    definition.1 = Some(ExprId(index));
-                }
-                continue;
-            }
-            ExprKind::Global(_) => continue,
-            kind => {
-                crate::application::visit_globals(kind, |global| {
-                    assigned[global.0] = true;
-                });
-                continue;
-            }
-        };
-        for mut target in targets {
-            // The reads of a `^boolean` global carry its hint, in a `js*`
-            // hole too.
-            while let ExprKind::BooleanHint(inner) = program.exprs[target.0].kind {
-                target = inner;
-            }
-            if let ExprKind::Global(global) = program.exprs[target.0].kind {
-                assigned[global.0] = true;
-            }
-        }
-    }
-    definitions
-        .into_iter()
-        .zip(assigned)
-        .map(|(definition, assigned)| match definition {
-            (1, definition) if !assigned => definition,
-            _ => None,
-        })
-        .collect()
 }
 
 /// The longest string, in UTF-16 code units, that a definition which is not
@@ -1271,12 +2602,11 @@ struct ConstantGlobals {
     returns: Vec<Option<(u32, ExprKind)>>,
 }
 
-/// The globals whose sole definition ([`sole_definitions`]: nothing else
-/// defines or assigns them, by `set!`, `binding`, `with-redefs`, a `js*`
-/// hole, a type or a protocol) is a direct top-level `def` (not `defonce`),
-/// with what that definition makes known (light-cljs-984). Definitions are
-/// taken in top-level order, so each reads only what earlier ones made
-/// known:
+/// The globals whose sole definition (nothing else defines or assigns them,
+/// by `set!`, `binding`, `with-redefs`, a `js*` hole, a type or a protocol)
+/// is a direct top-level `def` (not `defonce`), with what that definition
+/// makes known (light-cljs-984). Definitions are taken in top-level order,
+/// so each reads only what earlier ones made known:
 ///
 /// - a value: a `^:const` (or `goog-define`) global defined by a
 ///   [`Constant`], or any global defined by a scalar or symbol literal (a
@@ -1293,8 +2623,12 @@ struct ConstantGlobals {
 /// `true`, `false` or `nil` gets none: tests trust the tag and read
 /// JavaScript truth, which substituting the value would change. A
 /// `^:const` literal keeps its value whatever the tag, as before.
-fn constant_globals(program: &Program, top: &[ExprId], position: &[u32]) -> ConstantGlobals {
-    let definitions = sole_definitions(program, position);
+fn constant_globals_from_defs(
+    program: &Program,
+    top: &[ExprId],
+    position: &[u32],
+    definitions: Vec<Option<ExprId>>,
+) -> ConstantGlobals {
     let count = program.globals.len();
     let mut known = ConstantGlobals {
         values: vec![None; count],
@@ -1372,23 +2706,24 @@ fn known_value(
         // A hinted value whose JavaScript truth is not its Clojure truth
         // stays unknown: a function returning it has its calls tested by
         // JavaScript truth once inlined, as upstream infers its return tag.
-        ExprKind::BooleanHint(inner) => known_value(program, known, *inner, at)
-            .filter(|value| Constant::of_kind(program, value).is_some_and(|c| c.truth_is_js())),
+        ExprKind::BooleanHint(inner) => known_value(program, known, *inner, at).filter(|value| {
+            Constant::of_kind_view(program, value).is_some_and(|c| c.truth_is_js())
+        }),
         ExprKind::Global(global) => found(&known.values[global.0]),
         ExprKind::Call { callee, args } if args.is_empty() => {
-            found(&known.returns[called_global(program, *callee)?.0])
+            found(&known.returns[called_global_view(program, *callee)?.0])
         }
-        kind => Constant::of_kind(program, kind).map(|_| kind.clone()),
+        kind => Constant::of_kind_view(program, kind).map(|_| kind.clone()),
     }
 }
 
 /// The global a callee reads, through the `^boolean` hint a tagged
 /// function's calls carry.
-fn called_global(program: &Program, mut callee: ExprId) -> Option<GlobalId> {
+fn called_global_view<S: ExprSource>(src: &S, mut callee: ExprId) -> Option<GlobalId> {
     loop {
-        match program.exprs[callee.0].kind {
-            ExprKind::BooleanHint(inner) => callee = inner,
-            ExprKind::Global(global) => return Some(global),
+        match src.kind(callee) {
+            ExprKind::BooleanHint(inner) => callee = *inner,
+            ExprKind::Global(global) => return Some(*global),
             _ => return None,
         }
     }
@@ -1405,341 +2740,1010 @@ fn flatten(program: &Program, id: ExprId, top: &mut Vec<ExprId>) {
     }
 }
 
-struct Folder<'p> {
-    program: &'p mut Program,
+/// Sparse delta returned by a read-only [`Folder`] traversal (serial or per
+/// parallel slice). Applied sequentially to `&mut Program` in slice order
+/// without cloning [`Program`].
+struct FoldDelta {
+    replacements: Vec<(ExprId, ExprKind)>,
+    new_exprs: Vec<Expr>,
+    new_strings: Vec<Vec<u16>>,
+    built_updates: Vec<(ExprId, bool)>,
+    folded: usize,
+    saw_shared_unread_let: bool,
+}
+
+/// Rebase slice-local `ExprId >= base_exprs` and `StringId >= base_strings`
+/// inside `kind` when applying parallel slice deltas in order.
+fn rebase_expr_kind(
+    kind: &mut ExprKind,
+    base_exprs: usize,
+    expr_offset: usize,
+    base_strings: usize,
+    string_offset: usize,
+) {
+    let re = |id: &mut ExprId| {
+        if id.0 >= base_exprs {
+            id.0 += expr_offset;
+        }
+    };
+    let rs = |id: &mut StringId| {
+        if id.0 >= base_strings {
+            id.0 += string_offset;
+        }
+    };
+    use ExprKind::*;
+    match kind {
+        Nil
+        | Bool(_)
+        | Number(_)
+        | Keyword(_)
+        | Symbol(_)
+        | CoreFn(_)
+        | Local(_)
+        | Global(_)
+        | JsGlobal(_)
+        | JsArguments
+        | LoadableType
+        | DefProtocol { .. } => {}
+        String(sid) => rs(sid),
+        NamespaceView { namespace, value } => {
+            rs(namespace);
+            re(value);
+        }
+        Assert {
+            test,
+            message,
+            form,
+        } => {
+            re(test);
+            if let Some(m) = message {
+                re(m);
+            }
+            rs(form);
+        }
+        Loadable { class: value, .. }
+        | DefinitionTest { value, .. }
+        | ThisAs { body: value, .. }
+        | QualifiedMethod { class: value, .. }
+        | Property {
+            receiver: value, ..
+        }
+        | CopyArguments(value)
+        | WithOutStr(value)
+        | Exists(value)
+        | BindingExists(value)
+        | BooleanHint(value)
+        | Throw(value)
+        | Await(value) => re(value),
+        ReaderLiteral { items, .. }
+        | List(items)
+        | Vector(items)
+        | Map(items)
+        | Set(items)
+        | LiteralMap(items)
+        | LiteralSet(items)
+        | Do(items)
+        | JsTemplate { args: items, .. }
+        | Recur { args: items, .. } => {
+            for item in items {
+                re(item);
+            }
+        }
+        WithMeta {
+            value: a,
+            metadata: b,
+        }
+        | JsDelete {
+            receiver: a,
+            key: b,
+        }
+        | ProtocolPredicate {
+            protocol: a,
+            value: b,
+            ..
+        }
+        | SetGlobal {
+            target: a,
+            value: b,
+        }
+        | InstanceOf { class: a, value: b } => {
+            re(a);
+            re(b);
+        }
+        Var {
+            value, metadata, ..
+        } => {
+            re(value);
+            if let Some(m) = metadata {
+                re(m);
+            }
+        }
+        JsIndex {
+            receiver,
+            indices: args,
+        }
+        | MethodCall { receiver, args, .. }
+        | Construct {
+            callee: receiver,
+            args,
+        }
+        | Call {
+            callee: receiver,
+            args,
+        } => {
+            re(receiver);
+            for arg in args {
+                re(arg);
+            }
+        }
+        ExtendType {
+            target, methods, ..
+        } => {
+            re(target);
+            for (_, method) in methods {
+                re(&mut method.body);
+            }
+        }
+        Reify {
+            metadata, methods, ..
+        } => {
+            if let Some(m) = metadata {
+                re(m);
+            }
+            for (_, method) in methods {
+                re(&mut method.body);
+            }
+        }
+        DefType {
+            layout, methods, ..
+        } => {
+            if let Some(b) = &mut layout.body {
+                re(b);
+            }
+            if let Some(m) = &mut layout.masks {
+                re(m);
+            }
+            for (_, method) in methods {
+                re(&mut method.body);
+            }
+        }
+        Def { init, test, .. } => {
+            if let Some(i) = init {
+                re(i);
+            }
+            if let Some(t) = test {
+                re(t);
+            }
+        }
+        Binding { bindings, body } => {
+            for (target, value) in bindings {
+                re(target);
+                re(value);
+            }
+            re(body);
+        }
+        If { test, yes, no } => {
+            re(test);
+            re(yes);
+            re(no);
+        }
+        Let { bindings, body } | LetFn { bindings, body } | Loop { bindings, body, .. } => {
+            for (_, value) in bindings {
+                re(value);
+            }
+            re(body);
+        }
+        Try {
+            body,
+            catches,
+            finally,
+        } => {
+            re(body);
+            for catch in catches {
+                if let Some(c) = &mut catch.class {
+                    re(c);
+                }
+                re(&mut catch.body);
+            }
+            if let Some(f) = finally {
+                re(f);
+            }
+        }
+        Case {
+            test,
+            branches,
+            default,
+            ..
+        } => {
+            re(test);
+            for (t, v) in branches {
+                re(t);
+                re(v);
+            }
+            if let Some(d) = default {
+                re(d);
+            }
+        }
+        Fn { methods, .. } => {
+            for method in methods {
+                re(&mut method.body);
+            }
+        }
+    }
+}
+
+fn apply_fold_delta(
+    program: &mut Program,
+    built: &mut Vec<bool>,
+    mut delta: FoldDelta,
+    base_exprs: usize,
+    expr_offset: usize,
+    base_strings: usize,
+    string_offset: usize,
+) {
+    let needs_rebase = (expr_offset > 0 && !delta.new_exprs.is_empty())
+        || (string_offset > 0 && !delta.new_strings.is_empty());
+    for s in delta.new_strings {
+        program.strings.push(s);
+    }
+    for mut expr in delta.new_exprs {
+        if needs_rebase {
+            rebase_expr_kind(
+                &mut expr.kind,
+                base_exprs,
+                expr_offset,
+                base_strings,
+                string_offset,
+            );
+        }
+        program.exprs.push(expr);
+    }
+    built.resize(program.exprs.len(), false);
+    for (id, mut kind) in delta.replacements.drain(..) {
+        if needs_rebase {
+            rebase_expr_kind(
+                &mut kind,
+                base_exprs,
+                expr_offset,
+                base_strings,
+                string_offset,
+            );
+        }
+        program.exprs[id.0].kind = kind;
+    }
+    for (id, val) in delta.built_updates {
+        if id.0 < built.len() {
+            built[id.0] = val;
+        }
+    }
+}
+
+/// Shared read-only tables across all parallel [`Folder`] slices.
+struct FoldContext<'p> {
+    program: &'p Program,
     facts: &'p ProgramFacts,
-    /// The runtime names of the core operations the program may replace,
-    /// sorted, as the emitter's `constant_nodes` takes them.
-    replaced: Vec<&'static str>,
-    /// By expression: the first top-level form that reaches it.
-    position: Vec<u32>,
-    /// By global: the top-level position of its sole definition and the
-    /// literal every later read is ([`ConstantGlobals::values`]).
-    globals: Vec<Option<(u32, ExprKind)>>,
-    /// By global: the top-level position of its sole definition and the
-    /// collection literal it defines, for `^:const` globals.
-    collections: Vec<Option<(u32, ExprId)>>,
-    /// By global: the top-level position of its sole definition and the
-    /// literal every later call without arguments is
-    /// ([`ConstantGlobals::returns`]).
-    returns: Vec<Option<(u32, ExprKind)>>,
-    /// By local: captured by a closure or type, a type field, or a `js*` hole.
-    pinned: Vec<bool>,
-    /// By local: a type field, a `js*` hole or a `set!` target, whose value
-    /// may change after its binding.
-    assignable: Vec<bool>,
-    /// By local: the expressions the root reaches that read it.
-    reads: Vec<u32>,
-    /// By expression: its identity matters (top-level `do` forms, namespace
-    /// entries, macro functions), so it keeps its kind and no other
-    /// expression takes it over.
-    kept: Vec<bool>,
-    /// By expression: a map key or set member, which never becomes a constant
-    /// here ([`fenced_positions`]).
-    fenced: Vec<bool>,
-    /// By expression: a literal built at each evaluation ([`built_literals`]),
-    /// a mark that moves with the literal when an expression takes it over.
-    built: &'p mut Vec<bool>,
-    /// By expression: how many expressions the root reaches it from.
-    parents: Vec<u8>,
-    /// By expression: a `do` form whose value is discarded, set by the `do`
-    /// around it before it is visited.
-    discarded: Vec<bool>,
-    /// By local: the constant substituted for it.
-    locals: Vec<Option<ExprKind>>,
-    /// By local: bound by a `let` to a literal collection or `fn`, so true.
-    truths: Vec<bool>,
-    /// By local: the initializer a `let` binds it to and never changes, which
-    /// [`Folder::collection`] follows to a constant collection.
-    bound: Vec<Option<ExprId>>,
-    /// By expression: the constant pool's classification
-    /// ([`crate::emitter::constant_nodes`]), memoized.
-    classes: Vec<ConstantClass>,
-    visited: Vec<bool>,
+    replaced: &'p [&'static str],
+    position: &'p [u32],
+    globals: &'p [Option<(u32, ExprKind)>],
+    collections: &'p [Option<(u32, ExprId)>],
+    returns: &'p [Option<(u32, ExprKind)>],
+    pinned: &'p BitSet,
+    assignable: &'p BitSet,
+    reads: &'p [u32],
+    kept: &'p BitSet,
+    fenced: &'p BitSet,
+    built: &'p [bool],
+    parents: &'p [u8],
+    pre_folded: &'p HashSet<ExprId>,
+}
+
+/// Read-only overlay combining immutable `&Program` with a slice's sparse
+/// replacements, newly created expressions, and newly interned strings.
+struct FolderView<'a> {
+    program: &'a Program,
+    base_exprs: usize,
+    base_strings: usize,
+    modified_bits: &'a BitSet,
+    delta_map: &'a HashMap<ExprId, usize>,
+    replacements: &'a [(ExprId, ExprKind)],
+    new_exprs: &'a [Expr],
+    new_strings: &'a [Vec<u16>],
+}
+
+impl ExprSource for FolderView<'_> {
+    #[inline]
+    fn kind(&self, id: ExprId) -> &ExprKind {
+        if id.0 >= self.base_exprs {
+            &self.new_exprs[id.0 - self.base_exprs].kind
+        } else if self.modified_bits.get(id.0) {
+            &self.replacements[self.delta_map[&id]].1
+        } else {
+            &self.program.exprs[id.0].kind
+        }
+    }
+
+    #[inline]
+    fn string(&self, id: StringId) -> &[u16] {
+        if id.0 >= self.base_strings {
+            &self.new_strings[id.0 - self.base_strings]
+        } else {
+            &self.program.strings[id.0]
+        }
+    }
+
+    #[inline]
+    fn named_literal(&self, id: NamedLiteralId) -> &NamedLiteral {
+        &self.program.named_literals[id.0]
+    }
+}
+
+/// Constant-pool eligibility classification matching
+/// [`crate::emitter::constant_nodes`], over any [`ExprSource`] with a sparse
+/// memoization map so parallel workers avoid allocating dense tables.
+fn constant_nodes_view<S: ExprSource>(
+    src: &S,
+    replaced: &[&str],
+    classes: &mut HashMap<ExprId, ConstantClass>,
+    id: ExprId,
+) -> Option<u32> {
+    if let Some(&class) = classes.get(&id) {
+        return match class {
+            ConstantClass::Constant(nodes) => Some(nodes),
+            ConstantClass::Variable => None,
+            ConstantClass::Unknown => unreachable!(),
+        };
+    }
+    let fixed = |name: &str| replaced.binary_search(&name).is_err();
+    let scalar_constant = |kind: &ExprKind| {
+        matches!(
+            kind,
+            ExprKind::Nil
+                | ExprKind::Bool(_)
+                | ExprKind::Number(_)
+                | ExprKind::String(_)
+                | ExprKind::Keyword(_)
+                | ExprKind::Symbol(_)
+        )
+    };
+    let kind = src.kind(id);
+    let nodes = if scalar_constant(kind) {
+        Some(1)
+    } else {
+        match kind {
+            ExprKind::Vector(items) if items.is_empty() => fixed("PersistentVector").then_some(1),
+            ExprKind::Map(items) if items.is_empty() => fixed("PersistentArrayMap").then_some(1),
+            ExprKind::Set(items) if items.is_empty() => fixed("PersistentHashSet").then_some(1),
+            ExprKind::List(items) if items.is_empty() => fixed("List").then_some(1),
+            ExprKind::Vector(items)
+            | ExprKind::List(items)
+            | ExprKind::Map(items)
+            | ExprKind::LiteralMap(items)
+            | ExprKind::LiteralSet(items) => items.iter().try_fold(1u32, |nodes, &item| {
+                Some(nodes.saturating_add(constant_nodes_view(src, replaced, classes, item)?))
+            }),
+            ExprKind::Set(items) => {
+                if items.iter().all(|item| scalar_constant(src.kind(*item))) {
+                    items.iter().try_fold(1u32, |nodes, &item| {
+                        Some(
+                            nodes
+                                .saturating_add(constant_nodes_view(src, replaced, classes, item)?),
+                        )
+                    })
+                } else {
+                    None
+                }
+            }
+            ExprKind::WithMeta { value, metadata } => {
+                let value_kind = src.kind(*value);
+                if !fixed("withMeta")
+                    || matches!(
+                        value_kind,
+                        ExprKind::ReaderLiteral {
+                            kind: CompilerLiteralKind::JsArray | CompilerLiteralKind::JsObject,
+                            quoted: true,
+                            ..
+                        }
+                    )
+                    || !matches!(
+                        value_kind,
+                        ExprKind::Vector(_)
+                            | ExprKind::List(_)
+                            | ExprKind::Map(_)
+                            | ExprKind::Set(_)
+                            | ExprKind::LiteralMap(_)
+                            | ExprKind::LiteralSet(_)
+                            | ExprKind::Symbol(_)
+                            | ExprKind::WithMeta { .. }
+                    )
+                {
+                    None
+                } else {
+                    let v = constant_nodes_view(src, replaced, classes, *value)?;
+                    let m = constant_nodes_view(src, replaced, classes, *metadata)?;
+                    Some(1u32.saturating_add(v).saturating_add(m))
+                }
+            }
+            ExprKind::ReaderLiteral {
+                kind: CompilerLiteralKind::Uuid,
+                items,
+                ..
+            } => {
+                if !fixed("uuid") {
+                    None
+                } else {
+                    items.iter().try_fold(1u32, |nodes, &item| {
+                        Some(
+                            nodes
+                                .saturating_add(constant_nodes_view(src, replaced, classes, item)?),
+                        )
+                    })
+                }
+            }
+            _ => None,
+        }
+    };
+    classes.insert(
+        id,
+        nodes.map_or(ConstantClass::Variable, ConstantClass::Constant),
+    );
+    nodes
+}
+
+struct Folder<'p> {
+    ctx: &'p FoldContext<'p>,
+    base_exprs: usize,
+    base_strings: usize,
+    visited: BitSet,
+    modified_bits: BitSet,
+    delta_map: HashMap<ExprId, usize>,
+    replacements: Vec<(ExprId, ExprKind)>,
+    new_exprs: Vec<Expr>,
+    new_built: Vec<bool>,
+    new_positions: Vec<u32>,
+    new_strings: Vec<Vec<u16>>,
+    built_overrides: HashMap<ExprId, bool>,
+    /// Lexically scoped constant/alias substitutions for active `Let` bindings.
+    locals: Vec<(LocalId, ExprKind)>,
+    /// Lexically scoped locals bound to truthy literals (`fn` / collections).
+    truths: Vec<LocalId>,
+    /// Lexically scoped locals bound to collections or chains of such locals.
+    bound: Vec<(LocalId, ExprId)>,
+    /// Sparse constant-pool classification memoization.
+    classes: HashMap<ExprId, ConstantClass>,
     folded: usize,
     /// Whether `rewrite` deferred dropping an unread non-pinned `let` binding
-    /// because its body was shared, so `sweep` must still run even if
+    /// (shared body or skipped subtree), so `sweep` must still run even if
     /// `folded == 0`.
     saw_shared_unread_let: bool,
 }
 
-impl Folder<'_> {
-    fn visit(&mut self, id: ExprId) {
-        if std::mem::replace(&mut self.visited[id.0], true) {
-            return;
+impl<'p> Folder<'p> {
+    fn new(ctx: &'p FoldContext<'p>) -> Self {
+        let count = ctx.program.exprs.len();
+        Self::with_visited(ctx, BitSet::new(count))
+    }
+
+    fn with_visited(ctx: &'p FoldContext<'p>, visited: BitSet) -> Self {
+        let count = ctx.program.exprs.len();
+        Self {
+            ctx,
+            base_exprs: count,
+            base_strings: ctx.program.strings.len(),
+            visited,
+            modified_bits: BitSet::new(count),
+            delta_map: HashMap::new(),
+            replacements: Vec::new(),
+            new_exprs: Vec::new(),
+            new_built: Vec::new(),
+            new_positions: Vec::new(),
+            new_strings: Vec::new(),
+            built_overrides: HashMap::new(),
+            locals: Vec::new(),
+            truths: Vec::new(),
+            bound: Vec::new(),
+            classes: HashMap::new(),
+            folded: 0,
+            saw_shared_unread_let: false,
         }
-        let kind = std::mem::replace(&mut self.program.exprs[id.0].kind, ExprKind::Nil);
-        let kind = self.rewrite(id, kind);
-        self.program.exprs[id.0].kind = kind;
     }
 
-    /// `child` produces the value of `parent`, so it is discarded when
-    /// `parent` is and nothing else reads `parent`.
-    fn pass_discard(&mut self, parent: ExprId, child: ExprId) {
-        if !self.visited[child.0] {
-            self.discarded[child.0] = self.discarded[parent.0] && self.parents[parent.0] <= 1;
+    fn into_delta(self) -> FoldDelta {
+        FoldDelta {
+            replacements: self.replacements,
+            new_exprs: self.new_exprs,
+            new_strings: self.new_strings,
+            built_updates: self.built_overrides.into_iter().collect(),
+            folded: self.folded,
+            saw_shared_unread_let: self.saw_shared_unread_let,
         }
     }
 
-    /// The constant `id` evaluates to, once visited.
-    fn constant(&self, id: ExprId) -> Option<Constant> {
-        Constant::of(self.program, id)
+    fn into_delta_and_visited(self) -> (FoldDelta, BitSet) {
+        let visited = self.visited;
+        let delta = FoldDelta {
+            replacements: self.replacements,
+            new_exprs: self.new_exprs,
+            new_strings: self.new_strings,
+            built_updates: self.built_overrides.into_iter().collect(),
+            folded: self.folded,
+            saw_shared_unread_let: self.saw_shared_unread_let,
+        };
+        (delta, visited)
     }
 
-    /// The kind of `child`, for its parent to take over, unless the child's
-    /// identity matters.
-    fn adopt(&mut self, parent: ExprId, child: ExprId) -> Option<ExprKind> {
-        if self.kept[child.0]
-            || (self.fenced[parent.0]
-                && constant_like(self.program, &self.program.exprs[child.0].kind))
-        {
+    #[inline]
+    fn view(&self) -> FolderView<'_> {
+        FolderView {
+            program: self.ctx.program,
+            base_exprs: self.base_exprs,
+            base_strings: self.base_strings,
+            modified_bits: &self.modified_bits,
+            delta_map: &self.delta_map,
+            replacements: &self.replacements,
+            new_exprs: &self.new_exprs,
+            new_strings: &self.new_strings,
+        }
+    }
+
+    #[inline]
+    fn kind(&self, id: ExprId) -> &ExprKind {
+        if id.0 >= self.base_exprs {
+            &self.new_exprs[id.0 - self.base_exprs].kind
+        } else if self.modified_bits.get(id.0) {
+            &self.replacements[self.delta_map[&id]].1
+        } else {
+            &self.ctx.program.exprs[id.0].kind
+        }
+    }
+
+    #[inline]
+    fn position_of(&self, id: ExprId) -> u32 {
+        if id.0 >= self.base_exprs {
+            self.new_positions[id.0 - self.base_exprs]
+        } else {
+            self.ctx.position.get(id.0).copied().unwrap_or(NOWHERE)
+        }
+    }
+
+    #[inline]
+    fn built_of(&self, id: ExprId) -> bool {
+        if id.0 >= self.base_exprs {
+            self.new_built[id.0 - self.base_exprs]
+        } else if let Some(&val) = self.built_overrides.get(&id) {
+            val
+        } else {
+            self.ctx.built.get(id.0).copied().unwrap_or(false)
+        }
+    }
+
+    #[inline]
+    fn set_built(&mut self, id: ExprId, val: bool) {
+        if id.0 >= self.base_exprs {
+            self.new_built[id.0 - self.base_exprs] = val;
+        } else if self.built_of(id) != val {
+            self.built_overrides.insert(id, val);
+        }
+    }
+
+    #[inline]
+    fn set_kind(&mut self, id: ExprId, kind: ExprKind) {
+        self.classes.remove(&id);
+        if id.0 >= self.base_exprs {
+            self.new_exprs[id.0 - self.base_exprs].kind = kind;
+        } else if self.modified_bits.get(id.0) {
+            let slot = self.delta_map[&id];
+            self.replacements[slot].1 = kind;
+        } else {
+            let slot = self.replacements.len();
+            self.replacements.push((id, kind));
+            self.delta_map.insert(id, slot);
+            self.modified_bits.set(id.0);
+        }
+    }
+
+    fn constant_to_kind(&mut self, constant: Constant) -> ExprKind {
+        match constant {
+            Constant::Nil => ExprKind::Nil,
+            Constant::Bool(value) => ExprKind::Bool(value),
+            Constant::Number(value) => ExprKind::Number(value),
+            Constant::String(units) => {
+                let id = StringId(self.base_strings + self.new_strings.len());
+                self.new_strings.push(units);
+                ExprKind::String(id)
+            }
+            Constant::Keyword(literal) => ExprKind::Keyword(literal),
+            Constant::Symbol(literal) => ExprKind::Symbol(literal),
+            Constant::Collection(_) => unreachable!("evaluation returns scalars"),
+        }
+    }
+
+    #[inline]
+    fn local_value(&self, local: LocalId) -> Option<&ExprKind> {
+        if self.locals.is_empty() {
             return None;
         }
-        self.built[parent.0] = self.built[child.0];
-        self.folded += 1;
-        Some(self.program.exprs[child.0].kind.clone())
+        self.locals
+            .iter()
+            .rev()
+            .find(|(l, _)| *l == local)
+            .map(|(_, kind)| kind)
     }
 
-    fn rewrite(&mut self, id: ExprId, kind: ExprKind) -> ExprKind {
+    #[inline]
+    fn bound_init(&self, local: LocalId) -> Option<ExprId> {
+        if self.bound.is_empty() {
+            return None;
+        }
+        self.bound
+            .iter()
+            .rev()
+            .find(|(l, _)| *l == local)
+            .map(|(_, init)| *init)
+    }
+
+    #[inline]
+    fn is_truthy_local(&self, local: LocalId) -> bool {
+        !self.truths.is_empty() && self.truths.contains(&local)
+    }
+
+    fn is_bound_candidate(&self, init: ExprId) -> bool {
+        let view = self.view();
+        match view.kind(init) {
+            ExprKind::Local(other) => self.bound_init(*other).is_some(),
+            ExprKind::Global(global) => self.ctx.collections[global.0].is_some(),
+            _ => shape_view(&view, init).is_some(),
+        }
+    }
+
+    /// Check skipped subtrees (e.g., `Case` branch test operands) for any
+    /// unread non-pinned effect-free `let` binding when nothing has folded yet,
+    /// so `sweep` still runs when needed.
+    fn check_skipped_unread_let(&mut self, root: ExprId) {
+        if self.folded > 0 || self.saw_shared_unread_let {
+            return;
+        }
+        let mut pending = vec![root];
+        let view = self.view();
+        while let Some(id) = pending.pop() {
+            if id.0 < self.base_exprs && self.visited.get(id.0) {
+                continue;
+            }
+            let kind = view.kind(id);
+            if let ExprKind::Let { bindings, .. } = kind
+                && bindings.iter().any(|(local, init)| {
+                    self.ctx.reads[local.0] == 0
+                        && !self.ctx.pinned.get(local.0)
+                        && effect_free_view(&view, view.kind(*init))
+                })
+            {
+                self.saw_shared_unread_let = true;
+                return;
+            }
+            visit_children(kind, |child| pending.push(child));
+        }
+    }
+
+    fn visit(&mut self, id: ExprId, discarded: bool) {
+        if id.0 >= self.base_exprs || self.visited.set(id.0) {
+            return;
+        }
+        if !self.ctx.pre_folded.is_empty() && self.ctx.pre_folded.contains(&id) {
+            return;
+        }
+        // Read directly from immutable `&'p Program` with zero `mem::replace`
+        // churn on untouched nodes.
+        let kind: &'p ExprKind = &self.ctx.program.exprs[id.0].kind;
         match kind {
-            ExprKind::Global(global) => match &self.globals[global.0] {
-                Some((at, value))
-                    if !self.fenced[id.0]
-                        && self.position[id.0] != NOWHERE
-                        && self.position[id.0] > *at =>
+            ExprKind::Global(global) => {
+                if let Some((at, value)) = &self.ctx.globals[global.0]
+                    && !self.ctx.fenced.get(id.0)
+                    && self.ctx.position[id.0] != NOWHERE
+                    && self.ctx.position[id.0] > *at
                 {
                     self.folded += 1;
-                    value.clone()
+                    self.set_kind(id, value.clone());
                 }
-                _ => kind,
-            },
-            ExprKind::Local(local) => match &self.locals[local.0] {
-                Some(value) => {
+            }
+            ExprKind::Local(local) => {
+                if let Some(value) = self.local_value(*local) {
+                    let value = value.clone();
                     self.folded += 1;
-                    value.clone()
+                    self.set_kind(id, value);
                 }
-                None => kind,
-            },
+            }
             ExprKind::Let { bindings, body } => {
+                let body = *body;
                 // Substitution rewrites the reads while it visits the body, so
                 // a body another parent already visited keeps its bindings.
-                let shared = self.visited[body.0];
-                let mut kept = Vec::with_capacity(bindings.len());
-                for (local, init) in bindings {
-                    self.visit(init);
+                let shared = body.0 < self.base_exprs && self.visited.get(body.0);
+                let saved_locals = self.locals.len();
+                let saved_truths = self.truths.len();
+                let saved_bound = self.bound.len();
+                let mut kept: Option<Vec<(LocalId, ExprId)>> = None;
+                for (b_idx, &(local, init)) in bindings.iter().enumerate() {
+                    self.visit(init, false);
                     // Lookups through the local may fold against the value it
                     // is bound to.
-                    if !shared && !self.assignable[local.0] {
-                        self.bound[local.0] = Some(init);
+                    if !shared && !self.ctx.assignable.get(local.0) && self.is_bound_candidate(init)
+                    {
+                        self.bound.push((local, init));
                     }
                     // Another local bound to a collection literal whose value
                     // cannot change: the aliases a destructuring binds, such
                     // as its `:as` local. Aliases of other values stay, since
                     // passes after this one read `and` and `or` from the
                     // local their expansions bind.
-                    let alias = !self.pinned[local.0]
+                    let alias = !self.ctx.pinned.get(local.0)
                         && !shared
-                        && matches!(self.program.exprs[init.0].kind,
-                            ExprKind::Local(other) if !self.assignable[other.0])
+                        && matches!(self.kind(init), ExprKind::Local(other) if !self.ctx.assignable.get(other.0))
                         && (self.collection(init).is_some() || self.keyed(init).is_some());
-                    let value = &self.program.exprs[init.0].kind;
-                    if self.pinned[local.0] || shared {
+                    let mut keep_binding = false;
+                    if self.ctx.pinned.get(local.0) || shared {
                         if shared
-                            && !self.pinned[local.0]
-                            && self.reads[local.0] == 0
-                            && effect_free(self.program, value)
+                            && !self.ctx.pinned.get(local.0)
+                            && self.ctx.reads[local.0] == 0
+                            && effect_free_view(&self.view(), self.kind(init))
                         {
                             self.saw_shared_unread_let = true;
                         }
-                        kept.push((local, init));
-                    } else if Constant::of_kind(self.program, value).is_some() || alias {
+                        keep_binding = true;
+                    } else if Constant::of_kind_view(&self.view(), self.kind(init)).is_some()
+                        || alias
+                    {
                         // A constant or such an alias is read in its place.
-                        self.locals[local.0] = Some(value.clone());
+                        let val = self.kind(init).clone();
+                        self.locals.push((local, val));
                         self.folded += 1;
-                    } else if self.reads[local.0] == 0 && effect_free(self.program, value) {
+                    } else if self.ctx.reads[local.0] == 0
+                        && effect_free_view(&self.view(), self.kind(init))
+                    {
                         self.folded += 1;
                     } else {
                         // A literal collection or `fn` is true wherever the
                         // local is tested.
-                        if literal_truth(self.program, value) == Some(true) {
-                            self.truths[local.0] = true;
+                        if literal_truth_view(&self.view(), self.kind(init)) == Some(true) {
+                            self.truths.push(local);
                         }
-                        kept.push((local, init));
+                        keep_binding = true;
+                    }
+                    if keep_binding {
+                        if let Some(ref mut k) = kept {
+                            k.push((local, init));
+                        }
+                    } else if kept.is_none() {
+                        let mut k = Vec::with_capacity(bindings.len() - 1);
+                        k.extend_from_slice(&bindings[..b_idx]);
+                        kept = Some(k);
                     }
                 }
-                self.pass_discard(id, body);
-                self.visit(body);
-                if kept.is_empty()
-                    && !scoped(self.program, body)
-                    && let Some(kind) = self.adopt(id, body)
+                let body_discarded = discarded && self.ctx.parents[id.0] <= 1;
+                self.visit(body, body_discarded);
+                self.locals.truncate(saved_locals);
+                self.truths.truncate(saved_truths);
+                self.bound.truncate(saved_bound);
+                let kept_empty = match &kept {
+                    Some(k) => k.is_empty(),
+                    None => bindings.is_empty(),
+                };
+                if kept_empty
+                    && !scoped_view(&self.view(), body)
+                    && let Some(new_kind) = self.adopt(id, body)
                 {
-                    return kind;
+                    self.set_kind(id, new_kind);
+                    return;
                 }
-                ExprKind::Let {
-                    bindings: kept,
-                    body,
+                if let Some(kept) = kept {
+                    self.set_kind(
+                        id,
+                        ExprKind::Let {
+                            bindings: kept,
+                            body,
+                        },
+                    );
                 }
             }
             ExprKind::If { test, yes, no } => {
-                self.visit(test);
-                self.pass_discard(id, yes);
-                self.pass_discard(id, no);
-                let truth = match self.program.exprs[test.0].kind {
-                    ExprKind::Local(local) if self.truths[local.0] => Some(true),
-                    ref kind => literal_truth(self.program, kind),
+                let (test, yes, no) = (*test, *yes, *no);
+                self.visit(test, false);
+                let branch_discarded = discarded && self.ctx.parents[id.0] <= 1;
+                let truth = match self.kind(test) {
+                    ExprKind::Local(local) if self.is_truthy_local(*local) => Some(true),
+                    test_kind => literal_truth_view(&self.view(), test_kind),
                 };
                 if let Some(truth) = truth {
                     let branch = if truth { yes } else { no };
-                    self.visit(branch);
-                    if let Some(kind) = self.adopt(id, branch) {
-                        return kind;
+                    self.visit(branch, branch_discarded);
+                    if let Some(new_kind) = self.adopt(id, branch) {
+                        self.set_kind(id, new_kind);
+                        return;
                     }
                 }
-                self.visit(yes);
-                self.visit(no);
-                ExprKind::If { test, yes, no }
+                self.visit(yes, branch_discarded);
+                self.visit(no, branch_discarded);
             }
             ExprKind::BooleanHint(inner) => {
-                self.visit(inner);
+                let inner = *inner;
+                self.visit(inner, false);
                 // A hinted test reads JavaScript truth, so the hint stays on
                 // a constant whose JavaScript truth is not its Clojure truth
                 // (`0`, `NaN`, `""`).
                 if self
                     .constant(inner)
                     .is_some_and(|value| value.truth_is_js())
-                    && let Some(kind) = self.adopt(id, inner)
+                    && let Some(new_kind) = self.adopt(id, inner)
                 {
-                    return kind;
+                    self.set_kind(id, new_kind);
                 }
-                ExprKind::BooleanHint(inner)
             }
             ExprKind::Do(items) => {
                 // Forms before the last are discarded, and so is the last one
                 // of a discarded `do` that nothing else reads.
-                let discarded = self.discarded[id.0] && self.parents[id.0] <= 1;
+                let do_discarded = discarded && self.ctx.parents[id.0] <= 1;
                 let last = items.len().saturating_sub(1);
-                for (index, item) in items.iter().enumerate() {
-                    if !self.visited[item.0] {
-                        self.discarded[item.0] = discarded || index != last;
+                for (index, &item) in items.iter().enumerate() {
+                    self.visit(item, do_discarded || index != last);
+                }
+                if self.ctx.kept.get(id.0) || items.is_empty() {
+                    return;
+                }
+                let mut forms: Option<Vec<ExprId>> = None;
+                for (index, &item) in items.iter().enumerate() {
+                    let keep_item = (index == last && !do_discarded)
+                        || self.ctx.kept.get(item.0)
+                        || !effect_free_view(&self.view(), self.kind(item));
+                    if keep_item {
+                        if let Some(ref mut f) = forms {
+                            f.push(item);
+                        }
+                    } else if forms.is_none() {
+                        let mut f = Vec::with_capacity(items.len() - 1);
+                        f.extend_from_slice(&items[..index]);
+                        forms = Some(f);
                     }
-                    self.visit(*item);
                 }
-                if self.kept[id.0] || items.is_empty() {
-                    return ExprKind::Do(items);
+                let kept_slice = forms.as_deref().unwrap_or(items);
+                self.folded += items.len() - kept_slice.len();
+                if kept_slice.is_empty() {
+                    self.set_kind(id, ExprKind::Nil);
+                    return;
                 }
-                let forms: Vec<ExprId> = items
-                    .iter()
-                    .enumerate()
-                    .filter(|(index, item)| {
-                        (*index == last && !discarded)
-                            || self.kept[item.0]
-                            || !effect_free(self.program, &self.program.exprs[item.0].kind)
-                    })
-                    .map(|(_, item)| *item)
-                    .collect();
-                self.folded += items.len() - forms.len();
-                if forms.is_empty() {
-                    return ExprKind::Nil;
-                }
-                if let [form] = forms[..]
-                    && !scoped(self.program, form)
-                    && let Some(kind) = self.adopt(id, form)
+                if let [form] = kept_slice
+                    && !scoped_view(&self.view(), *form)
+                    && let Some(new_kind) = self.adopt(id, *form)
                 {
-                    return kind;
+                    self.set_kind(id, new_kind);
+                    return;
                 }
-                ExprKind::Do(forms)
+                if let Some(forms) = forms {
+                    self.set_kind(id, ExprKind::Do(forms));
+                }
             }
             ExprKind::Call { callee, args } => {
-                self.visit(callee);
-                for arg in &args {
-                    self.visit(*arg);
+                let callee = *callee;
+                self.visit(callee, false);
+                for &arg in args {
+                    self.visit(arg, false);
                 }
-                if let ExprKind::CoreFn(core) = self.program.exprs[callee.0].kind {
-                    if !self.fenced[id.0]
-                        && let Some(value) = self.call(core, &args)
+                if let ExprKind::CoreFn(core) = *self.kind(callee) {
+                    if !self.ctx.fenced.get(id.0)
+                        && let Some(value) = self.call(core, args)
                     {
                         self.folded += 1;
-                        return value.into_kind(self.program);
+                        let new_kind = self.constant_to_kind(value);
+                        self.set_kind(id, new_kind);
+                        return;
                     }
-                    if !self.fenced[id.0]
-                        && let Some(kind) = self.select(id, core, &args)
+                    if !self.ctx.fenced.get(id.0)
+                        && let Some(new_kind) = self.select(id, core, args)
                     {
                         self.folded += 1;
-                        return kind;
+                        self.set_kind(id, new_kind);
+                        return;
                     }
-                    if let Some(args) = self.prefix(core, &args) {
+                    if let Some(new_args) = self.prefix(core, args) {
                         self.folded += 1;
-                        return ExprKind::Call { callee, args };
+                        self.set_kind(
+                            id,
+                            ExprKind::Call {
+                                callee,
+                                args: new_args,
+                            },
+                        );
+                        return;
                     }
                 } else if args.is_empty()
-                    && !self.fenced[id.0]
-                    && !self.kept[id.0]
-                    && let Some(global) = called_global(self.program, callee)
-                    && let Some((at, value)) = &self.returns[global.0]
-                    && self.position[id.0] != NOWHERE
-                    && self.position[id.0] > *at
+                    && !self.ctx.fenced.get(id.0)
+                    && !self.ctx.kept.get(id.0)
+                    && let Some(global) = called_global_view(&self.view(), callee)
+                    && let Some((at, value)) = &self.ctx.returns[global.0]
+                    && self.ctx.position[id.0] != NOWHERE
+                    && self.ctx.position[id.0] > *at
                 {
                     // A function that returns a constant, called after its
                     // definition, is that constant.
                     self.folded += 1;
-                    return value.clone();
-                } else if !self.fenced[id.0]
-                    && let Some(kind) = self.invoke(id, callee, &args)
+                    self.set_kind(id, value.clone());
+                    return;
+                } else if !self.ctx.fenced.get(id.0)
+                    && let Some(new_kind) = self.invoke(id, callee, args)
                 {
                     self.folded += 1;
-                    return kind;
+                    self.set_kind(id, new_kind);
+                    return;
                 }
-                self.member_set(callee, &args);
-                ExprKind::Call { callee, args }
+                self.member_set(callee, args);
             }
             // These read a global's binding rather than its value.
-            ExprKind::Var { .. } | ExprKind::Exists(_) | ExprKind::BindingExists(_) => kind,
+            ExprKind::Var {
+                value, metadata, ..
+            } => {
+                self.check_skipped_unread_let(*value);
+                if let Some(m) = metadata {
+                    self.check_skipped_unread_let(*m);
+                }
+            }
+            ExprKind::Exists(inner) | ExprKind::BindingExists(inner) => {
+                self.check_skipped_unread_let(*inner);
+            }
             // Assignment targets are not reads.
             ExprKind::SetGlobal { target, value } => {
+                let (target, value) = (*target, *value);
                 if !matches!(
-                    self.program.exprs[target.0].kind,
+                    self.kind(target),
                     ExprKind::Global(_) | ExprKind::Local(_) | ExprKind::CoreFn(_)
                 ) {
-                    self.visit(target);
+                    self.visit(target, false);
                 }
-                self.visit(value);
-                ExprKind::SetGlobal { target, value }
+                self.visit(value, false);
             }
             ExprKind::Binding { bindings, body } => {
-                for (_, init) in &bindings {
-                    self.visit(*init);
+                for &(target, init) in bindings {
+                    self.check_skipped_unread_let(target);
+                    self.visit(init, false);
                 }
-                self.visit(body);
-                ExprKind::Binding { bindings, body }
+                self.visit(*body, false);
             }
             // Case tests are the constants it dispatches on, as analyzed.
             ExprKind::Case {
-                strict,
-                keyword_tests,
                 test,
                 branches,
                 default,
+                ..
             } => {
-                self.visit(test);
-                for (_, branch) in &branches {
-                    self.visit(*branch);
+                self.visit(*test, false);
+                for &(branch_test, branch) in branches {
+                    self.check_skipped_unread_let(branch_test);
+                    self.visit(branch, false);
                 }
                 if let Some(default) = default {
-                    self.visit(default);
-                }
-                ExprKind::Case {
-                    strict,
-                    keyword_tests,
-                    test,
-                    branches,
-                    default,
+                    self.visit(*default, false);
                 }
             }
-            kind => {
-                visit_children(&kind, |child| self.visit(child));
-                kind
+            _ => {
+                visit_children(kind, |child| self.visit(child, false));
             }
         }
+    }
+
+    /// The constant `id` evaluates to, once visited.
+    fn constant(&self, id: ExprId) -> Option<Constant> {
+        Constant::of_view(&self.view(), id)
+    }
+
+    /// The kind of `child`, for its parent to take over, unless the child's
+    /// identity matters.
+    fn adopt(&mut self, parent: ExprId, child: ExprId) -> Option<ExprKind> {
+        if (child.0 < self.base_exprs && self.ctx.kept.get(child.0))
+            || (parent.0 < self.base_exprs
+                && self.ctx.fenced.get(parent.0)
+                && constant_like_view(&self.view(), self.kind(child)))
+        {
+            return None;
+        }
+        let child_built = self.built_of(child);
+        self.set_built(parent, child_built);
+        self.folded += 1;
+        Some(self.kind(child).clone())
     }
 
     /// The arguments of a call of `+`, `-`, `*` or `/` whose leading number
@@ -1750,13 +3754,13 @@ impl Folder<'_> {
         if !matches!(
             core,
             CoreFnId::Add | CoreFnId::Subtract | CoreFnId::Multiply | CoreFnId::Divide
-        ) || self.facts.replaced(core)
+        ) || self.ctx.facts.replaced(core)
         {
             return None;
         }
         let numbers: Vec<Constant> = args
             .iter()
-            .map_while(|arg| match self.program.exprs[arg.0].kind {
+            .map_while(|arg| match *self.kind(*arg) {
                 ExprKind::Number(value) => Some(Constant::Number(value)),
                 _ => None,
             })
@@ -1764,8 +3768,8 @@ impl Folder<'_> {
         if numbers.len() < 2 || numbers.len() == args.len() {
             return None;
         }
-        let value = evaluate(self.program, core, &numbers)?;
-        let kind = value.into_kind(self.program);
+        let value = evaluate_view(&self.view(), core, &numbers)?;
+        let kind = self.constant_to_kind(value);
         let folded = self.push(args[0], kind);
         Some(
             std::iter::once(folded)
@@ -1788,22 +3792,23 @@ impl Folder<'_> {
         if constants
             .iter()
             .any(|constant| matches!(constant, Constant::Collection(_)))
-            && !self.facts.core_protocols_intact()
+            && !self.ctx.facts.core_protocols_intact()
         {
             return None;
         }
+        let view = self.view();
         let types: Vec<Type> = constants
             .iter()
-            .map(|constant| constant.ty(self.program))
+            .map(|constant| constant.ty_view(&view))
             .collect();
         let call = core.operation().call(&types);
         if call.purity != Purity::Pure
-            || !self.facts.trusted(core, call.calls)
+            || !self.ctx.facts.trusted(core, call.calls)
             || self.equiv_written(core)
         {
             return None;
         }
-        evaluate(self.program, core, &constants)
+        evaluate_view(&view, core, &constants)
     }
 
     /// Whether `core` is `=` or `not=` in a program that writes `IEquiv`'s
@@ -1811,7 +3816,7 @@ impl Folder<'_> {
     /// too, a method that `=` calls at every level (light-cljs-1061): no
     /// fold reads it.
     fn equiv_written(&self, core: CoreFnId) -> bool {
-        matches!(core, CoreFnId::Equal | CoreFnId::NotEqual) && self.facts.equiv_by_name()
+        matches!(core, CoreFnId::Equal | CoreFnId::NotEqual) && self.ctx.facts.equiv_by_name()
     }
 
     /// In a test of membership in a set, a call `(s x)`, `(contains? s x)` or
@@ -1822,37 +3827,35 @@ impl Folder<'_> {
     /// emitter's `membership`, which states the conditions checked here), in
     /// an `if` test and in value position alike (light-cljs-231).
     fn member_set(&mut self, callee: ExprId, args: &[ExprId]) {
-        if !self.facts.core_protocols_intact() || self.facts.implements_equiv() {
+        if !self.ctx.facts.core_protocols_intact() || self.ctx.facts.implements_equiv() {
             return;
         }
-        let operand = match (&self.program.exprs[callee.0].kind, args) {
+        let operand = match (self.kind(callee), args) {
             (ExprKind::CoreFn(core @ (CoreFnId::Contains | CoreFnId::Get)), [set, _])
-                if !self.facts.replaced(*core) =>
+                if !self.ctx.facts.replaced(*core) =>
             {
                 *set
             }
             (_, [_]) => callee,
             _ => return,
         };
-        if !matches!(
-            self.program.exprs[operand.0].kind,
-            ExprKind::Local(_) | ExprKind::Global(_)
-        ) {
+        if !matches!(self.kind(operand), ExprKind::Local(_) | ExprKind::Global(_)) {
             return;
         }
         let Some(set) = self.collection(operand) else {
             return;
         };
-        let (ExprKind::Set(members) | ExprKind::LiteralSet(members)) =
-            &self.program.exprs[set.0].kind
-        else {
-            return;
+        let is_comparable = match self.kind(set) {
+            ExprKind::Set(members) | ExprKind::LiteralSet(members) => {
+                members_view(&self.view(), members).is_some()
+            }
+            _ => false,
         };
-        if self::members(self.program, members).is_none() {
+        if !is_comparable {
             return;
         }
         if let Some(kind) = self.copy(set) {
-            self.program.exprs[operand.0].kind = kind;
+            self.set_kind(operand, kind);
             self.folded += 1;
         }
     }
@@ -1876,7 +3879,7 @@ impl Folder<'_> {
                 | CoreFnId::Next
                 | CoreFnId::Seq
                 | CoreFnId::NotEmpty
-        ) || !self.facts.core_protocols_intact()
+        ) || !self.ctx.facts.core_protocols_intact()
         {
             return None;
         }
@@ -1887,31 +3890,37 @@ impl Folder<'_> {
             (CoreFnId::Get | CoreFnId::GetIn, [None, Some(_), ..]) => Some(self.keyed(args[0])?),
             _ => None,
         };
-        let types: Vec<Type> = values
-            .iter()
-            .enumerate()
-            .map(|(index, value)| match value {
-                Some(value) => value.ty(self.program),
-                None if index == 0 && keyed.is_some() => Type::MAP,
-                None => Type::ANY,
-            })
-            .collect();
+        let types: Vec<Type> = {
+            let view = self.view();
+            values
+                .iter()
+                .enumerate()
+                .map(|(index, value)| match value {
+                    Some(value) => value.ty_view(&view),
+                    None if index == 0 && keyed.is_some() => Type::MAP,
+                    None => Type::ANY,
+                })
+                .collect()
+        };
         let call = core.operation().call(&types);
-        if call.purity == Purity::Effect || !self.facts.trusted(core, call.calls) {
+        if call.purity == Purity::Effect || !self.ctx.facts.trusted(core, call.calls) {
             return None;
         }
         let folded = match keyed {
             Some(map) => {
                 let (key, rest) = match core {
                     CoreFnId::Get => (values[1].clone()?, Vec::new()),
-                    _ => match path_keys(self.program, values[1].as_ref()?)? {
-                        [] => return self.write(id, Folded::Argument(0), args, None),
-                        [key, rest @ ..] => (Constant::of(self.program, *key)?, rest.to_vec()),
-                    },
+                    _ => {
+                        let view = self.view();
+                        match path_keys_view(&view, values[1].as_ref()?)? {
+                            [] => return self.write(id, Folded::Argument(0), args, None),
+                            [key, rest @ ..] => (Constant::of_view(&view, *key)?, rest.to_vec()),
+                        }
+                    }
                 };
                 self.keyed_walk(args[0], map, &key, &rest, (args.len() == 3).then_some(2))?
             }
-            None => select(self.program, core, &values)?,
+            None => select_view(&self.view(), core, &values)?,
         };
         // A default argument that is not a constant is the last one.
         let default = (args.len() > 2 && values.last()?.is_none()).then(|| args.len() - 1);
@@ -1928,7 +3937,7 @@ impl Folder<'_> {
     /// too.
     fn invoke(&mut self, id: ExprId, callee: ExprId, args: &[ExprId]) -> Option<ExprKind> {
         // Keywords and collections call the runtime's `get` and `lookup`.
-        if !self.facts.core_protocols_intact() || self.facts.replaced(CoreFnId::Get) {
+        if !self.ctx.facts.core_protocols_intact() || self.ctx.facts.replaced(CoreFnId::Get) {
             return None;
         }
         let values: Vec<Option<Constant>> = args.iter().map(|arg| self.value(*arg)).collect();
@@ -1944,14 +3953,14 @@ impl Folder<'_> {
             Lookup::Missing if defaulted => Folded::Argument(1),
             Lookup::Missing => Folded::Value(Constant::Nil),
         };
-        let named = match self.program.exprs[callee.0].kind {
+        let named = match *self.kind(callee) {
             ExprKind::Keyword(literal) => Some(Constant::Keyword(literal)),
             ExprKind::Symbol(literal) => Some(Constant::Symbol(literal)),
             _ => None,
         };
         let folded = if let Some(named) = named {
             match &values[0] {
-                Some(value) => found(get(self.program, value, &named)?),
+                Some(value) => found(get_view(&self.view(), value, &named)?),
                 None => {
                     let map = self.keyed(args[0])?;
                     self.keyed_walk(args[0], map, &named, &[], defaulted.then_some(1))?
@@ -1965,12 +3974,11 @@ impl Folder<'_> {
                     self.keyed_walk(callee, map, &key.clone(), &[], defaulted.then_some(1))?;
                 return self.write(id, folded, args, default);
             };
-            match shape(self.program, collection)?.0 {
-                Shape::Vector => match lookup(self.program, collection, key)? {
+            let view = self.view();
+            match shape_view(&view, collection)?.0 {
+                Shape::Vector => match lookup_view(&view, collection, key)? {
                     Lookup::Found(item) if matches!(key, Constant::Number(_)) => {
-                        if defaulted
-                            && !effect_free(self.program, &self.program.exprs[args[1].0].kind)
-                        {
+                        if defaulted && !effect_free_view(&view, view.kind(args[1])) {
                             return None;
                         }
                         // The ignored argument has no effect, so drop it.
@@ -1980,7 +3988,7 @@ impl Folder<'_> {
                 },
                 Shape::List => return None,
                 Shape::Map { .. } | Shape::Set { .. } => {
-                    found(lookup(self.program, collection, key)?)
+                    found(lookup_view(&view, collection, key)?)
                 }
             }
         };
@@ -1995,13 +4003,14 @@ impl Folder<'_> {
     /// bound; a literal is evaluated where it is, so a fold that drops it
     /// needs its values to have no effect ([`Folder::dropped`]).
     fn keyed(&self, mut id: ExprId) -> Option<ExprId> {
-        for _ in 0..self.program.locals.len() + 1 {
-            match &self.program.exprs[id.0].kind {
-                ExprKind::Local(local) => id = self.bound[local.0]?,
+        let view = self.view();
+        for _ in 0..self.bound.len() + 2 {
+            match view.kind(id) {
+                ExprKind::Local(local) => id = self.bound_init(*local)?,
                 ExprKind::Map(items) => {
                     let keys = || items.iter().step_by(2).copied();
-                    return (keys().all(|key| Constant::item(self.program, key).is_some())
-                        && distinct(self.program, keys()))
+                    return (keys().all(|key| Constant::item_view(&view, key).is_some())
+                        && distinct_view(&view, keys()))
                     .then_some(id);
                 }
                 _ => return None,
@@ -2026,13 +4035,14 @@ impl Folder<'_> {
         rest: &[ExprId],
         default: Option<usize>,
     ) -> Option<Folded> {
-        match lookup(self.program, map, key)? {
+        match lookup_view(&self.view(), map, key)? {
             Lookup::Found(value) if self.copyable(value) => {
                 if !self.dropped(receiver, map, None) {
                     return None;
                 }
-                let current = Constant::item(self.program, value)?;
-                walk(self.program, current, Some(value), rest, default.is_some())
+                let view = self.view();
+                let current = Constant::item_view(&view, value)?;
+                walk_view(&view, current, Some(value), rest, default.is_some())
             }
             Lookup::Found(value) if receiver == map && rest.is_empty() => self
                 .dropped(receiver, map, Some(value))
@@ -2043,8 +4053,8 @@ impl Folder<'_> {
             // read stays in the scope the map was built in.
             Lookup::Found(value)
                 if rest.is_empty()
-                    && matches!(self.program.exprs[value.0].kind,
-                        ExprKind::Local(local) if !self.assignable[local.0])
+                    && matches!(self.kind(value),
+                        ExprKind::Local(local) if !self.ctx.assignable.get(local.0))
                     && self.uncaptured(receiver) =>
             {
                 Some(Folded::Expression(value))
@@ -2053,7 +4063,7 @@ impl Folder<'_> {
             _ if !self.dropped(receiver, map, None) => None,
             Lookup::Missing => match default {
                 Some(index) => Some(Folded::Argument(index)),
-                None => walk(self.program, Constant::Nil, None, rest, false),
+                None => walk_view(&self.view(), Constant::Nil, None, rest, false),
             },
         }
     }
@@ -2061,12 +4071,12 @@ impl Folder<'_> {
     /// Whether no closure, type or `js*` hole reads the locals from
     /// `receiver` along the chain of locals [`Folder::keyed`] followed.
     fn uncaptured(&self, mut id: ExprId) -> bool {
-        for _ in 0..self.program.locals.len() + 1 {
-            let ExprKind::Local(local) = self.program.exprs[id.0].kind else {
+        for _ in 0..self.bound.len() + 2 {
+            let ExprKind::Local(local) = *self.kind(id) else {
                 return true;
             };
-            match self.bound[local.0] {
-                Some(init) if !self.pinned[local.0] => id = init,
+            match self.bound_init(local) {
+                Some(init) if !self.ctx.pinned.get(local.0) => id = init,
                 _ => return false,
             }
         }
@@ -2081,13 +4091,14 @@ impl Folder<'_> {
         if receiver != map {
             return true;
         }
-        let ExprKind::Map(items) = &self.program.exprs[map.0].kind else {
+        let view = self.view();
+        let ExprKind::Map(items) = view.kind(map) else {
             return false;
         };
         items
             .iter()
             .filter(|item| Some(**item) != kept)
-            .all(|item| effect_free(self.program, &self.program.exprs[item.0].kind))
+            .all(|item| effect_free_view(&view, view.kind(*item)))
     }
 
     /// A `pure` call on a map bound to a local whose keys are constants
@@ -2095,7 +4106,7 @@ impl Folder<'_> {
     /// answers `count`, `empty?`, `contains?` and the type predicates from
     /// the literal's shape and keys alone (`(seq? m)` of a map destructuring).
     fn keyed_call(&mut self, core: CoreFnId, args: &[ExprId]) -> Option<Constant> {
-        if !self.facts.core_protocols_intact() {
+        if !self.ctx.facts.core_protocols_intact() {
             return None;
         }
         let (receiver, rest) = args.split_first()?;
@@ -2107,18 +4118,19 @@ impl Folder<'_> {
         for arg in rest {
             constants.push(self.value(*arg)?);
         }
+        let view = self.view();
         let types: Vec<Type> = constants
             .iter()
-            .map(|constant| constant.ty(self.program))
+            .map(|constant| constant.ty_view(&view))
             .collect();
         let call = core.operation().call(&types);
         if call.purity != Purity::Pure
-            || !self.facts.trusted(core, call.calls)
+            || !self.ctx.facts.trusted(core, call.calls)
             || self.equiv_written(core)
         {
             return None;
         }
-        evaluate(self.program, core, &constants)
+        evaluate_view(&view, core, &constants)
     }
 
     /// The kind that replaces the call `id` of `args` with `folded`. Only the
@@ -2138,18 +4150,14 @@ impl Folder<'_> {
             // The default runs after the value, so it must have no effect.
             Folded::Expression(value) => {
                 return match default {
-                    Some(index)
-                        if !effect_free(self.program, &self.program.exprs[args[index].0].kind) =>
-                    {
-                        None
-                    }
+                    Some(index) if !effect_free_view(&self.view(), self.kind(args[index])) => None,
                     _ => self.adopt(id, value),
                 };
             }
             _ => (),
         }
         let kind = match folded {
-            Folded::Value(value) => value.into_kind(self.program),
+            Folded::Value(value) => self.constant_to_kind(value),
             Folded::Item(item) => self.copy(item)?,
             Folded::List(items) => {
                 if !items.iter().all(|item| self.copyable(*item)) {
@@ -2167,7 +4175,7 @@ impl Folder<'_> {
             Folded::Argument(_) | Folded::Expression(_) => unreachable!("written above"),
         };
         match default {
-            Some(index) if !effect_free(self.program, &self.program.exprs[args[index].0].kind) => {
+            Some(index) if !effect_free_view(&self.view(), self.kind(args[index])) => {
                 let value = self.push(id, kind);
                 Some(ExprKind::Do(vec![args[index], value]))
             }
@@ -2178,7 +4186,8 @@ impl Folder<'_> {
     /// The constant `id` evaluates to: a scalar or symbol literal, or a
     /// constant collection ([`Folder::collection`]).
     fn value(&mut self, id: ExprId) -> Option<Constant> {
-        Constant::of(self.program, id).or_else(|| self.collection(id).map(Constant::Collection))
+        Constant::of_view(&self.view(), id)
+            .or_else(|| self.collection(id).map(Constant::Collection))
     }
 
     /// The constant collection literal that `id` evaluates to: a literal the
@@ -2187,20 +4196,20 @@ impl Folder<'_> {
     /// locals bound to such reads.
     fn collection(&mut self, mut id: ExprId) -> Option<ExprId> {
         // Locals bound to locals form chains as long as the nesting of `let`s.
-        for _ in 0..self.program.locals.len() + 2 {
-            match self.program.exprs[id.0].kind {
-                ExprKind::Local(local) => id = self.bound[local.0]?,
+        for _ in 0..self.bound.len() + 3 {
+            match *self.kind(id) {
+                ExprKind::Local(local) => id = self.bound_init(local)?,
                 ExprKind::Global(global) => {
                     // Read in a later top-level form, after the definition.
-                    let (at, literal) = self.collections[global.0]?;
-                    let read = self.position.get(id.0).copied().unwrap_or(NOWHERE);
+                    let (at, literal) = self.ctx.collections[global.0]?;
+                    let read = self.position_of(id);
                     if read == NOWHERE || read <= at {
                         return None;
                     }
                     id = literal;
                 }
                 _ => {
-                    shape(self.program, id)?;
+                    shape_view(&self.view(), id)?;
                     return self.constant_class(id).then_some(id);
                 }
             }
@@ -2211,9 +4220,17 @@ impl Folder<'_> {
     /// Whether the constant pool may hold `id` (the emitter's
     /// `constant_nodes`): a constant that cannot throw or change when built.
     fn constant_class(&mut self, id: ExprId) -> bool {
-        self.classes
-            .resize(self.program.exprs.len(), ConstantClass::Unknown);
-        constant_nodes(self.program, &self.replaced, &mut self.classes, id).is_some()
+        let view = FolderView {
+            program: self.ctx.program,
+            base_exprs: self.base_exprs,
+            base_strings: self.base_strings,
+            modified_bits: &self.modified_bits,
+            delta_map: &self.delta_map,
+            replacements: &self.replacements,
+            new_exprs: &self.new_exprs,
+            new_strings: &self.new_strings,
+        };
+        constant_nodes_view(&view, self.ctx.replaced, &mut self.classes, id).is_some()
     }
 
     /// Whether the item `id` of a constant collection may be copied to
@@ -2223,7 +4240,7 @@ impl Folder<'_> {
     /// item (hash-consing on structure). A literal marked built (see
     /// [`built_literals`]) would be a fresh value at each place.
     fn copyable(&mut self, id: ExprId) -> bool {
-        if Constant::of(self.program, id).is_some() {
+        if Constant::of_view(&self.view(), id).is_some() {
             return true;
         }
         if !self.constant_class(id) {
@@ -2233,12 +4250,10 @@ impl Folder<'_> {
         let mut nodes = 0;
         while let Some(node) = pending.pop() {
             nodes += 1;
-            if nodes > COPY_LIMIT || self.built.get(node.0).copied().unwrap_or(false) {
+            if nodes > COPY_LIMIT || self.built_of(node) {
                 return false;
             }
-            visit_children(&self.program.exprs[node.0].kind, |child| {
-                pending.push(child)
-            });
+            visit_children(self.kind(node), |child| pending.push(child));
         }
         true
     }
@@ -2249,7 +4264,7 @@ impl Folder<'_> {
         if !self.copyable(id) {
             return None;
         }
-        let mut kind = self.program.exprs[id.0].kind.clone();
+        let mut kind = self.kind(id).clone();
         match &mut kind {
             ExprKind::Vector(items)
             | ExprKind::List(items)
@@ -2274,76 +4289,26 @@ impl Folder<'_> {
         Some(kind)
     }
 
-    /// A new expression of `kind` where `like` is, already visited: the
-    /// per-expression state grows with the arena.
+    /// A new expression of `kind` where `like` is, already visited: stored
+    /// in the slice's local `new_exprs` buffer and rebased on merge.
     fn push(&mut self, like: ExprId, kind: ExprKind) -> ExprId {
-        let mut expr = self.program.exprs[like.0].clone();
-        expr.kind = kind;
-        self.program.exprs.push(expr);
-        let id = ExprId(self.program.exprs.len() - 1);
-        let count = self.program.exprs.len();
-        let position = self.position.get(like.0).copied().unwrap_or(NOWHERE);
-        self.position.resize(count, position);
-        self.kept.resize(count, false);
-        self.fenced.resize(count, false);
-        self.built.resize(count, false);
-        self.parents.resize(count, 1);
-        self.discarded.resize(count, false);
-        self.visited.resize(count, true);
+        let template = if like.0 >= self.base_exprs {
+            &self.new_exprs[like.0 - self.base_exprs]
+        } else {
+            &self.ctx.program.exprs[like.0]
+        };
+        let expr = Expr {
+            kind,
+            span: template.span.clone(),
+            context: template.context,
+            source_index: template.source_index,
+        };
+        let pos = self.position_of(like);
+        let id = ExprId(self.base_exprs + self.new_exprs.len());
+        self.new_exprs.push(expr);
+        self.new_built.push(false);
+        self.new_positions.push(pos);
         id
-    }
-
-    /// Drop the bindings that nothing reads any more and whose initializers
-    /// have no effect, which folding a lookup leaves behind: the local a
-    /// destructuring binds its value to, and the locals bound to that one.
-    /// A `let` left without bindings is its body. Repeats (at most
-    /// [`SWEEPS`] times) while a binding goes, since an initializer may be
-    /// the last read of an earlier binding.
-    fn sweep(&mut self) {
-        for _ in 0..SWEEPS {
-            let mut reached = vec![false; self.program.exprs.len()];
-            let reads = reachable_reads(self.program, None, &mut reached, None);
-            let mut dropped = 0;
-            for (index, reached) in reached.iter().enumerate() {
-                let ExprKind::Let { bindings, body } = &self.program.exprs[index].kind else {
-                    continue;
-                };
-                if !reached {
-                    continue;
-                }
-                let body = *body;
-                let kept: Vec<(LocalId, ExprId)> = bindings
-                    .iter()
-                    .filter(|(local, init)| {
-                        reads[local.0] > 0
-                            || self.pinned[local.0]
-                            || !effect_free(self.program, &self.program.exprs[init.0].kind)
-                    })
-                    .copied()
-                    .collect();
-                if kept.len() == bindings.len() {
-                    continue;
-                }
-                dropped += bindings.len() - kept.len();
-                let id = ExprId(index);
-                if kept.is_empty()
-                    && !self.kept[index]
-                    && !scoped(self.program, body)
-                    && let Some(kind) = self.adopt(id, body)
-                {
-                    self.program.exprs[index].kind = kind;
-                    continue;
-                }
-                self.program.exprs[index].kind = ExprKind::Let {
-                    bindings: kept,
-                    body,
-                };
-            }
-            self.folded += dropped;
-            if dropped == 0 {
-                break;
-            }
-        }
     }
 }
 
@@ -2352,7 +4317,7 @@ impl Folder<'_> {
 /// copy as the entry the item already is, so emitted code does not grow.
 const COPY_LIMIT: usize = 256;
 
-/// The most passes [`Folder::sweep`] makes over the program.
+/// The most passes [`sweep_with_slots`] makes over the program.
 const SWEEPS: usize = 4;
 
 /// Whether `id` depends on the function scope emission gives it: outside
@@ -2362,9 +4327,13 @@ const SWEEPS: usize = 4;
 /// keep the form around them (the emitter's `sequence_keeps_scope` asks the
 /// same).
 pub(crate) fn scoped(program: &Program, id: ExprId) -> bool {
+    scoped_view(program, id)
+}
+
+fn scoped_view<S: ExprSource>(src: &S, id: ExprId) -> bool {
     let mut pending = vec![id];
     while let Some(id) = pending.pop() {
-        match &program.exprs[id.0].kind {
+        match src.kind(id) {
             ExprKind::JsArguments
             | ExprKind::CopyArguments(_)
             | ExprKind::JsTemplate { .. }
@@ -2374,31 +4343,6 @@ pub(crate) fn scoped(program: &Program, id: ExprId) -> bool {
         }
     }
     false
-}
-
-/// By expression: a key of a map literal or a member of a set literal. These
-/// never become constants here: the emitter builds a map whose keys are all
-/// constants from a key shape and a set whose members are all scalars without
-/// the duplicate check of members computed at run time, which assume the
-/// distinct keys analysis checks in source literals.
-pub(crate) fn fenced_positions(program: &Program) -> Vec<bool> {
-    let mut fenced = vec![false; program.exprs.len()];
-    for expr in &program.exprs {
-        match &expr.kind {
-            ExprKind::Map(items) | ExprKind::LiteralMap(items) => {
-                for key in items.iter().step_by(2) {
-                    fenced[key.0] = true;
-                }
-            }
-            ExprKind::Set(items) | ExprKind::LiteralSet(items) => {
-                for member in items {
-                    fenced[member.0] = true;
-                }
-            }
-            _ => (),
-        }
-    }
-    fenced
 }
 
 /// By expression: the literals that the program builds at each evaluation
@@ -2485,6 +4429,10 @@ fn pooled_kind(kind: &ExprKind) -> bool {
 /// scalars, quoted symbols, and collection literals of such expressions. A
 /// superset of the emitter's own classification.
 pub(crate) fn constant_like(program: &Program, kind: &ExprKind) -> bool {
+    constant_like_view(program, kind)
+}
+
+fn constant_like_view<S: ExprSource>(src: &S, kind: &ExprKind) -> bool {
     match kind {
         ExprKind::Nil
         | ExprKind::Bool(_)
@@ -2500,10 +4448,10 @@ pub(crate) fn constant_like(program: &Program, kind: &ExprKind) -> bool {
         | ExprKind::LiteralSet(items)
         | ExprKind::ReaderLiteral { items, .. } => items
             .iter()
-            .all(|item| constant_like(program, &program.exprs[item.0].kind)),
+            .all(|item| constant_like_view(src, src.kind(*item))),
         ExprKind::WithMeta { value, metadata } => [value, metadata]
             .iter()
-            .all(|item| constant_like(program, &program.exprs[item.0].kind)),
+            .all(|item| constant_like_view(src, src.kind(**item))),
         _ => false,
     }
 }
@@ -2512,8 +4460,8 @@ pub(crate) fn constant_like(program: &Program, kind: &ExprKind) -> bool {
 /// when evaluating it has no effect and the answer is known: the truth of a
 /// constant, and `true` for quoted symbols, `fn` and collection literals
 /// without effects, which are never `nil` or `false`.
-fn literal_truth(program: &Program, kind: &ExprKind) -> Option<bool> {
-    if let Some(constant) = Constant::of_kind(program, kind) {
+fn literal_truth_view<S: ExprSource>(src: &S, kind: &ExprKind) -> Option<bool> {
+    if let Some(constant) = Constant::of_kind_view(src, kind) {
         return Some(constant.truthy());
     }
     match kind {
@@ -2524,7 +4472,7 @@ fn literal_truth(program: &Program, kind: &ExprKind) -> Option<bool> {
         | ExprKind::Map(_)
         | ExprKind::Set(_)
         | ExprKind::LiteralMap(_)
-        | ExprKind::LiteralSet(_) => effect_free(program, kind).then_some(true),
+        | ExprKind::LiteralSet(_) => effect_free_view(src, kind).then_some(true),
         _ => None,
     }
 }
@@ -2535,9 +4483,13 @@ fn literal_truth(program: &Program, kind: &ExprKind) -> Option<bool> {
 /// whose keys and members are scalar literals (analysis rejects equal literal
 /// keys, which would throw) and whose values are such expressions.
 pub(crate) fn effect_free(program: &Program, kind: &ExprKind) -> bool {
+    effect_free_view(program, kind)
+}
+
+fn effect_free_view<S: ExprSource>(src: &S, kind: &ExprKind) -> bool {
     let scalar = |id: &ExprId| {
         matches!(
-            program.exprs[id.0].kind,
+            src.kind(*id),
             ExprKind::Nil
                 | ExprKind::Bool(_)
                 | ExprKind::Number(_)
@@ -2546,7 +4498,7 @@ pub(crate) fn effect_free(program: &Program, kind: &ExprKind) -> bool {
                 | ExprKind::Symbol(_)
         )
     };
-    let free = |id: &ExprId| effect_free(program, &program.exprs[id.0].kind);
+    let free = |id: &ExprId| effect_free_view(src, src.kind(*id));
     match kind {
         ExprKind::Nil
         | ExprKind::Bool(_)
@@ -2784,5 +4736,110 @@ mod tests {
             "unread binding in case operand should be dropped: {:?}",
             program.exprs[let_idx].kind
         );
+    }
+
+    #[test]
+    fn parallel_fold_and_entry_lookups_match_serial() {
+        use super::{entry_lookups_with_slots, fold_with_facts_with_slots};
+        use crate::scheduler::Slots;
+
+        // Build a program well above PARALLEL_EXPR_THRESHOLD (2048) and
+        // PARALLEL_FORM_THRESHOLD (16) that exercises:
+        // - a non-literal `^:const` collection pre-folded before fan-out
+        // - per-slice string creation (`str`) and new-expr creation (`+` prefix and collection copy)
+        // - `sweep_with_slots` dropping unread destructuring bindings
+        // - `entry_lookups_with_slots` over map literals and local aliases
+        let mut source =
+            String::from("(def ^:const BASE {:a (+ 10 20) :b (str \"hi-\" 7) :v [1 (+ 2 3)]})\n");
+        for i in 0..180 {
+            source.push_str(&format!(
+                "(defn f{i} [x] \
+                   (let [m {{:k1 (inc x) :k2 (+ {i} 1)}} \
+                         unused [x] \
+                         s (str \"p\" {i} \"q\") \
+                         p (+ 1 2 x) \
+                         v (:v BASE) \
+                         alias m] \
+                     [(get alias :k1) (:k2 m) (:a BASE) (:b BASE) (nth v 1) p s]))\n"
+            ));
+        }
+        source.push_str("(pr-str [(f0 5) (f90 6) (f179 7)])\n");
+
+        let base = crate::analyze(&source, &crate::parse(&source).unwrap()).unwrap();
+        assert!(
+            base.exprs.len() >= 2048,
+            "program must exceed parallel threshold: {}",
+            base.exprs.len()
+        );
+
+        let mut p1 = base.clone();
+        let mut built1 = built_literals(&p1);
+        let mut top1 = Vec::new();
+        flatten(&p1, p1.root, &mut top1);
+        let facts1 = ProgramFacts::new_light(&p1, &top1);
+        let folded1 = fold_with_facts_with_slots(&mut p1, &mut built1, &facts1, Slots::ONE);
+        let lookups1 = entry_lookups_with_slots(&p1, &facts1, Slots::ONE);
+
+        for n in [2, 4, 8] {
+            let slots = Slots::new(n).unwrap();
+            let mut pn = base.clone();
+            let mut builtn = built_literals(&pn);
+            let mut topn = Vec::new();
+            flatten(&pn, pn.root, &mut topn);
+            let factsn = ProgramFacts::new_light(&pn, &topn);
+            let foldedn = fold_with_facts_with_slots(&mut pn, &mut builtn, &factsn, slots);
+            let lookupsn = entry_lookups_with_slots(&pn, &factsn, slots);
+
+            assert_eq!(foldedn, folded1, "folded count mismatch at slots={n}");
+            assert_eq!(lookupsn, lookups1, "entry_lookups mismatch at slots={n}");
+            assert!(
+                folded1 > 180 * 3,
+                "expected folds across all slices: {folded1}"
+            );
+            assert!(
+                lookups1.len() >= 180,
+                "expected entry lookups: {}",
+                lookups1.len()
+            );
+        }
+    }
+
+    #[test]
+    fn parallel_fold_falls_back_cleanly_on_cross_slice_shared_expr() {
+        use super::fold_with_facts_with_slots;
+        use crate::scheduler::Slots;
+
+        let mut source = String::new();
+        for i in 0..160 {
+            source.push_str(&format!(
+                "(defn g{i} [x] (let [a (+ 1 2) b (+ {i} 3)] (+ a b x)))\n"
+            ));
+        }
+        source.push_str("(g0 1)\n");
+        let mut base = crate::analyze(&source, &crate::parse(&source).unwrap()).unwrap();
+        assert!(base.exprs.len() >= 2048);
+
+        // Share an expression from an early top-level form inside a late top-level form.
+        if let ExprKind::Do(ref items) = base.exprs[base.root.0].kind {
+            let shared_id = items[0];
+            let mut new_items = items.clone();
+            new_items.push(shared_id);
+            base.exprs[base.root.0].kind = ExprKind::Do(new_items);
+        }
+
+        let mut p1 = base.clone();
+        let mut b1 = built_literals(&p1);
+        let mut t1 = Vec::new();
+        flatten(&p1, p1.root, &mut t1);
+        let f1 = ProgramFacts::new_light(&p1, &t1);
+        let folded1 = fold_with_facts_with_slots(&mut p1, &mut b1, &f1, Slots::ONE);
+
+        let mut p4 = base.clone();
+        let mut b4 = built_literals(&p4);
+        let mut t4 = Vec::new();
+        flatten(&p4, p4.root, &mut t4);
+        let f4 = ProgramFacts::new_light(&p4, &t4);
+        let folded4 = fold_with_facts_with_slots(&mut p4, &mut b4, &f4, Slots::new(4).unwrap());
+        assert_eq!(folded4, folded1);
     }
 }

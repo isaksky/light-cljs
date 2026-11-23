@@ -799,7 +799,12 @@ pub fn prepare_owned_application_with_slots(
             let folded = if options.no_folding {
                 0
             } else {
-                crate::folding::fold_with_facts(&mut prepared.program, &mut built, &facts)
+                crate::folding::fold_with_facts_with_slots(
+                    &mut prepared.program,
+                    &mut built,
+                    &facts,
+                    slots,
+                )
             };
             prepared.stats.folded_expressions += folded;
             if round > 0 && folded == 0 && prev_inlined == 0 && prev_removed == 0 {
@@ -829,12 +834,13 @@ pub fn prepare_owned_application_with_slots(
                 #[cfg(test)]
                 SIMPLIFY_CALL_SHAPES.with(|count| count.set(count.get() + 1));
                 let shapes = crate::call_shapes::analyze(&prepared.program, None, &options.exports);
-                crate::inlining::inline_with_facts_checked(
+                crate::inlining::inline_with_facts_checked_with_slots(
                     &mut prepared.program,
                     &shapes,
                     &mut growth,
                     &mut built,
                     &facts,
+                    slots,
                 )
             };
             prepared.stats.inlined_calls += inlined;
@@ -940,7 +946,7 @@ pub fn prepare_owned_application_with_slots(
         // Lookups of constant keys in maps with constant keys read their entry
         // (light-cljs-221).
         prepared.entry_lookups =
-            crate::folding::entry_lookups(&prepared.program, inference.facts());
+            crate::folding::entry_lookups_with_slots(&prepared.program, inference.facts(), slots);
         prepared.inference = Some(inference);
         prepared.movable = candidates
             .iter()

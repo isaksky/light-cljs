@@ -940,3 +940,80 @@ fn dead_type_assignment_does_not_block_folding_after_compaction() {
     assert!(stats.folded_expressions >= 1, "{stats:?}");
     assert!(!text.contains("rt$count"), "{text}");
 }
+
+/// Parallel `prepare_owned_application_with_slots` (folding delta rewrites,
+/// inlining pre-scans with cached body measurement + multi-overload mutation
+/// invalidation, and `entry_lookups`) matches `Slots::ONE` in stats and
+/// runtime execution across `--jobs 1, 2, 4, 8`.
+#[test]
+fn parallel_prepare_folding_inlining_and_entry_lookups_match_serial() {
+    use light_cljs::prepare_owned_application_with_slots;
+    use light_cljs::scheduler::Slots;
+
+    let mut source = String::from(
+        "(def ^:const CFG {:base (+ 40 2) :tag (str \"v\" 3) :items [10 (+ 10 10)]})\n\
+         (defn leaf [x] (+ x 1))\n\
+         (defn multi\n\
+           ([x] (+ (leaf x) 10))\n\
+           ([x y] (+ (leaf x) (leaf y))))\n",
+    );
+    for i in 0..160 {
+        source.push_str(&format!(
+            "(defn h{i} [x] (+ x {i}))\n\
+             (defn u{i} [x]\n\
+               (let [m {{:a x :b (+ {i} 2)}}\n\
+                     dead [x]\n\
+                     a m]\n\
+                 [(h{i} x) (multi x) (multi x 2) (:a a) (get m :b) (:base CFG) (:tag CFG) (nth (:items CFG) 1) (+ 1 2 x) (str \"k\" {i})]))\n"
+        ));
+    }
+    source.push_str("(pr-str [");
+    for i in 0..160 {
+        source.push_str(&format!("(u{i} {i}) "));
+    }
+    source.push_str("])\n");
+
+    let base = program(&source);
+    assert!(
+        base.exprs.len() >= 2048,
+        "test program should trigger parallel passes: {} exprs",
+        base.exprs.len()
+    );
+
+    let serial = prepare_owned_application_with_slots(
+        base.clone(),
+        ApplicationOptions::new(OptimizationLevel::Advanced),
+        Slots::ONE,
+    );
+    let serial_stats = serial.stats().clone();
+    let serial_out = execute(&format!("console.log({});", serial.emit_js()));
+    assert!(serial_stats.folded_expressions > 300, "{serial_stats:?}");
+    assert!(serial_stats.inlined_calls > 150, "{serial_stats:?}");
+
+    for jobs in [2, 4, 8] {
+        let slots = Slots::new(jobs).unwrap();
+        let parallel = prepare_owned_application_with_slots(
+            base.clone(),
+            ApplicationOptions::new(OptimizationLevel::Advanced),
+            slots,
+        );
+        let stats = parallel.stats();
+        assert_eq!(
+            stats.folded_expressions, serial_stats.folded_expressions,
+            "folded_expressions mismatch at jobs={jobs}"
+        );
+        assert_eq!(
+            stats.inlined_calls, serial_stats.inlined_calls,
+            "inlined_calls mismatch at jobs={jobs}"
+        );
+        assert_eq!(
+            stats.removed_definitions, serial_stats.removed_definitions,
+            "removed_definitions mismatch at jobs={jobs}"
+        );
+        let out = execute(&format!(
+            "console.log({});",
+            parallel.emit_js_with_slots(slots)
+        ));
+        assert_eq!(out, serial_out, "runtime output mismatch at jobs={jobs}");
+    }
+}

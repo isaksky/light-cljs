@@ -64,10 +64,22 @@
 use crate::analyzer::{Expr, ExprId, ExprKind, LocalBinding, LocalId, Program};
 use crate::call_shapes::CallShapes;
 use crate::core_operations::{Calls, Purity};
-use crate::folding::{NOWHERE, constant_like};
+use crate::folding::{
+    BitSet, NOWHERE, constant_like, partition_slices, sole_definitions_and_fenced_with_slots,
+};
 use crate::inference::ProgramFacts;
 use crate::program_fragment::visit_children;
-use std::collections::HashSet;
+use crate::scheduler::{self, Slots};
+use std::collections::{HashMap, HashSet};
+
+/// Minimum expression count before parallelizing inlining pre-scans.
+const PARALLEL_EXPR_THRESHOLD: usize = 2048;
+
+/// Minimum top-level form count before slicing the inlining pre-walk.
+const PARALLEL_FORM_THRESHOLD: usize = 16;
+
+/// Target slices per CPU slot for load balancing on `scheduler::map`.
+const SLICES_PER_SLOT: usize = 4;
 
 /// The most expressions a body inlined at every call may have.
 pub const INLINE_BUDGET: usize = 10;
@@ -89,8 +101,8 @@ struct Body {
     nodes: usize,
     pure: bool,
     binds: bool,
-    /// The local of every local read, once per read.
-    reads: Vec<LocalId>,
+    /// The local of every local read, once per read (compact `u32` IDs).
+    reads: Vec<u32>,
 }
 
 /// How an argument reaches its parameter.
@@ -146,6 +158,19 @@ pub fn inline_with_facts(
     inline_with_facts_checked(program, shapes, growth, built, facts).0
 }
 
+/// [`inline_with_facts`] running read-only pre-scans on `slots` CPU work slots
+/// (`--jobs N`), keeping the growth-budget commit loop serial and deterministic.
+pub fn inline_with_facts_with_slots(
+    program: &mut Program,
+    shapes: &CallShapes,
+    growth: &mut usize,
+    built: &mut Vec<bool>,
+    facts: &ProgramFacts,
+    slots: Slots,
+) -> usize {
+    inline_with_facts_checked_with_slots(program, shapes, growth, built, facts, slots).0
+}
+
 /// [`inline_with_facts`], also reporting whether any inlined call sat in a
 /// position that [`ProgramFacts`] inspects directly (assignment target or
 /// receiver, raw JS hole, or `extend-type` target), so callers know whether
@@ -157,50 +182,89 @@ pub(crate) fn inline_with_facts_checked(
     built: &mut Vec<bool>,
     facts: &ProgramFacts,
 ) -> (usize, bool) {
+    inline_with_facts_checked_with_slots(program, shapes, growth, built, facts, Slots::ONE)
+}
+
+const NO_OWNER: u32 = u32::MAX;
+const FLAG_BLOCK: u8 = 1;
+const FLAG_MULTI_PARENT: u8 = 2;
+
+#[derive(Clone, Copy)]
+struct DirectCallInfo {
+    id: u32,
+    top_index: u32,
+    owner: u32,
+    flags: u8,
+}
+
+impl DirectCallInfo {
+    #[inline]
+    fn block(self) -> bool {
+        (self.flags & FLAG_BLOCK) != 0
+    }
+
+    #[inline]
+    fn multi_parent(self) -> bool {
+        (self.flags & FLAG_MULTI_PARENT) != 0
+    }
+}
+
+struct InlineScanSlice {
+    reached: BitSet,
+    direct_calls: Vec<DirectCallInfo>,
+    fn_owners: Vec<(u32, u32)>,
+    def_positions: Vec<(u32, u32)>,
+    fact_sites: Vec<u32>,
+}
+
+fn record_assign_site(program: &Program, target: ExprId, sites: &mut Vec<u32>) {
+    sites.push(target.0 as u32);
+    if let ExprKind::Property { receiver, .. } | ExprKind::JsIndex { receiver, .. } =
+        program.exprs[target.0].kind
+    {
+        sites.push(receiver.0 as u32);
+    }
+}
+
+fn scan_inline_slice(
+    program: &Program,
+    shapes: &CallShapes,
+    top: &[ExprId],
+    range: std::ops::Range<usize>,
+) -> InlineScanSlice {
     let count = program.exprs.len();
-    let mut top = Vec::new();
-    flatten(program, program.root, &mut top);
-
-    // Expressions whose rewrite could expose a new `CoreFn`, `Global`,
-    // `Property` or `JsGlobal` directly inspected by `ProgramFacts::build`.
-    let mut fact_sites: HashSet<ExprId> = HashSet::new();
-    let record_assign_site = |program: &Program, target: ExprId, sites: &mut HashSet<ExprId>| {
-        sites.insert(target);
-        if let ExprKind::Property { receiver, .. } | ExprKind::JsIndex { receiver, .. } =
-            program.exprs[target.0].kind
-        {
-            sites.insert(receiver);
-        }
-    };
-
-    // Walk each top-level form in order, children first, recording each
-    // expression's parent count, the first form that reaches it, the
-    // innermost `fn` around it (`owner`) and whether emission writes it as a
-    // statement or a returned value (`block`), where a `let` is a block
-    // rather than a function call.
-    let mut parents = vec![0u8; count];
-    let mut owner = vec![None; count];
-    let mut position = vec![NOWHERE; count];
-    let mut block = vec![false; count];
-    let mut visited = vec![false; count];
-    let mut calls = Vec::new();
+    let mut visited = BitSet::new(count);
+    let mut pushed = BitSet::new(count);
+    let mut multi_parents: HashSet<u32> = HashSet::new();
+    let mut direct_calls = Vec::new();
+    let mut fn_owners = Vec::new();
+    let mut def_positions = Vec::new();
+    let mut fact_sites = Vec::new();
     let mut roles = Vec::new();
-    for (index, &form) in top.iter().enumerate() {
-        if visited[form.0] {
+    let mut pending: Vec<(ExprId, bool, bool, u32)> = Vec::new();
+
+    for index in range {
+        let form = top[index];
+        if visited.get(form.0) {
             continue;
         }
-        // A top-level form's parent is the `do` around it.
-        parents[form.0] = 1;
-        block[form.0] = true;
-        let mut pending = vec![(form, false)];
-        while let Some((id, expanded)) = pending.pop() {
+        pushed.set(form.0);
+        pending.push((form, false, true, NO_OWNER));
+        while let Some((id, expanded, is_block, cur_owner)) = pending.pop() {
             if expanded {
-                if matches!(program.exprs[id.0].kind, ExprKind::Call { .. }) {
-                    calls.push(id);
+                if matches!(program.exprs[id.0].kind, ExprKind::Call { .. })
+                    && shapes.call(id).is_some()
+                {
+                    direct_calls.push(DirectCallInfo {
+                        id: id.0 as u32,
+                        top_index: index as u32,
+                        owner: cur_owner,
+                        flags: if is_block { FLAG_BLOCK } else { 0 },
+                    });
                 }
                 continue;
             }
-            if std::mem::replace(&mut visited[id.0], true) {
+            if visited.set(id.0) {
                 continue;
             }
             match &program.exprs[id.0].kind {
@@ -218,48 +282,293 @@ pub(crate) fn inline_with_facts_checked(
                     }
                 }
                 ExprKind::ExtendType { target, .. } => {
-                    fact_sites.insert(*target);
+                    fact_sites.push(target.0 as u32);
+                }
+                ExprKind::Def { .. } => {
+                    def_positions.push((id.0 as u32, index as u32));
+                }
+                ExprKind::Fn { .. } => {
+                    fn_owners.push((id.0 as u32, cur_owner));
                 }
                 _ => (),
             }
-            position[id.0] = index as u32;
-            pending.push((id, true));
+            pending.push((id, true, is_block, cur_owner));
             roles.clear();
-            child_roles(program, id, block[id.0], &mut roles);
+            child_roles(program, id, is_block, &mut roles);
             let inner = if matches!(program.exprs[id.0].kind, ExprKind::Fn { .. }) {
-                Some(id)
+                id.0 as u32
             } else {
-                owner[id.0]
+                cur_owner
             };
             for &(child, role) in roles.iter().rev() {
-                parents[child.0] = parents[child.0].saturating_add(1);
-                if !visited[child.0] {
-                    block[child.0] = role;
-                    owner[child.0] = inner;
-                    pending.push((child, false));
+                if pushed.set(child.0) {
+                    multi_parents.insert(child.0 as u32);
+                }
+                if !visited.get(child.0) {
+                    pending.push((child, false, role, inner));
                 }
             }
         }
     }
 
-    let definitions = crate::folding::sole_definitions(program, &position);
-    // Map keys and set members, which must not become constants.
-    let fenced = crate::folding::fenced_positions(program);
-    built.resize(count, false);
-    let mut sites = vec![0u32; count];
-    for &call in &calls {
-        if let Some(direct) = shapes.call(call) {
-            sites[direct.function.0] += 1;
+    if !multi_parents.is_empty() {
+        for call in &mut direct_calls {
+            if multi_parents.contains(&call.id) {
+                call.flags |= FLAG_MULTI_PARENT;
+            }
         }
     }
 
+    InlineScanSlice {
+        reached: visited,
+        direct_calls,
+        fn_owners,
+        def_positions,
+        fact_sites,
+    }
+}
+
+/// [`inline_with_facts_checked`] running read-only pre-scans on `slots` CPU
+/// work slots (`--jobs N`).
+pub(crate) fn inline_with_facts_checked_with_slots(
+    program: &mut Program,
+    shapes: &CallShapes,
+    growth: &mut usize,
+    built: &mut Vec<bool>,
+    facts: &ProgramFacts,
+    slots: Slots,
+) -> (usize, bool) {
+    let count = program.exprs.len();
+    let mut top = Vec::new();
+    flatten(program, program.root, &mut top);
+
+    let use_parallel =
+        slots.get() > 1 && count >= PARALLEL_EXPR_THRESHOLD && top.len() >= PARALLEL_FORM_THRESHOLD;
+
+    // Walk each top-level form in order, children first, recording each
+    // direct call's single-parent status, top-level form index, innermost `fn`
+    // owner, and whether emission writes it in block/return position.
+    let (global_reached, direct_calls, fn_owners, def_positions, fact_sites, cross_slice_shared) =
+        if use_parallel {
+            let target_slices = (slots.get() * SLICES_PER_SLOT).min(top.len());
+            let weights: Vec<u64> = vec![1; top.len()];
+            let ranges = partition_slices(&weights, target_slices);
+            let jobs: Vec<(u64, std::ops::Range<usize>)> =
+                ranges.into_iter().map(|r| (r.len() as u64, r)).collect();
+            let slice_results = scheduler::map(slots, jobs, |range| {
+                scan_inline_slice(program, shapes, &top, range)
+            });
+
+            let mut global_reached = BitSet::new(count);
+            let mut overlaps = false;
+            for slice in &slice_results {
+                if global_reached.intersects(&slice.reached) {
+                    overlaps = true;
+                    break;
+                }
+                global_reached.or_assign(&slice.reached);
+            }
+
+            if overlaps {
+                // Rare cross-slice shared ExprId: fall back to exact serial pre-walk.
+                drop(slice_results);
+                let single = scan_inline_slice(program, shapes, &top, 0..top.len());
+                let fn_owners: HashMap<u32, u32> = single.fn_owners.into_iter().collect();
+                let def_positions: HashMap<u32, u32> = single.def_positions.into_iter().collect();
+                let fact_sites: HashSet<u32> = single.fact_sites.into_iter().collect();
+                (
+                    single.reached,
+                    single.direct_calls,
+                    fn_owners,
+                    def_positions,
+                    fact_sites,
+                    true,
+                )
+            } else {
+                let total_calls: usize = slice_results.iter().map(|s| s.direct_calls.len()).sum();
+                let total_fns: usize = slice_results.iter().map(|s| s.fn_owners.len()).sum();
+                let total_defs: usize = slice_results.iter().map(|s| s.def_positions.len()).sum();
+                let mut direct_calls = Vec::with_capacity(total_calls);
+                let mut fn_owners = HashMap::with_capacity(total_fns);
+                let mut def_positions = HashMap::with_capacity(total_defs);
+                let mut fact_sites = HashSet::new();
+                for slice in slice_results {
+                    direct_calls.extend(slice.direct_calls);
+                    fn_owners.extend(slice.fn_owners);
+                    def_positions.extend(slice.def_positions);
+                    fact_sites.extend(slice.fact_sites);
+                }
+                (
+                    global_reached,
+                    direct_calls,
+                    fn_owners,
+                    def_positions,
+                    fact_sites,
+                    false,
+                )
+            }
+        } else {
+            let single = scan_inline_slice(program, shapes, &top, 0..top.len());
+            let fn_owners: HashMap<u32, u32> = single.fn_owners.into_iter().collect();
+            let def_positions: HashMap<u32, u32> = single.def_positions.into_iter().collect();
+            let fact_sites: HashSet<u32> = single.fact_sites.into_iter().collect();
+            (
+                single.reached,
+                single.direct_calls,
+                fn_owners,
+                def_positions,
+                fact_sites,
+                false,
+            )
+        };
+
+    let (definitions, fenced) =
+        sole_definitions_and_fenced_with_slots(program, &global_reached, slots);
+    drop(global_reached);
+    built.resize(count, false);
+
+    let mut sites: HashMap<u32, u32> = HashMap::new();
+    for call in &direct_calls {
+        if let Some(direct) = shapes.call(ExprId(call.id as usize)) {
+            *sites.entry(direct.function.0 as u32).or_insert(0) += 1;
+        }
+    }
+
+    // Pre-measure distinct eligible `(function, method)` candidates in parallel
+    // when running on multiple slots. For `Slots::ONE`, skip upfront batch
+    // allocation and measure lazily during the commit loop (caching only
+    // multi-call small bodies so single-use bodies are never retained).
+    let mut measured_bodies: HashMap<(u32, u32), (u32, Option<Body>)> =
+        if slots.get() > 1 && !cross_slice_shared {
+            let mut candidate_seen: HashSet<(u32, u32)> = HashSet::new();
+            let mut candidates: Vec<(u32, u32, ExprId, usize)> = Vec::new();
+            for call in &direct_calls {
+                if call.multi_parent() {
+                    continue;
+                }
+                let call_id = ExprId(call.id as usize);
+                let Some(direct) = shapes.call(call_id) else {
+                    continue;
+                };
+                let ExprKind::Call { callee, args } = &program.exprs[call_id.0].kind else {
+                    continue;
+                };
+                let ExprKind::Global(global) = program.exprs[callee.0].kind else {
+                    continue;
+                };
+                if program.globals[global.0].boolean_tag {
+                    continue;
+                }
+                let Some(definition) = definitions[global.0] else {
+                    continue;
+                };
+                let defined = def_positions
+                    .get(&(definition.0 as u32))
+                    .copied()
+                    .unwrap_or(NOWHERE);
+                if top.get(defined as usize) != Some(&definition)
+                    || call.top_index == NOWHERE
+                    || call.top_index < defined
+                {
+                    continue;
+                }
+                if call.top_index == defined {
+                    let mut inside = false;
+                    let mut function = call.owner;
+                    while function != NO_OWNER {
+                        if function == direct.function.0 as u32 {
+                            inside = true;
+                            break;
+                        }
+                        function = fn_owners.get(&function).copied().unwrap_or(NO_OWNER);
+                    }
+                    if !inside {
+                        continue;
+                    }
+                }
+                let ExprKind::Fn { methods, .. } = &program.exprs[direct.function.0].kind else {
+                    continue;
+                };
+                let method = &methods[direct.method];
+                let fixed = method.params.len();
+                if method.asynchronous
+                    || !method.captures.is_empty()
+                    || program.recur_targets[method.target.0].used
+                    || (method.rest.is_none() && args.len() != fixed)
+                    || args.len() < fixed
+                {
+                    continue;
+                }
+                let key = (direct.function.0 as u32, direct.method as u32);
+                if candidate_seen.insert(key) {
+                    let closed = shapes.closed(global);
+                    let call_count =
+                        sites.get(&(direct.function.0 as u32)).copied().unwrap_or(0) as usize;
+                    let single = closed && call_count == 1;
+                    let limit = if single {
+                        SINGLE_USE_LIMIT
+                    } else {
+                        INLINE_BUDGET
+                    };
+                    candidates.push((key.0, key.1, method.body, limit));
+                }
+            }
+            drop(candidate_seen);
+
+            if candidates.len() >= PARALLEL_FORM_THRESHOLD {
+                let target_slices = (slots.get() * SLICES_PER_SLOT).min(candidates.len());
+                let weights: Vec<u64> = candidates.iter().map(|c| c.3 as u64).collect();
+                let ranges = partition_slices(&weights, target_slices);
+                let jobs: Vec<(u64, std::ops::Range<usize>)> = ranges
+                    .into_iter()
+                    .map(|r| {
+                        let w: u64 = weights[r.clone()].iter().sum();
+                        (w, r)
+                    })
+                    .collect();
+                let chunks = scheduler::map(slots, jobs, |range| {
+                    let mut out = Vec::with_capacity(range.len());
+                    for &(func, method_idx, body_id, limit) in &candidates[range] {
+                        out.push((
+                            (func, method_idx),
+                            (0u32, measure(program, facts, body_id, limit)),
+                        ));
+                    }
+                    out
+                });
+                drop(candidates);
+                let mut map = HashMap::new();
+                for chunk in chunks {
+                    map.extend(chunk);
+                }
+                map
+            } else {
+                let mut map = HashMap::with_capacity(candidates.len());
+                for (func, method_idx, body_id, limit) in candidates {
+                    map.insert(
+                        (func, method_idx),
+                        (0u32, measure(program, facts, body_id, limit)),
+                    );
+                }
+                map
+            }
+        } else {
+            HashMap::new()
+        };
+
+    // Version counter per enclosing `fn`: bumped whenever an inlined call
+    // mutates inside that `fn`, invalidating cached `Body` measurements for
+    // every method of that `fn`.
+    let mut fn_versions: HashMap<u32, u32> = HashMap::new();
+
     let mut inlined = 0;
     let mut invalidated_facts = false;
-    for call in calls {
+    for call_info in direct_calls {
+        let call = ExprId(call_info.id as usize);
         let Some(direct) = shapes.call(call) else {
             continue;
         };
-        if parents[call.0] != 1 {
+        if call_info.multi_parent() {
             continue;
         }
         let ExprKind::Call { callee, args } = &program.exprs[call.0].kind else {
@@ -276,23 +585,26 @@ pub(crate) fn inline_with_facts_checked(
         let Some(definition) = definitions[global.0] else {
             continue;
         };
-        let defined = position[definition.0];
+        let defined = def_positions
+            .get(&(definition.0 as u32))
+            .copied()
+            .unwrap_or(NOWHERE);
         // A call inside the function itself runs once the function exists,
         // after its definition.
         let inside = || {
-            let mut function = owner[call.0];
-            while let Some(id) = function {
-                if id == direct.function {
+            let mut function = call_info.owner;
+            while function != NO_OWNER {
+                if function == direct.function.0 as u32 {
                     return true;
                 }
-                function = owner[id.0];
+                function = fn_owners.get(&function).copied().unwrap_or(NO_OWNER);
             }
             false
         };
         if top.get(defined as usize) != Some(&definition)
-            || position[call.0] == NOWHERE
-            || position[call.0] < defined
-            || (position[call.0] == defined && !inside())
+            || call_info.top_index == NOWHERE
+            || call_info.top_index < defined
+            || (call_info.top_index == defined && !inside())
         {
             continue;
         }
@@ -313,14 +625,34 @@ pub(crate) fn inline_with_facts_checked(
             continue;
         }
         let closed = shapes.closed(global);
-        let call_count = sites[direct.function.0] as usize;
+        let call_count = sites.get(&(direct.function.0 as u32)).copied().unwrap_or(0) as usize;
         let single = closed && call_count == 1;
         let limit = if single {
             SINGLE_USE_LIMIT
         } else {
             INLINE_BUDGET
         };
-        let Some(body) = measure(program, facts, method.body, limit) else {
+        let func32 = direct.function.0 as u32;
+        let key = (func32, direct.method as u32);
+        let cur_ver = fn_versions.get(&func32).copied().unwrap_or(0);
+        let body = if cross_slice_shared {
+            measure(program, facts, method.body, limit)
+        } else if single {
+            // Single-use body is needed at most once: take ownership and free immediately.
+            match measured_bodies.remove(&key) {
+                Some((ver, cached)) if ver == cur_ver => cached,
+                _ => measure(program, facts, method.body, limit),
+            }
+        } else if let Some((ver, cached)) = measured_bodies.get(&key)
+            && *ver == cur_ver
+        {
+            cached.clone()
+        } else {
+            let fresh_body = measure(program, facts, method.body, limit);
+            measured_bodies.insert(key, (cur_ver, fresh_body.clone()));
+            fresh_body
+        };
+        let Some(body) = body else {
             continue;
         };
         if !single
@@ -330,7 +662,7 @@ pub(crate) fn inline_with_facts_checked(
         {
             continue;
         }
-        if body.binds && !block[call.0] {
+        if body.binds && !call_info.block() {
             continue;
         }
 
@@ -343,7 +675,8 @@ pub(crate) fn inline_with_facts_checked(
             .map(|(index, &arg)| {
                 let kind = &program.exprs[arg.0].kind;
                 let reads = method.params.get(index).map_or(0, |parameter| {
-                    body.reads.iter().filter(|l| *l == parameter).count()
+                    let target = parameter.0 as u32;
+                    body.reads.iter().filter(|l| **l == target).count()
                 });
                 // A literal built at each evaluation is one value per call,
                 // which copies at several reads would not be.
@@ -373,12 +706,12 @@ pub(crate) fn inline_with_facts_checked(
             // Other code runs while an `await` waits, and may change what
             // the body reads before the parameter.
             && !crate::program_fragment::awaits(program, args[bound])
-            && body.reads.iter().filter(|l| **l == parameter).count() == 1
+            && body.reads.iter().filter(|l| **l == parameter.0 as u32).count() == 1
             && first_read(program, method.body, parameter) == Scan::Found
         {
             uses[bound] = Use::Moved;
         }
-        if uses.contains(&Use::Bound) && !block[call.0] {
+        if uses.contains(&Use::Bound) && !call_info.block() {
             continue;
         }
         let (exprs, locals) = (program.exprs.len(), program.locals.len());
@@ -411,10 +744,9 @@ pub(crate) fn inline_with_facts_checked(
             parameters,
         };
         // A call that is a map key or set member must not become a constant.
-        let Some(copy) = copier
-            .copy(method.body)
-            .filter(|copy| !fenced[call.0] || !constant_like(program, &program.exprs[copy.0].kind))
-        else {
+        let Some(copy) = copier.copy(method.body).filter(|copy| {
+            !fenced.get(call.0) || !constant_like(program, &program.exprs[copy.0].kind)
+        }) else {
             program.exprs.truncate(exprs);
             program.locals.truncate(locals);
             built.truncate(exprs);
@@ -431,10 +763,17 @@ pub(crate) fn inline_with_facts_checked(
             }
         };
         program.exprs[call.0].kind = kind;
+        // Any enclosing `fn` now has a modified body and must be re-measured
+        // before a later call copies it.
+        let mut enclosing = call_info.owner;
+        while enclosing != NO_OWNER {
+            *fn_versions.entry(enclosing).or_insert(0) += 1;
+            enclosing = fn_owners.get(&enclosing).copied().unwrap_or(NO_OWNER);
+        }
         if !single {
             *growth -= body.nodes;
         }
-        invalidated_facts |= fact_sites.contains(&call);
+        invalidated_facts |= fact_sites.contains(&call_info.id);
         inlined += 1;
     }
     (inlined, invalidated_facts)
@@ -688,7 +1027,7 @@ fn measure(program: &Program, facts: &ProgramFacts, body: ExprId, limit: usize) 
         }
         let kind = &program.exprs[id.0].kind;
         match kind {
-            ExprKind::Local(local) => result.reads.push(*local),
+            ExprKind::Local(local) => result.reads.push(local.0 as u32),
             ExprKind::Nil
             | ExprKind::Bool(_)
             | ExprKind::Number(_)
@@ -874,7 +1213,7 @@ impl Copier<'_> {
             _ => return None,
         };
         // Map keys and set members that are not constants must not become
-        // ones ([`crate::folding::fenced_positions`]).
+        // ones (fenced positions).
         let program = &*self.program;
         let keys = |kind: &ExprKind| -> Vec<ExprId> {
             match kind {
