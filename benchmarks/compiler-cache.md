@@ -1092,12 +1092,28 @@ advanced --stats`). Peak memory is from `/usr/bin/time -l` (GB = 10^9 bytes).
   the cache populated by cold `--jobs 8` achieves 100% cache hits (`569/569` in
   `1,160.3 ms` on `workload-200k-seed42`; `3,073/3,073` in `2,292.3 ms` on
   `re-frame-200k-seed42`) with byte-identical output and matching runtime results.
-- *Targets.* Every `trace.top-level-ms` (`347.0 <= 650 ms`, `752.2 <= 950 ms`),
-  `trace.wait-ms` (`11.7 <= 650 ms`, `31.4 <= 550 ms`), and peak-memory
-  (`1.168 <= 1.25 GB`, `1.372 <= 1.45 GB`) target passes with wide margins, and
-  `trace.top-level-ms` matches `--no-cache` on both workloads (`trace.top-level.wait-ms = 0.0 ms`).
-  `pool.utilization` on `workload-200k-seed42` rises +73% (`0.120 -> 0.208`) but
-  remains below the pre-1102 `>= 0.28` target: `light-cljs-1102` cut the
-  numerator `time.worker-units-ms` by 38% (`5,691 -> 3,468 ms`), while the
-  unlanded serial `cache.write-ms` (`1,113.5 ms`, 47.5% of `time.pool-ms = 2,344.5 ms`,
-  owned by `light-cljs-1104`) keeps workers idle during artifact publishing.
+- *Targets.* Pre-rebase (`de2f03113` on `865f64ca2`), every `trace.top-level-ms`
+  (`347.0 <= 650 ms`, `752.2 <= 950 ms`), `trace.wait-ms` (`11.7 <= 650 ms`,
+  `31.4 <= 550 ms`), and peak-memory (`1.168 <= 1.25 GB`, `1.372 <= 1.45 GB`)
+  target passed, while `pool.utilization` on `workload-200k-seed42` rose +73%
+  (`0.120 -> 0.208`) below `>= 0.28` only while `1104`'s serial `cache.write-ms`
+  (`1,113.5 ms`) remained on `master`.
+- *Post-rebase on `master` `6961c3a0b` (with `light-cljs-1104` landed, candidate
+  `54a34a441`, unreserved load 5.45–6.34, medians of 3 cold `--cache-dir --jobs 8`
+  rounds + 1 `--no-cache --jobs 8` + 1 `warm-j1-from-j8`):* every target passes:
+  - `workload-200k-seed42`: `--no-cache --jobs 8` wall `2,065.5 ms` (`1.152 GB`);
+    cold `--cache-dir --jobs 8` median wall `2,129.1 ms` (`2,103.5–2,380.6`),
+    `trace.top-level-ms` `380.3 ms` (`365.8–414.5`, `<= 650 ms`), `trace.wait-ms`
+    `207.4 ms` (`201.6–274.9`, `<= 650 ms`), `trace.top-level.wait-ms` `0.0 ms`,
+    `cache.write-ms` `17.6 ms`, `pool.utilization` `0.342` (`0.326–0.343`,
+    `>= 0.28`), peak memory `1.224 GB` (`1.218–1.225`, `<= 1.25 GB`);
+    `warm-j1-from-j8` `960.1 ms` (`569/569` hits, `0.499 GB`), SHA-256
+    `4a4f9189a188`, oracle `484264`, `check-waste.bb --strict` exit 0.
+  - `re-frame-200k-seed42`: `--no-cache --jobs 8` wall `2,956.9 ms` (`1.362 GB`);
+    cold `--cache-dir --jobs 8` median wall `3,474.5 ms` (`3,460.2–3,524.6`),
+    `trace.top-level-ms` `814.7 ms` (`811.5–816.9`, `<= 950 ms`), `trace.wait-ms`
+    `202.6 ms` (`195.5–208.4`, `<= 550 ms`), `trace.top-level.wait-ms` `0.0 ms`,
+    `cache.write-ms` `36.8 ms`, `pool.utilization` `0.215` (`0.214–0.216`),
+    peak memory `1.404 GB` (`1.401–1.417`, `<= 1.45 GB`); `warm-j1-from-j8`
+    `1,223.7 ms` (`3,073/3,073` hits, `0.639 GB`), SHA-256 `e934a4528dc7`,
+    oracle `714878 117718`, `check-waste.bb --strict` exit 0.

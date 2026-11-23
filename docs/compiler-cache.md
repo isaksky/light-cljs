@@ -1557,6 +1557,19 @@ build is a supported debugging and comparison path.
   16-word rolling message schedule with 8-round unrolled blocks, and
   `artifact_codec::Interner` uses a contiguous UTF-16 pool with an
   open-addressed table and an ASCII fast path.
+
+  *As built (light-cljs-1103):* cache keying is decoupled from the per-namespace
+  settling stall. `ObservationLog` indexes observations per `source_index` so
+  each namespace's deferred observations are taken cleanly in canonical order at
+  `merge_namespace` (via `PendingPublication::Unkeyed`), while `CompileCache::has_candidates`
+  gates a miss->hit soundness barrier that calls `settle_pending` (skipping
+  `macro_free` units) and keys earlier unkeyed captures only before a namespace
+  with snapshot candidates is looked up. `ParallelTopLevel` is enabled during
+  artifact capture (skipping speculation on namespaces with snapshot candidates),
+  relocating overlay `view_globals` against canonical `start.globals`, recording
+  overlay namespace registry entries with `unit: None`, and deferring
+  `Unit::emitted` marks to canonical unit charge time so `--jobs 8` and
+  `--jobs 1` publish compatible artifacts.
 - **Failure.** The first failed write (a read-only directory, a full disk)
   prints one `warning:` line and turns writing off for the store's
   lifetime. A failed write leaves at most a temporary file, so what the
