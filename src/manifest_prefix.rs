@@ -111,7 +111,14 @@ impl NamespaceRecords for ManifestPrefix {
         self.ids.get(name).map(|&id| NamespaceId(id))
     }
     fn dependency_row(&self, id: NamespaceId) -> Vec<(NamespaceId, EdgeKinds)> {
-        self.rows[id.0 as usize].clone()
+        let row = &self.rows[id.0 as usize];
+        if self.namespaces[id.0 as usize].coarse {
+            row.iter()
+                .map(|&(target, kinds)| (target, kinds | EdgeKinds::COARSE))
+                .collect()
+        } else {
+            row.clone()
+        }
     }
     fn inventory(&self) -> crate::cache_key::Digest {
         crate::cache_key::inventory(&self.namespaces)
@@ -239,10 +246,8 @@ impl ManifestPrefix {
                 rows.push((NamespaceId(target), kinds));
             }
         }
-        if fields.coarse {
-            let earlier = self.namespaces.len() as u32;
-            rows.extend((0..earlier).map(|at| (NamespaceId(at), EdgeKinds::COARSE)));
-        }
+        // Keep coarse edges implicit via `record.coarse` instead of expanding
+        // `0..earlier` into `self.rows` (expanded lazily in `to_manifest`).
         record.coarse = fields.coarse;
         record.declarations = fields.declarations.clone();
         record.absent = fields.absent.clone();
@@ -260,18 +265,41 @@ impl ManifestPrefix {
     /// its startup build used the persistent cache, where installed
     /// namespaces observe nothing and their stored records stand in.
     pub fn to_manifest(&self, lazy: &[(u32, String)]) -> DependencyManifest {
+        let rows = self
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(id, row)| {
+                if !self.namespaces[id].coarse {
+                    return row
+                        .iter()
+                        .map(|&(target, kinds)| (target.0, kinds))
+                        .collect();
+                }
+                let earlier = id as u32;
+                let mut merged = Vec::with_capacity(earlier as usize);
+                let mut explicit = row.iter().peekable();
+                for at in 0..earlier {
+                    let mut kinds = EdgeKinds::COARSE;
+                    if let Some(&&(target, extra)) = explicit.peek()
+                        && target.0 == at
+                    {
+                        kinds |= extra;
+                        explicit.next();
+                    }
+                    merged.push((at, kinds));
+                }
+                for &(target, kinds) in explicit {
+                    merged.push((target.0, kinds));
+                }
+                merged
+            })
+            .collect();
         crate::dependency_manifest::from_rows(
             self.namespaces.clone(),
             self.lookups.clone(),
             self.inputs.clone(),
-            self.rows
-                .iter()
-                .map(|row| {
-                    row.iter()
-                        .map(|&(target, kinds)| (target.0, kinds))
-                        .collect()
-                })
-                .collect(),
+            rows,
             lazy,
             &self.helper_inputs,
         )
@@ -410,7 +438,6 @@ impl ManifestPrefix {
         rows.append(&mut helpers);
         if coarse {
             record.coarse = true;
-            rows.extend((0..id).map(|earlier| (NamespaceId(earlier), EdgeKinds::COARSE)));
         }
         merge(&mut rows);
         absent.sort_unstable();

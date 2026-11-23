@@ -3160,8 +3160,8 @@ fn cache_lookup_respects_two_cpu_slots() {
     // Stage C for `h1..h4` runs after `UnitPool` starts and must use only the
     // active `UnitPool` worker plus coordinator (<= 2 slots, no `light-cljs-map-*`).
     write_sources(20);
-    let stage_c_threads: Arc<Mutex<HashSet<(std::thread::ThreadId, Option<String>)>>> =
-        Arc::new(Mutex::new(HashSet::new()));
+    type ThreadSet = HashSet<(std::thread::ThreadId, Option<String>)>;
+    let stage_c_threads: Arc<Mutex<ThreadSet>> = Arc::new(Mutex::new(HashSet::new()));
     let hook_threads = Arc::clone(&stage_c_threads);
     {
         let provider = FileSourceProvider::new(vec![src_dir.clone()]);

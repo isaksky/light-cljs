@@ -4775,7 +4775,7 @@ impl NamespaceAnalysis {
         let mut drained = match pending {
             Pending::Analyzed(drained) => drained,
             Pending::Installed {
-                artifact,
+                mut artifact,
                 top,
                 source_index,
                 exprs,
@@ -4793,22 +4793,6 @@ impl NamespaceAnalysis {
                 }
                 warnings.extend(held);
                 sort_warnings(warnings);
-                let bodies = self.program.exprs.len();
-                crate::artifact_install::install_bodies(
-                    crate::artifact_install::Target {
-                        program: &mut self.program,
-                        names: &mut self.globals,
-                        index: &mut self.install_index,
-                        source_index,
-                        warnings,
-                    },
-                    &artifact,
-                    top,
-                )
-                .map_err(DrainError::Install)?;
-                for range in [exprs, bodies..self.program.exprs.len()] {
-                    extend_arities(&self.program, range, &mut self.arities);
-                }
                 let mut lazy: Vec<(String, Span)> = Vec::new();
                 if let Some(bodies) = &artifact.bodies {
                     for target in &bodies.declarations.lazy_targets {
@@ -4820,6 +4804,22 @@ impl NamespaceAnalysis {
                             lazy.push((target.namespace.clone(), start as usize..end as usize));
                         }
                     }
+                }
+                let bodies = self.program.exprs.len();
+                crate::artifact_install::install_bodies(
+                    crate::artifact_install::Target {
+                        program: &mut self.program,
+                        names: &mut self.globals,
+                        index: &mut self.install_index,
+                        source_index,
+                        warnings,
+                    },
+                    &mut artifact,
+                    top,
+                )
+                .map_err(DrainError::Install)?;
+                for range in [exprs, bodies..self.program.exprs.len()] {
+                    extend_arities(&self.program, range, &mut self.arities);
                 }
                 return Ok(Some(Merged {
                     source_index,
@@ -5677,7 +5677,7 @@ impl NamespaceAnalysis {
                 source_index: self.roots.len(),
                 warnings: &mut warnings,
             },
-            &artifact,
+            &mut artifact,
             source,
             macro_host,
         )?;

@@ -178,14 +178,87 @@ pub(crate) fn install(
 
 /// [`install`] for a freshly decoded artifact that already passed
 /// [`NamespaceArtifact::validate_with_depth`], skipping the redundant
-/// structural validation walk.
+/// structural validation walk and moving its IR tables into `program` without
+/// cloning once [`resolve`] admits it.
 pub(crate) fn install_validated(
     target: Target<'_>,
-    artifact: &NamespaceArtifact,
+    artifact: &mut NamespaceArtifact,
     source: &InstallSource<'_>,
     macro_host: &mut MacroHost,
 ) -> Result<ir::ExprId, InstallError> {
-    install_inner(target, artifact, source, macro_host, true)
+    let Target {
+        program,
+        names,
+        index,
+        source_index,
+        warnings,
+    } = target;
+    index.extend(program);
+    index.take_fresh();
+    let resolved = resolve(
+        program,
+        names,
+        index,
+        source_index,
+        artifact,
+        source,
+        macro_host,
+        true,
+    )
+    .map_err(InstallError::Refused)?;
+    let mut owned_ir = std::mem::take(&mut artifact.ir);
+    let mut owned_reader_context = std::mem::take(&mut artifact.declarations.reader_context);
+    #[cfg(feature = "bbp-macros")]
+    {
+        if macro_host.native_macro_backend()
+            && let Some(session) = macro_host.session_handle()
+        {
+            let check = || match macro_host.halted(source.control) {
+                Some(reason) => Err(reason),
+                None => Ok(()),
+            };
+            for ir in
+                std::iter::once(&owned_ir).chain(artifact.bodies.as_ref().map(|bodies| &bodies.ir))
+            {
+                let note_target = |mut target: ExprRef| {
+                    while let ExprKind::Property { receiver, .. }
+                    | ExprKind::JsIndex { receiver, .. } = ir.exprs[target.0 as usize].kind
+                    {
+                        target = receiver;
+                    }
+                    if let ExprKind::CoreFn(core) = ir.exprs[target.0 as usize].kind {
+                        session.shared().index_native_core_function(core);
+                    }
+                };
+                for (index, expr) in ir.exprs.iter().enumerate() {
+                    if index % CHECK_INTERVAL == 0 {
+                        check().map_err(InstallError::Failed)?;
+                    }
+                    match &expr.kind {
+                        ExprKind::SetGlobal { target, .. } => note_target(*target),
+                        ExprKind::Binding { bindings, .. } => {
+                            for &(target, _) in bindings {
+                                note_target(target);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    Installer {
+        program,
+        names,
+        index,
+        artifact,
+        source,
+        resolved,
+        bases: Bases::default(),
+        warnings,
+    }
+    .run_owned(macro_host, &mut owned_ir, &mut owned_reader_context)
+    .map_err(InstallError::Failed)
 }
 
 fn install_inner(
@@ -253,7 +326,7 @@ pub(crate) struct InstalledTop {
 /// compilation, since the first part changed it.
 pub(crate) fn install_bodies(
     target: Target<'_>,
-    artifact: &NamespaceArtifact,
+    artifact: &mut NamespaceArtifact,
     top: InstalledTop,
 ) -> Result<(), String> {
     let Target {
@@ -263,7 +336,7 @@ pub(crate) fn install_bodies(
         source_index,
         warnings,
     } = target;
-    let Some(bodies) = artifact.bodies.as_deref() else {
+    let Some(mut bodies) = artifact.bodies.take() else {
         return Ok(());
     };
     index.extend(program);
@@ -335,7 +408,7 @@ pub(crate) fn install_bodies(
         bases: Bases::default(),
         warnings,
     }
-    .bodies(bodies, top);
+    .bodies(&mut bodies, top);
     Ok(())
 }
 
@@ -794,6 +867,380 @@ struct Bases {
     own_globals: Vec<GlobalId>,
 }
 
+fn same_reader_context(existing: &ir::RuntimeReaderNamespace, context: &ReaderContext) -> bool {
+    existing.aliases == context.aliases
+        && existing.refers == context.refers
+        && existing.excludes == context.excludes
+        && existing.macros == context.macros
+}
+
+/// Pure index relocator borrowing only `resolved` and `bases` so `Installer`
+/// can stream owned artifact tables directly into `self.program` arenas with
+/// zero temporary `Vec`s or string clones.
+struct Relocator<'a> {
+    resolved: &'a Resolved,
+    bases: &'a Bases,
+}
+
+impl Relocator<'_> {
+    fn expr(&self, id: ExprRef) -> ir::ExprId {
+        ir::ExprId(self.bases.exprs + id.0 as usize)
+    }
+    fn exprs(&self, ids: &[ExprRef]) -> Vec<ir::ExprId> {
+        ids.iter().map(|&id| self.expr(id)).collect()
+    }
+    fn optional(&self, id: Option<ExprRef>) -> Option<ir::ExprId> {
+        id.map(|id| self.expr(id))
+    }
+    fn local(&self, id: LocalRef) -> ir::LocalId {
+        ir::LocalId(self.bases.locals + id.0 as usize)
+    }
+    fn locals(&self, ids: &[LocalRef]) -> Vec<ir::LocalId> {
+        ids.iter().map(|&id| self.local(id)).collect()
+    }
+    fn recur(&self, id: RecurRef) -> ir::RecurTargetId {
+        ir::RecurTargetId(self.bases.recur_targets + id.0 as usize)
+    }
+    fn string(&self, id: StringRef) -> ir::StringId {
+        ir::StringId(self.bases.strings + id.0 as usize)
+    }
+    fn named(&self, id: NamedRef) -> ir::NamedLiteralId {
+        ir::NamedLiteralId(self.bases.named_literals + id.0 as usize)
+    }
+    fn global(&self, global: GlobalRef) -> GlobalId {
+        match global {
+            GlobalRef::Own(index) => match self.bases.own_globals.get(index as usize) {
+                Some(&id) => id,
+                None => GlobalId(self.bases.globals + index as usize),
+            },
+            GlobalRef::External(index) => self.resolved.globals[index as usize],
+        }
+    }
+    fn source_index(&self, source: SourceRef) -> usize {
+        match source {
+            SourceRef::Own => self.resolved.source_index,
+            SourceRef::Namespace(index) => self.resolved.namespaces[index as usize],
+        }
+    }
+    fn unit(&self, unit: UnitRef) -> usize {
+        self.resolved.first_unit + unit.0 as usize
+    }
+    fn protocol_method_owned(&self, method: ProtocolMethod) -> ir::ProtocolMethod {
+        ir::ProtocolMethod {
+            global: self.global(method.global),
+            key: method.key,
+            arities: method.arities.into_iter().map(|a| a as usize).collect(),
+            variadic: method.variadic.map(|v| v as usize),
+        }
+    }
+    fn method_owned(&self, method: FnMethod) -> ir::FnMethod {
+        ir::FnMethod {
+            params: self.locals(&method.params),
+            rest: method.rest.map(|id| self.local(id)),
+            body: self.expr(method.body),
+            target: self.recur(method.target),
+            captures: self.locals(&method.captures),
+            asynchronous: method.asynchronous,
+        }
+    }
+    fn methods_owned(
+        &self,
+        methods: Vec<(MethodDispatch, FnMethod)>,
+    ) -> Vec<(ir::MethodDispatch, ir::FnMethod)> {
+        methods
+            .into_iter()
+            .map(|(dispatch, method)| (dispatch, self.method_owned(method)))
+            .collect()
+    }
+    fn bindings(&self, bindings: &[(LocalRef, ExprRef)]) -> Vec<(ir::LocalId, ir::ExprId)> {
+        bindings
+            .iter()
+            .map(|&(local, init)| (self.local(local), self.expr(init)))
+            .collect()
+    }
+    fn pairs(&self, pairs: &[(ExprRef, ExprRef)]) -> Vec<(ir::ExprId, ir::ExprId)> {
+        pairs
+            .iter()
+            .map(|&(a, b)| (self.expr(a), self.expr(b)))
+            .collect()
+    }
+    fn optional_global(&self, global: Option<GlobalRef>) -> Option<GlobalId> {
+        global.map(|global| self.global(global))
+    }
+    fn kind_owned(&self, kind: ExprKind) -> ir::ExprKind {
+        use ir::ExprKind as K;
+        match kind {
+            ExprKind::Nil => K::Nil,
+            ExprKind::Bool(value) => K::Bool(value),
+            ExprKind::Number(value) => K::Number(value),
+            ExprKind::String(id) => K::String(self.string(id)),
+            ExprKind::ReaderLiteral {
+                kind,
+                items,
+                quoted,
+            } => K::ReaderLiteral {
+                kind,
+                items: self.exprs(&items),
+                quoted,
+            },
+            ExprKind::DefinitionTest { value, unit } => K::DefinitionTest {
+                value: self.expr(value),
+                unit: self.unit(unit),
+            },
+            ExprKind::NamespaceView { namespace, value } => K::NamespaceView {
+                namespace: self.string(namespace),
+                value: self.expr(value),
+            },
+            ExprKind::WithMeta { value, metadata } => K::WithMeta {
+                value: self.expr(value),
+                metadata: self.expr(metadata),
+            },
+            ExprKind::Var {
+                definition,
+                value,
+                symbol,
+                metadata,
+            } => K::Var {
+                definition,
+                value: self.expr(value),
+                symbol: self.named(symbol),
+                metadata: match metadata {
+                    None => None,
+                    Some(VarMetadata::Expr(id)) => Some(self.expr(id)),
+                    Some(VarMetadata::Global(GlobalRef::External(external))) => {
+                        self.resolved.metadata[external as usize]
+                    }
+                    Some(VarMetadata::Global(GlobalRef::Own(_))) => {
+                        unreachable!("refused by resolve")
+                    }
+                },
+            },
+            ExprKind::Keyword(id) => K::Keyword(self.named(id)),
+            ExprKind::Symbol(id) => K::Symbol(self.named(id)),
+            ExprKind::List(items) => K::List(self.exprs(&items)),
+            ExprKind::Vector(items) => K::Vector(self.exprs(&items)),
+            ExprKind::Map(items) => K::Map(self.exprs(&items)),
+            ExprKind::Set(items) => K::Set(self.exprs(&items)),
+            ExprKind::LiteralMap(items) => K::LiteralMap(self.exprs(&items)),
+            ExprKind::LiteralSet(items) => K::LiteralSet(self.exprs(&items)),
+            ExprKind::CoreFn(id) => K::CoreFn(id),
+            ExprKind::Local(id) => K::Local(self.local(id)),
+            ExprKind::Global(id) => K::Global(self.global(id)),
+            ExprKind::JsGlobal(id) => K::JsGlobal(self.bases.js_globals[id.0 as usize]),
+            ExprKind::ThisAs { binding, body } => K::ThisAs {
+                binding: self.local(binding),
+                body: self.expr(body),
+            },
+            ExprKind::JsArguments => K::JsArguments,
+            ExprKind::JsTemplate { segments, args } => K::JsTemplate {
+                segments,
+                args: self.exprs(&args),
+            },
+            ExprKind::JsIndex { receiver, indices } => K::JsIndex {
+                receiver: self.expr(receiver),
+                indices: self.exprs(&indices),
+            },
+            ExprKind::JsDelete { receiver, key } => K::JsDelete {
+                receiver: self.expr(receiver),
+                key: self.expr(key),
+            },
+            ExprKind::QualifiedMethod { class, method } => K::QualifiedMethod {
+                class: self.expr(class),
+                method,
+            },
+            ExprKind::CopyArguments(id) => K::CopyArguments(self.expr(id)),
+            ExprKind::DefProtocol {
+                global,
+                methods,
+                via_metadata,
+            } => K::DefProtocol {
+                global: self.global(global),
+                methods: methods
+                    .into_iter()
+                    .map(|method| self.protocol_method_owned(method))
+                    .collect(),
+                via_metadata,
+            },
+            ExprKind::ProtocolPredicate {
+                protocol,
+                value,
+                key,
+                direct,
+            } => K::ProtocolPredicate {
+                protocol: self.expr(protocol),
+                value: self.expr(value),
+                key,
+                direct,
+            },
+            ExprKind::ExtendType {
+                instance,
+                return_target,
+                target,
+                methods,
+            } => K::ExtendType {
+                instance,
+                return_target,
+                target: self.expr(target),
+                methods: self.methods_owned(methods),
+            },
+            ExprKind::Reify {
+                metadata,
+                captures,
+                methods,
+            } => K::Reify {
+                metadata: self.optional(metadata),
+                captures: self.locals(&captures),
+                methods: self.methods_owned(methods),
+            },
+            ExprKind::DefType {
+                record,
+                global,
+                methods,
+                layout,
+            } => K::DefType {
+                record,
+                global: self.global(global),
+                methods: self.methods_owned(methods),
+                layout: Box::new(ir::TypeLayout {
+                    constructor: self.optional_global(layout.constructor),
+                    body: self.optional(layout.body),
+                    masks: self.optional(layout.masks),
+                    map_constructor: self.optional_global(layout.map_constructor),
+                    fields: layout.fields,
+                    mutable: layout.mutable,
+                }),
+            },
+            ExprKind::Construct { callee, args } => K::Construct {
+                callee: self.expr(callee),
+                args: self.exprs(&args),
+            },
+            ExprKind::Assert {
+                test,
+                message,
+                form,
+            } => K::Assert {
+                test: self.expr(test),
+                message: self.optional(message),
+                form: self.string(form),
+            },
+            ExprKind::Def {
+                global,
+                init,
+                test,
+                once,
+            } => K::Def {
+                global: self.global(global),
+                init: self.optional(init),
+                test: self.optional(test),
+                once,
+            },
+            ExprKind::SetGlobal { target, value } => K::SetGlobal {
+                target: self.expr(target),
+                value: self.expr(value),
+            },
+            ExprKind::Binding { bindings, body } => K::Binding {
+                bindings: self.pairs(&bindings),
+                body: self.expr(body),
+            },
+            ExprKind::WithOutStr(id) => K::WithOutStr(self.expr(id)),
+            ExprKind::Exists(id) => K::Exists(self.expr(id)),
+            ExprKind::Loadable { target, class } => K::Loadable {
+                target: ir::LazyTargetId(self.bases.lazy_targets + target.0 as usize),
+                class: self.expr(class),
+            },
+            ExprKind::LoadableType => K::LoadableType,
+            ExprKind::BindingExists(id) => K::BindingExists(self.expr(id)),
+            ExprKind::BooleanHint(id) => K::BooleanHint(self.expr(id)),
+            ExprKind::Property { receiver, property } => K::Property {
+                receiver: self.expr(receiver),
+                property,
+            },
+            ExprKind::MethodCall {
+                receiver,
+                method,
+                args,
+            } => K::MethodCall {
+                receiver: self.expr(receiver),
+                method,
+                args: self.exprs(&args),
+            },
+            ExprKind::If { test, yes, no } => K::If {
+                test: self.expr(test),
+                yes: self.expr(yes),
+                no: self.expr(no),
+            },
+            ExprKind::Do(items) => K::Do(self.exprs(&items)),
+            ExprKind::Let { bindings, body } => K::Let {
+                bindings: self.bindings(&bindings),
+                body: self.expr(body),
+            },
+            ExprKind::LetFn { bindings, body } => K::LetFn {
+                bindings: self.bindings(&bindings),
+                body: self.expr(body),
+            },
+            ExprKind::Loop {
+                target,
+                bindings,
+                body,
+            } => K::Loop {
+                target: self.recur(target),
+                bindings: self.bindings(&bindings),
+                body: self.expr(body),
+            },
+            ExprKind::Recur { target, args } => K::Recur {
+                target: self.recur(target),
+                args: self.exprs(&args),
+            },
+            ExprKind::Throw(id) => K::Throw(self.expr(id)),
+            ExprKind::Await(id) => K::Await(self.expr(id)),
+            ExprKind::Try {
+                body,
+                catches,
+                finally,
+            } => K::Try {
+                body: self.expr(body),
+                catches: catches
+                    .into_iter()
+                    .map(|catch| ir::CatchClause {
+                        class: self.optional(catch.class),
+                        binding: self.local(catch.binding),
+                        body: self.expr(catch.body),
+                    })
+                    .collect(),
+                finally: self.optional(finally),
+            },
+            ExprKind::Case {
+                strict,
+                keyword_tests,
+                test,
+                branches,
+                default,
+            } => K::Case {
+                strict,
+                keyword_tests,
+                test: self.expr(test),
+                branches: self.pairs(&branches),
+                default: self.optional(default),
+            },
+            ExprKind::Fn { name, methods } => K::Fn {
+                name: name.map(|id| self.local(id)),
+                methods: methods
+                    .into_iter()
+                    .map(|method| self.method_owned(method))
+                    .collect(),
+            },
+            ExprKind::Call { callee, args } => K::Call {
+                callee: self.expr(callee),
+                args: self.exprs(&args),
+            },
+            ExprKind::InstanceOf { class, value } => K::InstanceOf {
+                class: self.expr(class),
+                value: self.expr(value),
+            },
+        }
+    }
+}
+
 struct Installer<'a> {
     program: &'a mut Program,
     names: &'a mut crate::name_index::NameIndex,
@@ -1051,6 +1498,8 @@ impl Installer<'_> {
             self.program.macro_functions.insert(expr);
         }
         let context = &declarations.reader_context;
+        let reader_contexts_before = self.program.reader_contexts.clone();
+        let had_own_before = reader_contexts_before.contains_key(namespace);
         self.program.reader_contexts.insert(
             namespace.to_owned(),
             ir::RuntimeReaderNamespace {
@@ -1069,10 +1518,262 @@ impl Installer<'_> {
         self.check(macro_host)?;
         #[cfg(feature = "bbp-macros")]
         self.restore_native_core_writes(macro_host)?;
-        self.declare(macro_host, &views)?;
+        self.declare(macro_host, &views, &reader_contexts_before, had_own_before)?;
         self.check(macro_host)?;
         // The namespace's warnings, for its drain point, which reports
         // those its analysis would have reported (light-cljs-395).
+        let source_index = self.resolved.source_index;
+        for (warning, &kind) in artifact
+            .diagnostics
+            .warnings
+            .iter()
+            .zip(&self.resolved.warning_kinds)
+        {
+            self.warnings.push(ir::AnalysisWarning {
+                kind,
+                message: warning.message.clone(),
+                span: span(warning.span),
+                source_index,
+            });
+        }
+        Ok(root)
+    }
+
+    /// Consuming counterpart of [`Self::run`] for freshly decoded cache
+    /// artifacts: drains owned `ir` and `reader_context` directly into
+    /// `self.program` arenas without temporary `Vec`s or string clones.
+    fn run_owned(
+        mut self,
+        macro_host: &mut MacroHost,
+        ir: &mut SemanticIr,
+        reader_context: &mut ReaderContext,
+    ) -> Result<ir::ExprId, String> {
+        let artifact = self.artifact;
+        let namespace = artifact.header.namespace.as_str();
+        charge(artifact, macro_host);
+        reserve_generated_names(&artifact.names, self.index, macro_host)?;
+        if self.resolved.new_namespace {
+            self.program.namespaces.push(namespace.to_owned());
+        }
+        reserve_registry(&artifact.registry, self.program, self.index, macro_host)?;
+        self.program.namespaces.freeze();
+        let program = &*self.program;
+        self.bases = Bases {
+            exprs: program.exprs.len(),
+            locals: program.locals.len(),
+            recur_targets: program.recur_targets.len(),
+            strings: program.strings.len(),
+            named_literals: program.named_literals.len(),
+            globals: program.globals.len(),
+            lazy_targets: program.lazy_targets.len(),
+            js_globals: Vec::new(),
+            own_globals: Vec::new(),
+        };
+        self.program.strings.extend(ir.strings.drain(..));
+        self.program.strings.spill_flat_tail();
+        {
+            let rel = Relocator {
+                resolved: &self.resolved,
+                bases: &self.bases,
+            };
+            self.program
+                .named_literals
+                .extend(ir.named_literals.drain(..).map(|literal| ir::NamedLiteral {
+                    namespace: literal.namespace.map(|id| rel.string(id)),
+                    name: rel.string(literal.name),
+                }));
+            self.program.named_literals.spill_flat_tail();
+        }
+        let mut js_globals = Vec::with_capacity(ir.js_globals.len());
+        for path in ir.js_globals.drain(..) {
+            let id = match self.index.js_globals.get(&path) {
+                Some(&id) => id,
+                None => {
+                    let id = self.program.js_globals.len();
+                    self.index.js_globals.insert(path.clone(), id);
+                    self.program.js_globals.push(ir::JsGlobal { path });
+                    id
+                }
+            };
+            js_globals.push(ir::JsGlobalId(id));
+        }
+        self.index.indexed_js_globals = self.program.js_globals.len();
+        self.bases.js_globals = js_globals;
+        let mut frontiers = artifact
+            .units
+            .units
+            .iter()
+            .map(|unit| unit.view.own_globals)
+            .chain(
+                artifact
+                    .declarations
+                    .macros
+                    .iter()
+                    .map(|declaration| declaration.view.own_globals),
+            )
+            .collect::<Vec<_>>();
+        frontiers.sort_unstable();
+        frontiers.dedup();
+        let mut views = HashMap::new();
+        let mut next_view = frontiers.iter().peekable();
+        for (index, global) in artifact.declarations.globals.iter().enumerate() {
+            while next_view
+                .next_if(|&&frontier| frontier as usize == index)
+                .is_some()
+            {
+                self.program.globals.freeze();
+                views.insert(index as u32, self.program.globals.clone());
+            }
+            let binding = ir::GlobalBinding {
+                type_descriptor: global.flags.type_descriptor,
+                declared: global.flags.declared,
+                constant: global.flags.constant,
+                define: global.flags.define,
+                boolean_tag: global.flags.boolean_tag,
+                metadata: self.optional(global.metadata),
+                namespace: global.namespace.clone(),
+                name: global.name.clone(),
+                span: span(global.span),
+                source_index: self.source_index(global.source),
+            };
+            let id = GlobalId(self.program.globals.len());
+            self.program.globals.push(binding);
+            self.names
+                .insert((global.namespace.clone(), global.name.clone()), id);
+        }
+        if next_view.peek().is_some() {
+            self.program.globals.freeze();
+            for &frontier in next_view {
+                views.insert(frontier, self.program.globals.clone());
+            }
+        }
+        {
+            let rel = Relocator {
+                resolved: &self.resolved,
+                bases: &self.bases,
+            };
+            self.program
+                .locals
+                .extend(ir.locals.drain(..).map(|local| ir::LocalBinding {
+                    name: local.name,
+                    span: span(local.span),
+                    source_index: rel.source_index(local.source),
+                }));
+            self.program.locals.spill_flat_tail();
+            self.program
+                .recur_targets
+                .extend(ir.recur_targets.drain(..).map(|target| {
+                    ir::RecurTarget {
+                        params: rel.locals(&target.params),
+                        protocol_impl: target.protocol_impl,
+                        receiver_from_this: target.receiver_from_this,
+                        used: target.used,
+                        argument_slots: target
+                            .argument_slots
+                            .into_iter()
+                            .map(|slot| slot.map(|slot| slot as usize))
+                            .collect(),
+                    }
+                }));
+            let mut expr_iter = ir.exprs.drain(..).enumerate();
+            loop {
+                let mut count = 0usize;
+                for (converted, expr) in expr_iter.by_ref().take(CHECK_INTERVAL) {
+                    if converted % CHECK_INTERVAL == 0 {
+                        self.check(macro_host)?;
+                    }
+                    self.program.exprs.push(ir::Expr {
+                        kind: rel.kind_owned(expr.kind),
+                        span: span(expr.span),
+                        context: expr.context,
+                        source_index: rel.source_index(expr.source),
+                    });
+                    count += 1;
+                }
+                if count < CHECK_INTERVAL {
+                    break;
+                }
+            }
+            self.program.exprs.spill_flat_tail();
+        }
+        let declarations = &artifact.declarations;
+        for target in &declarations.lazy_targets {
+            let lazy_namespace = match self.index.lazy_namespaces.get(&target.namespace) {
+                Some(&index) => index,
+                None => {
+                    let index = self.program.lazy_namespaces.len();
+                    self.program.lazy_namespaces.push(target.namespace.clone());
+                    self.index
+                        .lazy_namespaces
+                        .insert(target.namespace.clone(), index);
+                    index
+                }
+            };
+            let lazy = ir::LazyTarget {
+                site: self.expr(target.site),
+                namespace: lazy_namespace,
+                global: self.optional_global(target.global),
+            };
+            self.program.lazy_targets.push(lazy);
+        }
+        self.index.indexed_lazy_namespaces = self.program.lazy_namespaces.len();
+        for patch in &artifact.patches {
+            let id = self.global(patch.global);
+            let metadata = self.optional(patch.metadata);
+            let global = &mut self.program.globals[id.0];
+            global.type_descriptor = patch.flags.type_descriptor;
+            global.declared = patch.flags.declared;
+            global.constant = patch.flags.constant;
+            global.define = patch.flags.define;
+            global.boolean_tag = patch.flags.boolean_tag;
+            if metadata.is_some() {
+                global.metadata = metadata;
+            }
+        }
+        for (global, methods) in &declarations.protocols {
+            let methods = methods
+                .iter()
+                .map(|method| self.protocol_method(method))
+                .collect();
+            let global = self.global(*global);
+            self.program.protocols.insert(global, methods);
+        }
+        for &global in &declarations.record_constructors {
+            let global = self.global(global);
+            self.program.record_constructors.insert(global);
+        }
+        for &(local, target, mutable) in &declarations.field_bindings {
+            let entry = (self.local(local), (self.recur(target), mutable));
+            self.program.field_bindings.insert(entry.0, entry.1);
+        }
+        for &target in &declarations.type_methods {
+            let target = self.recur(target);
+            self.program.type_methods.insert(target);
+        }
+        for &expr in &declarations.macro_functions {
+            let expr = self.expr(expr);
+            self.program.macro_functions.insert(expr);
+        }
+        let reader_contexts_before = self.program.reader_contexts.clone();
+        let had_own_before = reader_contexts_before.contains_key(namespace);
+        self.program.reader_contexts.insert(
+            namespace.to_owned(),
+            ir::RuntimeReaderNamespace {
+                aliases: std::mem::take(&mut reader_context.aliases),
+                refers: std::mem::take(&mut reader_context.refers),
+                excludes: std::mem::take(&mut reader_context.excludes),
+                macros: std::mem::take(&mut reader_context.macros),
+            }
+            .into(),
+        );
+        let root = self.expr(artifact.header.root);
+        self.program
+            .namespace_entries
+            .insert(root, namespace.to_owned());
+        self.index.extend(self.program);
+        self.check(macro_host)?;
+        self.declare(macro_host, &views, &reader_contexts_before, had_own_before)?;
+        self.check(macro_host)?;
         let source_index = self.resolved.source_index;
         for (warning, &kind) in artifact
             .diagnostics
@@ -1136,8 +1837,9 @@ impl Installer<'_> {
         Ok(())
     }
 
-    /// Append `bodies` as [`install_bodies`] says.
-    fn bodies(mut self, bodies: &Bodies, top: InstalledTop) {
+    /// Append `bodies` as [`install_bodies`] says, moving owned tables directly
+    /// into `self.program` arenas without temporary `Vec`s or string clones.
+    fn bodies(mut self, bodies: &mut Bodies, top: InstalledTop) {
         let program = &*self.program;
         self.bases = Bases {
             exprs: program.exprs.len(),
@@ -1150,27 +1852,30 @@ impl Installer<'_> {
             js_globals: Vec::new(),
             own_globals: Vec::new(),
         };
-        let ir = &bodies.ir;
-        self.program.strings.extend(ir.strings.iter().cloned());
-        let literals = ir
-            .named_literals
-            .iter()
-            .map(|literal| ir::NamedLiteral {
-                namespace: literal.namespace.map(|id| self.string(id)),
-                name: self.string(literal.name),
-            })
-            .collect::<Vec<_>>();
-        self.program.named_literals.extend(literals);
+        let ir = &mut bodies.ir;
+        self.program.strings.extend(ir.strings.drain(..));
+        self.program.strings.spill_flat_tail();
+        {
+            let rel = Relocator {
+                resolved: &self.resolved,
+                bases: &self.bases,
+            };
+            self.program
+                .named_literals
+                .extend(ir.named_literals.drain(..).map(|literal| ir::NamedLiteral {
+                    namespace: literal.namespace.map(|id| rel.string(id)),
+                    name: rel.string(literal.name),
+                }));
+            self.program.named_literals.spill_flat_tail();
+        }
         let mut js_globals = Vec::with_capacity(ir.js_globals.len());
-        for path in &ir.js_globals {
-            let id = match self.index.js_globals.get(path) {
+        for path in ir.js_globals.drain(..) {
+            let id = match self.index.js_globals.get(&path) {
                 Some(&id) => id,
                 None => {
                     let id = self.program.js_globals.len();
-                    self.program
-                        .js_globals
-                        .push(ir::JsGlobal { path: path.clone() });
                     self.index.js_globals.insert(path.clone(), id);
+                    self.program.js_globals.push(ir::JsGlobal { path });
                     id
                 }
             };
@@ -1178,8 +1883,8 @@ impl Installer<'_> {
         }
         self.index.indexed_js_globals = self.program.js_globals.len();
         self.bases.js_globals = js_globals;
-        let declarations = &bodies.declarations;
-        for global in &declarations.globals {
+        let declarations = &mut bodies.declarations;
+        for global in declarations.globals.drain(..) {
             if let Some(&id) = self.names.get_str(&global.namespace, &global.name) {
                 let metadata = self.optional(global.metadata);
                 let existing = &mut self.program.globals[id.0];
@@ -1196,6 +1901,7 @@ impl Installer<'_> {
                 self.bases.own_globals.push(id);
                 continue;
             }
+            let key = (global.namespace.clone(), global.name.clone());
             let binding = ir::GlobalBinding {
                 type_descriptor: global.flags.type_descriptor,
                 declared: global.flags.declared,
@@ -1203,63 +1909,63 @@ impl Installer<'_> {
                 define: global.flags.define,
                 boolean_tag: global.flags.boolean_tag,
                 metadata: self.optional(global.metadata),
-                namespace: global.namespace.clone(),
-                name: global.name.clone(),
+                namespace: global.namespace,
+                name: global.name,
                 span: span(global.span),
                 source_index: self.source_index(global.source),
             };
             let id = GlobalId(self.program.globals.len());
             self.program.globals.push(binding);
-            self.names
-                .insert((global.namespace.clone(), global.name.clone()), id);
+            self.names.insert(key, id);
             self.bases.own_globals.push(id);
         }
-        let locals = ir
-            .locals
-            .iter()
-            .map(|local| ir::LocalBinding {
-                name: local.name.clone(),
-                span: span(local.span),
-                source_index: self.source_index(local.source),
-            })
-            .collect::<Vec<_>>();
-        self.program.locals.extend(locals);
-        let targets = ir
-            .recur_targets
-            .iter()
-            .map(|target| ir::RecurTarget {
-                params: self.locals(&target.params),
-                protocol_impl: target.protocol_impl,
-                receiver_from_this: target.receiver_from_this,
-                used: target.used,
-                argument_slots: target
-                    .argument_slots
-                    .iter()
-                    .map(|slot| slot.map(|slot| slot as usize))
-                    .collect(),
-            })
-            .collect::<Vec<_>>();
-        self.program.recur_targets.extend(targets);
-        let exprs = ir
-            .exprs
-            .iter()
-            .map(|expr| ir::Expr {
-                kind: self.kind(&expr.kind),
-                span: span(expr.span),
-                context: expr.context,
-                source_index: self.source_index(expr.source),
-            })
-            .collect::<Vec<_>>();
-        self.program.exprs.extend(exprs);
-        for target in &declarations.lazy_targets {
+        {
+            let rel = Relocator {
+                resolved: &self.resolved,
+                bases: &self.bases,
+            };
+            self.program
+                .locals
+                .extend(ir.locals.drain(..).map(|local| ir::LocalBinding {
+                    name: local.name,
+                    span: span(local.span),
+                    source_index: rel.source_index(local.source),
+                }));
+            self.program.locals.spill_flat_tail();
+            self.program
+                .recur_targets
+                .extend(ir.recur_targets.drain(..).map(|target| {
+                    ir::RecurTarget {
+                        params: rel.locals(&target.params),
+                        protocol_impl: target.protocol_impl,
+                        receiver_from_this: target.receiver_from_this,
+                        used: target.used,
+                        argument_slots: target
+                            .argument_slots
+                            .into_iter()
+                            .map(|slot| slot.map(|slot| slot as usize))
+                            .collect(),
+                    }
+                }));
+            self.program
+                .exprs
+                .extend(ir.exprs.drain(..).map(|expr| ir::Expr {
+                    kind: rel.kind_owned(expr.kind),
+                    span: span(expr.span),
+                    context: expr.context,
+                    source_index: rel.source_index(expr.source),
+                }));
+            self.program.exprs.spill_flat_tail();
+        }
+        for target in declarations.lazy_targets.drain(..) {
             let lazy_namespace = match self.index.lazy_namespaces.get(&target.namespace) {
                 Some(&index) => index,
                 None => {
                     let index = self.program.lazy_namespaces.len();
-                    self.program.lazy_namespaces.push(target.namespace.clone());
                     self.index
                         .lazy_namespaces
                         .insert(target.namespace.clone(), index);
+                    self.program.lazy_namespaces.push(target.namespace);
                     index
                 }
             };
@@ -1284,13 +1990,19 @@ impl Installer<'_> {
                 global.metadata = metadata;
             }
         }
-        for (global, methods) in &declarations.protocols {
-            let methods = methods
-                .iter()
-                .map(|method| self.protocol_method(method))
-                .collect();
-            let global = self.global(*global);
-            self.program.protocols.insert(global, methods);
+        {
+            let rel = Relocator {
+                resolved: &self.resolved,
+                bases: &self.bases,
+            };
+            for (global, methods) in declarations.protocols.drain(..) {
+                let methods = methods
+                    .into_iter()
+                    .map(|method| rel.protocol_method_owned(method))
+                    .collect();
+                let global = rel.global(global);
+                self.program.protocols.insert(global, methods);
+            }
         }
         for &global in &declarations.record_constructors {
             let global = self.global(global);
@@ -1314,17 +2026,23 @@ impl Installer<'_> {
                 ir::ExprKind::Do(vec![root]);
         }
         let namespace = &self.artifact.header.namespace;
-        let context = &declarations.reader_context;
-        let context = ir::RuntimeReaderNamespace {
-            aliases: context.aliases.clone(),
-            refers: context.refers.clone(),
-            excludes: context.excludes.clone(),
-            macros: context.macros.clone(),
-        };
-        if self.program.reader_contexts.get(namespace).map(|c| &**c) != Some(&context) {
-            self.program
-                .reader_contexts
-                .insert(namespace.to_owned(), context.into());
+        let context = &mut declarations.reader_context;
+        let matches_existing = self
+            .program
+            .reader_contexts
+            .get(namespace)
+            .is_some_and(|existing| same_reader_context(existing, context));
+        if !matches_existing {
+            self.program.reader_contexts.insert(
+                namespace.to_owned(),
+                ir::RuntimeReaderNamespace {
+                    aliases: std::mem::take(&mut context.aliases),
+                    refers: std::mem::take(&mut context.refers),
+                    excludes: std::mem::take(&mut context.excludes),
+                    macros: std::mem::take(&mut context.macros),
+                }
+                .into(),
+            );
         }
         self.index.extend(self.program);
     }
@@ -1670,6 +2388,10 @@ impl Installer<'_> {
         code: &RelocatableCode,
         view: &RegistrationView,
         views: &HashMap<u32, crate::arena::Arena<ir::GlobalBinding>>,
+        reader_contexts_before: &crate::shared::Shared<
+            crate::layered::Layered<String, crate::shared::Shared<ir::RuntimeReaderNamespace>>,
+        >,
+        had_own_before: bool,
     ) -> crate::emitter::DeferredUnit {
         let mut globals = views[&view.own_globals].clone();
         // Registration reads only their names and flags.
@@ -1687,10 +2409,19 @@ impl Installer<'_> {
                 source_index: self.resolved.source_index,
             });
         }
-        let mut reader_contexts = self.program.reader_contexts.clone();
         let namespace = &self.artifact.header.namespace;
-        match &view.reader_context {
+        let reader_contexts = match &view.reader_context {
+            Some(context)
+                if self
+                    .program
+                    .reader_contexts
+                    .get(namespace)
+                    .is_some_and(|existing| same_reader_context(existing, context)) =>
+            {
+                self.program.reader_contexts.clone()
+            }
             Some(context) => {
+                let mut reader_contexts = self.program.reader_contexts.clone();
                 reader_contexts.insert(
                     namespace.clone(),
                     ir::RuntimeReaderNamespace {
@@ -1701,11 +2432,15 @@ impl Installer<'_> {
                     }
                     .into(),
                 );
+                reader_contexts
             }
+            None if !had_own_before => reader_contexts_before.clone(),
             None => {
+                let mut reader_contexts = self.program.reader_contexts.clone();
                 reader_contexts.remove(namespace);
+                reader_contexts
             }
-        }
+        };
         crate::emitter::DeferredUnit::from_parts(
             self.code(code),
             self.program.namespaces.clone(),
@@ -1720,6 +2455,10 @@ impl Installer<'_> {
         &mut self,
         macro_host: &mut MacroHost,
         views: &HashMap<u32, crate::arena::Arena<ir::GlobalBinding>>,
+        reader_contexts_before: &crate::shared::Shared<
+            crate::layered::Layered<String, crate::shared::Shared<ir::RuntimeReaderNamespace>>,
+        >,
+        had_own_before: bool,
     ) -> Result<(), String> {
         let artifact = self.artifact;
         let namespace = artifact.header.namespace.as_str();
@@ -1786,7 +2525,13 @@ impl Installer<'_> {
             macro_host.install_javascript_macro(
                 format!("{namespace}/{}", declaration.name),
                 crate::compiler_bootstrap::CompiledMacro::installed(
-                    self.prepared(&declaration.code, &declaration.view, views),
+                    self.prepared(
+                        &declaration.code,
+                        &declaration.view,
+                        views,
+                        reader_contexts_before,
+                        had_own_before,
+                    ),
                     span,
                     datum(&declaration.metadata),
                     declaration.generation as usize,
@@ -1800,7 +2545,15 @@ impl Installer<'_> {
         let prepared = units
             .units
             .iter()
-            .map(|unit| self.prepared(&unit.code, &unit.view, views))
+            .map(|unit| {
+                self.prepared(
+                    &unit.code,
+                    &unit.view,
+                    views,
+                    reader_contexts_before,
+                    had_own_before,
+                )
+            })
             .collect();
         let unit_name = |unit: UnitRef| match &units.units[unit.0 as usize].name {
             UnitName::Var(name) => name.clone(),

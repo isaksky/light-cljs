@@ -2129,6 +2129,11 @@ impl CompileCache {
         if !self.any_propagated {
             return None;
         }
+        if self.prefix.record(id).coarse {
+            return (0..id.0).find_map(|target| {
+                self.propagated[target as usize].map(|(reason, _)| (reason, target))
+            });
+        }
         self.prefix
             .row(id)
             .iter()
@@ -4356,11 +4361,11 @@ mod tests {
 
         // Case 1: lookup_batched runs inline on the coordinator while the sole
         // pool worker stays gated, never deadlocking and never spawning a 3rd slot.
-        for i in 0..names.len() {
+        for (i, name) in names.iter().enumerate() {
             let hit = cache
                 .lookup_batched(&loader, i, &text_of, &sources, Arc::clone(&cancel))
                 .unwrap();
-            assert!(hit.is_some(), "expected hit for {}", names[i]);
+            assert!(hit.is_some(), "expected hit for {name}");
             cache.installed(&host);
         }
         assert!(

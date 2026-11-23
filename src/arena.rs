@@ -333,6 +333,42 @@ impl<T> Arena<T> {
         self.tail.extend(iter);
     }
 
+    /// Spill full `LEAF_SIZE` chunks from a large unfrozen `tail` into flat
+    /// O(1)-indexed `Chunk::Leaf`s when the arena is empty or already flat,
+    /// avoiding multi-hundred-megabyte `Vec` doubling reallocations and
+    /// `memmove` copies on large warm cache installs.
+    pub(crate) fn spill_flat_tail(&mut self) {
+        const SPILL_THRESHOLD: usize = 8192;
+        if self.tail.len() < SPILL_THRESHOLD {
+            return;
+        }
+        if !self.chunks.is_empty()
+            && (self.buckets.is_empty() || (self.buckets.len() << 6) != self.frozen)
+        {
+            return;
+        }
+        let full_leaves = self.tail.len() / LEAF_SIZE;
+        if full_leaves == 0 || self.chunks.len() + full_leaves > u32::MAX as usize {
+            return;
+        }
+        let old_tail = std::mem::replace(&mut self.tail, Vec::with_capacity(SPILL_THRESHOLD));
+        let mut iter = old_tail.into_iter();
+        self.chunks.reserve(full_leaves);
+        self.starts.reserve(full_leaves);
+        self.buckets.reserve(full_leaves);
+        for _ in 0..full_leaves {
+            let chunk_index = self.chunks.len() as u32;
+            let mut leaf = Vec::with_capacity(LEAF_SIZE);
+            leaf.extend(iter.by_ref().take(LEAF_SIZE));
+            self.starts.push(self.frozen);
+            self.chunks.push(Arc::new(Chunk::Leaf(leaf)));
+            self.buckets.push(chunk_index);
+            self.frozen += LEAF_SIZE;
+        }
+        self.tail.extend(iter);
+        *self.hint.get_mut() = 0;
+    }
+
     /// Whether the first `len` entries of both tables are the same shared
     /// chunks, so they are equal without comparing entries.
     pub fn shares_prefix(&self, other: &Self, len: usize) -> bool {
