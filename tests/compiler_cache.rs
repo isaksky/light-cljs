@@ -2586,3 +2586,169 @@ fn cache_staging_io_does_not_block_deferred_analysis() {
     assert_eq!(counts.published, NS_COUNT);
     assert!(counts.unpublished.is_empty(), "{:?}", counts.unpublished);
 }
+
+#[test]
+fn warm_rebuild_with_jobs_8_has_zero_engine_entries() {
+    let project = Project::new(FIXTURE);
+    let oracle = project.uncached("main");
+    let cold = project.cached("main", &["--jobs", "8"]);
+    assert_eq!(cold.js, oracle.js);
+    assert_eq!(cold.stat("cache.published"), 5, "{}", cold.stats);
+
+    let warm = project.cached("main", &["--jobs", "8"]);
+    assert_eq!(warm.js, oracle.js);
+    assert_eq!(warm.run(), "h1 9 84 h2\n");
+    assert_eq!(warm.stat("cache.hits"), 5, "{}", warm.stats);
+    assert_eq!(warm.stat("cache.published"), 0, "{}", warm.stats);
+    assert_eq!(
+        warm.stat("trace.engine.entries"),
+        0,
+        "100% warm cache rebuild at --jobs 8 must not eagerly boot V8:\n{}",
+        warm.stats
+    );
+}
+
+#[test]
+fn sliding_window_batch_lookup_recovers_from_mid_window_corruption() {
+    use light_cljs::artifact_codec::{DecodeLimits, manifest_end, read_manifest, seal};
+
+    let files = [
+        ("n0.cljs", "(ns n0) (def v0 1)"),
+        ("n1.cljs", "(ns n1 (:require [n0])) (def v1 (+ n0/v0 2))"),
+        ("n2.cljs", "(ns n2 (:require [n1])) (def v2 (+ n1/v1 3))"),
+        ("n3.cljs", "(ns n3 (:require [n2])) (def v3 (+ n2/v2 4))"),
+        ("n4.cljs", "(ns n4 (:require [n3])) (def v4 (+ n3/v3 5))"),
+        ("n5.cljs", "(ns n5 (:require [n4])) (def v5 (+ n4/v4 6))"),
+        ("n6.cljs", "(ns n6 (:require [n5])) (def v6 (+ n5/v5 7))"),
+        (
+            "main.cljs",
+            "(ns main (:require [n6])) (js/console.log n6/v6)",
+        ),
+    ];
+    let project = Project::new(&files);
+    let oracle = project.uncached("main");
+    assert_eq!(oracle.run(), "28\n");
+    let cold = project.cached("main", &["--jobs", "8"]);
+    assert_eq!(cold.js, oracle.js);
+    assert_eq!(cold.stat("cache.published"), 8, "{}", cold.stats);
+
+    let warm = project.cached("main", &["--jobs", "8"]);
+    assert_eq!(warm.js, oracle.js);
+    assert_eq!(warm.stat("cache.hits"), 8, "{}", warm.stats);
+    assert_eq!(warm.stat("trace.engine.entries"), 0, "{}", warm.stats);
+
+    // Corrupt a mid-window artifact (`n3`) and re-seal its manifest & section
+    // hashes so only full-file content-hash verification catches it.
+    let n3_object = project
+        .objects()
+        .into_iter()
+        .find(|path| {
+            read_manifest(&fs::read(path).unwrap(), &DecodeLimits::default())
+                .unwrap()
+                .namespace
+                == "n3"
+        })
+        .expect("n3 artifact exists");
+    let mut bytes = fs::read(&n3_object).unwrap();
+    *bytes.last_mut().unwrap() ^= 0xff;
+    seal(&mut bytes).unwrap();
+    fs::write(&n3_object, &bytes).unwrap();
+
+    let recovered = project.cached("main", &["--jobs", "8"]);
+    assert_eq!(recovered.js, oracle.js);
+    assert_eq!(recovered.run(), "28\n");
+    assert_eq!(
+        recovered.stat("cache.miss.unreadable"),
+        1,
+        "{}",
+        recovered.stats
+    );
+    assert!(
+        recovered
+            .rows()
+            .iter()
+            .any(|row| row.contains("n3 miss unreadable: the artifact fails its content hash")),
+        "{:?}",
+        recovered.rows()
+    );
+
+    // After recovery, the repaired cache hits 8/8 at --jobs 8.
+    let repaired = project.cached("main", &["--jobs", "8"]);
+    assert_eq!(repaired.js, oracle.js);
+    assert_eq!(repaired.stat("cache.hits"), 8, "{}", repaired.stats);
+
+    // Stale candidates under --jobs 8 still read only their manifest prefix.
+    let first = project.objects();
+    let whole: u64 = first
+        .iter()
+        .map(|path| fs::metadata(path).unwrap().len())
+        .sum();
+    project.write("n4.cljs", "(ns n4 (:require [n3])) (def v4 (+ n3/v3 50))");
+    project.cached("main", &["--jobs", "8"]);
+    let stale: Vec<PathBuf> = project
+        .objects()
+        .into_iter()
+        .filter(|path| !first.contains(path))
+        .collect();
+    assert!(!stale.is_empty());
+    project.write("n4.cljs", "(ns n4 (:require [n3])) (def v4 (+ n3/v3 5))");
+    let back = project.cached("main", &["--jobs", "8"]);
+    assert_eq!(back.js, oracle.js);
+    assert_eq!(back.stat("cache.hits"), 8, "{}", back.stats);
+    let manifests: u64 = stale
+        .iter()
+        .map(|path| manifest_end(&fs::read(path).unwrap()).unwrap())
+        .sum();
+    assert_eq!(
+        back.stat("cache.bytes-read"),
+        whole + manifests,
+        "{}",
+        back.stats
+    );
+}
+
+#[test]
+fn warm_rebuild_skips_trim_when_within_retention_and_trims_when_exceeding() {
+    let project = Project::new(FIXTURE);
+    // Populate two versions of `plain` and `main` (default retention = 3).
+    project.cached("main", &["--jobs", "4"]);
+    project.write("plain.cljs", "(ns plain) (def answer (+ 40 3))");
+    project.cached("main", &["--jobs", "4"]);
+    let count_two_versions = project.objects().len();
+    assert!(
+        count_two_versions > 5,
+        "expected > 5 objects across two versions, got {count_two_versions}"
+    );
+
+    // Place a sentinel orphan object in `v1/objects/`. A `Store::trim` run
+    // removes unindexed objects, so its survival proves `trim` was skipped.
+    let sentinel = project
+        .cache()
+        .join("v1/objects")
+        .join("0000000000000000000000000000000000000000000000000000000000000001");
+    fs::write(&sentinel, b"orphan-sentinel!").unwrap();
+
+    // Warm rebuild already within `--cache-retention 3` skips `trim`.
+    let within = project.cached("main", &["--jobs", "4", "--cache-retention", "3"]);
+    assert_eq!(within.stat("cache.hits"), 5, "{}", within.stats);
+    assert_eq!(within.stat("cache.published"), 0, "{}", within.stats);
+    assert!(
+        sentinel.exists(),
+        "0-publish warm build within retention must skip Store::trim"
+    );
+
+    // Warm rebuild with smaller `--cache-retention 1` still runs `trim` and
+    // evicts both the older version's objects and the sentinel orphan.
+    let tighter = project.cached("main", &["--jobs", "4", "--cache-retention", "1"]);
+    assert_eq!(tighter.stat("cache.hits"), 5, "{}", tighter.stats);
+    assert_eq!(tighter.stat("cache.published"), 0, "{}", tighter.stats);
+    assert!(
+        !sentinel.exists(),
+        "0-publish warm build with tighter --cache-retention must still run Store::trim"
+    );
+    assert_eq!(
+        project.objects().len(),
+        5,
+        "tighter --cache-retention 1 must trim down to 1 artifact per namespace"
+    );
+}

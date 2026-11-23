@@ -516,11 +516,6 @@ impl NamespaceKeys {
             "keys are computed in source order"
         );
         let record = manifest.record(id);
-        let mut components = [[0; 32]; Component::ALL.len()];
-        components[Component::Compiler as usize] = environment.compiler;
-        components[Component::Options as usize] = environment.options;
-        components[Component::Config as usize] = environment.config;
-
         let mut source = Fingerprint::new("light-cljs source");
         source
             .text(&record.name)
@@ -529,7 +524,7 @@ impl NamespaceKeys {
             .flag(record.source.kind == SourceKind::Cljc)
             .flag(record.source.origin == SourceOrigin::Bundled)
             .digest(&digest(text.as_bytes()));
-        components[Component::Source as usize] = source.finish();
+        let source_digest = source.finish();
 
         let mut resolution = Fingerprint::new("light-cljs resolution");
         lookup(&mut resolution, manifest, record.source.lookup);
@@ -553,7 +548,33 @@ impl NamespaceKeys {
                 lookup(&mut resolution, manifest, id);
             }
         }
-        components[Component::Resolution as usize] = resolution.finish();
+        let resolution_digest = resolution.finish();
+        self.next_with_digests(environment, manifest, id, source_digest, resolution_digest)
+    }
+
+    /// [`Self::next`] using precomputed [`Component::Source`] and
+    /// [`Component::Resolution`] digests (computed in parallel during
+    /// sliding-window cache lookup).
+    pub(crate) fn next_with_digests(
+        &self,
+        environment: &KeyEnvironment,
+        manifest: &(impl NamespaceRecords + ?Sized),
+        id: NamespaceId,
+        source_digest: Digest,
+        resolution_digest: Digest,
+    ) -> FrontEndKey {
+        assert_eq!(
+            id.0 as usize,
+            self.keys.len(),
+            "keys are computed in source order"
+        );
+        let record = manifest.record(id);
+        let mut components = [[0; 32]; Component::ALL.len()];
+        components[Component::Compiler as usize] = environment.compiler;
+        components[Component::Options as usize] = environment.options;
+        components[Component::Config as usize] = environment.config;
+        components[Component::Source as usize] = source_digest;
+        components[Component::Resolution as usize] = resolution_digest;
 
         // The coarse fallback's edges are the view's chain; a lazy target is
         // not a compilation dependency and may come later.
@@ -622,6 +643,67 @@ impl NamespaceKeys {
 
         FrontEndKey::new(components, dependencies)
     }
+}
+
+/// Precompute [`Component::Source`] for `source_rec` (matching
+/// [`NamespaceKeys::next`]) without touching [`ManifestPrefix`].
+pub(crate) fn source_digest_from_loader(
+    source_rec: &crate::dependency_manifest::LoadedSource,
+    text: &str,
+    entry: &str,
+) -> Digest {
+    let mut source = Fingerprint::new("light-cljs source");
+    source
+        .text(&source_rec.name)
+        .flag(source_rec.name == entry)
+        .text(&source_rec.file)
+        .flag(source_rec.kind == SourceKind::Cljc)
+        .flag(source_rec.origin == SourceOrigin::Bundled)
+        .digest(&digest(text.as_bytes()));
+    source.finish()
+}
+
+/// Precompute [`Component::Resolution`] for `loader.sources[id]` (matching
+/// [`NamespaceKeys::next`] and [`crate::manifest_prefix::ManifestPrefix::push_stored`])
+/// without touching [`ManifestPrefix`].
+pub(crate) fn resolution_digest_from_loader(
+    loader: &crate::dependency_manifest::LoaderRecord,
+    id: usize,
+    ns_positions: &std::collections::HashMap<&str, usize>,
+) -> Digest {
+    let source_rec = &loader.sources[id];
+    let mut resolution = Fingerprint::new("light-cljs resolution");
+    let hash_lookup = |fingerprint: &mut Fingerprint, lookup_id: LookupId| {
+        let lookup = &loader.lookups[lookup_id.0 as usize];
+        fingerprint.text(&lookup.namespace).text(&lookup.requester);
+        candidates(fingerprint, &lookup.candidates);
+        fingerprint.optional_text(lookup.found.as_deref());
+    };
+    hash_lookup(&mut resolution, source_rec.lookup);
+    resolution.count(source_rec.requires.len());
+    for (written, target, form, lookups) in &source_rec.requires {
+        resolution.text(written);
+        if matches!(target.as_str(), "cljs.core" | "clojure.core") {
+            resolution.number(1);
+        } else if ns_positions
+            .get(target.as_str())
+            .is_some_and(|&pos| pos < id)
+        {
+            resolution.number(0).text(target);
+        } else {
+            resolution.number(2);
+        }
+        resolution.number(match form {
+            RequireForm::Declared => 0,
+            RequireForm::ClojureRewrite => 1,
+            RequireForm::ImplicitLazy => 2,
+        });
+        resolution.count(lookups.len());
+        for &lookup_id in lookups {
+            hash_lookup(&mut resolution, lookup_id);
+        }
+    }
+    resolution.finish()
 }
 
 /// The `:namespaces` broad view of `namespaces`: every namespace's name and

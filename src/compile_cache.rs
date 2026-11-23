@@ -95,6 +95,41 @@ pub enum CacheCpuKind {
     IndexEncodeHash,
 }
 
+/// Upper bound on consecutive candidate-bearing namespaces prefetched in one
+/// sliding-window cache lookup batch.
+const LOOKUP_WINDOW_MAX_NS: usize = 128;
+/// Upper bound on total encoded artifact bytes prefetched in one sliding-window
+/// cache lookup batch (16 MiB), bounding in-flight decoded memory.
+const LOOKUP_WINDOW_MAX_BYTES: u64 = 16 * 1024 * 1024;
+
+/// A candidate matched and verified/decoded ahead of time during a sliding-window
+/// parallel cache lookup, waiting for serial deterministic install in Stage D.
+struct PrefetchedHit {
+    id: NamespaceId,
+    fields: ManifestFields,
+    key: Box<FrontEndKey>,
+    artifact_digest: Digest,
+    prefix_bytes_read: u64,
+    body: PrefetchedBody,
+    candidate_index: usize,
+    prior_miss: Option<(&'static str, String)>,
+}
+
+enum PrefetchedBody {
+    Decoded {
+        artifact: NamespaceArtifact,
+        body_bytes_read: u64,
+    },
+    ReadError {
+        error: crate::artifact_store::ReadError,
+        body_bytes_read: u64,
+    },
+    DecodeError {
+        error: artifact_codec::DecodeError,
+        body_bytes_read: u64,
+    },
+}
+
 /// One compilation's use of a cache directory.
 pub struct CompileCache {
     store: Store,
@@ -120,6 +155,12 @@ pub struct CompileCache {
     /// How many namespaces so far a later coarse view covers by their
     /// declaration key or whole key ([`CacheCounts::view_declaring`]).
     declaring: u64,
+    /// True if any lookup observed a damaged index or unreadable/undecodable
+    /// object, forcing [`Self::finish`] to run [`Store::trim`].
+    saw_damage: bool,
+    /// Prefetched decoded hits from the current sliding window, consumed in
+    /// strict source order by [`Self::lookup_batched`].
+    prefetched: VecDeque<PrefetchedHit>,
     /// CPU slots available to this compilation, detected from the session's
     /// unit pool policy when `--jobs > 1`.
     slots: Slots,
@@ -149,9 +190,21 @@ impl CompileCache {
         analysis: crate::analyzer::AnalysisOptions,
         entry: &str,
     ) -> Self {
+        Self::open_with_slots(options, host, analysis, entry, Slots::ONE)
+    }
+
+    /// [`Self::open`], using `slots` CPU slots for parallel index snapshotting,
+    /// sliding-window lookup/decode, and background publishing.
+    pub fn open_with_slots(
+        options: &CacheOptions,
+        host: &MacroHost,
+        analysis: crate::analyzer::AnalysisOptions,
+        entry: &str,
+        slots: Slots,
+    ) -> Self {
         let started = Instant::now();
         let store = Store::open(&options.dir);
-        let snapshot = store.snapshot_all();
+        let snapshot = store.snapshot_all_with_slots(slots);
         let mut counts = CacheCounts::default();
         counts.validate_time += started.elapsed();
         Self {
@@ -170,7 +223,9 @@ impl CompileCache {
             counts,
             retention: options.retention,
             declaring: 0,
-            slots: Slots::ONE,
+            saw_damage: false,
+            prefetched: VecDeque::new(),
+            slots,
             pool: None,
             inline_batch: Vec::new(),
             pipeline: None,
@@ -193,6 +248,14 @@ impl CompileCache {
         hook: Option<crate::artifact_store::WriteTemporaryHook>,
     ) {
         self.store.set_write_temporary_hook(hook);
+    }
+
+    /// Configure the CPU slot budget for sliding-window lookup/decode and
+    /// background publishing when opened via [`Self::open`].
+    pub(crate) fn set_slots(&mut self, slots: Slots) {
+        if slots.get() > self.slots.get() {
+            self.slots = slots;
+        }
     }
 
     /// The generated names of every candidate this compilation may install.
@@ -253,6 +316,12 @@ impl CompileCache {
         if self.store.write_failure().is_some() {
             return;
         }
+        if self.counts.published == 0
+            && !self.saw_damage
+            && self.snapshot.within_retention(&self.retention)
+        {
+            return;
+        }
         if let Err(error) = self.store.trim(&self.retention, &self.in_use) {
             eprintln!(
                 "warning: cannot trim the compiler cache in {}: {error}",
@@ -293,6 +362,9 @@ impl CompileCache {
     }
 
     fn miss(&mut self, kind: &'static str, description: String) {
+        if matches!(kind, "unreadable" | "index" | "undecodable") {
+            self.saw_damage = true;
+        }
         if !matches!(self.pending, Some(Pending::Miss(..))) {
             self.pending = Some(Pending::Miss(kind, description));
         }
@@ -466,6 +538,649 @@ impl CompileCache {
         }
     }
 
+    /// Sliding-window parallel cache lookup for namespace `index`, prefetching
+    /// up to `LOOKUP_WINDOW_MAX_NS` consecutive candidate-bearing namespaces
+    /// (bounded by `LOOKUP_WINDOW_MAX_BYTES`) across `self.slots`:
+    /// - Stage A (parallel): `begin_read` + `read_manifest_prefix` of each
+    ///   namespace's newest candidate, plus `source_digest`, `resolution_digest`,
+    ///   and concurrent `inputs_unchanged`.
+    /// - Stage B (serial in-memory): chain-walk `ManifestPrefix` and
+    ///   `NamespaceKeys` in topological order to confirm the contiguous hit
+    ///   prefix, stopping at the first miss or bypass so stale candidates only
+    ///   read their manifest prefix.
+    /// - Stage C (parallel): `Reading::finish` (content-hash verify) and
+    ///   `artifact_codec::decode_verified` (with fused `validate_with_depth`),
+    ///   dropping raw bytes immediately on workers.
+    /// - Stage D (delivered here one by one): return each decoded artifact in
+    ///   order, falling back cleanly on corruption or cancellation with exact
+    ///   `bytes_read` and miss reporting.
+    pub(crate) fn lookup_batched<'a>(
+        &mut self,
+        loader: &LoaderRecord,
+        index: usize,
+        text_of: &(dyn Fn(usize) -> &'a str + Sync),
+        sources: &dyn SourceProvider,
+        cancelled: &(dyn Fn() -> bool + Sync),
+    ) -> Result<Option<NamespaceArtifact>, String> {
+        self.pending = None;
+        let id = NamespaceId(self.prefix.len() as u32);
+        debug_assert_eq!(id.0 as usize, index);
+        if self.slots == Slots::ONE {
+            return self.lookup(loader, text_of(index), sources, cancelled);
+        }
+        if self.prefetched.front().is_some_and(|item| item.id != id) {
+            self.prefetched.clear();
+        }
+        if self.prefetched.is_empty() {
+            let mut window_end = index;
+            let mut window_bytes = 0u64;
+            while window_end < loader.sources.len()
+                && window_end - index < LOOKUP_WINDOW_MAX_NS
+                && self.has_candidates(&loader.sources[window_end].name)
+            {
+                let first_bytes = self
+                    .snapshot
+                    .candidates(&loader.sources[window_end].name)
+                    .ok()
+                    .and_then(|entries| entries.first())
+                    .map_or(0, |entry| entry.bytes);
+                if window_end > index
+                    && window_bytes.saturating_add(first_bytes) > LOOKUP_WINDOW_MAX_BYTES
+                {
+                    break;
+                }
+                window_bytes = window_bytes.saturating_add(first_bytes);
+                window_end += 1;
+            }
+            if window_end <= index + 1 {
+                return self.lookup(loader, text_of(index), sources, cancelled);
+            }
+            if !self.fill_prefetch_window(loader, index, window_end, text_of, sources, cancelled) {
+                return Ok(None);
+            }
+        }
+        let item = self
+            .prefetched
+            .pop_front()
+            .expect("prefetch window populated or returned early");
+        debug_assert_eq!(item.id, id);
+        self.counts.bytes_read += item.prefix_bytes_read;
+        match item.body {
+            PrefetchedBody::Decoded {
+                artifact,
+                body_bytes_read,
+            } => {
+                self.counts.bytes_read += body_bytes_read;
+                self.prefix.push_stored(loader, &item.fields, false);
+                self.pending = Some(Pending::Hit {
+                    key: item.key,
+                    artifact: item.artifact_digest,
+                });
+                Ok(Some(artifact))
+            }
+            PrefetchedBody::ReadError {
+                error,
+                body_bytes_read,
+            } => {
+                self.counts.bytes_read += body_bytes_read;
+                self.prefetched.clear();
+                if let Some((kind, description)) = item.prior_miss {
+                    self.miss(kind, description);
+                }
+                self.miss("unreadable", error.to_string());
+                self.lookup_remaining_candidates(
+                    loader,
+                    id,
+                    text_of(index),
+                    sources,
+                    cancelled,
+                    item.candidate_index + 1,
+                )
+            }
+            PrefetchedBody::DecodeError {
+                error,
+                body_bytes_read,
+            } => {
+                self.counts.bytes_read += body_bytes_read;
+                self.prefetched.clear();
+                if error == artifact_codec::DecodeError::Cancelled {
+                    return Err(error.to_string());
+                }
+                if let Some((kind, description)) = item.prior_miss {
+                    self.miss(kind, description);
+                }
+                self.miss("undecodable", error.to_string());
+                Ok(None)
+            }
+        }
+    }
+
+    /// Run Stages A, B, and C for `index..window_end`. Returns `true` when at
+    /// least namespace `index` entered `self.prefetched`; returns `false` when
+    /// namespace `index` itself missed or bypassed (having already recorded its
+    /// `bytes_read` and miss reason).
+    fn fill_prefetch_window<'a>(
+        &mut self,
+        loader: &LoaderRecord,
+        index: usize,
+        window_end: usize,
+        text_of: &(dyn Fn(usize) -> &'a str + Sync),
+        sources: &dyn SourceProvider,
+        cancelled: &(dyn Fn() -> bool + Sync),
+    ) -> bool {
+        enum FirstCandidateRead {
+            BeginErr(crate::artifact_store::ReadError),
+            ManifestErr {
+                reading: crate::artifact_store::Reading,
+                error: artifact_codec::DecodeError,
+            },
+            ManifestOk {
+                reading: crate::artifact_store::Reading,
+                manifest: artifact_codec::Manifest,
+                inputs_check: Option<Result<(), Mismatch>>,
+            },
+        }
+        struct StageAOutcome {
+            source_digest: Digest,
+            resolution_digest: Digest,
+            first_read: FirstCandidateRead,
+        }
+        struct StageCJob {
+            id: NamespaceId,
+            reading: crate::artifact_store::Reading,
+            fields: ManifestFields,
+            key: Box<FrontEndKey>,
+            artifact_digest: Digest,
+            prefix_bytes_read: u64,
+            candidate_index: usize,
+            prior_miss: Option<(&'static str, String)>,
+        }
+
+        let validate_started = Instant::now();
+        let ns_positions: std::collections::HashMap<&str, usize> = loader
+            .sources
+            .iter()
+            .take(window_end)
+            .enumerate()
+            .map(|(pos, src)| (src.name.as_str(), pos))
+            .collect();
+        let concurrent_sources = sources.concurrent();
+        let store = &self.store;
+        let snapshot = &self.snapshot;
+        let limits = &self.limits;
+        let entry = &self.entry;
+        let stage_a_jobs: Vec<(u64, usize)> = (index..window_end)
+            .map(|ns_idx| {
+                let first_bytes = snapshot
+                    .candidates(&loader.sources[ns_idx].name)
+                    .ok()
+                    .and_then(|c| c.first())
+                    .map_or(0, |e| e.bytes);
+                let cost = text_of(ns_idx).len() as u64 + first_bytes.min(65536);
+                (cost, ns_idx)
+            })
+            .collect();
+
+        // Stage A: parallel manifest prefix reads + source/resolution digests.
+        let stage_a = crate::scheduler::map(self.slots, stage_a_jobs, |ns_idx| {
+            let src = &loader.sources[ns_idx];
+            let text = text_of(ns_idx);
+            let source_digest = crate::cache_key::source_digest_from_loader(src, text, entry);
+            let resolution_digest =
+                crate::cache_key::resolution_digest_from_loader(loader, ns_idx, &ns_positions);
+            let first = &snapshot
+                .candidates(&src.name)
+                .expect("window entries have candidates")[0];
+            let first_read = match store.begin_read(first, limits) {
+                Err(error) => FirstCandidateRead::BeginErr(error),
+                Ok(reading) => match artifact_codec::read_manifest_prefix(
+                    reading.prefix(),
+                    reading.length(),
+                    limits,
+                ) {
+                    Err(error) => FirstCandidateRead::ManifestErr { reading, error },
+                    Ok(manifest) => {
+                        let inputs_check = if manifest.namespace == src.name {
+                            let has_resources = manifest
+                                .fields
+                                .inputs
+                                .iter()
+                                .any(|input| matches!(input, ExternalInput::Resource(_)));
+                            if !has_resources {
+                                Some(Ok(()))
+                            } else {
+                                concurrent_sources.map(|cs| {
+                                    crate::cache_key::inputs_unchanged(&manifest.fields.inputs, cs)
+                                })
+                            }
+                        } else {
+                            None
+                        };
+                        FirstCandidateRead::ManifestOk {
+                            reading,
+                            manifest,
+                            inputs_check,
+                        }
+                    }
+                },
+            };
+            StageAOutcome {
+                source_digest,
+                resolution_digest,
+                first_read,
+            }
+        });
+
+        // Stage B: fast in-memory serial chain walk in topological order.
+        let mut pushed_count = 0usize;
+        let mut stage_c_jobs: Vec<StageCJob> = Vec::with_capacity(stage_a.len());
+        let mut first_ns_miss: Option<(&'static str, String)> = None;
+        let mut first_ns_bypass = false;
+        let mut first_ns_prefix_bytes = 0u64;
+
+        'window: for (offset, outcome) in stage_a.into_iter().enumerate() {
+            let ns_idx = index + offset;
+            let ns_id = NamespaceId(ns_idx as u32);
+            let name = loader.sources[ns_idx].name.clone();
+            let candidates = self
+                .snapshot
+                .candidates(&name)
+                .expect("window entries have candidates")
+                .to_vec();
+            let mut prefix_bytes_read = 0u64;
+            let mut prior_miss: Option<(&'static str, String)> = None;
+            let mut note_miss = |kind: &'static str, description: String| {
+                if prior_miss.is_none() {
+                    prior_miss = Some((kind, description));
+                }
+            };
+            let mut first_read = Some(outcome.first_read);
+            let mut matched_hit = false;
+
+            for (cand_idx, candidate) in candidates.iter().enumerate() {
+                let (reading, manifest, inputs_check) = if cand_idx == 0 {
+                    match first_read.take().expect("cand 0 read once") {
+                        FirstCandidateRead::BeginErr(error) => {
+                            note_miss("unreadable", error.to_string());
+                            continue;
+                        }
+                        FirstCandidateRead::ManifestErr { reading, error } => {
+                            prefix_bytes_read += reading.prefix().len() as u64;
+                            let rest = reading.length() - reading.prefix().len() as u64;
+                            let finished = reading.finish();
+                            if matches!(
+                                finished,
+                                Ok(_) | Err(crate::artifact_store::ReadError::Integrity)
+                            ) {
+                                prefix_bytes_read += rest;
+                            }
+                            match finished {
+                                Ok(_) => note_miss("undecodable", error.to_string()),
+                                Err(read) => note_miss("unreadable", read.to_string()),
+                            }
+                            continue;
+                        }
+                        FirstCandidateRead::ManifestOk {
+                            reading,
+                            manifest,
+                            inputs_check,
+                        } => {
+                            prefix_bytes_read += reading.prefix().len() as u64;
+                            (reading, manifest, inputs_check)
+                        }
+                    }
+                } else {
+                    let reading = match self.store.begin_read(candidate, &self.limits) {
+                        Ok(reading) => reading,
+                        Err(error) => {
+                            note_miss("unreadable", error.to_string());
+                            continue;
+                        }
+                    };
+                    prefix_bytes_read += reading.prefix().len() as u64;
+                    match artifact_codec::read_manifest_prefix(
+                        reading.prefix(),
+                        reading.length(),
+                        &self.limits,
+                    ) {
+                        Ok(manifest) => (reading, manifest, None),
+                        Err(error) => {
+                            let rest = reading.length() - reading.prefix().len() as u64;
+                            let finished = reading.finish();
+                            if matches!(
+                                finished,
+                                Ok(_) | Err(crate::artifact_store::ReadError::Integrity)
+                            ) {
+                                prefix_bytes_read += rest;
+                            }
+                            match finished {
+                                Ok(_) => note_miss("undecodable", error.to_string()),
+                                Err(read) => note_miss("unreadable", read.to_string()),
+                            }
+                            continue;
+                        }
+                    }
+                };
+                if manifest.namespace != name {
+                    note_miss(
+                        "undecodable",
+                        format!("the artifact is {}'s", manifest.namespace),
+                    );
+                    continue;
+                }
+                let fields = &manifest.fields;
+                self.prefix.push_stored(loader, fields, false);
+                let key = self.keys.next_with_digests(
+                    &self.environment,
+                    &self.prefix,
+                    ns_id,
+                    outcome.source_digest,
+                    outcome.resolution_digest,
+                );
+                let check_inputs = || match &inputs_check {
+                    Some(res) => res.clone(),
+                    None => crate::cache_key::inputs_unchanged(&fields.inputs, sources),
+                };
+                let matched =
+                    if key.digest != candidate.key || fields.front_end_key.digest != key.digest {
+                        match fields.front_end_key.mismatch(&key) {
+                            Some(Mismatch::View) => check_inputs().and(Err(Mismatch::View)),
+                            mismatch => Err(mismatch.unwrap_or(Mismatch::Inconsistent)),
+                        }
+                    } else {
+                        check_inputs()
+                    };
+                if let Err(mismatch) = matched {
+                    self.prefix.pop();
+                    note_miss(kind(&mismatch), mismatch.to_string());
+                    continue;
+                }
+                if fields.no_cache
+                    || fields.always
+                    || self.reaching(ns_id).is_some()
+                    || self.origin(ns_id, false, false).is_some()
+                {
+                    self.prefix.pop();
+                    if offset == 0 {
+                        first_ns_bypass = true;
+                        first_ns_prefix_bytes = prefix_bytes_read;
+                    }
+                    break 'window;
+                }
+                self.keys.append(self.prefix.record(ns_id), key.clone());
+                self.propagated.push(None);
+                pushed_count += 1;
+                stage_c_jobs.push(StageCJob {
+                    id: ns_id,
+                    reading,
+                    fields: manifest.fields,
+                    key: Box::new(key),
+                    artifact_digest: candidate.artifact,
+                    prefix_bytes_read,
+                    candidate_index: cand_idx,
+                    prior_miss: prior_miss.take(),
+                });
+                matched_hit = true;
+                break;
+            }
+            if !matched_hit {
+                if offset == 0 {
+                    first_ns_miss = prior_miss;
+                    first_ns_prefix_bytes = prefix_bytes_read;
+                }
+                break;
+            }
+        }
+
+        // Unwind speculative chain state before Stage C/D so any mid-window
+        // corruption or install refusal leaves prefix/keys untouched.
+        for _ in 0..pushed_count {
+            self.prefix.pop();
+            self.keys.pop();
+            self.propagated.pop();
+        }
+        self.counts.validate_time += validate_started.elapsed();
+
+        if stage_c_jobs.is_empty() {
+            self.counts.bytes_read += first_ns_prefix_bytes;
+            if !first_ns_bypass && let Some((kind, description)) = first_ns_miss {
+                self.miss(kind, description);
+            }
+            return false;
+        }
+
+        // Stage C: parallel body read + full-file SHA-256 verify + decode_verified.
+        let stage_c_started = Instant::now();
+        let limits = &self.limits;
+        let jobs: Vec<(u64, StageCJob)> = stage_c_jobs
+            .into_iter()
+            .map(|job| (job.reading.length(), job))
+            .collect();
+        let decoded = crate::scheduler::map(self.slots, jobs, |job| {
+            let StageCJob {
+                id,
+                reading,
+                fields,
+                key,
+                artifact_digest,
+                prefix_bytes_read,
+                candidate_index,
+                prior_miss,
+            } = job;
+            if cancelled() {
+                drop(reading);
+                return (
+                    PrefetchedHit {
+                        id,
+                        fields,
+                        key,
+                        artifact_digest,
+                        prefix_bytes_read,
+                        body: PrefetchedBody::DecodeError {
+                            error: artifact_codec::DecodeError::Cancelled,
+                            body_bytes_read: 0,
+                        },
+                        candidate_index,
+                        prior_miss,
+                    },
+                    0u64,
+                    0u64,
+                );
+            }
+            let rest = reading.length() - reading.prefix().len() as u64;
+            let t0 = Instant::now();
+            let read_res = reading.finish();
+            let read_ns = t0.elapsed().as_nanos() as u64;
+            let (body, decode_ns) = match read_res {
+                Err(error) => {
+                    let body_bytes_read =
+                        if matches!(error, crate::artifact_store::ReadError::Integrity) {
+                            rest
+                        } else {
+                            0
+                        };
+                    (
+                        PrefetchedBody::ReadError {
+                            error,
+                            body_bytes_read,
+                        },
+                        0u64,
+                    )
+                }
+                Ok(bytes) => {
+                    let t1 = Instant::now();
+                    let decoded = artifact_codec::decode_verified(&bytes, limits, cancelled);
+                    // Drop raw artifact bytes immediately on the worker thread.
+                    drop(bytes);
+                    let decode_ns = t1.elapsed().as_nanos() as u64;
+                    let body = match decoded {
+                        Ok((_, artifact)) => PrefetchedBody::Decoded {
+                            artifact,
+                            body_bytes_read: rest,
+                        },
+                        Err(error) => PrefetchedBody::DecodeError {
+                            error,
+                            body_bytes_read: rest,
+                        },
+                    };
+                    (body, decode_ns)
+                }
+            };
+            (
+                PrefetchedHit {
+                    id,
+                    fields,
+                    key,
+                    artifact_digest,
+                    prefix_bytes_read,
+                    body,
+                    candidate_index,
+                    prior_miss,
+                },
+                read_ns,
+                decode_ns,
+            )
+        });
+        let stage_c_wall = stage_c_started.elapsed();
+        let mut total_read_ns = 0u128;
+        let mut total_decode_ns = 0u128;
+        for (hit, read_ns, decode_ns) in decoded {
+            total_read_ns += u128::from(read_ns);
+            total_decode_ns += u128::from(decode_ns);
+            self.prefetched.push_back(hit);
+        }
+        let total_cpu_ns = total_read_ns + total_decode_ns;
+        if total_cpu_ns > 0 {
+            let wall_ns = stage_c_wall.as_nanos();
+            let read_wall =
+                std::time::Duration::from_nanos((wall_ns * total_read_ns / total_cpu_ns) as u64);
+            self.counts.validate_time += read_wall;
+            self.counts.decode_time += stage_c_wall.saturating_sub(read_wall);
+        } else {
+            self.counts.decode_time += stage_c_wall;
+        }
+        true
+    }
+
+    /// Fallback for [`Self::lookup_batched`] when candidate `start_index - 1`
+    /// failed `Reading::finish` in Stage C and the namespace has additional
+    /// candidates to inspect.
+    fn lookup_remaining_candidates(
+        &mut self,
+        loader: &LoaderRecord,
+        id: NamespaceId,
+        text: &str,
+        sources: &dyn SourceProvider,
+        cancelled: &dyn Fn() -> bool,
+        start_index: usize,
+    ) -> Result<Option<NamespaceArtifact>, String> {
+        let name = loader.sources[id.0 as usize].name.clone();
+        let candidates = match self.snapshot.candidates(&name) {
+            Ok(candidates) if start_index < candidates.len() => candidates[start_index..].to_vec(),
+            _ => return Ok(None),
+        };
+        let started = Instant::now();
+        let mut found = None;
+        for candidate in &candidates {
+            let reading = match self.store.begin_read(candidate, &self.limits) {
+                Ok(reading) => reading,
+                Err(error) => {
+                    self.miss("unreadable", error.to_string());
+                    continue;
+                }
+            };
+            self.counts.bytes_read += reading.prefix().len() as u64;
+            let manifest = match artifact_codec::read_manifest_prefix(
+                reading.prefix(),
+                reading.length(),
+                &self.limits,
+            ) {
+                Ok(manifest) if manifest.namespace == name => manifest,
+                Ok(manifest) => {
+                    self.miss(
+                        "undecodable",
+                        format!("the artifact is {}'s", manifest.namespace),
+                    );
+                    continue;
+                }
+                Err(error) => {
+                    match self.finish_read(reading) {
+                        Ok(_) => self.miss("undecodable", error.to_string()),
+                        Err(read) => self.miss("unreadable", read.to_string()),
+                    }
+                    continue;
+                }
+            };
+            let fields = &manifest.fields;
+            self.prefix.push_stored(loader, fields, false);
+            let key = self
+                .keys
+                .next(&self.environment, &self.prefix, id, text, &self.entry);
+            let matched =
+                if key.digest != candidate.key || fields.front_end_key.digest != key.digest {
+                    match fields.front_end_key.mismatch(&key) {
+                        Some(Mismatch::View) => {
+                            crate::cache_key::inputs_unchanged(&fields.inputs, sources)
+                                .and(Err(Mismatch::View))
+                        }
+                        mismatch => Err(mismatch.unwrap_or(Mismatch::Inconsistent)),
+                    }
+                } else {
+                    crate::cache_key::inputs_unchanged(&fields.inputs, sources)
+                };
+            if let Err(mismatch) = matched {
+                self.prefix.pop();
+                self.miss(kind(&mismatch), mismatch.to_string());
+                continue;
+            }
+            if fields.no_cache
+                || fields.always
+                || self.reaching(id).is_some()
+                || self.origin(id, false, false).is_some()
+            {
+                self.prefix.pop();
+                self.pending = None;
+                break;
+            }
+            let bytes = match self.finish_read(reading) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    self.prefix.pop();
+                    self.miss("unreadable", error.to_string());
+                    continue;
+                }
+            };
+            found = Some((key, candidate.artifact, bytes));
+            break;
+        }
+        self.counts.validate_time += started.elapsed();
+        let Some((key, artifact, bytes)) = found else {
+            return Ok(None);
+        };
+        let started = Instant::now();
+        let decoded = artifact_codec::decode_verified(&bytes, &self.limits, cancelled);
+        drop(bytes);
+        self.counts.decode_time += started.elapsed();
+        match decoded {
+            Ok((_, decoded)) => {
+                self.pending = Some(Pending::Hit {
+                    key: Box::new(key),
+                    artifact,
+                });
+                Ok(Some(decoded))
+            }
+            Err(error) => {
+                self.prefix.pop();
+                self.pending = None;
+                if error == artifact_codec::DecodeError::Cancelled {
+                    return Err(error.to_string());
+                }
+                self.miss("undecodable", error.to_string());
+                Ok(None)
+            }
+        }
+    }
+
     /// The next namespace is analyzed without a lookup, because the
     /// Pants build may write a core function's value, which `description`
     /// names. It misses as [`CORE_WRITE`] and publishes nothing: no build
@@ -497,6 +1212,7 @@ impl CompileCache {
     /// The artifact [`Self::lookup`] returned was refused; its namespace is
     /// analyzed instead.
     pub(crate) fn refused(&mut self, reason: &str) {
+        self.prefetched.clear();
         self.prefix.pop();
         self.pending = None;
         self.miss("refused", reason.to_owned());

@@ -4990,4 +4990,29 @@ mod tests {
         assert_eq!(digest(&encoded), digest(&rebuilt));
         assert_eq!(encoded, rebuilt);
     }
+
+    #[test]
+    fn decode_verified_matches_decode_and_enforces_depth_limit() {
+        let artifact = sample(0);
+        let f = fields();
+        let encoded = encode(&artifact, &f).unwrap();
+        let limits = DecodeLimits::default();
+        let strict = decode(&encoded, &limits, &|| false).unwrap();
+        let verified = decode_verified(&encoded, &limits, &|| false).unwrap();
+        assert_eq!(verified, strict);
+
+        let depth = artifact.validate_with_depth().unwrap();
+        assert_eq!(Ok(depth), artifact.ir_depth());
+        let tight = DecodeLimits {
+            max_ir_depth: depth.saturating_sub(1),
+            ..limits
+        };
+        assert!(matches!(
+            decode_verified(&encoded, &tight, &|| false),
+            Err(DecodeError::Limit {
+                what: "expression nesting",
+                ..
+            })
+        ));
+    }
 }

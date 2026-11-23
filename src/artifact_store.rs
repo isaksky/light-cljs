@@ -407,6 +407,16 @@ struct StoreInner {
     write_temporary_hook: Mutex<Option<WriteTemporaryHook>>,
 }
 
+/// Summary of the store's `index/` directory when a [`Snapshot`] was built,
+/// used to skip [`Store::trim`] on zero-publish warm builds whose stored
+/// indexes are already healthy and within retention.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct SnapshotHealth {
+    max_per_namespace: usize,
+    total_bytes: u64,
+    saw_unhealthy: bool,
+}
+
 /// The candidates a compilation may look up, read once before its first
 /// namespace, and the [`Reservation`] of their generated names, which it
 /// reserves then ([`crate::compiler::EntryRecorders::reserve`]). Looking up
@@ -417,10 +427,14 @@ struct StoreInner {
 pub struct Snapshot {
     indexes: HashMap<String, Result<Vec<Entry>, IndexError>>,
     reservation: Reservation,
+    health: SnapshotHealth,
 }
 
 impl Snapshot {
-    fn new(indexes: HashMap<String, Result<Vec<Entry>, IndexError>>) -> Self {
+    fn new(
+        indexes: HashMap<String, Result<Vec<Entry>, IndexError>>,
+        health: SnapshotHealth,
+    ) -> Self {
         let reservation = Reservation::of(
             indexes
                 .values()
@@ -430,7 +444,16 @@ impl Snapshot {
         Self {
             indexes,
             reservation,
+            health,
         }
+    }
+
+    /// Whether the full store snapshot observed healthy indexes already within
+    /// `retention`, so a build that published nothing may skip [`Store::trim`].
+    pub(crate) fn within_retention(&self, retention: &Retention) -> bool {
+        !self.health.saw_unhealthy
+            && self.health.max_per_namespace <= retention.per_namespace
+            && self.health.total_bytes <= retention.max_bytes
     }
 
     /// The candidates of `namespace`, newest first, or why there are none.
@@ -671,16 +694,28 @@ impl Store {
                     (namespace.to_owned(), entries)
                 })
                 .collect(),
+            SnapshotHealth {
+                saw_unhealthy: true,
+                ..Default::default()
+            },
         )
     }
 
     /// [`Store::snapshot`] of every namespace the store indexes.
     pub fn snapshot_all(&self) -> Snapshot {
+        self.snapshot_all_with_slots(crate::scheduler::Slots::ONE)
+    }
+
+    /// [`Store::snapshot_all`], reading and verifying index files in parallel
+    /// across `slots` when `slots.get() > 1`.
+    pub fn snapshot_all_with_slots(&self, slots: crate::scheduler::Slots) -> Snapshot {
+        let (indexes, health) = self.all_indexes_with_health(slots);
         Snapshot::new(
-            self.all_indexes()
+            indexes
                 .into_iter()
                 .map(|(_, index)| (index.namespace, Ok(index.entries)))
                 .collect(),
+            health,
         )
     }
 
@@ -692,19 +727,80 @@ impl Store {
         Ok(index)
     }
 
-    /// Every valid index, with its file name.
-    fn all_indexes(&self) -> Vec<(String, Index)> {
-        let Ok(files) = fs::read_dir(self.indexes()) else {
-            return Vec::new();
+    /// Every valid index, with its file name, plus health metadata for
+    /// conditional trim skipping. Directory entries are sorted by file name so
+    /// parallel reads produce a deterministic ordered result.
+    fn all_indexes_with_health(
+        &self,
+        slots: crate::scheduler::Slots,
+    ) -> (Vec<(String, Index)>, SnapshotHealth) {
+        let files = match fs::read_dir(self.indexes()) {
+            Ok(files) => files,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return (Vec::new(), SnapshotHealth::default());
+            }
+            Err(_) => {
+                return (
+                    Vec::new(),
+                    SnapshotHealth {
+                        saw_unhealthy: true,
+                        ..Default::default()
+                    },
+                );
+            }
         };
-        files
-            .flatten()
-            .filter_map(|file| {
-                let name = file.file_name().into_string().ok()?;
-                let index = read_index_file(&file.path()).ok()?;
-                (hex(&digest(index.namespace.as_bytes())) == name).then_some((name, index))
-            })
-            .collect()
+        let mut saw_unhealthy = false;
+        let mut candidates: Vec<(String, PathBuf)> = Vec::new();
+        for entry in files {
+            let Ok(file) = entry else {
+                saw_unhealthy = true;
+                continue;
+            };
+            let Ok(name) = file.file_name().into_string() else {
+                saw_unhealthy = true;
+                continue;
+            };
+            if name.starts_with(TEMP_PREFIX) || parse_hex(&name).is_none() {
+                saw_unhealthy = true;
+                continue;
+            }
+            candidates.push((name, file.path()));
+        }
+        candidates.sort_by(|a, b| a.0.cmp(&b.0));
+        let jobs: Vec<(u64, (String, PathBuf))> =
+            candidates.into_iter().map(|item| (1u64, item)).collect();
+        let outcomes = crate::scheduler::map(slots, jobs, |(name, path)| {
+            let index = read_index_file(&path).ok()?;
+            (hex(&digest(index.namespace.as_bytes())) == name).then_some((name, index))
+        });
+        let mut valid = Vec::with_capacity(outcomes.len());
+        let mut max_per_namespace = 0usize;
+        let mut total_bytes = 0u64;
+        for outcome in outcomes {
+            match outcome {
+                Some((name, index)) => {
+                    if index.entries.is_empty() {
+                        saw_unhealthy = true;
+                    }
+                    max_per_namespace = max_per_namespace.max(index.entries.len());
+                    for entry in &index.entries {
+                        total_bytes = total_bytes.saturating_add(entry.bytes);
+                    }
+                    valid.push((name, index));
+                }
+                None => {
+                    saw_unhealthy = true;
+                }
+            }
+        }
+        (
+            valid,
+            SnapshotHealth {
+                max_per_namespace,
+                total_bytes,
+                saw_unhealthy,
+            },
+        )
     }
 
     // -- Writing ------------------------------------------------------------
@@ -2030,6 +2126,57 @@ mod tests {
         assert!(matches!(results_2.as_slice(), [Publish::Published(_)]));
         assert_eq!(store.candidates("race.contested").len(), 1);
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn snapshot_all_with_slots_matches_serial_and_tracks_health() {
+        let dir = std::env::temp_dir().join(format!(
+            "light-cljs-snap-slots-{}-{}",
+            std::process::id(),
+            now()
+        ));
+        let store = Store::open(&dir);
+        store.prepare().unwrap();
+        for i in 0..12u8 {
+            let index = Index {
+                namespace: format!("app.ns{i}"),
+                entries: vec![entry(i + 1, &[]), entry(i + 20, &[])],
+            };
+            store.write_index(&index).unwrap();
+        }
+        let serial = store.snapshot_all();
+        let parallel = store.snapshot_all_with_slots(crate::scheduler::Slots::new(4).unwrap());
+        assert_eq!(serial.reservation(), parallel.reservation());
+        for i in 0..12u8 {
+            let ns = format!("app.ns{i}");
+            assert_eq!(serial.candidates(&ns), parallel.candidates(&ns));
+        }
+        assert!(parallel.within_retention(&Retention {
+            per_namespace: 2,
+            max_bytes: u64::MAX,
+            ..Retention::default()
+        }));
+        assert!(!parallel.within_retention(&Retention {
+            per_namespace: 1,
+            max_bytes: u64::MAX,
+            ..Retention::default()
+        }));
+        assert!(!parallel.within_retention(&Retention {
+            per_namespace: 3,
+            max_bytes: 1,
+            ..Retention::default()
+        }));
+        let temp_file = store.indexes().join(".tmp-stale");
+        fs::write(&temp_file, b"partial").unwrap();
+        let unhealthy = store.snapshot_all_with_slots(crate::scheduler::Slots::new(4).unwrap());
+        assert!(!unhealthy.within_retention(&Retention::default()));
+        let _ = fs::remove_file(&temp_file);
+        let damaged_file = store.indexes().join(hex(&digest(b"app.damaged")));
+        fs::write(&damaged_file, b"corrupt").unwrap();
+        let unhealthy_damaged =
+            store.snapshot_all_with_slots(crate::scheduler::Slots::new(4).unwrap());
+        assert!(!unhealthy_damaged.within_retention(&Retention::default()));
         let _ = fs::remove_dir_all(&dir);
     }
 }

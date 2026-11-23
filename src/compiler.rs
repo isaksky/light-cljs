@@ -2209,7 +2209,13 @@ pub fn analyze_namespace_entry_cached_output(
     ),
     NamespaceCompileError,
 > {
-    let mut store = crate::compile_cache::CompileCache::open(cache, macros, options, entry);
+    let mut store = crate::compile_cache::CompileCache::open_with_slots(
+        cache,
+        macros,
+        options,
+        entry,
+        parse_slots(slots),
+    );
     let mut stats = stats;
     if let Some(stats) = stats.as_deref_mut() {
         *stats = CompileStats::default();
@@ -2893,6 +2899,9 @@ fn analyze_entry(
     analysis.begin_generated_names(names_start);
     // Each namespace's macro-free units may be analyzed on the pool.
     analysis.unit_slots = parse_slots(slots);
+    if let Some(cache) = cache.as_deref_mut() {
+        cache.set_slots(analysis.unit_slots);
+    }
     // On the native backend, compile-time atom effects keep their `--jobs
     // 1` order at every `--jobs` (light-cljs-480).
     if macros.native_macro_backend()
@@ -2966,64 +2975,116 @@ fn analyze_entry(
     // adds them where it charges the unit, in unit order
     // (docs/compiler-concurrency.md, "As built (light-cljs-374)").
     let memory_limit = macros.evaluator_options.memory_limit;
-    if !namespace_workers
-        && analysis.unit_slots.get() > 1
-        && let Some(session) = macros.session_handle()
-    {
-        use crate::compilation_session::PoolEngines;
-        // V8 isolates, or in QuickJS-only builds QuickJS runtimes
-        // (light-cljs-436).
-        let engines = if (macros.native_macro_backend() || cfg!(any(light_v8, light_quickjs)))
-            && macros.engine.script_host.is_none()
-            && !macros.tables.interactive
-        {
-            if fresh_isolates || std::env::var_os("LIGHT_CLJS_FRESH_UNIT_ISOLATES").is_some() {
-                PoolEngines::Fresh
-            } else {
-                PoolEngines::Persistent
+    let mut pool_started = false;
+    let mut parallel_top: Option<parallel_top_level::ParallelTopLevel> = None;
+    let parallel_recording = crate::macro_host::UnitRecording {
+        observe: observations.is_some(),
+        capture: capturing,
+    };
+    let parallel_top_eligible = !namespace_workers
+        && !macros.native_macro_backend()
+        && !macros.tables.interactive
+        && macros.engine.script_host.is_none()
+        && install.is_none()
+        && blockers.is_empty()
+        // In `warning_mode`, non-macro namespaces drain units inline per form
+        // instead of queuing deferred-unit batches, so enabling lookahead
+        // namespaces at `--jobs 2` keeps the single worker busy instead of
+        // starving deferred units.
+        && (analysis.unit_slots.get() >= 3
+            || (options.warning_mode && analysis.unit_slots.get() >= 2));
+    // Start the unit pool, macro bootstrap, and parallel top-level scheduler
+    // lazily on the first actual cache miss (or immediately when no cache or
+    // external artifact lookup is active), so 100% warm cache builds incur
+    // zero V8 bootstrap and zero worker-pool spawn.
+    macro_rules! ensure_pool_started {
+        ($at_index:expr) => {{
+            if !pool_started {
+                pool_started = true;
+                if !namespace_workers
+                    && analysis.unit_slots.get() > 1
+                    && let Some(session) = macros.session_handle()
+                {
+                    use crate::compilation_session::PoolEngines;
+                    // V8 isolates, or in QuickJS-only builds QuickJS runtimes
+                    // (light-cljs-436).
+                    let engines = if (macros.native_macro_backend()
+                        || cfg!(any(light_v8, light_quickjs)))
+                        && macros.engine.script_host.is_none()
+                        && !macros.tables.interactive
+                    {
+                        if fresh_isolates
+                            || std::env::var_os("LIGHT_CLJS_FRESH_UNIT_ISOLATES").is_some()
+                        {
+                            PoolEngines::Fresh
+                        } else {
+                            PoolEngines::Persistent
+                        }
+                    } else {
+                        PoolEngines::None
+                    };
+                    // The main isolate's reservation and as many workers' as the rest
+                    // of the limit gives `WORKER_SHARE` each; with none, no worker has an
+                    // engine.
+                    let isolates = if macros.native_macro_backend() {
+                        analysis.unit_slots.get()
+                    } else {
+                        crate::compilation_session::pool_isolate_count(
+                            memory_limit,
+                            analysis.unit_slots,
+                        )
+                    };
+                    let engines = if isolates < 2 {
+                        PoolEngines::None
+                    } else {
+                        engines
+                    };
+                    let mut resources = None;
+                    if engines != PoolEngines::None && !macros.native_macro_backend() {
+                        // Every isolate installs the bootstrap units: they are compiled
+                        // before the build's deadline starts (light-cljs-378).
+                        crate::compiler_bootstrap::prepare(macros)
+                            .map_err(NamespaceCompileError::new)?;
+                        resources = Some(
+                            crate::evaluator::BuildResources::new(
+                                &macros.evaluator_options,
+                                isolates,
+                            )
+                            .map_err(|e| NamespaceCompileError::new(e.0))?,
+                        );
+                    }
+                    let started = session.start_pool(
+                        analysis.unit_slots,
+                        engines,
+                        isolates,
+                        macros.environment(),
+                        resources,
+                        parallel_recording,
+                    );
+                    if let Err(error) = started {
+                        macros.evaluator_options.memory_limit = memory_limit;
+                        return Err(NamespaceCompileError::new(error));
+                    }
+                }
+                if parallel_top_eligible
+                    && let Some(policy) = macros
+                        .session_handle()
+                        .and_then(|session| session.pool_policy())
+                {
+                    let mut parallel =
+                        parallel_top_level::ParallelTopLevel::new(policy, analysis.unit_slots);
+                    let at: usize = $at_index;
+                    for prev in 0..at {
+                        parallel.note_published(prev, &loader.ordered[prev].name, false);
+                    }
+                    parallel.extend_graph(&loader.ordered);
+                    parallel_top = Some(parallel);
+                }
             }
-        } else {
-            PoolEngines::None
-        };
-        // The main isolate's reservation and as many workers' as the rest
-        // of the limit gives `WORKER_SHARE` each; with none, no worker has an
-        // engine.
-        let isolates = if macros.native_macro_backend() {
-            analysis.unit_slots.get()
-        } else {
-            crate::compilation_session::pool_isolate_count(memory_limit, analysis.unit_slots)
-        };
-        let engines = if isolates < 2 {
-            PoolEngines::None
-        } else {
-            engines
-        };
-        let mut resources = None;
-        if engines != PoolEngines::None && !macros.native_macro_backend() {
-            // Every isolate installs the bootstrap units: they are compiled
-            // before the build's deadline starts (light-cljs-378).
-            crate::compiler_bootstrap::prepare(macros).map_err(NamespaceCompileError::new)?;
-            resources = Some(
-                crate::evaluator::BuildResources::new(&macros.evaluator_options, isolates)
-                    .map_err(|e| NamespaceCompileError::new(e.0))?,
-            );
-        }
-        let recording = crate::macro_host::UnitRecording {
-            observe: observations.is_some(),
-            capture: capturing,
-        };
-        let started = session.start_pool(
-            analysis.unit_slots,
-            engines,
-            isolates,
-            macros.environment(),
-            resources,
-            recording,
-        );
-        if let Err(error) = started {
-            macros.evaluator_options.memory_limit = memory_limit;
-            return Err(NamespaceCompileError::new(error));
-        }
+        }};
+    }
+    if cache.is_none() && install.is_none() {
+        ensure_pool_started!(0);
     }
     // A cache blocker and its consumers keep their units on this thread's
     // isolate (docs/compiler-concurrency.md, "As built (light-cljs-340)").
@@ -3129,30 +3190,6 @@ fn analyze_entry(
     }
     #[cfg(feature = "bbp-macros")]
     let mut namespace_results = std::collections::VecDeque::new();
-    let parallel_recording = crate::macro_host::UnitRecording {
-        observe: observations.is_some(),
-        capture: capturing,
-    };
-    let mut parallel_top = if !namespace_workers
-        && !macros.native_macro_backend()
-        && !macros.tables.interactive
-        && macros.engine.script_host.is_none()
-        && install.is_none()
-        && blockers.is_empty()
-        // In `warning_mode`, non-macro namespaces drain units inline per form
-        // instead of queuing deferred-unit batches, so enabling lookahead
-        // namespaces at `--jobs 2` keeps the single worker busy instead of
-        // starving deferred units.
-        && (analysis.unit_slots.get() >= 3
-            || (options.warning_mode && analysis.unit_slots.get() >= 2))
-    {
-        macros
-            .session_handle()
-            .and_then(|session| session.pool_policy())
-            .map(|policy| parallel_top_level::ParallelTopLevel::new(policy, analysis.unit_slots))
-    } else {
-        None
-    };
     let looped = (|| -> Result<(), NamespaceCompileError> {
         loop {
             // Past the last source, the namespaces still waiting reach
@@ -3314,9 +3351,20 @@ fn analyze_entry(
                 }
                 (Some(cache), Some(record)) if has_candidates => {
                     looked_up = true;
-                    let cancelled = || macros.halted(control).is_some();
+                    let session_control = macros.engine.interactive_control.clone().or_else(|| {
+                        macros
+                            .engine
+                            .bootstrap
+                            .as_ref()
+                            .map(|b| b.evaluator.control())
+                    });
+                    let cancelled = || {
+                        control.is_some_and(|c| c.check().is_err())
+                            || session_control.as_ref().is_some_and(|c| c.check().is_err())
+                    };
+                    let text_of = |i: usize| loader.ordered[i].source.as_str();
                     cache
-                        .lookup(record, &file.source, sources, &cancelled)
+                        .lookup_batched(record, index, &text_of, sources, &cancelled)
                         .map_err(|message| {
                             NamespaceCompileError::new(format!("loading {}: {message}", file.name))
                         })?
@@ -3428,6 +3476,23 @@ fn analyze_entry(
                 captures.push_back(None);
                 lazy_marks.push_back((mark, index));
             } else {
+                if !pool_started {
+                    ensure_pool_started!(index);
+                    if let Some(parallel) = parallel_top.as_mut() {
+                        let cache_ref = cache.as_deref();
+                        parallel.dispatch_ready(
+                            index,
+                            entry_index,
+                            &loader.ordered,
+                            &mut analysis,
+                            macros,
+                            &build,
+                            options,
+                            parallel_recording,
+                            |name| cache_ref.is_some_and(|c| c.has_candidates(name)),
+                        );
+                    }
+                }
                 let parallel_ready = if let Some(parallel) = parallel_top.as_mut() {
                     match parallel
                         .take_or_wait(index, file, &analysis, macros)
