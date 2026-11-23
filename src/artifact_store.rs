@@ -773,17 +773,27 @@ impl Store {
         candidates.sort_by(|a, b| a.0.cmp(&b.0));
         let jobs: Vec<(u64, (String, PathBuf))> =
             candidates.into_iter().map(|item| (1u64, item)).collect();
-        let outcomes = crate::scheduler::map(slots, jobs, |(name, path)| {
+        let objects_dir = self.objects();
+        let outcomes = crate::scheduler::map(slots, jobs, move |(name, path)| {
             let index = read_index_file(&path).ok()?;
-            (hex(&digest(index.namespace.as_bytes())) == name).then_some((name, index))
+            if hex(&digest(index.namespace.as_bytes())) != name {
+                return None;
+            }
+            let objects_ok = index.entries.iter().all(|entry| {
+                let obj_path = objects_dir.join(hex(&entry.artifact));
+                fs::metadata(&obj_path)
+                    .ok()
+                    .is_some_and(|meta| meta.is_file() && meta.len() == entry.bytes)
+            });
+            Some((name, index, objects_ok))
         });
         let mut valid = Vec::with_capacity(outcomes.len());
         let mut max_per_namespace = 0usize;
         let mut total_bytes = 0u64;
         for outcome in outcomes {
             match outcome {
-                Some((name, index)) => {
-                    if index.entries.is_empty() {
+                Some((name, index, objects_ok)) => {
+                    if index.entries.is_empty() || !objects_ok {
                         saw_unhealthy = true;
                     }
                     max_per_namespace = max_per_namespace.max(index.entries.len());
@@ -2171,9 +2181,13 @@ mod tests {
         let store = Store::open(&dir);
         store.prepare().unwrap();
         for i in 0..12u8 {
+            let entries = vec![entry(i + 1, &[]), entry(i + 20, &[])];
+            for e in &entries {
+                fs::write(store.object_path(&e.artifact), vec![0u8; e.bytes as usize]).unwrap();
+            }
             let index = Index {
                 namespace: format!("app.ns{i}"),
-                entries: vec![entry(i + 1, &[]), entry(i + 20, &[])],
+                entries,
             };
             store.write_index(&index).unwrap();
         }

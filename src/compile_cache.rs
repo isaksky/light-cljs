@@ -149,6 +149,10 @@ struct PrefetchedHit {
     candidate_index: usize,
     prior_miss: Option<(&'static str, String)>,
     saw_damage: bool,
+    /// True when this hit had external resource inputs that were checked
+    /// speculatively ahead of its frontier (`offset > 0`) and must be
+    /// reconfirmed at its actual frontier in Stage D.
+    recheck_inputs: bool,
 }
 
 enum PrefetchedBody {
@@ -244,6 +248,8 @@ pub struct CompileCache {
     stage_c_batch_hook: Option<Arc<dyn Fn(usize, u64) + Send + Sync>>,
     #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
     lookup_work_hook: Option<Arc<dyn Fn(&'static str) + Send + Sync>>,
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+    deferred_decode_hook: Option<Arc<dyn Fn(usize) + Send + Sync>>,
 }
 
 impl CompileCache {
@@ -308,6 +314,8 @@ impl CompileCache {
             stage_c_batch_hook: None,
             #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
             lookup_work_hook: None,
+            #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+            deferred_decode_hook: None,
         }
     }
 
@@ -334,6 +342,12 @@ impl CompileCache {
     #[doc(hidden)]
     pub fn set_lookup_work_hook(&mut self, hook: Option<Arc<dyn Fn(&'static str) + Send + Sync>>) {
         self.lookup_work_hook = hook;
+    }
+
+    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+    #[doc(hidden)]
+    pub fn set_deferred_decode_hook(&mut self, hook: Option<Arc<dyn Fn(usize) + Send + Sync>>) {
+        self.deferred_decode_hook = hook;
     }
 
     #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
@@ -942,6 +956,32 @@ impl CompileCache {
             }
         }
 
+        // Confirm external resource inputs fresh at the namespace's actual
+        // frontier whenever Stage A/B checked them speculatively ahead of the
+        // frontier (`offset > 0`) or after an earlier window error/refusal.
+        if (item.recheck_inputs || self.prefetched_speculative)
+            && !item.fields.inputs.is_empty()
+            && let Err(mismatch) = crate::cache_key::inputs_unchanged(&item.fields.inputs, sources)
+        {
+            if item.saw_damage {
+                self.saw_damage = true;
+            }
+            self.prefetched_speculative = true;
+            if let Some((prior_kind, prior_desc)) = item.prior_miss {
+                self.miss(prior_kind, prior_desc);
+            } else {
+                self.miss(kind(&mismatch), mismatch.to_string());
+            }
+            return self.lookup_remaining_candidates(
+                loader,
+                id,
+                text_of(index),
+                sources,
+                &*cancelled,
+                item.candidate_index + 1,
+            );
+        }
+
         match item.body {
             PrefetchedBody::Decoded { artifact } => {
                 if item.saw_damage {
@@ -955,6 +995,19 @@ impl CompileCache {
                 Ok(Some(*artifact))
             }
             PrefetchedBody::DeferredVerified { bytes } => {
+                let resident_decoded = self
+                    .prefetched
+                    .iter()
+                    .filter(|later| matches!(later.body, PrefetchedBody::Decoded { .. }))
+                    .count();
+                debug_assert_eq!(
+                    resident_decoded, 0,
+                    "deferred oversized artifact must decode with no later decoded hits resident"
+                );
+                #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
+                if let Some(hook) = &self.deferred_decode_hook {
+                    hook(resident_decoded);
+                }
                 let started = Instant::now();
                 let decoded = artifact_codec::decode_verified(&bytes, &self.limits, &*cancelled);
                 drop(bytes);
@@ -1063,6 +1116,7 @@ impl CompileCache {
             candidate_index: usize,
             prior_miss: Option<(&'static str, String)>,
             saw_damage: bool,
+            recheck_inputs: bool,
         }
 
         let validate_started = Instant::now();
@@ -1332,24 +1386,32 @@ impl CompileCache {
                             ns_id,
                             (entry.source_digest, entry.resolution_digest),
                         );
+                        let check_inputs = |inputs_check: &mut Option<Result<(), Mismatch>>| {
+                            if offset == 0 {
+                                if fields.inputs.is_empty() {
+                                    Ok(())
+                                } else {
+                                    crate::cache_key::inputs_unchanged(&fields.inputs, sources)
+                                }
+                            } else {
+                                inputs_check
+                                    .get_or_insert_with(|| {
+                                        crate::cache_key::inputs_unchanged(&fields.inputs, sources)
+                                    })
+                                    .clone()
+                            }
+                        };
                         let matched = if key.digest != candidate_key
                             || fields.front_end_key.digest != key.digest
                         {
                             match fields.front_end_key.mismatch(&key) {
                                 Some(Mismatch::View) => {
-                                    let res = inputs_check.get_or_insert_with(|| {
-                                        crate::cache_key::inputs_unchanged(&fields.inputs, sources)
-                                    });
-                                    res.clone().and(Err(Mismatch::View))
+                                    check_inputs(inputs_check).and(Err(Mismatch::View))
                                 }
                                 mismatch => Err(mismatch.unwrap_or(Mismatch::Inconsistent)),
                             }
                         } else {
-                            inputs_check
-                                .get_or_insert_with(|| {
-                                    crate::cache_key::inputs_unchanged(&fields.inputs, sources)
-                                })
-                                .clone()
+                            check_inputs(inputs_check)
                         };
                         if let Err(mismatch) = matched {
                             note_miss(kind(&mismatch), mismatch.to_string());
@@ -1402,6 +1464,7 @@ impl CompileCache {
                         };
                         stage_c_encoded_bytes =
                             stage_c_encoded_bytes.saturating_add(selected_bytes);
+                        let recheck_inputs = offset > 0 && !manifest.fields.inputs.is_empty();
                         self.keys.append_stored(src, &manifest.fields, key.clone());
                         pushed_keys += 1;
                         stage_c_jobs.push(StageCJob {
@@ -1415,6 +1478,7 @@ impl CompileCache {
                             candidate_index: cand_idx,
                             prior_miss: prior_miss.take(),
                             saw_damage: ns_saw_damage,
+                            recheck_inputs,
                         });
                         matched_hit = true;
                         break;
@@ -1489,6 +1553,7 @@ impl CompileCache {
                     candidate_index,
                     prior_miss,
                     saw_damage,
+                    recheck_inputs,
                 } = job;
                 if cancelled() {
                     drop(reading);
@@ -1506,7 +1571,9 @@ impl CompileCache {
                             candidate_index,
                             prior_miss,
                             saw_damage,
+                            recheck_inputs,
                         },
+                        None,
                         0u64,
                         0u64,
                         0u64,
@@ -1516,7 +1583,7 @@ impl CompileCache {
                 let t0 = Instant::now();
                 let read_res = reading.finish();
                 let read_ns = t0.elapsed().as_nanos() as u64;
-                let (body, body_bytes_read, decode_ns) = match read_res {
+                let (body, retained_bytes, body_bytes_read, decode_ns) = match read_res {
                     Err(error) => {
                         let body_bytes_read =
                             if matches!(error, crate::artifact_store::ReadError::Integrity) {
@@ -1524,7 +1591,12 @@ impl CompileCache {
                             } else {
                                 0
                             };
-                        (PrefetchedBody::ReadError { error }, body_bytes_read, 0u64)
+                        (
+                            PrefetchedBody::ReadError { error },
+                            None,
+                            body_bytes_read,
+                            0u64,
+                        )
                     }
                     Ok(bytes) => {
                         let t1 = Instant::now();
@@ -1535,25 +1607,37 @@ impl CompileCache {
                             shared_budget.as_deref(),
                         );
                         let decode_ns = t1.elapsed().as_nanos() as u64;
-                        let body = match decoded {
+                        let (body, retained_bytes) = match decoded {
                             Ok((_, artifact)) => {
-                                // Drop raw artifact bytes immediately on the worker thread.
-                                drop(bytes);
-                                PrefetchedBody::Decoded {
-                                    artifact: Box::new(artifact),
-                                }
+                                // For multi-item batches (total encoded <=
+                                // `lookup_window_max_bytes`), briefly keep the
+                                // verified bytes until Stage C returns so any
+                                // hit after a shared-budget deferment can drop
+                                // its decoded allocation without re-reading.
+                                let retained = if shared_budget.is_some() {
+                                    Some(bytes)
+                                } else {
+                                    drop(bytes);
+                                    None
+                                };
+                                (
+                                    PrefetchedBody::Decoded {
+                                        artifact: Box::new(artifact),
+                                    },
+                                    retained,
+                                )
                             }
                             Err(artifact_codec::VerifiedDecodeError::BatchBudget) => {
                                 // Retain the already-verified encoded bytes (bounded by
                                 // `lookup_window_max_bytes`) to decode alone in Stage D.
-                                PrefetchedBody::DeferredVerified { bytes }
+                                (PrefetchedBody::DeferredVerified { bytes }, None)
                             }
                             Err(artifact_codec::VerifiedDecodeError::Decode(error)) => {
                                 drop(bytes);
-                                PrefetchedBody::DecodeError { error }
+                                (PrefetchedBody::DecodeError { error }, None)
                             }
                         };
-                        (body, rest, decode_ns)
+                        (body, retained_bytes, rest, decode_ns)
                     }
                 };
                 (
@@ -1568,7 +1652,9 @@ impl CompileCache {
                         candidate_index,
                         prior_miss,
                         saw_damage,
+                        recheck_inputs,
                     },
+                    retained_bytes,
                     body_bytes_read,
                     read_ns,
                     decode_ns,
@@ -1576,13 +1662,31 @@ impl CompileCache {
             }),
         );
         let stage_c_wall = stage_c_started.elapsed();
+        let first_deferred = decoded
+            .iter()
+            .position(|(hit, ..)| matches!(hit.body, PrefetchedBody::DeferredVerified { .. }));
         let mut total_read_ns = 0u128;
         let mut total_decode_ns = 0u128;
-        for (hit, body_bytes_read, read_ns, decode_ns) in decoded {
+        for (idx, (mut hit, retained_bytes, body_bytes_read, read_ns, decode_ns)) in
+            decoded.into_iter().enumerate()
+        {
             // Account for every completed Stage C body read once on arrival.
             self.counts.bytes_read += body_bytes_read;
             total_read_ns += u128::from(read_ns);
             total_decode_ns += u128::from(decode_ns);
+            if first_deferred.is_some_and(|at| idx > at)
+                && matches!(hit.body, PrefetchedBody::Decoded { .. })
+            {
+                // Release later decoded allocations so the first deferred
+                // artifact decodes alone in Stage D without overlapping with
+                // later decoded hits, while keeping verified bytes to avoid
+                // re-reading from disk.
+                let bytes = retained_bytes
+                    .expect("multi-item Stage C decoded hits retain verified encoded bytes");
+                hit.body = PrefetchedBody::DeferredVerified { bytes };
+            } else {
+                drop(retained_bytes);
+            }
             self.prefetched.push_back(hit);
         }
         self.prefetched_speculative = false;
@@ -4422,6 +4526,184 @@ mod tests {
             cv.notify_all();
         }
         session.finish_pool();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batched_verified_decode_error_rebuilds_namespace() {
+        use crate::analyzer::AnalysisOptions;
+        use crate::compiler::{EntryRecorders, analyze_namespace_entry_recorded_with_provider};
+        use crate::emitter::emit_js;
+        use crate::source_provider::FileSourceProvider;
+
+        let dir = std::env::temp_dir().join(format!(
+            "light-cljs-batched-decode-err-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let src_dir = dir.join("src");
+        let cache_dir = dir.join("cache");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        // `app.a`, `app.b`, `app.c` are independent siblings required by `app.d`
+        // so corrupting `app.b` mid-window still allows `app.c` to reuse its
+        // prefetched hit at its frontier.
+        std::fs::write(src_dir.join("app_a.cljs"), "(ns app-a) (def a 10)").unwrap();
+        std::fs::write(src_dir.join("app_b.cljs"), "(ns app-b) (def b 20)").unwrap();
+        std::fs::write(src_dir.join("app_c.cljs"), "(ns app-c) (def c 30)").unwrap();
+        std::fs::write(
+            src_dir.join("app_d.cljs"),
+            "(ns app-d (:require [app-a] [app-b] [app-c])) (def total (+ app-a/a app-b/b app-c/c))",
+        )
+        .unwrap();
+
+        let options = CacheOptions {
+            dir: cache_dir.clone(),
+            ..CacheOptions::default()
+        };
+        let provider = FileSourceProvider::new(vec![src_dir.clone()]);
+
+        // Cold fill.
+        let mut host = MacroHost::new();
+        let mut cold_cache = CompileCache::open_with_slots(
+            &options,
+            &host,
+            AnalysisOptions::default(),
+            "app-d",
+            Slots::new(4).unwrap(),
+        );
+        let (cold_program, _) = analyze_namespace_entry_recorded_with_provider(
+            "app-d",
+            &provider,
+            &mut host,
+            AnalysisOptions::default(),
+            &mut Vec::new(),
+            EntryRecorders {
+                cache: Some(&mut cold_cache),
+                slots: Slots::new(4).unwrap(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        cold_cache.finish();
+        assert_eq!(cold_cache.take_counts().published, 4);
+        let expected_js = emit_js(&cold_program);
+
+        // Read `app-b`'s valid cached artifact, corrupt bytes strictly AFTER
+        // its manifest section (so `read_manifest_prefix` still succeeds), and
+        // republish the corrupted bytes via `Store::stage_encoded` under the
+        // ORIGINAL front-end key with the NEW content-verified digest.
+        let store = Store::open(&cache_dir);
+        let orig_entry = store.candidates("app-b")[0].clone();
+        let orig_path = store.root().join("objects").join(
+            orig_entry
+                .artifact
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>(),
+        );
+        let mut bad_bytes = std::fs::read(&orig_path).unwrap();
+        let manifest_end = artifact_codec::manifest_end(&bad_bytes).unwrap() as usize;
+        assert!(
+            bad_bytes.len() > manifest_end + 8,
+            "artifact must contain body sections past manifest"
+        );
+        // Flip every byte after the manifest header area so `decode_verified`
+        // fails after `Reading::finish` verifies the new full-file SHA-256.
+        for byte in &mut bad_bytes[manifest_end..] {
+            *byte ^= 0xFF;
+        }
+        // Confirm our corrupted payload still passes manifest prefix reading
+        // and fails `decode_verified`.
+        assert!(
+            artifact_codec::read_manifest_prefix(
+                &bad_bytes[..manifest_end],
+                bad_bytes.len() as u64,
+                &DecodeLimits::default()
+            )
+            .is_ok()
+        );
+        assert!(
+            artifact_codec::decode_verified(&bad_bytes, &DecodeLimits::default(), &|| false)
+                .is_err()
+        );
+        // Replace `app-b`'s index entry with the content-verified corrupt object
+        // by deleting the original object and committing the resealed corrupt
+        // bytes under the exact same front-end key.
+        std::fs::remove_file(&orig_path).unwrap();
+        let staged = store
+            .stage_encoded(
+                "app-b".to_owned(),
+                orig_entry.key,
+                orig_entry.names,
+                bad_bytes,
+            )
+            .unwrap();
+        let committed = store.commit_batch(vec![staged]);
+        assert_eq!(committed.len(), 1);
+        assert!(matches!(
+            committed[0],
+            crate::artifact_store::Publish::Published(_)
+        ));
+
+        // Warm `--jobs 4` rebuild: Stage C verifies the resealed object's
+        // content hash cleanly, then `decode_verified_with_budget` returns a
+        // decoder error. `app-b` must record an `undecodable` miss (not
+        // `unreadable`), rebuild `app-b`, reuse `app-c`'s prefetched hit, and
+        // produce byte-identical JS.
+        let mut warm_host = MacroHost::new();
+        let mut warm_cache = CompileCache::open_with_slots(
+            &options,
+            &warm_host,
+            AnalysisOptions::default(),
+            "app-d",
+            Slots::new(4).unwrap(),
+        );
+        let (warm_program, _) = analyze_namespace_entry_recorded_with_provider(
+            "app-d",
+            &provider,
+            &mut warm_host,
+            AnalysisOptions::default(),
+            &mut Vec::new(),
+            EntryRecorders {
+                cache: Some(&mut warm_cache),
+                slots: Slots::new(4).unwrap(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        warm_cache.finish();
+        let counts = warm_cache.take_counts();
+        let rebuilt_js = emit_js(&warm_program);
+
+        assert_eq!(rebuilt_js, expected_js);
+        assert!(
+            counts
+                .misses
+                .iter()
+                .any(|(ns, kind, _)| ns == "app-b" && *kind == "undecodable"),
+            "expected undecodable miss for app-b, got {:?}",
+            counts.misses
+        );
+        assert!(
+            !counts
+                .misses
+                .iter()
+                .any(|(ns, kind, _)| ns == "app-b" && *kind == "unreadable"),
+            "content-verified decode error must not report unreadable: {:?}",
+            counts.misses
+        );
+        // `app-a` and `app-c` both hit (and `app-d` hits once `app-b`'s
+        // rebuilt key matches its original key).
+        assert!(
+            counts.hits >= 2,
+            "expected app-a and reused app-c hits, got {counts:?}"
+        );
+        assert!(
+            !counts.misses.iter().any(|(ns, _, _)| ns == "app-c"),
+            "app-c must reuse its prefetched hit: {:?}",
+            counts.misses
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

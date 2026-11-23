@@ -186,6 +186,9 @@ pub(crate) fn install_validated(
     source: &InstallSource<'_>,
     macro_host: &mut MacroHost,
 ) -> Result<ir::ExprId, InstallError> {
+    if let Some(reason) = macro_host.halted(source.control) {
+        return Err(InstallError::Failed(reason));
+    }
     let Target {
         program,
         names,
@@ -2650,5 +2653,108 @@ fn datum(datum: &Datum) -> SourceDatum {
     match &datum.metadata {
         Some(metadata) => value.with_metadata(self::datum(metadata)),
         None => value,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::evaluator::{Evaluator, EvaluatorOptions};
+    use crate::namespace_artifact::{
+        Declarations, DeferredUnits, Diagnostics, Expr, ExprContext, ExprKind, ExprRef, Header,
+        Live, References, SemanticIr, SourceRef,
+    };
+
+    #[test]
+    fn cancelled_verified_install_fails_before_refusal() {
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let control = evaluator.control();
+        control.cancel();
+
+        // Structurally valid artifact that `resolve` would refuse because its
+        // namespace header does not match `source.namespace` (and it carries
+        // no accounting).
+        let mut artifact = NamespaceArtifact {
+            header: Header {
+                namespace: "other.ns".to_owned(),
+                path: "other.cljs".to_owned(),
+                source_length: 0,
+                cljc: false,
+                source_name: None,
+                entry: false,
+                root: ExprRef(0),
+                policy: Default::default(),
+            },
+            declarations: Declarations::default(),
+            ir: SemanticIr {
+                exprs: vec![Expr {
+                    kind: ExprKind::Nil,
+                    span: (0, 0),
+                    context: ExprContext::Value,
+                    source: SourceRef::Own,
+                }],
+                ..SemanticIr::default()
+            },
+            patches: Vec::new(),
+            units: DeferredUnits::default(),
+            diagnostics: Diagnostics::default(),
+            references: References::default(),
+            names: crate::generated_names::GeneratedNames::default(),
+            accounting: None,
+            registry: Vec::new(),
+            bodies: None,
+            live: Live::default(),
+        };
+
+        let tree = crate::parser::parse("nil").unwrap();
+        let mut program = crate::analyzer::analyze("nil", &tree).unwrap();
+        let mut names = crate::name_index::NameIndex::default();
+        let mut index = InstallIndex::default();
+        let mut warnings = Vec::new();
+        let mut macro_host = MacroHost::new();
+        let source = InstallSource {
+            namespace: "expected.ns",
+            path: "expected.cljs",
+            text: "(ns expected.ns)",
+            entry: false,
+            options: ir::AnalysisOptions::default(),
+            control: Some(&control),
+        };
+
+        let err_borrowed = install(
+            Target {
+                program: &mut program,
+                names: &mut names,
+                index: &mut index,
+                source_index: 0,
+                warnings: &mut warnings,
+            },
+            &artifact,
+            &source,
+            &mut macro_host,
+        )
+        .expect_err("cancelled borrowed install must fail");
+        assert!(
+            matches!(err_borrowed, InstallError::Failed(_)),
+            "expected Failed on cancelled borrowed install, got {err_borrowed:?}"
+        );
+
+        let err_verified = install_validated(
+            Target {
+                program: &mut program,
+                names: &mut names,
+                index: &mut index,
+                source_index: 0,
+                warnings: &mut warnings,
+            },
+            &mut artifact,
+            &source,
+            &mut macro_host,
+        )
+        .expect_err("cancelled verified install must fail before refusal");
+        assert!(
+            matches!(err_verified, InstallError::Failed(_)),
+            "expected Failed on cancelled verified install, got {err_verified:?}"
+        );
     }
 }

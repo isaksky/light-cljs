@@ -609,6 +609,27 @@ impl<T> Arena<T> {
     }
 }
 
+/// Pairwise bottom-up join of existing frozen chunks into one balanced tree
+/// without copying entries, preserving logarithmic lookup depth and copy-on-write
+/// leaf sharing when [`Arena::freeze`] follows [`Arena::spill_flat_tail`] or
+/// [`Arena::flatten_leaves`].
+fn build_balanced_chunk<T>(mut nodes: Vec<Arc<Chunk<T>>>) -> Arc<Chunk<T>> {
+    debug_assert!(!nodes.is_empty());
+    while nodes.len() > 1 {
+        let mut next = Vec::with_capacity(nodes.len().div_ceil(2));
+        let mut iter = nodes.into_iter();
+        while let Some(left) = iter.next() {
+            if let Some(right) = iter.next() {
+                next.push(Arc::new(Chunk::join(left, right)));
+            } else {
+                next.push(left);
+            }
+        }
+        nodes = next;
+    }
+    nodes.pop().expect("non-empty")
+}
+
 impl<T: Clone> Arena<T> {
     /// Consume the arena as contiguous entries, moving unshared chunks and
     /// copying shared ones so earlier snapshots keep their contents.
@@ -627,7 +648,15 @@ impl<T: Clone> Arena<T> {
         if self.tail.is_empty() {
             return;
         }
-        self.buckets.clear();
+        if !self.buckets.is_empty() {
+            self.buckets.clear();
+            if self.chunks.len() > 1 {
+                let balanced = build_balanced_chunk(std::mem::take(&mut self.chunks));
+                self.chunks.push(balanced);
+                self.starts.clear();
+                self.starts.push(0);
+            }
+        }
         self.starts.push(self.frozen);
         self.frozen += self.tail.len();
         self.chunks
@@ -1274,5 +1303,69 @@ mod tests {
             assert_eq!(*tracked[i], i);
             assert_eq!(Arc::strong_count(&tracked[i]), 1);
         }
+    }
+
+    #[test]
+    fn freeze_after_spill_keeps_logarithmic_depth() {
+        use super::{Chunk, LEAF_SIZE};
+
+        fn chunk_depth<T>(chunk: &Chunk<T>) -> usize {
+            match chunk {
+                Chunk::Leaf(_) => 1,
+                Chunk::Branch { left, right, .. } => 1 + chunk_depth(left).max(chunk_depth(right)),
+            }
+        }
+
+        let mut arena: Arena<usize> = Arena::new();
+        for i in 0..32_768 {
+            arena.push(i);
+            if arena.tail.len() == 8_192 {
+                arena.spill_flat_tail();
+            }
+        }
+        arena.spill_flat_tail();
+        assert!(arena.is_flat());
+        assert_eq!(arena.frozen(), 32_768);
+        assert_eq!(arena.chunks.len(), 32_768 / LEAF_SIZE);
+
+        // Push >= LEAF_SIZE / 2 entries into tail so freeze triggers its merge
+        // loop; without balancing spilled leaves first, this degenerates into
+        // a linear chain of depth 513.
+        for i in 32_768..32_832 {
+            arena.push(i);
+        }
+        let snapshot_before_freeze = arena.clone();
+        arena.freeze();
+
+        assert_eq!(arena.len(), 32_832);
+        assert_eq!(arena.frozen(), 32_832);
+        let max_depth = arena
+            .chunks
+            .iter()
+            .map(|c| chunk_depth(c))
+            .max()
+            .unwrap_or(0);
+        assert!(
+            max_depth <= 16,
+            "expected logarithmic depth after spilling and freezing 512 leaves, got {max_depth}"
+        );
+        assert!(
+            arena.chunks.len() <= 4,
+            "expected logarithmic chunk count after freeze, got {}",
+            arena.chunks.len()
+        );
+        for i in [0, 1, 63, 64, 8_191, 8_192, 16_384, 32_767, 32_768, 32_831] {
+            assert_eq!(arena[i], i);
+        }
+        assert!(arena.iter().copied().eq(0..32_832));
+
+        let snapshot_after_freeze = arena.clone();
+        arena[12_345] = 999_999;
+        arena[32_800] = 888_888;
+        assert_eq!(snapshot_before_freeze[12_345], 12_345);
+        assert_eq!(snapshot_after_freeze[12_345], 12_345);
+        assert_eq!(snapshot_after_freeze[32_800], 32_800);
+        assert_eq!(arena[12_345], 999_999);
+        assert_eq!(arena[32_800], 888_888);
     }
 }

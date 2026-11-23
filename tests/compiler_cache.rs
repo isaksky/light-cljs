@@ -2990,6 +2990,8 @@ fn lookup_window_bounds_older_candidate_working_set() {
     );
     let batches: Arc<Mutex<Vec<(usize, u64)>>> = Arc::new(Mutex::new(Vec::new()));
     let batches_hook = Arc::clone(&batches);
+    let deferred_residents: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(Vec::new()));
+    let deferred_hook = Arc::clone(&deferred_residents);
     {
         let host = MacroHost::new();
         let mut cache = CompileCache::open_with_slots(
@@ -3003,6 +3005,9 @@ fn lookup_window_bounds_older_candidate_working_set() {
         cache.set_stage_c_batch_hook(Some(Arc::new(move |len, bytes| {
             batches_hook.lock().unwrap().push((len, bytes));
         })));
+        cache.set_deferred_decode_hook(Some(Arc::new(move |resident_decoded| {
+            deferred_hook.lock().unwrap().push(resident_decoded);
+        })));
         run_build(&mut cache);
         cache.finish();
         let counts = cache.take_counts();
@@ -3010,6 +3015,15 @@ fn lookup_window_bounds_older_candidate_working_set() {
         assert_eq!(counts.published, 0);
         assert_eq!(counts.bytes_read, small_manifests + large_whole);
     }
+    let recorded_deferred = deferred_residents.lock().unwrap().clone();
+    assert!(
+        !recorded_deferred.is_empty(),
+        "tight shared decoded cap must trigger Stage D deferred decoding"
+    );
+    assert!(
+        recorded_deferred.iter().all(|&resident| resident == 0),
+        "deferred oversized artifact must decode with no later decoded hits resident, saw {recorded_deferred:?}"
+    );
     let recorded = batches.lock().unwrap().clone();
     assert!(
         recorded.len() >= 2,
@@ -3335,5 +3349,288 @@ fn batched_cache_decode_cancellation_stops_the_build() {
             .any(|(_, kind, _)| *kind == "undecodable" || *kind == "unreadable"),
         "cancellation must not record a corruption miss: {:?}",
         counts.misses
+    );
+}
+
+#[test]
+fn prefetched_resource_change_after_earlier_miss() {
+    use light_cljs::analyzer::AnalysisOptions;
+    use light_cljs::compile_cache::{CacheOptions, CompileCache};
+    use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded_with_provider};
+    use light_cljs::dependency_manifest::Candidate;
+    use light_cljs::emitter::emit_js;
+    use light_cljs::macro_host::MacroHost;
+    use light_cljs::scheduler::Slots;
+    use light_cljs::source_provider::{
+        FileSourceProvider, LoadError, LoadRequest, ResourceInput, ResourceProvider, SourceInput,
+        SourceProvider,
+    };
+    use std::rc::Rc;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    #[derive(Clone)]
+    struct FlippingResourceProvider {
+        inner: FileSourceProvider,
+        data_a: PathBuf,
+        data_b: PathBuf,
+        flipped_a: Arc<AtomicBool>,
+        flipped_b: Arc<AtomicBool>,
+    }
+
+    struct FlippingResources {
+        inner: Rc<dyn ResourceProvider>,
+        data_a: PathBuf,
+        data_b: PathBuf,
+        flipped_a: Arc<AtomicBool>,
+        flipped_b: Arc<AtomicBool>,
+    }
+
+    impl ResourceProvider for FlippingResources {
+        fn load_resource(
+            &self,
+            path: &str,
+            tried: &mut Vec<Candidate>,
+        ) -> Result<Option<ResourceInput>, LoadError> {
+            let res = self.inner.load_resource(path, tried)?;
+            if path == "data_a.txt" && !self.flipped_a.swap(true, Ordering::SeqCst) {
+                fs::write(&self.data_a, "two-a").unwrap();
+            } else if path == "data_b.txt" && !self.flipped_b.swap(true, Ordering::SeqCst) {
+                fs::write(&self.data_b, "two-b").unwrap();
+            }
+            Ok(res)
+        }
+
+        fn stable(&self) -> bool {
+            self.inner.stable()
+        }
+
+        fn directory(&self, file: &str) -> Option<String> {
+            self.inner.directory(file)
+        }
+    }
+
+    impl SourceProvider for FlippingResourceProvider {
+        fn load(&self, request: &LoadRequest) -> Result<Option<SourceInput>, LoadError> {
+            self.inner.load(request)
+        }
+
+        fn load_traced(
+            &self,
+            request: &LoadRequest,
+            tried: &mut Vec<Candidate>,
+        ) -> Result<Option<SourceInput>, LoadError> {
+            self.inner.load_traced(request, tried)
+        }
+
+        fn locate_traced(
+            &self,
+            request: &LoadRequest,
+            tried: &mut Vec<Candidate>,
+        ) -> Result<Option<String>, LoadError> {
+            self.inner.locate_traced(request, tried)
+        }
+
+        fn resources(&self) -> Option<Rc<dyn ResourceProvider>> {
+            Some(Rc::new(FlippingResources {
+                inner: self.inner.resources()?,
+                data_a: self.data_a.clone(),
+                data_b: self.data_b.clone(),
+                flipped_a: Arc::clone(&self.flipped_a),
+                flipped_b: Arc::clone(&self.flipped_b),
+            }))
+        }
+
+        fn concurrent(&self) -> Option<&(dyn SourceProvider + Send + Sync)> {
+            Some(self)
+        }
+
+        fn owned_concurrent(&self) -> Option<Arc<dyn SourceProvider + Send + Sync>> {
+            Some(Arc::new(self.clone()))
+        }
+    }
+
+    let dir = TempDir::new("prefetched-resource-change");
+    let src_dir = dir.join("src");
+    let cache_dir = dir.join("cache");
+    fs::create_dir_all(&src_dir).unwrap();
+    let data_a = src_dir.join("data_a.txt");
+    let data_b = src_dir.join("data_b.txt");
+    fs::write(&data_a, "one-a").unwrap();
+    fs::write(&data_b, "one-b").unwrap();
+    fs::write(
+        src_dir.join("inputs.cljs"),
+        "(ns inputs (:require [light.build :as b])) (defmacro inline [path] (b/resource path))",
+    )
+    .unwrap();
+    fs::write(src_dir.join("early.cljs"), "(ns early) (def v 1)").unwrap();
+    // `reader_a` immediately follows `early` (tests Stage B lookahead reuse at
+    // offset 0 after `early` misses). `plain` hits, then `reader_b` follows in
+    // the same Stage C window (tests Stage D frontier recheck at offset > 0).
+    fs::write(
+        src_dir.join("reader_a.cljs"),
+        "(ns reader-a (:require [inputs :refer [inline]])) (def value (inline \"data_a.txt\"))",
+    )
+    .unwrap();
+    fs::write(src_dir.join("plain.cljs"), "(ns plain) (def x 7)").unwrap();
+    fs::write(
+        src_dir.join("reader_b.cljs"),
+        "(ns reader-b (:require [inputs :refer [inline]])) (def value (inline \"data_b.txt\"))",
+    )
+    .unwrap();
+    fs::write(
+        src_dir.join("main.cljs"),
+        "(ns main (:require [inputs] [early] [reader-a] [plain] [reader-b])) (def out [early/v reader-a/value plain/x reader-b/value])",
+    )
+    .unwrap();
+
+    let cache_opts = CacheOptions {
+        dir: cache_dir,
+        ..CacheOptions::default()
+    };
+
+    // Cold fill with data_a = "one-a", data_b = "one-b".
+    {
+        let provider = FileSourceProvider::new(vec![src_dir.clone()]);
+        let mut host = MacroHost::new();
+        let mut cache = CompileCache::open_with_slots(
+            &cache_opts,
+            &host,
+            AnalysisOptions::default(),
+            "main",
+            Slots::new(4).unwrap(),
+        );
+        let (program, _) = analyze_namespace_entry_recorded_with_provider(
+            "main",
+            &provider,
+            &mut host,
+            AnalysisOptions::default(),
+            &mut Vec::new(),
+            EntryRecorders {
+                cache: Some(&mut cache),
+                slots: Slots::new(4).unwrap(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        cache.finish();
+        assert_eq!(cache.take_counts().published, 7);
+        let js = emit_js(&program);
+        assert!(js.contains("one-a") && js.contains("one-b"));
+    }
+
+    // Mutate `early` so it misses while `reader-a` and `reader-b` are
+    // prefetched in Stage A while their resources still hold "one-a"/"one-b",
+    // then immediately change to "two-a"/"two-b" before their frontiers.
+    fs::write(src_dir.join("early.cljs"), "(ns early) (def v 2)").unwrap();
+    let provider = FlippingResourceProvider {
+        inner: FileSourceProvider::new(vec![src_dir.clone()]),
+        data_a: data_a.clone(),
+        data_b: data_b.clone(),
+        flipped_a: Arc::new(AtomicBool::new(false)),
+        flipped_b: Arc::new(AtomicBool::new(false)),
+    };
+    let mut host = MacroHost::new();
+    let mut cache = CompileCache::open_with_slots(
+        &cache_opts,
+        &host,
+        AnalysisOptions::default(),
+        "main",
+        Slots::new(4).unwrap(),
+    );
+    let (program, _) = analyze_namespace_entry_recorded_with_provider(
+        "main",
+        &provider,
+        &mut host,
+        AnalysisOptions::default(),
+        &mut Vec::new(),
+        EntryRecorders {
+            cache: Some(&mut cache),
+            slots: Slots::new(4).unwrap(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    cache.finish();
+    let counts = cache.take_counts();
+    let js = emit_js(&program);
+
+    assert!(provider.flipped_a.load(Ordering::SeqCst));
+    assert!(provider.flipped_b.load(Ordering::SeqCst));
+    assert!(
+        counts
+            .misses
+            .iter()
+            .any(|(ns, kind, _)| ns == "reader-a" && *kind == "inputs"),
+        "expected inputs miss for reader-a at frontier, got {:?}",
+        counts.misses
+    );
+    assert!(
+        counts
+            .misses
+            .iter()
+            .any(|(ns, kind, _)| ns == "reader-b" && *kind == "inputs"),
+        "expected inputs miss for reader-b at frontier, got {:?}",
+        counts.misses
+    );
+    assert!(
+        js.contains("two-a") && !js.contains("one-a"),
+        "reader-a output must reflect updated resource: {js}"
+    );
+    assert!(
+        js.contains("two-b") && !js.contains("one-b"),
+        "reader-b output must reflect updated resource: {js}"
+    );
+}
+
+#[test]
+fn warm_build_trims_dangling_index_outside_entry_graph() {
+    use light_cljs::artifact_codec::{DecodeLimits, read_manifest};
+
+    let project = Project::new(&[
+        ("plain.cljs", "(ns plain) (def answer 42)"),
+        (
+            "entry_a.cljs",
+            "(ns entry-a (:require [plain])) (js/console.log plain/answer)",
+        ),
+        ("other.cljs", "(ns other) (def value 99)"),
+        (
+            "entry_b.cljs",
+            "(ns entry-b (:require [other])) (js/console.log other/value)",
+        ),
+    ]);
+
+    let first_a = project.cached("entry-a", &["--jobs", "4"]);
+    assert_eq!(first_a.stat("cache.published"), 2, "{}", first_a.stats);
+    let first_b = project.cached("entry-b", &["--jobs", "4"]);
+    assert_eq!(first_b.stat("cache.published"), 2, "{}", first_b.stats);
+
+    // Delete `other`'s object file while leaving its index entry intact.
+    let other_obj = project
+        .objects()
+        .into_iter()
+        .find(|path| {
+            read_manifest(&fs::read(path).unwrap(), &DecodeLimits::default())
+                .unwrap()
+                .namespace
+                == "other"
+        })
+        .expect("other object exists");
+    fs::remove_file(&other_obj).unwrap();
+
+    let store = light_cljs::artifact_store::Store::open(project.cache());
+    assert_eq!(store.candidates("other").len(), 1);
+
+    // A zero-publish warm rebuild of disjoint `entry-a` never visits `other`,
+    // yet must detect the missing object in the unvisited index and trim it.
+    let warm_a = project.cached("entry-a", &["--jobs", "4"]);
+    assert_eq!(warm_a.js, first_a.js);
+    assert_eq!(warm_a.stat("cache.hits"), 2, "{}", warm_a.stats);
+    assert_eq!(warm_a.stat("cache.published"), 0, "{}", warm_a.stats);
+    assert!(
+        store.candidates("other").is_empty(),
+        "warm build must trim dangling index entry for unvisited namespace `other`"
     );
 }
