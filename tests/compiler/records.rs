@@ -610,7 +610,7 @@ fn advanced_records_compare_and_hash_with_their_own_methods() {
          const v0 = this[\"x\"], v1 = this[\"y\"], e = this[\"__extmap\"], x = e == null ? null : rt$toArray(e); \
          let r = (2099068185 ^ rt$hash(v0)) + (-1757859776 ^ rt$hash(v1)) | 0; \
          if (x != null) r = rt$recordEntriesHash(x, r); \
-         return this[\"__hash\"] = r ^ 24365320; }]]); ",
+         return this[\"__hash\"] = r ^ 24365320; }], [\"cljs$core$ILookup$_lookup$arity$2$",
         "this[\"foo_bar\"]",
         "{ const h = this[\"__hash\"]; if (h != null) return h; const e = this[\"__extmap\"], \
          x = e == null ? null : rt$toArray(e); let r = 0; if (x",
@@ -695,5 +695,101 @@ fn named_record_protocol_markers_remain_visible() {
                (array (some? (.-cljs$core$IRecord$ r)) (record? r)
                       (do (set! (.-cljs$lang$protocol_mask$partition0$ r) 0) (record? r))))"),
         "[true,true,true]\n"
+    );
+}
+
+/// light-cljs-1082: at `Advanced` a record type whose program looks up or
+/// associates keys has its own `ILookup/-lookup` (both arities) and
+/// `IAssociative/-assoc` methods: interned field keywords match by identity,
+/// non-interned keywords by spelling (`keywordFqn`), non-keywords and
+/// qualified keywords fall back to `__extmap`, and field `assoc` calls the
+/// type's current constructor with the fields written out. `extend-type`,
+/// `specify!`, `nil` extensions, 0/1/multi-field records, munged names,
+/// `__proto__`, `constructor`, nil/false field values, hash invalidation,
+/// and extmap key identity all match `None`.
+#[test]
+fn advanced_records_lookup_and_assoc_with_their_own_methods() {
+    let advanced = |source: &str| {
+        let program = light_cljs::analyze(source, &light_cljs::parse(source).unwrap()).unwrap();
+        light_cljs::prepare_application(
+            &program,
+            super::optimization::readable(light_cljs::OptimizationLevel::Advanced),
+        )
+        .emit_js()
+    };
+    let source = "(defrecord E [])
+                  (defrecord One [a])
+                  (defrecord M [w foo-bar a? __proto__ constructor])
+                  (defrecord Ext [x])
+                  (extend-type Ext
+                    ILookup (-lookup ([_ k nf] (str \"ext:\" (name k) \":\" nf)))
+                    IAssociative (-assoc [r k v] (str \"assoc:\" (.-x r) \":\" (name k) \":\" v)))
+                  (let [e @(atom (->E))
+                        o @(atom (with-meta (->One nil) {:m 1}))
+                        m @(atom (with-meta (assoc (->M false 2 3 4 5) :extra 6 :ns/w 7 \"w\" 8) {:tag \"m\"}))
+                        h-before (hash m)
+                        fw (keyword \"w\")
+                        fb (keyword \"foo-bar\")
+                        fp (keyword \"__proto__\")
+                        fk (keyword \"fresh-ext\")
+                        m2 (assoc m fw 10)
+                        m3 (assoc m fb 20)
+                        m4 (assoc m fk 30)
+                        m5 (assoc m :ns/w 40)
+                        o2 (assoc o (keyword \"a\") 99)
+                        e2 (assoc e :z 11)
+                        ext @(atom (->Ext 7))
+                        spec @(atom (specify! (->One 1)
+                                      ILookup (-lookup ([_ k nf] (str \"spec:\" (name k) \":\" nf)))
+                                      IAssociative (-assoc [_ k v] (str \"spec-a:\" (name k) \":\" v))))]
+                    (array (:w m) (get m :w \"nf\") (get m fw \"nf\") (fw m)
+                           (:foo-bar m) (get m fb) (:a? m) (:__proto__ m) (get m fp) (:constructor m)
+                           (:ns/w m) (get m \"w\") (get m 'w \"nf\") (get m nil \"nf\") (:extra m) (:missing m \"nf\")
+                           (get o :a \"nf\") (:a o) (:a o2) (:m (meta o2))
+                           (:z e2) (get e :z \"nf\")
+                           (:w m2) (:foo-bar m2) (:tag (meta m2)) (:extra m2) (= (hash m2) h-before)
+                           (:foo-bar m3) (:w m3)
+                           (get m4 fk) (identical? (first (filter #(= % fk) (keys m4))) fk)
+                           (:ns/w m5) (:w m5)
+                           (:x ext) (get ext :x \"nf\") (assoc ext :x 8)
+                           (:a spec) (get spec :a \"nf\") (assoc spec :a 2)))";
+    let js = advanced(source);
+    for expected in [
+        "cljs$core$ILookup$_lookup$arity$2$",
+        "cljs$core$ILookup$_lookup$arity$3$",
+        "cljs$core$IAssociative$_assoc$arity$3$",
+        "switch (rt$keywordFqn(a1))",
+        "case \"foo-bar\": return this[\"foo_bar\"];",
+        "case \"__proto__\": return this[\"__proto__\"];",
+        "return new g",
+    ] {
+        assert!(js.contains(expected), "{expected}\n{js}");
+    }
+    assert_eq!(
+        run(source),
+        "[false,false,false,false,2,2,3,4,4,5,7,8,\"nf\",\"nf\",6,\"nf\",null,null,99,1,11,\"nf\",10,2,\"m\",6,false,20,false,30,true,40,false,\"ext:x:\",\"ext:x:nf\",\"assoc:7:x:8\",\"spec:a:\",\"spec:a:nf\",\"spec-a:a:2\"]\n"
+    );
+
+    // Missing extmap matches `None` (including with nil protocol extensions).
+    assert_eq!(
+        run("(extend-type nil
+               ILookup (-lookup ([_ k] (array \"nil2\" (name k))) ([_ k nf] (array \"nil3\" (name k) nf)))
+               IAssociative (-assoc [_ k v] {:from-nil [k v]}))
+             (defrecord R [a])
+             (let [r @(atom (->R 1))]
+               (array (:a r) (:b r) (get r :b \"nf\") (pr-str (assoc r :b 2)) (pr-str (assoc r :a 9))))"),
+        "[1,null,\"nf\",\"#cljs.user.R{:a 1, :b 2}\",\"#cljs.user.R{:a 9}\"]\n"
+    );
+
+    // A record program that uses seq/reduce without any lookup or assoc writes
+    // no per-type `-lookup` or `-assoc` kit.
+    let no_lookup = "(defprotocol Area (area [s]))
+                     (defrecord Rect [w h] Area (area [_] (* w h)))
+                     (reduce (fn [t r] (+ t (area r))) 0 [(->Rect 2 3) (->Rect 1 4)])";
+    let js = advanced(no_lookup);
+    let definitions = &js[js.find("rt$defineType(function Type").unwrap()..];
+    assert!(
+        !definitions.contains("ILookup$_lookup") && !definitions.contains("IAssociative$_assoc"),
+        "{definitions}"
     );
 }

@@ -5733,3 +5733,39 @@ In the gate on master `ba3efd525`, `keys-small` (3.66x) and `vals-small` (3.66x)
 - `flow`: raw 1,210,576 to 1,217,362 (+6,786), gzip -9 282,579 to 284,342 (+1,763, +0.62%), brotli 227,331 to 228,594 (+1,263).
 
 The fixed ~6.78 KB raw (~1.58-1.76 KB gzip) across all three apps is the lazy `ArrayMapIndexCell` and `NodeSeqCell`/`ArrayNodeSeqCell` classes (with shared prototype-free entry caches and `seqReduceFrom` protocol-mutation fallbacks), `KeySeqCell`'s plain methods and slim slot wrappers for both map representations, and `ownEntryItems`, trading ~1.6 KB gzip for the 42-83% reduction across all five map key/value walk benchmarks with zero regressions across the 80-op gate. The size ratchet's note is in tests/support/ratchet_fixtures.rs (readable runtime +22,002 bytes; three record-only fixtures shrink 939-2,124 bytes at `:advanced`, nine seq-walking fixtures grow).
+
+## 2026-11-23: per-type record lookup and assoc (light-cljs-1082)
+
+In the full gate on master `96f4c97a`, `record-kw-field` (`(:w r)`) was 1.36x shadow-cljs's median (5.65 vs 4.14 ns) and `record-assoc` (`(:w (assoc r :w i))`) was 3.79x (52.1 vs 13.7 ns), because both ran the runtime's shared `recordMethods.lookup` and `recordMethods.assoc`: a per-type `Map` lookup (`recordKeywordFieldIndex`), a megamorphic keyed load (`this[Type.members[index]]`), and for `-assoc` an array allocation, closure, and spread (`...Type.members.map(...)`) per update. Now:
+
+- **Per-type `ILookup/-lookup` and `IAssociative/-assoc` kits.** At `:advanced` (single-file, serial and parallel), `splice_record_kits` emits each record type's own `ILookup/-lookup` (both arities) and `IAssociative/-assoc` alongside `-equiv` and `-hash` in `defineType`'s kit argument. Arity 2 of `-lookup` delegates through the receiver's 3-arity slot (`this.cljs$core$ILookup$_lookup$arity$3$LKEY(this, a1, null)`) so `extend-type`/`specify!` replacing only 3-arity `-lookup` still governs 2-arity lookups. Arity 3 of `-lookup` and `-assoc` compare the key against each field's interned keyword constant by identity (`===`), fall back to `switch (rt$keywordFqn(a1))` for non-interned keywords (such as `(keyword "w")`), and delegate other keys to `rt$get`/`rt$assoc` on `this["__extmap"]`. Field `-assoc` copies the fields into locals and calls the type's current constructor (`new g<n>(v0, ..., this["__meta"], e, null)`) at a single site (`O(N)` code size per record type).
+- **Selective emission and generic fallback.** `RuntimeRoots::record_kits` emits `-lookup` only when `recordMethods.lookup` is kept alongside a real lookup use (`RECORD_LOOKUP_USES` or a direct `get` root, excluding record-only programs that pull `get` solely via `recordEntries` -> `keywordPrototype`) and emits `-assoc` whenever `recordMethods.assoc` is kept. The runtime's shared `recordMethods.lookup` and `recordMethods.assoc` remain for raw `defrecord*`, lower optimization levels, chunked builds, the evaluator, and the macro host.
+
+Measured on Apple M3 Ultra (Virtual), 24 CPUs, 32 GiB, macOS 15.7.3; light-cljs master `96f4c97a` (`light-cljs-96f4c97a`, SHA-256 `2f249e3718d17c02...`) against after (`light-cljs`, SHA-256 `9e437d6a099f4cb8...`), V8 builds; shadow-cljs 3.5.3, Node v26.12.1. No run waited for the machine; all runs are unreserved.
+
+**Gate — record operations** (`bb benchmarks/core-ops/run.bb --runs 5 --ops protocol-on-record,record-kw-field,record-dot-field,record-assoc`, load 4.19-4.29 before, 4.26-4.32 after) and **full 80-op pass** (`--runs 5`, load 2.87-4.10 before on `96f4c97a`, 2.91-5.19 after), light-cljs ns per operation, medians of 5 alternated runs with ranges:
+
+| op (record selection) | light-cljs before | light-cljs after | change | shadow-cljs before, after | light/shadow before, after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| protocol-on-record | 2.37 (2.37-2.60) | 2.33 (2.32-2.38) | -2% | 2.37, 2.35 | 1.00, 0.99 |
+| record-kw-field | 5.53 (5.53-5.54) | 2.39 (2.34-2.40) | -57% | 2.78, 2.74 | 1.99, 0.87 |
+| record-dot-field | 0.87 (0.87-0.88) | 0.86 (0.82-0.87) | -1% | 0.87, 0.86 | 1.00, 1.00 |
+| record-assoc | 54.6 (54.3-55.0) | 6.85 (6.72-7.19) | -87% | 8.23, 8.20 | 6.64, 0.84 |
+
+| op (full 80-op pass) | light-cljs before | light-cljs after | change | shadow-cljs before, after | light/shadow before, after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| protocol-on-record | 2.32 (2.20-2.33) | 2.32 (2.32-2.40) | +0% | 2.32, 2.38 | 1.00, 0.97 |
+| record-kw-field | 5.65 (5.63-5.75) | 2.99 (2.97-3.09) | -47% | 4.14, 4.20 | 1.36, 0.71 |
+| record-dot-field | 0.86 (0.81-0.88) | 0.86 (0.81-0.89) | +0% | 0.87, 0.87 | 0.99, 0.99 |
+| record-assoc | 52.1 (51.4-53.1) | 9.21 (9.02-9.34) | -82% | 13.7, 13.8 | 3.79, 0.67 |
+
+Both `record-kw-field` and `record-assoc` are well below shadow-cljs's medians with non-overlapping ranges in both the isolated record selection (0.87x and 0.84x) and the full 80-op pass (0.71x and 0.67x). Across all 76 other operations in the full pass, `light/shadow` ratios remain within -0.05 to +0.05 of `96f4c97a` (both compilers saw the same ~3-7% load-driven shift on loop baselines `bit-and`/`aget-bit-and`); zero operations regressed.
+
+**Workload 200k** (`compare.bb --runs 5 --runtime-only --runtime 1,40`, private copy rebuilt with each binary just before its run, every checksum equal to the oracle's; load 4.54-4.98 before, 4.32-4.51 after): 1 iteration wall 0.330 s (0.324-0.335) to 0.328 s (0.316-0.343), 40 iterations wall 1.365 s (1.338-1.429) to 1.371 s (1.348-1.390), steady state 26.5 to 26.7 ms per iteration (shadow-cljs 22.1 and 23.3 ms; light/shadow 1.20 before and 1.15 after), peak memory at 40 iterations 0.254 to 0.259 GB (light/shadow 0.94 to 0.97).
+
+**Sizes** (light-cljs `:advanced` output as written, without React, compiled with `--no-cache` from `research/shadow-credibility/{simple-port-973,todomvc-port-980,flow-port-980}`):
+- `simple` (0 `defrecord`s): raw 260,287 to 260,287 (+0), gzip -9 70,315 to 70,315 (+0, 0.00%), brotli 60,598 to 60,598 (+0).
+- `todomvc` (0 `defrecord`s): raw 375,700 to 375,700 (+0), gzip -9 100,125 to 100,125 (+0, 0.00%), brotli 85,960 to 85,960 (+0).
+- `flow` (29 `defrecord`s): raw 1,218,298 to 1,235,503 (+17,205, +1.41%), gzip -9 284,449 to 287,474 (+3,025, +1.06%), brotli 228,561 to 230,439 (+1,878, +0.82%).
+
+`flow` grows +3,025 bytes gzip (+1.06%) because its `rewrite-clj` dependency defines 29 `defrecord` types (about 104 gzip bytes per record type for the per-type `ILookup/-lookup` and `IAssociative/-assoc` methods); `simple` and `todomvc` define no records and do not move. The size ratchet's note is in tests/support/ratchet_fixtures.rs (readable runtime +0 bytes; zero ratchet fixtures or `features` chunks move).

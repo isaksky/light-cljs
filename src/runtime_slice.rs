@@ -50,10 +50,31 @@ use crate::runtime_manifest::{CORE_CELLS, RootUse, RuntimeManifest, UnitId};
 /// binds one reaches reflection.
 pub const REGISTRY_CELLS: &[&str] = &["currentNs"];
 
-/// The effects installing a record's shared `-equiv` and `-hash`, which a
-/// record type defined at `Advanced` replaces with its own
-/// ([`RuntimeRoots::record_kits`], light-cljs-267).
-pub const RECORD_KIT_UNITS: [&str; 2] = ["recordMethods.equiv", "recordMethods.hash"];
+/// The effects installing a record's shared `-equiv`, `-hash`, `-lookup` and
+/// `-assoc`, which a record type defined at `Advanced` replaces with its own
+/// ([`RuntimeRoots::record_kits`], light-cljs-267, light-cljs-1082).
+pub const RECORD_KIT_UNITS: [&str; 4] = [
+    "recordMethods.equiv",
+    "recordMethods.hash",
+    "recordMethods.lookup",
+    "recordMethods.assoc",
+];
+
+/// Which per-type record methods are spliced into `defineType` at `Advanced`
+/// ([`RuntimeRoots::record_kits`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RecordKits {
+    pub(crate) equiv: bool,
+    pub(crate) hash: bool,
+    pub(crate) lookup: bool,
+    pub(crate) assoc: bool,
+}
+
+impl RecordKits {
+    pub(crate) fn any(self) -> bool {
+        self.equiv || self.hash || self.lookup || self.assoc
+    }
+}
 
 /// The operations through which a program compares values it did not
 /// build as constants: `=` and `not=`, a key's lookup in an array map or set
@@ -61,6 +82,32 @@ pub const RECORD_KIT_UNITS: [&str; 2] = ["recordMethods.equiv", "recordMethods.h
 /// vector keeps `equalPair` for its host `equiv` and `indexOf`, so its
 /// presence alone says nothing.
 pub const RECORD_EQUIV_USES: &[&str] = &["equal", "entryIndex", "hashNodeFind", "equivProtocol"];
+
+/// The operations through which a program looks up keys in values
+/// ([`RuntimeRoots::record_kits`], light-cljs-1082). Every record program
+/// with `seq` or `reduce` keeps `recordEntries` -> `keyword` ->
+/// `keywordPrototype` -> `get`, so `recordMethods.lookup`'s presence alone
+/// says nothing.
+pub const RECORD_LOOKUP_USES: &[&str] = &[
+    "getSite",
+    "getSite3",
+    "lookupProtocol",
+    "getIn",
+    "assocIn",
+    "updatePath",
+    "update",
+    "find",
+    "selectKeys",
+    "mergeMaps",
+    "requiredGet",
+    "groupBy",
+    "frequencies",
+    "recordFromMap",
+    "haltWhen",
+    "isaIn",
+    "keywordCore",
+    "symbolCore",
+];
 
 /// The upstream fields and methods of the runtime's types, munged: `first` of
 /// a `Cons`, `cnt` of a vector, `sval` of a `LazySeq`, ..., which the types'
@@ -470,14 +517,14 @@ impl RuntimeRoots {
             .any(|(first, unit)| first.is_some() && unit.compile_time)
     }
 
-    /// Whether a record type defined at `Advanced` writes its own `-equiv`
-    /// and its own `-hash` (`Emitter::record_kit` in `src/emitter.rs`,
-    /// light-cljs-267): where an `Advanced` slice of these roots installs the
-    /// shared one ([`RECORD_KIT_UNITS`]), and for `-equiv` also keeps one of
-    /// [`RECORD_EQUIV_USES`], so that a program that never compares values
-    /// keeps its size. Both are only faster: the shared methods give the same
-    /// answers wherever these are not written.
-    pub(crate) fn record_kits(&self) -> [bool; 2] {
+    /// Whether a record type defined at `Advanced` writes its own `-equiv`,
+    /// `-hash`, `-lookup` and `-assoc` (`Emitter::splice_record_kits` in
+    /// `src/emitter.rs`, light-cljs-267, light-cljs-1082): where an `Advanced`
+    /// slice of these roots installs the shared one ([`RECORD_KIT_UNITS`]), and
+    /// for `-equiv` also keeps one of [`RECORD_EQUIV_USES`], so that a program
+    /// that never compares values keeps its size. These are only faster: the
+    /// shared methods give the same answers wherever these are not written.
+    pub(crate) fn record_kits(&self) -> RecordKits {
         let manifest = RuntimeManifest::embedded();
         let first = manifest.reached_by_uses(&self.units(manifest));
         let kept = |name: &str| {
@@ -485,11 +532,15 @@ impl RuntimeRoots {
                 .unit_named(name)
                 .is_some_and(|unit| first[unit.0].is_some())
         };
-        let [equiv, hash] = RECORD_KIT_UNITS.map(kept);
-        [
-            equiv && RECORD_EQUIV_USES.iter().any(|name| kept(name)),
+        let [equiv, hash, lookup, assoc] = RECORD_KIT_UNITS.map(kept);
+        let lookup_used = RECORD_LOOKUP_USES.iter().any(|name| kept(name))
+            || self.names.iter().any(|(name, ..)| name.binding == "get");
+        RecordKits {
+            equiv: equiv && RECORD_EQUIV_USES.iter().any(|name| kept(name)),
             hash,
-        ]
+            lookup: lookup && lookup_used,
+            assoc,
+        }
     }
 
     /// The unit declaring each root's binding with its use, in root order. A

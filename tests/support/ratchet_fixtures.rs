@@ -1266,6 +1266,16 @@
 //! and the features chunks move (`app.main.js` 7,802 -> 7,900,
 //! `app.editor+app.reports.js` 100,594 -> 100,600, `app.editor.js` 16,464 ->
 //! 16,500), each moving to the next 100 above.
+//!
+//! Per-type record `-lookup` and `-assoc` (light-cljs-1082): at `Advanced`
+//! (single-file), `splice_record_kits` emits each record type's own
+//! `ILookup/-lookup` (both arities) and `IAssociative/-assoc` alongside
+//! `-equiv` and `-hash`, gated on `RECORD_LOOKUP_USES` (or a direct `get`
+//! root) and `recordMethods.assoc`. The readable runtime is unchanged and no
+//! size-ratchet fixture moves at any level (`none`, `prepare`, `advanced`, or
+//! `features` chunks); re-frame `simple` and `todomvc` (0 `defrecord`s) are
+//! unchanged and `flow` (29 `defrecord`s) grows +17,205 raw / +3,025 gzip -9
+//! (+1.06%).
 
 pub struct Fixture {
     pub name: &'static str,

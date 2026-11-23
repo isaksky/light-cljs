@@ -239,7 +239,7 @@ pub(super) fn remap_constant_key<'a>(key: &ConstantKey<'a>, remap: &[usize]) -> 
     match key {
         ConstantKey::Keyword { namespace, name } => ConstantKey::Keyword {
             namespace: *namespace,
-            name,
+            name: name.clone(),
         },
         ConstantKey::Symbol { namespace, name } => ConstantKey::Symbol {
             namespace: *namespace,
@@ -667,16 +667,56 @@ fn emit_application_parallel<'a>(
     } else {
         remaps.resize_with(slice_outputs.len(), Vec::new);
     }
-    drop(canon_numbers);
-
-    // Record kit splicing: check merged roots once, splice only into affected
-    // slices (in parallel) and into hoisted methods in `canon_declarations`.
+    // Record kit splicing: check merged roots once, intern field keyword
+    // constants, then splice only into affected slices (in parallel) and into
+    // hoisted methods in `canon_declarations`.
     let any_record_sites = !canon_record_kit_sites.is_empty()
         || slice_outputs.iter().any(|s| !s.record_kit_sites.is_empty());
     if slice && any_record_sites {
-        let kits = merged_runtime.record_kits();
-        let (equiv, hash) = record_kit_parts(kits, application.inference);
-        if equiv || hash {
+        let kits = record_kit_parts(merged_runtime.record_kits(), application.inference);
+        if kits.any() {
+            let mut field_keywords: HashMap<&'a str, usize> = HashMap::new();
+            if kits.lookup || kits.assoc {
+                for site in slice_outputs
+                    .iter()
+                    .flat_map(|s| s.record_kit_sites.iter())
+                    .chain(&canon_record_kit_sites)
+                {
+                    let ExprKind::DefType { layout, .. } = &program.exprs[site.expr.0].kind else {
+                        unreachable!("a record definition")
+                    };
+                    for field in &layout.fields {
+                        if field_keywords.contains_key(field.as_str()) {
+                            continue;
+                        }
+                        let units: Vec<u16> = field.encode_utf16().collect();
+                        let dedup_key = (
+                            ConstantKey::Keyword {
+                                namespace: None,
+                                name: Cow::Owned(units),
+                            },
+                            false,
+                        );
+                        let cid = if let Some(&number) = canon_numbers.get(&dedup_key) {
+                            number
+                        } else {
+                            let number = canon_lazy.len();
+                            let kw = record_direct_runtime_read(
+                                &mut merged_runtime,
+                                "keyword",
+                                Some(site.expr),
+                            );
+                            write!(canon_declarations, "  const k{number} = {kw}(null, ").unwrap();
+                            write_string(&mut canon_declarations, field.encode_utf16(), true);
+                            canon_declarations.push_str(");\n");
+                            canon_lazy.push(false);
+                            canon_numbers.insert(dedup_key, number);
+                            number
+                        };
+                        field_keywords.insert(field.as_str(), cid);
+                    }
+                }
+            }
             let splice_jobs: Vec<(u64, SliceOutput<'a>)> = slice_outputs
                 .into_iter()
                 .map(|s| (s.output.len() as u64, s))
@@ -691,8 +731,8 @@ fn emit_application_parallel<'a>(
                         &mut s.raw_segments,
                         s.marks.as_mut().map(|m| m.list.as_mut_slice()),
                         sites,
-                        equiv,
-                        hash,
+                        kits,
+                        &field_keywords,
                         &mut added_roots,
                     );
                 }
@@ -710,13 +750,14 @@ fn emit_application_parallel<'a>(
                     &mut [],
                     (!canon_marks.is_empty()).then_some(canon_marks.as_mut_slice()),
                     canon_record_kit_sites,
-                    equiv,
-                    hash,
+                    kits,
+                    &field_keywords,
                     &mut merged_runtime,
                 );
             }
         }
     }
+    drop(canon_numbers);
 
     #[cfg(debug_assertions)]
     {
@@ -1383,6 +1424,26 @@ mod tests {
                      (def i2 (make 9))
                      (array (dist p1 p2) (= p1 p2) (= (hash p1) (hash p2))
                             (= i1 i2) (= (hash i1) (hash i2)) (make 5 6) "after-main-record"))"#,
+            ),
+            (
+                "records-lookup-assoc",
+                r#"(defrecord Box [a b-c])
+                   (defrecord Empty [])
+                   (let [make (fn
+                                ([x]
+                                  (defrecord Nested [unmentioned])
+                                  (->Nested x))
+                                ([x y] (+ x y)))]
+                     (def b @(atom (->Box 1 2)))
+                     (def e @(atom (->Empty)))
+                     (def n @(atom (make 7)))
+                     (def b2 (assoc b :a 10))
+                     (def b3 (assoc b (keyword "b-c") 20))
+                     (def b4 (assoc b :ext 30))
+                     (def n2 (assoc n (keyword "unmentioned") 9))
+                     (array (:a b) (get b (keyword "b-c")) (:a b2) (:b-c b3) (:ext b4)
+                            (get (assoc e :z 4) :z) ((keyword "unmentioned") n)
+                            (get n2 (keyword "unmentioned")) (make 2 3)))"#,
             ),
             (
                 "raw-js-and-hygiene",

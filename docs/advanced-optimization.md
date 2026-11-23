@@ -2630,6 +2630,28 @@ host-facing methods of the vector and the keyword.
     methods answer the same, more slowly. The `record-keys` workload
     (benchmarks/compiler.md, "Record equality and hash") went from 7.7×
     to 2.07× upstream's time.
+  - **Per-type record lookup and assoc (light-cljs-1082).** The shared
+    `recordMethods.lookup` and `recordMethods.assoc` look up the field
+    in a per-type `Map` (`recordKeywordFieldIndex`), read it with a
+    megamorphic keyed load, and for `-assoc` allocate an array, a
+    closure, and a spread on every update. At `Advanced` (single-file),
+    `splice_record_kits` appends each record type's own `ILookup/-lookup`
+    (both arities) and `IAssociative/-assoc` to the `defineType` kit
+    argument wherever the slice keeps `recordMethods.lookup` (with a
+    lookup use in `RECORD_LOOKUP_USES` or a direct `get` root, since
+    `recordEntries` pulls `get` through `keywordPrototype`) or
+    `recordMethods.assoc`. Arity 2 of `-lookup` delegates through the
+    receiver's 3-arity slot so `extend-type`/`specify!` replacing only
+    3-arity `-lookup` still governs 2-arity calls; arity 3 and `-assoc`
+    compare `key` against each field's interned keyword constant by
+    identity (`===`), fall back to a `switch (rt$keywordFqn(key))` for
+    fresh non-interned keywords (such as `(keyword "w")`), and delegate
+    other keys to `rt$get`/`rt$assoc` on `this["__extmap"]`. Field
+    `-assoc` copies the fields into locals and calls the type's current
+    constructor (`new g<n>(v0, ..., this["__meta"], e, null)`) at one
+    site (`O(N)` code size per record). The shared runtime methods stay
+    for `defrecord*`, lower levels, chunked builds, the evaluator, and
+    the macro host.
   - **One unit per core dispatcher (light-cljs-254).** The unit
     `seqProtocol` declared eight core dispatchers and
     `protocolHooks.dispatchers` installed six; each is a unit of its own now,

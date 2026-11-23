@@ -17,7 +17,7 @@ use crate::inference::{Inference, Known};
 use crate::program_fragment::visit_children;
 use crate::runtime_manifest::{CORE_CELLS, CORE_HUB, CoreReference, RuntimeManifest};
 use crate::runtime_slice::{
-    ConstantPool, EmittedRuntime, NameUse, RuntimeEmbedding, RuntimeName, RuntimeRoots,
+    ConstantPool, EmittedRuntime, NameUse, RecordKits, RuntimeEmbedding, RuntimeName, RuntimeRoots,
 };
 use crate::source_map::{Mark, Marks, SourceMapping};
 use crate::value_hash::ConstantHashes;
@@ -1035,8 +1035,8 @@ fn emit_js_mode(
     } else {
         (emitter, prelude_end)
     };
-    // A record type has its own `-equiv` and `-hash`, which read its fields
-    // directly, where the slice installs the shared ones
+    // A record type has its own `-equiv`, `-hash`, `-lookup` and `-assoc`,
+    // which read its fields directly, where the slice installs the shared ones
     // (`Emitter::splice_record_kits`): splice them at the recorded `defineType`
     // call sites in one forward pass rather than re-emitting the body. A type's
     // constructor brands nothing: its prototype's keyed kind tells its
@@ -1045,7 +1045,7 @@ fn emit_js_mode(
         && (!emitter.record_kit_sites.is_empty() || !emitter.constant_record_kit_sites.is_empty())
     {
         let record_kits = emitter.runtime.record_kits();
-        if record_kits.contains(&true) {
+        if record_kits.any() {
             emitter.splice_record_kits(record_kits);
         }
     }
@@ -1750,10 +1750,10 @@ fn write_member(out: &mut String, name: &str) {
     out.push(']');
 }
 
-fn record_kit_parts(record_kits: [bool; 2], inference: Option<&Inference>) -> (bool, bool) {
-    let [equiv, hash] = record_kits;
-    let hash = hash && inference.is_some_and(|inference| inference.facts().core_protocols_intact());
-    (equiv, hash)
+fn record_kit_parts(mut kits: RecordKits, inference: Option<&Inference>) -> RecordKits {
+    kits.hash =
+        kits.hash && inference.is_some_and(|inference| inference.facts().core_protocols_intact());
+    kits
 }
 
 fn record_direct_runtime_read(
@@ -1770,12 +1770,29 @@ fn record_direct_runtime_read(
     resolved.to_string()
 }
 
+/// Write a record type's constructor reference inside a `new ...(...)` call.
+fn write_record_ctor(program: &Program, out: &mut String, global: GlobalId) {
+    let name = &program.globals[global.0].name;
+    if name.contains('.') {
+        let path = crate::analyzer::munge_js_path(name);
+        out.push_str("(host(");
+        write_string(out, path[0].encode_utf16(), true);
+        out.push(')');
+        for member in &path[1..] {
+            write_member(out, member);
+        }
+        out.push(')');
+    } else {
+        write!(out, "g{}", global.0).unwrap();
+    }
+}
+
 fn write_record_kit_into(
     program: &Program,
     out: &mut String,
     expr: ExprId,
-    equiv: bool,
-    hash: bool,
+    kits: RecordKits,
+    field_keywords: &HashMap<&str, usize>,
     runtime: &mut RuntimeRoots,
 ) {
     let ExprKind::DefType { global, layout, .. } = &program.exprs[expr.0].kind else {
@@ -1787,8 +1804,10 @@ fn write_record_kit_into(
         .iter()
         .map(|field| crate::analyzer::munge_js_member(field))
         .collect();
+    let mut wrote = false;
     out.push('[');
-    if equiv {
+    if kits.equiv {
+        wrote = true;
         let equal_pair = record_direct_runtime_read(runtime, "equalPair", Some(expr));
         out.push_str(
             "[\"IEquiv/-equiv\", 2, function(a0, a1) { return a1 != null && this.constructor === a1.constructor",
@@ -1804,10 +1823,11 @@ fn write_record_kit_into(
         }
         out.push_str("; }]");
     }
-    if hash {
-        if equiv {
+    if kits.hash {
+        if wrote {
             out.push_str(", ");
         }
+        wrote = true;
         let to_array = record_direct_runtime_read(runtime, "toArray", Some(expr));
         let hash_fn =
             (!fields.is_empty()).then(|| record_direct_runtime_read(runtime, "hash", Some(expr)));
@@ -1854,6 +1874,122 @@ fn write_record_kit_into(
         let type_hash = crate::value_hash::string_hash(&units);
         write!(out, " = r ^ {type_hash}; }}]").unwrap();
     }
+    if kits.lookup {
+        if wrote {
+            out.push_str(", ");
+        }
+        wrote = true;
+        let get_fn = record_direct_runtime_read(runtime, "get", Some(expr));
+        let kw_fqn = (!fields.is_empty())
+            .then(|| record_direct_runtime_read(runtime, "keywordFqn", Some(expr)));
+        // Arity 2 delegates through the receiver's 3-arity slot so
+        // `extend-type` or `specify!` replacing only 3-arity `-lookup` still
+        // governs 2-arity lookups, as upstream's `defrecord` does.
+        out.push_str(
+            "[\"cljs$core$ILookup$_lookup$arity$2$LKEY\", 2, function(a0, a1) { \
+             return this.cljs$core$ILookup$_lookup$arity$3$LKEY(this, a1, null); }], \
+             [\"cljs$core$ILookup$_lookup$arity$3$LKEY\", 3, function(a0, a1, a2) { ",
+        );
+        if fields.len() == 1 {
+            let cid = field_keywords[fields[0].as_str()];
+            write!(
+                out,
+                "if (a1 === k{cid} || {}(a1) === ",
+                kw_fqn.as_deref().unwrap()
+            )
+            .unwrap();
+            write_string(out, fields[0].encode_utf16(), true);
+            out.push_str(") return this");
+            write_member(out, &members[0]);
+            out.push_str("; ");
+        } else if fields.len() > 1 {
+            for (field, member) in fields.iter().zip(&members) {
+                let cid = field_keywords[field.as_str()];
+                write!(out, "if (a1 === k{cid}) return this").unwrap();
+                write_member(out, member);
+                out.push_str("; ");
+            }
+            write!(out, "switch ({}(a1)) {{ ", kw_fqn.as_deref().unwrap()).unwrap();
+            for (field, member) in fields.iter().zip(&members) {
+                out.push_str("case ");
+                write_string(out, field.encode_utf16(), true);
+                out.push_str(": return this");
+                write_member(out, member);
+                out.push_str("; ");
+            }
+            out.push_str("} ");
+        }
+        out.push_str("return ");
+        out.push_str(&get_fn);
+        out.push_str("(this");
+        write_member(out, "__extmap");
+        out.push_str(", a1, a2); }]");
+    }
+    if kits.assoc {
+        if wrote {
+            out.push_str(", ");
+        }
+        let assoc_fn = record_direct_runtime_read(runtime, "assoc", Some(expr));
+        let kw_fqn = (!fields.is_empty())
+            .then(|| record_direct_runtime_read(runtime, "keywordFqn", Some(expr)));
+        out.push_str("[\"cljs$core$IAssociative$_assoc$arity$3$LKEY\", 3, function(a0, a1, a2) { ");
+        if fields.is_empty() {
+            out.push_str("return new ");
+            write_record_ctor(program, out, *global);
+            out.push_str("(this");
+            write_member(out, "__meta");
+            out.push_str(", ");
+            out.push_str(&assoc_fn);
+            out.push_str("(this");
+            write_member(out, "__extmap");
+            out.push_str(", a1, a2), null); }]");
+        } else {
+            out.push_str("let ");
+            for (index, member) in members.iter().enumerate() {
+                write!(out, "v{index} = this").unwrap();
+                write_member(out, member);
+                out.push_str(", ");
+            }
+            out.push_str("e = this");
+            write_member(out, "__extmap");
+            out.push_str("; ");
+            if fields.len() == 1 {
+                let cid = field_keywords[fields[0].as_str()];
+                write!(
+                    out,
+                    "if (a1 === k{cid} || {}(a1) === ",
+                    kw_fqn.as_deref().unwrap()
+                )
+                .unwrap();
+                write_string(out, fields[0].encode_utf16(), true);
+                write!(out, ") v0 = a2; else e = {assoc_fn}(e, a1, a2); ").unwrap();
+            } else {
+                for (index, field) in fields.iter().enumerate() {
+                    let cid = field_keywords[field.as_str()];
+                    if index > 0 {
+                        out.push_str("else ");
+                    }
+                    write!(out, "if (a1 === k{cid}) v{index} = a2; ").unwrap();
+                }
+                write!(out, "else switch ({}(a1)) {{ ", kw_fqn.as_deref().unwrap()).unwrap();
+                for (index, field) in fields.iter().enumerate() {
+                    out.push_str("case ");
+                    write_string(out, field.encode_utf16(), true);
+                    write!(out, ": v{index} = a2; break; ").unwrap();
+                }
+                write!(out, "default: e = {assoc_fn}(e, a1, a2); }} ").unwrap();
+            }
+            out.push_str("return new ");
+            write_record_ctor(program, out, *global);
+            out.push('(');
+            for index in 0..fields.len() {
+                write!(out, "v{index}, ").unwrap();
+            }
+            out.push_str("this");
+            write_member(out, "__meta");
+            out.push_str(", e, null); }]");
+        }
+    }
     out.push(']');
 }
 
@@ -1864,17 +2000,17 @@ fn splice_record_kits_into(
     raw_segments: &mut [std::ops::Range<usize>],
     marks: Option<&mut [Mark]>,
     sites: Vec<RecordKitSite>,
-    equiv: bool,
-    hash: bool,
+    kits: RecordKits,
+    field_keywords: &HashMap<&str, usize>,
     runtime: &mut RuntimeRoots,
 ) {
-    if sites.is_empty() || (!equiv && !hash) {
+    if sites.is_empty() || !kits.any() {
         return;
     }
     let track_shifts = !raw_segments.is_empty() || marks.is_some();
     let mut shifts = Vec::with_capacity(if track_shifts { sites.len() } else { 0 });
     let original = std::mem::take(output);
-    let mut spliced = String::with_capacity(original.len() + sites.len() * 256);
+    let mut spliced = String::with_capacity(original.len() + sites.len() * 512);
     let mut cursor = 0;
     let mut delta = 0isize;
     for site in sites {
@@ -1882,7 +2018,14 @@ fn splice_record_kits_into(
         spliced.push_str(&original[cursor..site.range.start]);
         let before = spliced.len();
         spliced.push_str(site.prefix);
-        write_record_kit_into(program, &mut spliced, site.expr, equiv, hash, runtime);
+        write_record_kit_into(
+            program,
+            &mut spliced,
+            site.expr,
+            kits,
+            field_keywords,
+            runtime,
+        );
         let inserted = spliced.len() - before;
         delta += inserted as isize - site.range.len() as isize;
         if track_shifts {
@@ -2102,7 +2245,7 @@ enum ConstantKey<'a> {
     /// `rt$keyword(namespace, name)`; equal parts give the interned keyword.
     Keyword {
         namespace: Option<&'a [u16]>,
-        name: &'a [u16],
+        name: Cow<'a, [u16]>,
     },
     /// `rt$symbol(namespace, name)`, a quoted symbol without metadata.
     Symbol {
@@ -4031,7 +4174,10 @@ impl<'a, 's> Emitter<'a, 's> {
         let key = if symbol {
             ConstantKey::Symbol { namespace, name }
         } else {
-            ConstantKey::Keyword { namespace, name }
+            ConstantKey::Keyword {
+                namespace,
+                name: Cow::Borrowed(name),
+            }
         };
         let number = self.constant_entry(key, false, origin, |emitter| {
             emitter.construct_named(literal, symbol)
@@ -9012,10 +9158,53 @@ impl<'a, 's> Emitter<'a, 's> {
     /// one definition of the type's slots, where a call of
     /// `installMethods` after `defineType` defined them twice
     /// (light-cljs-1069).
-    fn splice_record_kits(&mut self, record_kits: [bool; 2]) {
-        let (equiv, hash) = self.record_kit_parts(record_kits);
-        if !equiv && !hash {
+    fn splice_record_kits(&mut self, record_kits: RecordKits) {
+        let kits = self.record_kit_parts(record_kits);
+        if !kits.any() {
             return;
+        }
+        let mut field_keywords: HashMap<&'a str, usize> = HashMap::new();
+        if kits.lookup || kits.assoc {
+            let constants = self
+                .constants
+                .as_mut()
+                .expect("constant table for record kits");
+            for site in self
+                .record_kit_sites
+                .iter()
+                .chain(&self.constant_record_kit_sites)
+            {
+                let ExprKind::DefType { layout, .. } = &self.program.exprs[site.expr.0].kind else {
+                    unreachable!("a record definition")
+                };
+                for field in &layout.fields {
+                    if field_keywords.contains_key(field.as_str()) {
+                        continue;
+                    }
+                    let units: Vec<u16> = field.encode_utf16().collect();
+                    let key = ConstantKey::Keyword {
+                        namespace: None,
+                        name: Cow::Owned(units),
+                    };
+                    let cid = if let Some(&number) = constants.numbers.get(&key) {
+                        number
+                    } else {
+                        let number = constants.lazy.len();
+                        let kw = record_direct_runtime_read(
+                            &mut self.runtime,
+                            "keyword",
+                            Some(site.expr),
+                        );
+                        write!(constants.declarations, "  const k{number} = {kw}(null, ").unwrap();
+                        write_string(&mut constants.declarations, field.encode_utf16(), true);
+                        constants.declarations.push_str(");\n");
+                        constants.lazy.push(false);
+                        constants.numbers.insert(key, number);
+                        number
+                    };
+                    field_keywords.insert(field.as_str(), cid);
+                }
+            }
         }
         if !self.record_kit_sites.is_empty() {
             let sites = std::mem::take(&mut self.record_kit_sites);
@@ -9025,8 +9214,8 @@ impl<'a, 's> Emitter<'a, 's> {
                 &mut self.raw_segments,
                 self.marks.as_mut().map(|marks| marks.list.as_mut_slice()),
                 sites,
-                equiv,
-                hash,
+                kits,
+                &field_keywords,
                 &mut self.runtime,
             );
         }
@@ -9043,18 +9232,18 @@ impl<'a, 's> Emitter<'a, 's> {
                 &mut [],
                 (!self.constant_marks.is_empty()).then_some(self.constant_marks.as_mut_slice()),
                 sites,
-                equiv,
-                hash,
+                kits,
+                &field_keywords,
                 &mut self.runtime,
             );
         }
     }
 
-    /// Which of a record's own `-equiv` and `-hash`
+    /// Which of a record's own `-equiv`, `-hash`, `-lookup` and `-assoc`
     /// [`Emitter::splice_record_kits`] writes: the hash only where no program
     /// extension can replace `IHash` of a keyword, whose hashes it holds as
     /// constants, as for the constant pool's.
-    fn record_kit_parts(&self, record_kits: [bool; 2]) -> (bool, bool) {
+    fn record_kit_parts(&self, record_kits: RecordKits) -> RecordKits {
         record_kit_parts(record_kits, self.inference)
     }
 
