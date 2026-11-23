@@ -1330,3 +1330,124 @@ fn a_required_source_that_becomes_invalid_utf8_refuses_publication() {
         Publish::Refused(light_cljs::cache_key::Mismatch::Resolution)
     );
 }
+
+#[test]
+fn trim_preserves_a_live_staged_batch_and_cleans_up_after_writer_exit() {
+    let dir = TempDir::new("store-batch-trim-lease");
+    let cache = dir.join("cache");
+    let first = source_root(&dir, "leased", 1, false);
+    let second = source_root(&dir, "leased", 2, false);
+    let store = Store::open(&cache);
+    let objects = store.root().join("objects");
+    let trim_zero_grace = || {
+        run(
+            "trim",
+            &[
+                ("STORE", path(&cache)),
+                ("PER_NAMESPACE", "3".into()),
+                ("MAX_BYTES", (1u64 << 30).to_string()),
+                ("GRACE_MS", "0".into()),
+            ],
+        )
+        .0
+    };
+
+    // Part 1: pause a live batch writer after staging, run a zero-grace trim,
+    // and confirm all staged files survive and commit without disabling writes.
+    let after_stage_1 = dir.join("after-stage-1");
+    let commit_go_1 = dir.join("commit-go-1");
+    let writer_1 = spawn(
+        "publish_batch",
+        &[
+            ("STORE", path(&cache)),
+            ("ROOTS", path(&first)),
+            ("ENTRY", "leased.main".into()),
+            ("AFTER_STAGE_READY", path(&after_stage_1)),
+            ("COMMIT_GO", path(&commit_go_1)),
+        ],
+    );
+    wait_for(&after_stage_1);
+    let staged_1 = temporaries(&objects);
+    assert_eq!(
+        staged_1.len(),
+        LEAVES + 1,
+        "staging wrote one temporary per namespace"
+    );
+    std::thread::sleep(Duration::from_millis(20));
+
+    let trim_while_live = trim_zero_grace();
+    assert!(
+        trim_while_live.contains("temporaries: 0,"),
+        "live staged files must not be trimmed: {trim_while_live}"
+    );
+    assert!(
+        staged_1.iter().all(|file| file.exists()),
+        "all live staged files must remain on disk"
+    );
+
+    fs::write(&commit_go_1, "").unwrap();
+    let (stdout, stderr) = finish(writer_1);
+    assert_eq!(
+        lines(&stdout, "published").len(),
+        LEAVES + 1,
+        "resumed writer must commit the entire batch: {stdout}"
+    );
+    assert!(
+        lines(&stdout, "unwritable").is_empty(),
+        "writing must not be disabled: {stdout}"
+    );
+    assert!(
+        lines(&stderr, "warning:").is_empty(),
+        "unexpected cache warning: {stderr}"
+    );
+    assert!(temporaries(&objects).is_empty());
+    assert!(temporaries(&store.root().join("index")).is_empty());
+    for namespace in namespaces("leased", false) {
+        assert_eq!(check_candidates(&store, &namespace), Ok(1), "{namespace}");
+    }
+
+    // Part 2: pause a second batch writer after staging, confirm zero-grace
+    // trim still preserves its staged files while it is alive, then kill it
+    // abruptly and confirm the next zero-grace trim removes the abandoned files.
+    let after_stage_2 = dir.join("after-stage-2");
+    let commit_go_2 = dir.join("commit-go-2");
+    let mut writer_2 = spawn(
+        "publish_batch",
+        &[
+            ("STORE", path(&cache)),
+            ("ROOTS", path(&second)),
+            ("ENTRY", "leased.main".into()),
+            ("AFTER_STAGE_READY", path(&after_stage_2)),
+            ("COMMIT_GO", path(&commit_go_2)),
+        ],
+    );
+    wait_for(&after_stage_2);
+    let staged_2 = temporaries(&objects);
+    assert_eq!(staged_2.len(), LEAVES + 1);
+    std::thread::sleep(Duration::from_millis(20));
+
+    let trim_while_live_2 = trim_zero_grace();
+    assert!(
+        trim_while_live_2.contains("temporaries: 0,"),
+        "second live writer's staged files must not be trimmed: {trim_while_live_2}"
+    );
+    assert!(staged_2.iter().all(|file| file.exists()));
+
+    writer_2.kill().unwrap();
+    writer_2.wait().unwrap();
+    assert!(
+        staged_2.iter().all(|file| file.exists()),
+        "killed writer leaves its staged temporaries behind for trim"
+    );
+
+    let trim_after_exit = trim_zero_grace();
+    assert!(
+        trim_after_exit.contains(&format!("temporaries: {},", staged_2.len())),
+        "trim must remove abandoned staged files after writer exit: {trim_after_exit}"
+    );
+    assert!(temporaries(&objects).is_empty());
+    for namespace in namespaces("leased", false) {
+        assert_eq!(check_candidates(&store, &namespace), Ok(1), "{namespace}");
+    }
+    assert_eq!(object_count(&store), LEAVES + 1);
+}

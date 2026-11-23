@@ -66,7 +66,7 @@
 //! an artifact a build keeps reusing ages until a build trims with it in
 //! use. It also removes every unindexed artifact (one a newer artifact of
 //! its key replaced, or a killed writer's), and temporary files older than
-//! [`Retention::grace`]; a younger one may be a running writer's.
+//! [`Retention::grace`] whose advisory staging lease is no longer held.
 //!
 //! The store is disposable derived data: it is never committed, and deleting
 //! the directory is always safe, when no compiler is writing to it or
@@ -202,7 +202,7 @@ impl StagedArtifact {
     pub(crate) fn approximate_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             + self.namespace.len()
-            + self.temporary.0.as_os_str().len()
+            + self.temporary.approximate_bytes()
             + self
                 .names
                 .gensyms
@@ -517,8 +517,9 @@ impl Store {
     }
 
     /// Keep the `retention.per_namespace` most recently written or used
-    /// outputs, `key`'s among them, and temporary files younger than
-    /// `retention.grace`. Holds the lock.
+    /// outputs, `key`'s among them, and temporary files that are younger than
+    /// `retention.grace` or still hold an advisory staging lease. Holds the
+    /// lock.
     fn trim_outputs(&self, retention: &Retention, key: &Digest) -> io::Result<()> {
         let mut outputs = Vec::new();
         for file in fs::read_dir(self.outputs())?.flatten() {
@@ -530,7 +531,7 @@ impl Store {
                     .and_then(|time| time.elapsed().ok())
                     .is_some_and(|age| age >= retention.grace);
                 if old {
-                    let _ = fs::remove_file(file.path());
+                    let _ = remove_unheld_temporary(&file.path());
                 }
             } else if let Some(output) = parse_hex(&name) {
                 let current = output == *key;
@@ -939,13 +940,14 @@ impl Store {
         };
 
         // The complete artifacts, by name, with their sizes. Temporary files
-        // go once they are old: a younger one may be a running writer's.
+        // go once they are old and their advisory staging lease is unheld: a
+        // younger or leased file may belong to a running writer.
         let mut objects: HashMap<Digest, u64> = HashMap::new();
         for file in fs::read_dir(self.objects())?.flatten() {
             let name = file.file_name();
             let name = name.to_string_lossy();
             if name.starts_with(TEMP_PREFIX) {
-                if old(&file) && fs::remove_file(file.path()).is_ok() {
+                if old(&file) && remove_unheld_temporary(&file.path()) {
                     trimmed.temporaries += 1;
                 }
             } else if let Some(artifact) = parse_hex(&name) {
@@ -957,7 +959,7 @@ impl Store {
         for file in fs::read_dir(self.indexes())?.flatten() {
             let name = file.file_name().into_string().unwrap_or_default();
             if name.starts_with(TEMP_PREFIX) {
-                if old(&file) && fs::remove_file(file.path()).is_ok() {
+                if old(&file) && remove_unheld_temporary(&file.path()) {
                     trimmed.temporaries += 1;
                 }
                 continue;
@@ -1067,36 +1069,96 @@ fn now() -> u64 {
         .map_or(0, |time| time.as_nanos() as u64)
 }
 
-/// A complete temporary file, removed when dropped unless published.
 #[derive(Debug)]
-struct Temporary(PathBuf);
+struct LeasedFile {
+    path: PathBuf,
+    lease: Option<fs::File>,
+}
+
+/// A complete temporary file holding an advisory staging lease, removed when
+/// dropped unless published.
+#[derive(Debug)]
+struct Temporary(Option<Box<LeasedFile>>);
 
 impl Temporary {
-    /// Write `bytes` to a new temporary file in `dir`.
+    /// Write `bytes` to a new temporary file in `dir`, acquiring an exclusive
+    /// advisory staging lease before writing and holding it through rename or
+    /// drop.
     fn write(dir: &Path, bytes: &[u8]) -> io::Result<Self> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
-        let temporary = Self(dir.join(format!(
-            "{TEMP_PREFIX}{}-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed),
-            now()
-        )));
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary.0)?;
-        file.write_all(bytes)?;
-        file.flush()?;
-        Ok(temporary)
+        let mut last_error = None;
+        for _ in 0..8 {
+            let path = dir.join(format!(
+                "{TEMP_PREFIX}{}-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed),
+                now()
+            ));
+            let file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)?;
+            let mut temporary = Self(Some(Box::new(LeasedFile { path, lease: None })));
+            match file.try_lock() {
+                Ok(()) => {
+                    let inner = temporary.0.as_mut().expect("temporary inner just set");
+                    inner.lease = Some(file);
+                    // A concurrent zero-grace trimmer could unlink this file in
+                    // the window between `create_new` and `try_lock`. Verify
+                    // the path is still linked before writing so we never stage
+                    // into an unlinked inode.
+                    if !inner.path.try_exists()? {
+                        last_error = Some(io::Error::new(
+                            io::ErrorKind::NotFound,
+                            "staged temporary file was removed before its lease was acquired",
+                        ));
+                        continue;
+                    }
+                    let leased = inner.lease.as_mut().expect("staging lease just set");
+                    leased.write_all(bytes)?;
+                    leased.flush()?;
+                    return Ok(temporary);
+                }
+                Err(fs::TryLockError::WouldBlock) => {
+                    // A concurrent zero-grace trimmer grabbed the lock first;
+                    // close this handle and retry with a fresh name.
+                    drop(file);
+                    last_error = Some(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "staged temporary file was locked before its lease was acquired",
+                    ));
+                    continue;
+                }
+                Err(fs::TryLockError::Error(error)) => {
+                    drop(file);
+                    return Err(error);
+                }
+            }
+        }
+        Err(last_error.unwrap_or_else(|| io::Error::other("could not acquire staging lease")))
     }
 
-    /// Rename it to `target`. Where the rename fails because `target` is
-    /// open (Windows), a `target` that already holds what `holds` accepts
-    /// counts as written.
-    fn publish(self, target: &Path, holds: impl Fn(&[u8]) -> bool) -> io::Result<()> {
-        match fs::rename(&self.0, target) {
+    fn approximate_bytes(&self) -> usize {
+        self.0.as_ref().map_or(0, |inner| {
+            std::mem::size_of::<LeasedFile>() + inner.path.as_os_str().len()
+        })
+    }
+
+    /// Rename it to `target`, holding the staging lease through the rename on
+    /// Unix (callers hold the store lock, so releasing the handle first on
+    /// Windows cannot race a trimmer) and closing the lease before returning.
+    /// Where the rename fails because `target` is open (Windows), a `target`
+    /// that already holds what `holds` accepts counts as written.
+    fn publish(mut self, target: &Path, holds: impl Fn(&[u8]) -> bool) -> io::Result<()> {
+        let Some(inner) = self.0.as_mut() else {
+            return Ok(());
+        };
+        #[cfg(windows)]
+        let _ = inner.lease.take();
+        match fs::rename(&inner.path, target) {
             Ok(()) => {
-                std::mem::forget(self);
+                // Disarm unlink-on-drop and release the lease immediately.
+                drop(self.0.take());
                 Ok(())
             }
             Err(_) if fs::read(target).is_ok_and(|existing| holds(&existing)) => Ok(()),
@@ -1107,7 +1169,30 @@ impl Temporary {
 
 impl Drop for Temporary {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
+        if let Some(mut inner) = self.0.take() {
+            #[cfg(windows)]
+            let _ = inner.lease.take();
+            let _ = fs::remove_file(&inner.path);
+            // `inner.lease` drops here, after unlinking `&inner.path`, so a
+            // concurrent trimmer never observes an unleased temporary.
+            let _ = inner.lease.take();
+        }
+    }
+}
+
+/// Remove an aged temporary file only when no live writer holds its advisory
+/// staging lease.
+fn remove_unheld_temporary(path: &Path) -> bool {
+    let Ok(file) = fs::File::open(path) else {
+        return false;
+    };
+    match file.try_lock() {
+        Ok(()) => {
+            let removed = fs::remove_file(path).is_ok();
+            drop(file);
+            removed
+        }
+        Err(_) => false,
     }
 }
 
@@ -1509,5 +1594,52 @@ mod tests {
         assert_eq!(parse_hex(&hex(&digest).to_uppercase()), None);
         assert_eq!(parse_hex(".tmp-1-2-3"), None);
         assert_eq!(parse_hex(&"é".repeat(32)), None);
+    }
+
+    #[test]
+    fn temporary_lease_blocks_trim_and_releases_after_publish() {
+        let dir = std::env::temp_dir().join(format!(
+            "light-cljs-temp-lease-{}-{}",
+            std::process::id(),
+            now()
+        ));
+        let store = Store::open(&dir);
+        fs::create_dir_all(store.outputs()).unwrap();
+
+        let live = Temporary::write(&store.outputs(), b"in-flight").unwrap();
+        let stale = store.outputs().join(format!("{TEMP_PREFIX}stale-0-0"));
+        fs::write(&stale, b"abandoned").unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+
+        let zero_grace = Retention {
+            grace: Duration::ZERO,
+            ..Retention::default()
+        };
+        let key = digest(b"out");
+        assert!(
+            store
+                .write_output(&key, &[("a.js", "1")], &zero_grace, MAX_OUTPUT_BYTES)
+                .is_some()
+        );
+        assert!(
+            live.0.as_ref().unwrap().path.exists(),
+            "leased output temporary must survive zero-grace trim"
+        );
+        assert!(
+            !stale.exists(),
+            "unheld output temporary must be removed by zero-grace trim"
+        );
+
+        let target = store.outputs().join("published");
+        live.publish(&target, |existing| existing == b"in-flight")
+            .unwrap();
+        // The staging lease must be released once publish completes.
+        let file = fs::File::open(&target).unwrap();
+        assert!(
+            file.try_lock().is_ok(),
+            "staging lease leaked onto published target"
+        );
+        drop(file);
+        let _ = fs::remove_dir_all(&dir);
     }
 }
