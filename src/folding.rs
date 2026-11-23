@@ -873,7 +873,19 @@ pub(crate) const NOWHERE: u32 = u32::MAX;
 pub fn fold(program: &mut Program, built: &mut Vec<bool>) -> usize {
     let mut top = Vec::new();
     flatten(program, program.root, &mut top);
-    let facts = ProgramFacts::new(program, &top);
+    let facts = ProgramFacts::new_light(program, &top);
+    fold_with_facts(program, built, &facts)
+}
+
+/// Fold `program` in place using precomputed [`ProgramFacts`], returning how
+/// many expressions were rewritten.
+pub fn fold_with_facts(
+    program: &mut Program,
+    built: &mut Vec<bool>,
+    facts: &ProgramFacts,
+) -> usize {
+    let mut top = Vec::new();
+    flatten(program, program.root, &mut top);
     let count = program.exprs.len();
     built.resize(count, false);
 
@@ -1002,10 +1014,13 @@ pub fn fold(program: &mut Program, built: &mut Vec<bool>) -> usize {
         classes: vec![ConstantClass::Unknown; count],
         visited: vec![false; count],
         folded: 0,
+        saw_shared_unread_let: false,
     };
     let root = folder.program.root;
     folder.visit(root);
-    folder.sweep();
+    if folder.folded > 0 || folder.saw_shared_unread_let {
+        folder.sweep();
+    }
     folder.folded
 }
 
@@ -1180,9 +1195,9 @@ pub(crate) fn sole_definitions(program: &Program, position: &[u32]) -> Vec<Optio
             }
             ExprKind::Global(_) => continue,
             kind => {
-                for global in crate::application::globals(kind) {
+                crate::application::visit_globals(kind, |global| {
                     assigned[global.0] = true;
-                }
+                });
                 continue;
             }
         };
@@ -1365,7 +1380,7 @@ fn flatten(program: &Program, id: ExprId, top: &mut Vec<ExprId>) {
 
 struct Folder<'p> {
     program: &'p mut Program,
-    facts: ProgramFacts,
+    facts: &'p ProgramFacts,
     /// The runtime names of the core operations the program may replace,
     /// sorted, as the emitter's `constant_nodes` takes them.
     replaced: Vec<&'static str>,
@@ -1415,6 +1430,10 @@ struct Folder<'p> {
     classes: Vec<ConstantClass>,
     visited: Vec<bool>,
     folded: usize,
+    /// Whether `rewrite` deferred dropping an unread non-pinned `let` binding
+    /// because its body was shared, so `sweep` must still run even if
+    /// `folded == 0`.
+    saw_shared_unread_let: bool,
 }
 
 impl Folder<'_> {
@@ -1498,6 +1517,13 @@ impl Folder<'_> {
                         && (self.collection(init).is_some() || self.keyed(init).is_some());
                     let value = &self.program.exprs[init.0].kind;
                     if self.pinned[local.0] || shared {
+                        if shared
+                            && !self.pinned[local.0]
+                            && self.reads[local.0] == 0
+                            && effect_free(self.program, value)
+                        {
+                            self.saw_shared_unread_let = true;
+                        }
                         kept.push((local, init));
                     } else if Constant::of_kind(self.program, value).is_some() || alias {
                         // A constant or such an alias is read in its place.
@@ -2519,9 +2545,11 @@ pub(crate) fn effect_free(program: &Program, kind: &ExprKind) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        Constant, Folded, Lookup, count, flatten, js_number, lookup, same_key, select, shape,
+        Constant, Folded, Lookup, built_literals, count, flatten, fold_with_facts, js_number,
+        lookup, same_key, select, shape,
     };
     use crate::analyzer::{CoreFnId, ExprId, ExprKind, Program};
+    use crate::inference::ProgramFacts;
 
     /// The program of `source` and its top-level forms.
     fn forms(source: &str) -> (Program, Vec<ExprId>) {
@@ -2658,5 +2686,54 @@ mod tests {
         ] {
             assert_eq!(js_number(value), text, "{value:e}");
         }
+    }
+
+    #[test]
+    fn sweep_runs_when_shared_let_defers_unread_binding() {
+        // Build a program where a `Let` has an unread non-pinned effect-free
+        // binding (an array literal, not a Constant) whose `body` ExprId is
+        // shared and already visited earlier, so `Folder::rewrite` defers
+        // dropping the binding (`shared == true`) with `folded == 0`.
+        let source = "(defn f [x] (let [unused [x]] (js/console.log x))) (f 1)";
+        let mut program = crate::analyze(source, &crate::parse(source).unwrap()).unwrap();
+        let let_idx = program
+            .exprs
+            .iter()
+            .position(|e| matches!(e.kind, ExprKind::Let { .. }))
+            .expect("let expr");
+        let ExprKind::Let { bindings, body } = program.exprs[let_idx].kind.clone() else {
+            unreachable!();
+        };
+        assert_eq!(bindings.len(), 1);
+        // Replace the `fn` body with `(do body (let [unused [x]] body))` so
+        // `body` is visited before the `let`, making `shared == true` on `let`.
+        let fn_idx = program
+            .exprs
+            .iter()
+            .position(|e| matches!(e.kind, ExprKind::Fn { .. }))
+            .expect("fn expr");
+        let do_expr = crate::analyzer::Expr {
+            kind: ExprKind::Do(vec![body, ExprId(let_idx)]),
+            span: program.exprs[let_idx].span.clone(),
+            source_index: program.exprs[let_idx].source_index,
+            context: program.exprs[let_idx].context,
+        };
+        let do_id = ExprId(program.exprs.len());
+        program.exprs.push(do_expr);
+        if let ExprKind::Fn { methods, .. } = &mut program.exprs[fn_idx].kind {
+            methods[0].body = do_id;
+        }
+
+        let mut built = built_literals(&program);
+        let mut top = Vec::new();
+        flatten(&program, program.root, &mut top);
+        let facts = ProgramFacts::new_light(&program, &top);
+        let folded = fold_with_facts(&mut program, &mut built, &facts);
+        assert!(folded >= 1, "expected sweep to drop shared unread binding");
+        assert!(
+            !matches!(program.exprs[let_idx].kind, ExprKind::Let { ref bindings, .. } if !bindings.is_empty()),
+            "unread binding should be dropped by sweep: {:?}",
+            program.exprs[let_idx].kind
+        );
     }
 }

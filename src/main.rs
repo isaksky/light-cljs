@@ -19,7 +19,7 @@ use light_cljs::compile_stats::{CompileStats, PhaseTimes};
 use light_cljs::source_map::{SourceFile, data_url};
 use light_cljs::{
     ApplicationOptions, Define, LineIndex, MacroHost, OptimizationLevel, PreparedApplication,
-    TokenKind, Tokenizer, parse, prepare_owned_application,
+    TokenKind, Tokenizer, parse, prepare_owned_application_with_slots,
 };
 
 mod config_cli;
@@ -828,7 +828,7 @@ fn build_namespace(
         }
     }
     let started = timer(&stats);
-    let prepared = prepare_owned_application(program, application);
+    let prepared = prepare_owned_application_with_slots(program, application, flags.jobs);
     let prepare_time = elapsed(started);
     let mut chunk_report = None;
     let (emission, write) = if let Some(out_dir) = out_dir {
@@ -1337,7 +1337,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             })?;
             if mode == "compile" {
                 let options = flags.options(&program)?;
-                let prepared = prepare_owned_application(program, options);
+                let prepared = prepare_owned_application_with_slots(program, options, flags.jobs);
                 let sources = [(Path::new(&source_name), source.as_str())];
                 let (output, map) = flags.output(&prepared, false, &sources)?;
                 flags.write_map(map)?;

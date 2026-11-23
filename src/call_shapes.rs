@@ -1262,9 +1262,9 @@ impl Scan {
                 },
                 // Types and protocols define their globals some other way.
                 kind => {
-                    for global in crate::application::globals(kind) {
+                    crate::application::visit_globals(kind, |global| {
                         fixed[global.0] = false;
-                    }
+                    });
                 }
             }
         }

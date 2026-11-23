@@ -459,11 +459,45 @@ pub struct ProgramFacts {
     top: Vec<Option<usize>>,
     /// Program protocols by marker key (`ns/Name`).
     protocols: HashMap<String, Implementors>,
+    /// Expressions that set a pessimistic summary flag (`replaced`, `extended`,
+    /// `equiv`, `equiv_by_name`), used to skip post-compaction refreshes when
+    /// none of them were compacted away (light-cljs-1098).
+    pessimistic_exprs: Vec<ExprId>,
 }
 
 impl ProgramFacts {
     /// Scan `program`, whose flattened top-level forms are `top`.
-    pub fn new<'p>(program: &'p Program, top: &[ExprId]) -> Self {
+    pub fn new(program: &Program, top: &[ExprId]) -> Self {
+        Self::build(program, top, true)
+    }
+
+    /// Lightweight scan that skips program-protocol implementor tables
+    /// (`protocols`), `lookups`, and emission-only protocol member name scans,
+    /// for `retain`, `folding`, and `inlining` (light-cljs-1098).
+    pub(crate) fn new_light(program: &Program, top: &[ExprId]) -> Self {
+        Self::build(program, top, false)
+    }
+
+    /// Release per-expression and per-global lookup tables once `Inert` has
+    /// read them; `folding` and `inlining` only read summary flags and
+    /// `replaced`.
+    pub(crate) fn discard_tables(&mut self) {
+        self.globals = Vec::new();
+        self.lookups = Vec::new();
+        self.top = Vec::new();
+        self.protocols = HashMap::new();
+    }
+
+    /// Whether any expression that contributed a pessimistic summary flag
+    /// (`replaced`, `core_protocols`, `equiv`, `equiv_by_name`) was dropped by
+    /// `compact_expressions` (`ids[old] == ExprId(usize::MAX)`).
+    pub(crate) fn any_pessimistic_dropped(&self, ids: &[ExprId]) -> bool {
+        self.pessimistic_exprs
+            .iter()
+            .any(|id| ids.get(id.0).copied().unwrap_or(ExprId(usize::MAX)) == ExprId(usize::MAX))
+    }
+
+    fn build<'p>(program: &'p Program, top: &[ExprId], full: bool) -> Self {
         let mut definitions = vec![0usize; program.globals.len()];
         let mut assigned = vec![false; program.globals.len()];
         let mut replaced = vec![false; CoreFnId::ALL.len()];
@@ -515,8 +549,8 @@ impl ProgramFacts {
         let mut equiv = false;
         let mut receives_functions = false;
         // Assigning a property of a core value (`PersistentHashMap.fromArrays`)
-        // counts as replacing it.
-        let mut assign = |target: &ExprId| {
+        // counts as replacing it. Returns whether a core operation was marked.
+        let mut assign = |target: &ExprId| -> bool {
             let target = match program.exprs[target.0].kind {
                 ExprKind::Property { receiver, .. } | ExprKind::JsIndex { receiver, .. } => {
                     receiver
@@ -524,9 +558,15 @@ impl ProgramFacts {
                 _ => *target,
             };
             match program.exprs[target.0].kind {
-                ExprKind::CoreFn(core) => replaced[core.table_row()] = true,
-                ExprKind::Global(global) => assigned[global.0] = true,
-                _ => (),
+                ExprKind::CoreFn(core) => {
+                    replaced[core.table_row()] = true;
+                    true
+                }
+                ExprKind::Global(global) => {
+                    assigned[global.0] = true;
+                    false
+                }
+                _ => false,
             }
         };
         // Definitions count where emission can reach them: analysis leaves
@@ -537,7 +577,9 @@ impl ProgramFacts {
         while let Some(id) = pending.pop() {
             if !std::mem::replace(&mut emitted[id.0], true) {
                 crate::program_fragment::visit_children(&program.exprs[id.0].kind, |child| {
-                    pending.push(child);
+                    if !emitted[child.0] {
+                        pending.push(child);
+                    }
                 });
             }
         }
@@ -603,19 +645,27 @@ impl ProgramFacts {
                 .any(|component| equiv_member(component)),
             _ => false,
         };
+        let mut def_exprs = Vec::new();
+        let mut protocol_impl_exprs = Vec::new();
+        let mut via_metadata = Vec::new();
+        let mut pessimistic_exprs = Vec::new();
         for (index, expr) in program.exprs.iter().enumerate() {
-            protocol_members_named |= match &expr.kind {
-                ExprKind::Property { property, .. } => protocol_member_name(property),
-                ExprKind::JsGlobal(global) => program.js_globals[global.0]
-                    .path
-                    .iter()
-                    .any(|component| protocol_member_name(component)),
-                ExprKind::JsTemplate { segments, .. } => segments.iter().any(|segment| {
-                    (segment.contains("cljs$core$") || segment.contains("cljs$lang$protocol_mask$"))
-                        && segment.contains(crate::rta::RUNTIME_KEY)
-                }),
-                _ => false,
-            };
+            let mut pessimistic = false;
+            if full {
+                protocol_members_named |= match &expr.kind {
+                    ExprKind::Property { property, .. } => protocol_member_name(property),
+                    ExprKind::JsGlobal(global) => program.js_globals[global.0]
+                        .path
+                        .iter()
+                        .any(|component| protocol_member_name(component)),
+                    ExprKind::JsTemplate { segments, .. } => segments.iter().any(|segment| {
+                        (segment.contains("cljs$core$")
+                            || segment.contains("cljs$lang$protocol_mask$"))
+                            && segment.contains(crate::rta::RUNTIME_KEY)
+                    }),
+                    _ => false,
+                };
+            }
             let method_write = match &expr.kind {
                 ExprKind::SetGlobal { target, .. } => core_method_target(target),
                 ExprKind::Binding { bindings, .. } => bindings
@@ -627,10 +677,10 @@ impl ProgramFacts {
                 }
                 _ => false,
             };
-            if method_write && core_method_write.is_none() {
+            if full && method_write && core_method_write.is_none() {
                 core_method_write = Some(ExprId(index));
             }
-            equiv_by_name |= method_write
+            if method_write
                 && match &expr.kind {
                     ExprKind::SetGlobal { target, .. } => equiv_target(target),
                     ExprKind::Binding { bindings, .. } => {
@@ -644,62 +694,128 @@ impl ProgramFacts {
                             })
                     }
                     _ => false,
-                };
+                }
+            {
+                equiv_by_name = true;
+                pessimistic = true;
+            }
             match &expr.kind {
                 ExprKind::SetGlobal { target, .. } => {
-                    core_slots_by_name |= core_slot_target(target);
-                    assign(target)
+                    if full {
+                        core_slots_by_name |= core_slot_target(target);
+                    }
+                    pessimistic |= assign(target);
                 }
                 ExprKind::Binding { bindings, .. } => {
-                    core_slots_by_name |=
-                        bindings.iter().any(|(target, _)| core_slot_target(target));
-                    bindings.iter().for_each(|(target, _)| assign(target))
+                    if full {
+                        core_slots_by_name |=
+                            bindings.iter().any(|(target, _)| core_slot_target(target));
+                    }
+                    for (target, _) in bindings {
+                        pessimistic |= assign(target);
+                    }
                 }
                 // Raw text may assign its holes.
                 ExprKind::JsTemplate { segments, args } => {
-                    core_slots_by_name |= args.iter().any(core_slot_target)
-                        || segments.iter().any(|segment| spelled(segment, false));
-                    args.iter().for_each(&mut assign)
+                    if full {
+                        core_slots_by_name |= args.iter().any(core_slot_target)
+                            || segments.iter().any(|segment| spelled(segment, false));
+                    }
+                    for arg in args {
+                        pessimistic |= assign(arg);
+                    }
                 }
                 ExprKind::ExtendType {
                     target, methods, ..
                 } => {
+                    if full {
+                        protocol_impl_exprs.push(index);
+                    }
                     if methods.iter().any(core_protocol) {
                         extended.push(*target);
+                        pessimistic = true;
                     }
-                    if methods.iter().any(lookup) {
+                    if full && methods.iter().any(lookup) {
                         lookup_targets.push(*target);
                     }
-                    equiv |= methods.iter().any(implements("IEquiv"));
-                    receives_functions |= methods.iter().any(receives);
+                    if methods.iter().any(implements("IEquiv")) {
+                        equiv = true;
+                        pessimistic = true;
+                    }
+                    if full {
+                        receives_functions |= methods.iter().any(receives);
+                    }
                 }
                 ExprKind::Reify { methods, .. } => {
-                    equiv |= methods.iter().any(implements("IEquiv"));
-                    receives_functions |= methods.iter().any(receives);
+                    if full {
+                        protocol_impl_exprs.push(index);
+                    }
+                    if methods.iter().any(implements("IEquiv")) {
+                        equiv = true;
+                        pessimistic = true;
+                    }
+                    if full {
+                        receives_functions |= methods.iter().any(receives);
+                    }
                 }
                 ExprKind::Global(_) => (),
                 kind => {
-                    if let ExprKind::DefType { methods, .. } = kind {
-                        equiv |= methods.iter().any(implements("IEquiv"));
-                        receives_functions |= methods.iter().any(receives);
+                    match kind {
+                        ExprKind::Def { .. } => {
+                            if emitted[index] {
+                                def_exprs.push(index);
+                            }
+                        }
+                        ExprKind::DefType { methods, .. } => {
+                            if full {
+                                protocol_impl_exprs.push(index);
+                            }
+                            if methods.iter().any(implements("IEquiv")) {
+                                equiv = true;
+                                pessimistic = true;
+                            }
+                            if full {
+                                receives_functions |= methods.iter().any(receives);
+                            }
+                            if emitted[index] {
+                                def_exprs.push(index);
+                            }
+                        }
+                        ExprKind::DefProtocol {
+                            global,
+                            via_metadata: is_via_metadata,
+                            ..
+                        } => {
+                            if full && *is_via_metadata {
+                                via_metadata.push(*global);
+                            }
+                            if emitted[index] {
+                                def_exprs.push(index);
+                            }
+                        }
+                        _ => (),
                     }
                     if emitted[index] {
-                        for global in crate::application::globals(kind) {
+                        crate::application::visit_globals(kind, |global| {
                             definitions[global.0] += 1;
-                        }
+                        });
                     }
                 }
+            }
+            if pessimistic {
+                pessimistic_exprs.push(ExprId(index));
             }
         }
         let sole = |global: GlobalId| definitions[global.0] == 1 && !assigned[global.0];
         let mut globals = vec![Definition::Unknown; program.globals.len()];
-        let mut lookups = vec![false; program.globals.len()];
-        for (index, expr) in program.exprs.iter().enumerate() {
+        let mut lookups = if full {
+            vec![false; program.globals.len()]
+        } else {
+            Vec::new()
+        };
+        for index in def_exprs {
             let id = ExprId(index);
-            if !emitted[index] {
-                continue;
-            }
-            match &expr.kind {
+            match &program.exprs[index].kind {
                 ExprKind::Def { global, .. } if sole(*global) => {
                     globals[global.0] = Definition::Def(id);
                 }
@@ -722,7 +838,9 @@ impl ProgramFacts {
                     if let Some(factory) = layout.map_constructor.filter(|factory| sole(*factory)) {
                         globals[factory.0] = role(TypeRole::MapFactory);
                     }
-                    lookups[global.0] = methods.iter().any(lookup);
+                    if full {
+                        lookups[global.0] = methods.iter().any(lookup);
+                    }
                 }
                 ExprKind::DefProtocol {
                     global, methods, ..
@@ -747,11 +865,13 @@ impl ProgramFacts {
             },
             _ => None,
         };
-        // An extension to anything else is a core protocol extension beyond the
-        // program's types, which `core_protocols` records.
-        for target in lookup_targets {
-            if let Some((global, _)) = program_type(target) {
-                lookups[global.0] = true;
+        if full {
+            // An extension to anything else is a core protocol extension beyond the
+            // program's types, which `core_protocols` records.
+            for target in lookup_targets {
+                if let Some((global, _)) = program_type(target) {
+                    lookups[global.0] = true;
+                }
             }
         }
         let mut top_positions = vec![None; program.exprs.len()];
@@ -768,92 +888,80 @@ impl ProgramFacts {
                     ..
                 } if top_positions[definition.0].is_some()))
         });
-        // Who implements each program protocol: the classes, the program types,
-        // and whether anything else does (`reify`, native types, `specify!`).
-        let mut implementations: HashMap<&str, (Type, Vec<GlobalId>, bool)> = HashMap::new();
-        let mut implement = |key: &'p str, classes: Type, program_type: Option<GlobalId>| {
-            let entry = implementations
-                .entry(key)
-                .or_insert((Type::NEVER, Vec::new(), false));
-            entry.0 = entry.0.union(classes);
-            match program_type {
-                Some(global) if !entry.1.contains(&global) => entry.1.push(global),
-                Some(_) => (),
-                None => entry.2 = true,
-            }
-        };
-        for (index, expr) in program.exprs.iter().enumerate() {
-            let (classes, program_type, methods) = match &expr.kind {
-                ExprKind::DefType {
-                    record,
-                    global,
-                    methods,
-                    ..
-                } => {
-                    let own = matches!(globals[global.0], Definition::Type {
-                        definition,
-                        role: TypeRole::Constructor,
-                        ..
-                    } if definition.0 == index);
-                    let class = if *record { Type::RECORD } else { Type::OBJECT };
-                    (class, own.then_some(*global), methods)
-                }
-                ExprKind::Reify { methods, .. } => (Type::OBJECT, None, methods),
-                ExprKind::ExtendType {
-                    instance: false,
-                    target,
-                    methods,
-                    ..
-                } => match program_type(*target) {
-                    Some((global, record)) => {
-                        let class = if record { Type::RECORD } else { Type::OBJECT };
-                        (class, Some(global), methods)
-                    }
-                    None => (native_classes(program, *target), None, methods),
-                },
-                ExprKind::ExtendType { methods, .. } => (Type::ANY, None, methods),
-                _ => continue,
-            };
-            for key in methods.iter().filter_map(marker) {
-                implement(key, classes, program_type);
-            }
-        }
-        // A protocol extendable through metadata may be satisfied by any value
-        // with metadata.
-        let via_metadata: Vec<GlobalId> = program
-            .exprs
-            .iter()
-            .filter_map(|expr| match expr.kind {
-                ExprKind::DefProtocol {
-                    global,
-                    via_metadata: true,
-                    ..
-                } => Some(global),
-                _ => None,
-            })
-            .collect();
         let mut protocols: HashMap<String, Implementors> = HashMap::new();
-        for protocol in program.protocols.keys() {
-            let binding = &program.globals[protocol.0];
-            let key = format!("{}/{}", binding.namespace, binding.name);
-            let implementors = match implementations.get(key.as_str()) {
-                _ if via_metadata.contains(protocol) => Implementors {
-                    classes: Type::ANY,
-                    sole: None,
-                },
-                Some((classes, types, other)) => Implementors {
-                    classes: *classes,
-                    sole: match types.as_slice() {
-                        [global] if !other => Some(*global),
-                        _ => None,
-                    },
-                },
-                None => Implementors {
-                    classes: Type::NEVER,
-                    sole: None,
-                },
+        if full {
+            // Who implements each program protocol: the classes, the program types,
+            // and whether anything else does (`reify`, native types, `specify!`).
+            let mut implementations: HashMap<&str, (Type, Vec<GlobalId>, bool)> = HashMap::new();
+            let mut implement = |key: &'p str, classes: Type, program_type: Option<GlobalId>| {
+                let entry = implementations
+                    .entry(key)
+                    .or_insert((Type::NEVER, Vec::new(), false));
+                entry.0 = entry.0.union(classes);
+                match program_type {
+                    Some(global) if !entry.1.contains(&global) => entry.1.push(global),
+                    Some(_) => (),
+                    None => entry.2 = true,
+                }
             };
-            protocols.insert(key, implementors);
+            for index in protocol_impl_exprs {
+                let (classes, program_type, methods) = match &program.exprs[index].kind {
+                    ExprKind::DefType {
+                        record,
+                        global,
+                        methods,
+                        ..
+                    } => {
+                        let own = matches!(globals[global.0], Definition::Type {
+                            definition,
+                            role: TypeRole::Constructor,
+                            ..
+                        } if definition.0 == index);
+                        let class = if *record { Type::RECORD } else { Type::OBJECT };
+                        (class, own.then_some(*global), methods)
+                    }
+                    ExprKind::Reify { methods, .. } => (Type::OBJECT, None, methods),
+                    ExprKind::ExtendType {
+                        instance: false,
+                        target,
+                        methods,
+                        ..
+                    } => match program_type(*target) {
+                        Some((global, record)) => {
+                            let class = if record { Type::RECORD } else { Type::OBJECT };
+                            (class, Some(global), methods)
+                        }
+                        None => (native_classes(program, *target), None, methods),
+                    },
+                    ExprKind::ExtendType { methods, .. } => (Type::ANY, None, methods),
+                    _ => continue,
+                };
+                for key in methods.iter().filter_map(marker) {
+                    implement(key, classes, program_type);
+                }
+            }
+            for protocol in program.protocols.keys() {
+                let binding = &program.globals[protocol.0];
+                let key = format!("{}/{}", binding.namespace, binding.name);
+                let implementors = match implementations.get(key.as_str()) {
+                    _ if via_metadata.contains(protocol) => Implementors {
+                        classes: Type::ANY,
+                        sole: None,
+                    },
+                    Some((classes, types, other)) => Implementors {
+                        classes: *classes,
+                        sole: match types.as_slice() {
+                            [global] if !other => Some(*global),
+                            _ => None,
+                        },
+                    },
+                    None => Implementors {
+                        classes: Type::NEVER,
+                        sole: None,
+                    },
+                };
+                protocols.insert(key, implementors);
+            }
         }
         Self {
             replaced,
@@ -868,6 +976,7 @@ impl ProgramFacts {
             lookups,
             top: top_positions,
             protocols,
+            pessimistic_exprs,
         }
     }
 

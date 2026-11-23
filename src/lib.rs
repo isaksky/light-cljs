@@ -97,7 +97,7 @@ pub use analyzer::{
 };
 pub use application::{
     ApplicationOptions, ApplicationStats, OptimizationLevel, PreparedApplication,
-    prepare_application, prepare_owned_application,
+    prepare_application, prepare_owned_application, prepare_owned_application_with_slots,
 };
 pub use build_services::BuildConfiguration;
 pub use chunks::{ChunkFile, ChunkedOutput, LoadableSite};

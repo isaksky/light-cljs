@@ -897,3 +897,18 @@ fn str_lowers_to_template_literals_across_edge_cases() {
     );
     assert!(text.contains('`'), "{text}");
 }
+
+/// An unused inert function whose body mutates a core var or extends a core
+/// protocol is removed by `retain` and compacted before folding; `ProgramFacts`
+/// refreshes so constant folding still fires in Round 0.
+#[test]
+fn dead_function_with_core_mutation_does_not_block_folding_after_compaction() {
+    let source = r#"
+        (defn unused-mutator [] (set! cljs.core/+ (fn [a b] 0)))
+        (defn unused-extender [] (extend-type number IEquiv (-equiv [_ _] false)))
+        (pr-str [(+ 1 2) (= 1 1)])"#;
+    let (text, stats) = every_level(source, "[3 true]");
+    assert!(stats.folded_expressions >= 2, "{stats:?}");
+    assert!(!text.contains("rt$add"), "{text}");
+    assert!(!text.contains("rt$equal"), "{text}");
+}

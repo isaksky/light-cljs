@@ -1094,8 +1094,13 @@ impl ChunkedRetention {
             ) {
                 return None;
             }
-            let defined = crate::application::globals(kind);
-            let global = &program.globals[defined[0].0];
+            let mut primary = None;
+            crate::application::visit_globals(kind, |global| {
+                if primary.is_none() {
+                    primary = Some(global);
+                }
+            });
+            let global = &program.globals[primary.expect("a definition defines a global").0];
             let (root, demand) = match item.reached {
                 Some((root, reader, _)) => {
                     let reader = &plan.items[reader];
@@ -1106,14 +1111,21 @@ impl ChunkedRetention {
                     // defines (a protocol and its dispatchers). A method key
                     // naming a protocol's dispatcher reads it without a
                     // reference: the form demands it.
-                    let at = defined
-                        .iter()
-                        .filter_map(|defined| first.get(defined).copied())
-                        .min_by_key(|&id| {
+                    let mut at: Option<ExprId> = None;
+                    crate::application::visit_globals(kind, |defined| {
+                        if let Some(&id) = first.get(&defined) {
                             let data = &program.exprs[id.0];
-                            (data.source_index, data.span.start)
-                        })
-                        .unwrap_or(reader.expr);
+                            let key = (data.source_index, data.span.start);
+                            let replace = at.is_none_or(|best| {
+                                let best = &program.exprs[best.0];
+                                key < (best.source_index, best.span.start)
+                            });
+                            if replace {
+                                at = Some(id);
+                            }
+                        }
+                    });
+                    let at = at.unwrap_or(reader.expr);
                     (root, (reader.chunk.0, expression_demand(program, at)))
                 }
                 None => {

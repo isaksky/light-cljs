@@ -1663,3 +1663,35 @@ report):
   models on the trace give 6.58 s for stage A (`Option U`, units on 4 or more
   workers behind serial top-level passes) and 2.96 s for stage C at 8 workers
   (`Model C`), against 6.06 s and 2.74 s from the probe data.
+
+## Reuse `ProgramFacts` and trim `prepare_owned_application` (light-cljs-1098, November 22, 2026)
+
+V8 build (`target/release/light-cljs`), parent `120cc6a48` (immutable copy)
+against the `light-cljs-1098` candidate, clean `:advanced` builds
+(`release bench --optimize advanced --no-cache --stats`), three alternating
+before/after rounds per `(project, --jobs)` on an unreserved Apple M3 Ultra VM
+(24 vCPUs, 32 GiB; 1-minute `uptime` load 2.92–4.03 across all rounds).
+Medians (min–max range); peak memory from `/usr/bin/time -l` in MiB.
+
+| Project | `--jobs` | Binary | `prepare-application` (ms) | Wall (s) | Peak memory (MiB) | Raw / gzip bytes |
+| --- | ---: | --- | --- | --- | --- | --- |
+| `workload-200k-seed42` | 1 | base `120cc6a48` | 1,010.4 (979.8–1,035.5) | 5.40 (5.22–5.47) | 921.0 (914.1–929.0) | 3,386,878 / 834,297 |
+| `workload-200k-seed42` | 1 | candidate | 796.7 (775.5–828.1) (-21.2%) | 5.11 (5.07–5.16) (-5.4%) | 925.0 (919.7–938.0) (+0.4%) | 3,386,878 / 834,297 |
+| `workload-200k-seed42` | 8 | base `120cc6a48` | 898.0 (895.9–902.1) | 2.39 (2.37–2.41) | 1,117.5 (1,109.0–1,137.0) | 3,386,824 / 834,686 |
+| `workload-200k-seed42` | 8 | candidate | 725.4 (718.7–743.3) (-19.2%) | 2.22 (2.20–2.28) (-7.1%) | 1,099.9 (1,097.2–1,122.4) (-1.6%) | 3,386,824 / 834,686 |
+| `re-frame-200k-seed42` | 1 | base `120cc6a48` | 1,534.1 (1,524.8–1,539.1) | 6.18 (5.95–6.34) | 1,170.3 (1,169.0–1,187.3) | 5,565,520 / 1,051,451 |
+| `re-frame-200k-seed42` | 1 | candidate | 1,308.6 (1,295.5–1,357.0) (-14.7%) | 5.75 (5.74–5.81) (-7.0%) | 1,195.8 (1,187.8–1,197.9) (+2.2%) | 5,565,520 / 1,051,451 |
+| `re-frame-200k-seed42` | 8 | base `120cc6a48` | 1,422.6 (1,401.3–1,434.8) | 3.68 (3.61–3.69) | 1,307.1 (1,293.1–1,322.9) | 5,565,482 / 1,051,473 |
+| `re-frame-200k-seed42` | 8 | candidate | 1,211.8 (1,190.9–1,242.1) (-14.8%) | 3.42 (3.42–3.43) (-7.1%) | 1,307.2 (1,300.0–1,342.7) (0.0%) | 5,565,482 / 1,051,473 |
+
+- *Parity.* All four `(project, --jobs)` combinations produce byte-identical
+  `out/light/workload.main.js` output (SHA-256 prefixes `94a7f9e2e894ea06`,
+  `4a4f9189a1885298`, `4946b32bc6bdf41b`, `e934a4528dc7d18b`), match
+  `bb oracle.bb 42 3` via `node run-light.mjs 42 3`, and pass
+  `bb check-waste.bb`.
+- *Why savings are ~15–21% rather than the ~35% projection.* On `re-frame-200k`
+  (confirmed via 1 ms `sample`), Round 1 still inlines calls (`prev_inlined > 0`),
+  so Round 2 legitimately runs `retain` + `call_shapes` + `inline` rather than
+  breaking after `fold`, while Round 2 `Folder::sweep` is skipped and
+  `ProgramFacts` drops from 11 full scans to 4 lightweight + 1 full scan. Peak
+  memory stays within run-to-run noise (-1.6% to +2.2%).

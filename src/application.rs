@@ -689,9 +689,20 @@ pub fn prepare_application(program: &Program, options: ApplicationOptions) -> Pr
 /// replaces the binary trees with a zero-copy flat leaf directory instead
 /// (light-cljs-1095).
 pub fn prepare_owned_application(
+    program: Program,
+    options: ApplicationOptions,
+) -> PreparedApplication {
+    prepare_owned_application_with_slots(program, options, crate::scheduler::Slots::ONE)
+}
+
+/// [`prepare_owned_application`] with a work-slot budget for parallel
+/// whole-program passes (light-cljs-1098).
+pub fn prepare_owned_application_with_slots(
     mut program: Program,
     mut options: ApplicationOptions,
+    slots: crate::scheduler::Slots,
 ) -> PreparedApplication {
+    let _ = slots;
     #[cfg(test)]
     PREPARATIONS.with(|count| count.set(count.get() + 1));
     let level = options.optimize;
@@ -751,6 +762,7 @@ pub fn prepare_owned_application(
     // of single-use and small pure functions, and removal then drops the
     // definitions nothing reads any more.
     if level.advanced() {
+        let mut facts = retained.facts.take().expect("advanced retain builds facts");
         let mut growth = crate::inlining::growth_budget(prepared.program.exprs.len());
         // Discarded definitions leave their bodies in the arena. Remove those
         // before repeated whole-arena scans, keeping the original growth budget.
@@ -764,19 +776,32 @@ pub fn prepare_owned_application(
             }
             retained.candidates = origins.iter().map(|&id| retained.candidates[id]).collect();
             retained.pinned = origins.iter().map(|&id| retained.pinned[id]).collect();
+            // Compaction removes unreachable bodies that `facts` scanned across
+            // the whole arena; refresh only if an expression that set a
+            // pessimistic flag was actually dropped.
+            if facts.any_pessimistic_dropped(&ids) {
+                let top_ids: Vec<ExprId> = retained.top.iter().map(|(id, _)| *id).collect();
+                facts = ProgramFacts::new_light(&prepared.program, &top_ids);
+                facts.discard_tables();
+            }
         }
         // Literals the program builds at each evaluation stay built, however
         // constant their items become.
         let mut built = crate::folding::built_literals(&prepared.program);
+        let mut prev_inlined = 0;
         for round in 0..SIMPLIFY_ROUNDS {
             let folded = if options.no_folding {
                 0
             } else {
-                crate::folding::fold(&mut prepared.program, &mut built)
+                crate::folding::fold_with_facts(&mut prepared.program, &mut built, &facts)
             };
             prepared.stats.folded_expressions += folded;
-            if round > 0 || folded > 0 {
+            if round > 0 && folded == 0 && prev_inlined == 0 {
+                break;
+            }
+            if folded > 0 || prev_inlined > 0 {
                 retained = retain(&mut prepared, &options.exports);
+                facts = retained.facts.take().expect("advanced retain builds facts");
             }
             if round + 1 == SIMPLIFY_ROUNDS {
                 break;
@@ -785,9 +810,16 @@ pub fn prepare_owned_application(
                 0
             } else {
                 let shapes = crate::call_shapes::analyze(&prepared.program, None, &options.exports);
-                crate::inlining::inline(&mut prepared.program, &shapes, &mut growth, &mut built)
+                crate::inlining::inline_with_facts(
+                    &mut prepared.program,
+                    &shapes,
+                    &mut growth,
+                    &mut built,
+                    &facts,
+                )
             };
             prepared.stats.inlined_calls += inlined;
+            prev_inlined = inlined;
             if inlined == 0 && folded == 0 {
                 break;
             }
@@ -802,6 +834,7 @@ pub fn prepare_owned_application(
         candidates,
         pinned,
         raw,
+        facts: _,
     } = retained;
     if level.prepares() && !raw {
         specialize(&mut prepared, &top);
@@ -818,9 +851,14 @@ pub fn prepare_owned_application(
     // Type inference (Phase 2 step 3) runs over the prepared program, whose
     // emission lowers truth tests and core calls with it.
     if level.advanced() {
-        let mut top = Vec::new();
-        flatten(&prepared.program, prepared.program.root, true, &mut top);
         let top: Vec<ExprId> = top.into_iter().map(|(id, _)| id).collect();
+        #[cfg(debug_assertions)]
+        {
+            let mut check = Vec::new();
+            flatten(&prepared.program, prepared.program.root, true, &mut check);
+            let check: Vec<ExprId> = check.into_iter().map(|(id, _)| id).collect();
+            debug_assert_eq!(top, check);
+        }
         let facts = ProgramFacts::new(&prepared.program, &top);
         prepared.replaced_core = facts.replaced_names();
         // Parameters of closed functions join the arguments of their calls
@@ -905,6 +943,9 @@ struct Retained {
     pinned: Vec<bool>,
     /// Below `Advanced`: a retained `js*` made every top-level form a root.
     raw: bool,
+    /// Lightweight post-retain facts at `Advanced`, reused by `folding` and
+    /// `inlining` (light-cljs-1098).
+    facts: Option<ProgramFacts>,
 }
 
 /// Mark the globals the program reads from its roots (every top-level form
@@ -920,7 +961,14 @@ fn retain(prepared: &mut PreparedApplication, exports: &[GlobalId]) -> Retained 
     let mut definitions = vec![Vec::new(); program.globals.len()];
     let mut pending = Vec::new();
     let mut pinned = vec![false; program.exprs.len()];
-    let mut inert = Inert::new(program, &top, level.advanced());
+    let mut facts = level.advanced().then(|| {
+        let top_ids: Vec<ExprId> = top.iter().map(|(id, _)| *id).collect();
+        ProgramFacts::new_light(program, &top_ids)
+    });
+    let mut inert = Inert::new(program, facts.as_ref());
+    if let Some(facts) = &mut facts {
+        facts.discard_tables();
+    }
     for (position, &(id, result)) in top.iter().enumerate() {
         if let ExprKind::Def {
             global, init, test, ..
@@ -966,25 +1014,40 @@ fn retain(prepared: &mut PreparedApplication, exports: &[GlobalId]) -> Retained 
             raw = true;
             pending.extend(top.iter().map(|(id, _)| *id));
         }
-        for global in globals(&program.exprs[id.0].kind) {
+        visit_globals(&program.exprs[id.0].kind, |global| {
             if !std::mem::replace(&mut retained[global.0], true) {
                 pending.extend(&definitions[global.0]);
             }
-        }
+        });
         visit_children(&program.exprs[id.0].kind, |child| pending.push(child));
     }
     prepared.globals = retained;
+    let mut removed = 0;
     for (index, candidate) in candidates.iter().enumerate() {
         if *candidate && !visited[index] {
             prepared.program.exprs[index].kind = ExprKind::Nil;
             prepared.stats.removed_definitions += 1;
+            removed += 1;
         }
+    }
+    // Without compaction, unreachable bodies stay in the arena so `replaced`,
+    // `equiv` and `equiv_by_name` cannot change; only `core_protocols` could
+    // relax if a removed `def` shared a global with an extended `deftype`.
+    if removed > 0
+        && let Some(ref existing) = facts
+        && !existing.core_protocols_intact()
+    {
+        let top_ids: Vec<ExprId> = top.iter().map(|(id, _)| *id).collect();
+        let mut refreshed = ProgramFacts::new_light(&prepared.program, &top_ids);
+        refreshed.discard_tables();
+        facts = Some(refreshed);
     }
     Retained {
         top,
         candidates,
         pinned,
         raw,
+        facts,
     }
 }
 
@@ -1104,10 +1167,10 @@ struct Inert<'p> {
     changeable: bool,
 }
 impl<'p> Inert<'p> {
-    fn new(program: &'p Program, top: &[(ExprId, bool)], advanced: bool) -> Self {
+    fn new(program: &'p Program, facts: Option<&ProgramFacts>) -> Self {
         let mut inert = Self {
             program,
-            advanced,
+            advanced: facts.is_some(),
             core_calls: false,
             replaced: Vec::new(),
             constructors: Vec::new(),
@@ -1116,14 +1179,9 @@ impl<'p> Inert<'p> {
             position: 0,
             changeable: false,
         };
-        if !advanced {
+        let Some(facts) = facts else {
             return inert;
-        }
-        // Program-wide, including code that may never run: which globals are
-        // defined once, which core operations may be reassigned, and which
-        // targets core protocols are extended to.
-        let top_ids: Vec<ExprId> = top.iter().map(|(id, _)| *id).collect();
-        let facts = ProgramFacts::new(program, &top_ids);
+        };
         inert.replaced = CoreFnId::ALL
             .into_iter()
             .map(|core| facts.replaced(core))
@@ -1549,20 +1607,28 @@ fn scalar(program: &Program, id: ExprId) -> bool {
             | ExprKind::Symbol(_)
     )
 }
-/// The globals an expression of this kind reads or defines.
-pub(crate) fn globals(kind: &ExprKind) -> Vec<GlobalId> {
+/// Visit every global an expression of this kind reads or defines.
+pub(crate) fn visit_globals(kind: &ExprKind, mut f: impl FnMut(GlobalId)) {
     match kind {
-        ExprKind::Global(g) | ExprKind::Def { global: g, .. } => vec![*g],
+        ExprKind::Global(g) | ExprKind::Def { global: g, .. } => f(*g),
         ExprKind::DefProtocol {
             global, methods, ..
-        } => std::iter::once(*global)
-            .chain(methods.iter().map(|m| m.global))
-            .collect(),
-        ExprKind::DefType { global, layout, .. } => std::iter::once(*global)
-            .chain(layout.constructor)
-            .chain(layout.map_constructor)
-            .collect(),
-        _ => Vec::new(),
+        } => {
+            f(*global);
+            for method in methods {
+                f(method.global);
+            }
+        }
+        ExprKind::DefType { global, layout, .. } => {
+            f(*global);
+            if let Some(constructor) = layout.constructor {
+                f(constructor);
+            }
+            if let Some(map_constructor) = layout.map_constructor {
+                f(map_constructor);
+            }
+        }
+        _ => (),
     }
 }
 fn reachable(program: &Program, root: ExprId) -> Vec<ExprId> {
@@ -1587,6 +1653,16 @@ pub(crate) fn unwrap_do(program: &Program, mut id: ExprId) -> ExprId {
     }
     id
 }
+const DYNAMIC_UTF16: [u16; 7] = [
+    b'd' as u16,
+    b'y' as u16,
+    b'n' as u16,
+    b'a' as u16,
+    b'm' as u16,
+    b'i' as u16,
+    b'c' as u16,
+];
+
 pub(crate) fn dynamic(program: &Program, g: GlobalId) -> bool {
     let Some(id) = program.globals[g.0].metadata else {
         return false;
@@ -1600,7 +1676,7 @@ pub(crate) fn dynamic(program: &Program, g: GlobalId) -> bool {
         };
         let name = &program.named_literals[name.0];
         name.namespace.is_none()
-            && program.strings[name.name.0] == "dynamic".encode_utf16().collect::<Vec<_>>()
+            && program.strings[name.name.0].as_slice() == DYNAMIC_UTF16
             && !matches!(
                 program.exprs[pair[1].0].kind,
                 ExprKind::Nil | ExprKind::Bool(false)
@@ -1897,5 +1973,107 @@ mod tests {
             ),
             [0, 0]
         );
+    }
+    #[test]
+    fn prepare_owned_application_with_slots_matches_serial() {
+        let source = "(defn helper [x] (+ x 1)) (def unused (vector 1 2)) (helper 41)";
+        let p = crate::analyze(source, &crate::parse(source).unwrap()).unwrap();
+        let slots = crate::scheduler::Slots::new(4).unwrap();
+        for level in OptimizationLevel::ALL {
+            let serial = prepare_owned_application(p.clone(), ApplicationOptions::new(level));
+            let parallel = prepare_owned_application_with_slots(
+                p.clone(),
+                ApplicationOptions::new(level),
+                slots,
+            );
+            assert_eq!(parallel.emit_js(), serial.emit_js(), "{level}");
+            assert_eq!(parallel.stats(), serial.stats(), "{level}");
+        }
+    }
+    #[test]
+    fn program_facts_new_light_matches_new_on_shared_fields() {
+        let sources = [
+            "(defprotocol P (m [x])) (deftype T [a] P (m [_] a)) (defrecord R [b]) (extend-type T IHash (-hash [_] 0)) (defn f [x] (+ x 1)) (f 2)",
+            "(set! cljs.core/inc (fn [x] x)) (extend-type number IEquiv (-equiv [_ _] true)) (reify IEquiv (-equiv [_ _] false)) (+ 1 2)",
+            "(def k :a) (set! (.-cljs$core$IEquiv$_equiv$arity$2 k) (fn [_ _] true)) (= k :b)",
+        ];
+        for source in sources {
+            let p = crate::analyze(source, &crate::parse(source).unwrap()).unwrap();
+            let mut top = Vec::new();
+            flatten(&p, p.root, true, &mut top);
+            let top_ids: Vec<ExprId> = top.into_iter().map(|(id, _)| id).collect();
+            let full = ProgramFacts::new(&p, &top_ids);
+            let light = ProgramFacts::new_light(&p, &top_ids);
+            assert_eq!(light.replaced_names(), full.replaced_names(), "{source}");
+            assert_eq!(
+                light.core_protocols_intact(),
+                full.core_protocols_intact(),
+                "{source}"
+            );
+            assert_eq!(light.equiv_by_name(), full.equiv_by_name(), "{source}");
+            assert_eq!(
+                light.implements_equiv(),
+                full.implements_equiv(),
+                "{source}"
+            );
+            for g in 0..p.globals.len() {
+                assert_eq!(
+                    light.definition(GlobalId(g)),
+                    full.definition(GlobalId(g)),
+                    "{source} global {g}"
+                );
+            }
+            for e in 0..p.exprs.len() {
+                assert_eq!(
+                    light.top_position(ExprId(e)),
+                    full.top_position(ExprId(e)),
+                    "{source} expr {e}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn visit_globals_and_dynamic_match_expected() {
+        let source = "(def ^:dynamic *a* 1) (def ^{:dynamic false} *b* 2) \
+                      (def ^{:dynamic nil} *c* 3) (def ^{:other/dynamic true} *d* 4) \
+                      (def e 5) (defprotocol P (m1 [x]) (m2 [x])) (defrecord R [f]) [*a* *b* *c* *d* e]";
+        let p = crate::analyze(source, &crate::parse(source).unwrap()).unwrap();
+        let find_global = |name: &str| {
+            GlobalId(
+                p.globals
+                    .iter()
+                    .position(|g| g.name == name)
+                    .unwrap_or_else(|| panic!("missing global {name}")),
+            )
+        };
+        assert!(dynamic(&p, find_global("*a*")));
+        assert!(!dynamic(&p, find_global("*b*")));
+        assert!(!dynamic(&p, find_global("*c*")));
+        assert!(!dynamic(&p, find_global("*d*")));
+        assert!(!dynamic(&p, find_global("e")));
+
+        let mut saw_protocol = false;
+        let mut saw_record = false;
+        for expr in &p.exprs {
+            let mut visited = Vec::new();
+            visit_globals(&expr.kind, |g| visited.push(g));
+            match &expr.kind {
+                ExprKind::DefProtocol {
+                    global, methods, ..
+                } => {
+                    saw_protocol = true;
+                    assert_eq!(visited.len(), 1 + methods.len());
+                    assert_eq!(visited[0], *global);
+                }
+                ExprKind::DefType { global, layout, .. } => {
+                    saw_record = true;
+                    assert_eq!(visited[0], *global);
+                    assert!(visited.contains(&layout.constructor.unwrap()));
+                    assert!(visited.contains(&layout.map_constructor.unwrap()));
+                }
+                _ => (),
+            }
+        }
+        assert!(saw_protocol && saw_record);
     }
 }

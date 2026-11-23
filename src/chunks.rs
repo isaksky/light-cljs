@@ -277,8 +277,13 @@ impl ChunkedOutput {
         };
         let definition = |item: &Item| {
             let kind = &program.exprs[item.expr.0].kind;
-            let global = crate::application::globals(kind)[0];
-            let global = &program.globals[global.0];
+            let mut first = None;
+            crate::application::visit_globals(kind, |global| {
+                if first.is_none() {
+                    first = Some(global);
+                }
+            });
+            let global = &program.globals[first.expect("a moved definition defines a global").0];
             format!("{}/{}", global.namespace, global.name)
         };
         let files = plan
@@ -592,15 +597,15 @@ impl ItemGraph {
                     }
                     ExprKind::Def { init: None, .. } => &[],
                     ExprKind::Def { .. } => {
-                        defines.extend(crate::application::globals(kind));
+                        crate::application::visit_globals(kind, |global| defines.push(global));
                         &[]
                     }
                     ExprKind::DefProtocol { .. } => {
-                        defines.extend(crate::application::globals(kind));
+                        crate::application::visit_globals(kind, |global| defines.push(global));
                         &[]
                     }
                     ExprKind::DefType { methods, .. } => {
-                        defines.extend(crate::application::globals(kind));
+                        crate::application::visit_globals(kind, |global| defines.push(global));
                         methods.as_slice()
                     }
                     ExprKind::ExtendType { methods, .. } | ExprKind::Reify { methods, .. } => {

@@ -128,10 +128,23 @@ pub fn inline(
     growth: &mut usize,
     built: &mut Vec<bool>,
 ) -> usize {
+    let mut top = Vec::new();
+    flatten(program, program.root, &mut top);
+    let facts = ProgramFacts::new_light(program, &top);
+    inline_with_facts(program, shapes, growth, built, &facts)
+}
+
+/// [`inline`] reusing precomputed [`ProgramFacts`].
+pub fn inline_with_facts(
+    program: &mut Program,
+    shapes: &CallShapes,
+    growth: &mut usize,
+    built: &mut Vec<bool>,
+    facts: &ProgramFacts,
+) -> usize {
     let count = program.exprs.len();
     let mut top = Vec::new();
     flatten(program, program.root, &mut top);
-    let facts = ProgramFacts::new(program, &top);
 
     // Walk each top-level form in order, children first, recording each
     // expression's parent count, the first form that reaches it, the
@@ -260,7 +273,7 @@ pub fn inline(
         } else {
             INLINE_BUDGET
         };
-        let Some(body) = measure(program, &facts, method.body, limit) else {
+        let Some(body) = measure(program, facts, method.body, limit) else {
             continue;
         };
         if !single
