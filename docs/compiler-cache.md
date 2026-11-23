@@ -1583,8 +1583,9 @@ build is a supported debugging and comparison path.
   `PoolTaskSubmitter::submit_plain` with coordinator help once `UnitPool` is
   active so total CPU slots stay within `--jobs`), and redundant hashing,
   validation, cloning, and startup work are removed:
-  - `Store::snapshot_all_with_slots` reads and verifies `index/` files across
-    `slots` in deterministic filename order and records `SnapshotHealth`
+  - `Store::snapshot_all_with_slots` reads and verifies `index/` files and
+    checks referenced `objects/` existence and byte sizes across `slots` in
+    deterministic filename order, recording `SnapshotHealth`
     (`max_per_namespace`, `total_bytes`, `saw_unhealthy`). `CompileCache::finish`
     skips `Store::trim` when nothing was published, no damaged artifact was
     observed, the snapshot is already healthy and within retention, and no
@@ -1594,25 +1595,30 @@ build is a supported debugging and comparison path.
     selected-candidate encoded bytes, and a shared 24 MiB decoded-byte budget
     for multi-artifact batches; an oversized candidate runs alone under its
     per-artifact `DecodeLimits`): Stage A reads uncovered newest-candidate
-    manifest prefixes and computes `source` digests (plus concurrent
+    manifest prefixes and computes `source` digests (plus speculative concurrent
     `inputs_unchanged`) in parallel, counting every completed prefix read once
     on arrival and retaining entries in bounded lookahead; Stage B walks
     `NamespaceKeys` serially in topological order via `next_stored` /
-    `append_stored` (charging each selected `Reading::length()` before Stage C
-    admission and leaving unread lookahead entries intact on miss, bypass, or
-    budget split); Stage C runs `Reading::finish` (full-file SHA-256
-    verification) and `artifact_codec::decode_verified_with_budget` (skipping
-    redundant per-section digests and using fused
-    `NamespaceArtifact::validate_with_depth`) in parallel, counting every
-    completed body read once on arrival and dropping raw bytes immediately on
-    workers (retaining already-verified bytes only for items that overflowed the
-    shared batch decoded budget, to decode alone in Stage D); Stage D installs
-    decoded artifacts serially via consuming `artifact_install::install_validated`
-    and `install_bodies`, `NamespaceArtifact::into_bodies_only`, borrowed
-    `NameIndex::get_str`, unchanged `reader_contexts` sharing in
-    `Installer::prepared`, `Arena::spill_flat_tail`, and implicit coarse edges in
+    `append_stored` (rechecking external resources fresh at `offset == 0`,
+    charging each selected `Reading::length()` before Stage C admission, and
+    leaving unread lookahead entries intact on miss, bypass, or budget split);
+    Stage C runs `Reading::finish` (full-file SHA-256 verification) and
+    `artifact_codec::decode_verified_with_budget` (skipping redundant
+    per-section digests and using fused `NamespaceArtifact::validate_with_depth`)
+    in parallel, counting every completed body read once on arrival, dropping
+    raw bytes on workers (or releasing decoded allocations of any hits after
+    the first shared-budget deferment back to verified bytes so the deferred
+    artifact decodes alone in Stage D with no later decoded hits resident);
+    Stage D confirms speculative resource inputs fresh at the namespace's
+    actual frontier and installs decoded artifacts serially via consuming
+    `artifact_install::install_validated` (checking cancellation before
+    resolution) and `install_bodies`, `NamespaceArtifact::into_bodies_only`,
+    borrowed `NameIndex::get_str`, unchanged `reader_contexts` sharing in
+    `Installer::prepared`, `Arena::spill_flat_tail` (with pairwise balanced
+    rebuilding in `Arena::freeze`), and implicit coarse edges in
     `ManifestPrefix`, revalidating and reusing later prefetched hits after a
-    mid-window read/decode error or refusal whenever their keys still match.
+    mid-window read/decode error or refusal whenever their keys and resources
+    still match.
   - `compiler.rs` starts the unit pool, V8 bootstrap, and `ParallelTopLevel`
     lazily on the first actual cache miss (shutting down any pre-pool `MapPool`
     first, wiring `PoolTaskSubmitter` into `CompileCache`, buffering
