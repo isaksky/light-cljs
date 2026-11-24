@@ -390,7 +390,7 @@ fn fixed_arity_callbacks_preserve_receivers_and_call_overrides() {
     let run = |source: &str| super::optimization::json_at_every_level(source);
 
     // Strict JS functions without fixed-arity entries still receive `this === null`,
-    // and reified IFn objects honor a replaced `.call` method in call0/call1/stepFn.
+    // and reified IFn objects honor a replaced `.call` method in call0/call1/call2/fixedFn.
     assert_eq!(
         run(r#"
         (let [strict2 (js* "(function(a, b) { 'use strict'; return this === null ? a + b : -1; })")
