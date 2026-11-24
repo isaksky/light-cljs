@@ -214,7 +214,9 @@ fn persistent_array_promotion_then_transient_growth() {
     // Sol #8: Promoting an 8-key array map persistently must insert the 9th key
     // persistently (capacity 9, not 12) so a later transient expands and rehashes
     // retained keys on insertion 16 rather than deferring to 17.
-    let source = r#"
+    // Exercise both custom-key promotion (via mapAssocEntries) and plain-key
+    // promotion (via arrayMapPromote's direct hashNodeAssoc path).
+    let custom_source = r#"
       (let [step (atom :init)
             hashes (atom [])
             k31 (reify
@@ -232,20 +234,134 @@ fn persistent_array_promotion_then_transient_growth() {
             m18 (persistent! t)
             _ (reset! step :lookup)]
         [(count m18) (get m18 k31) @hashes])"#;
-    let root = artifact_root("array-promotion-transient-growth");
+    let plain_source = r#"
+      (let [step (atom :init)
+            hashes (atom [])
+            k30 (reify
+                  IHash (-hash [_] (swap! hashes conj @step) 30)
+                  IEquiv (-equiv [a b] (identical? a b)))
+            m8 (array-map 0 0 1 1 2 2 3 3 4 4 5 5 6 6 31 31)
+            m9 (assoc m8 7 7)
+            t (transient m9)
+            _ (reset! step :insert-k30)
+            t (assoc! t k30 :k30)
+            t (reduce (fn [acc k]
+                        (reset! step k)
+                        (assoc! acc k k))
+                      t
+                      (range 9 17))
+            m18 (persistent! t)
+            _ (reset! step :lookup)]
+        [(count m18) (get m18 k30) @hashes])"#;
+    for (name, source, expected) in [
+        (
+            "array-promotion-transient-growth-custom",
+            custom_source,
+            "[18 :k31 [:promote-7 16 :lookup]]",
+        ),
+        (
+            "array-promotion-transient-growth-plain",
+            plain_source,
+            "[18 :k30 [:insert-k30 16 :lookup]]",
+        ),
+    ] {
+        let root = artifact_root(name);
+        let mut host = MacroHost::new();
+        let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
+        let unit = emit_js_unit(&program);
+        execute(&unit, expected, &root);
+
+        let wrapped = format!("(js/console.log (pr-str (do {source})))");
+        let mut adv_host = MacroHost::new();
+        let adv_program =
+            analyze_with_macros(&wrapped, &parse(&wrapped).unwrap(), &mut adv_host).unwrap();
+        let js = light_cljs::prepare_application(
+            &adv_program,
+            light_cljs::ApplicationOptions::new(light_cljs::OptimizationLevel::Advanced),
+        )
+        .emit_js();
+        let out = super::optimization::execute(&format!("{js};"));
+        assert_eq!(out.trim(), expected);
+    }
+}
+
+#[test]
+fn persistent_array_promotion_preserves_threshold_equiv() {
+    // Sol #2: At 8 entries, a custom query key must still observe the threshold
+    // entryIndex probe before promotion hashes retained keys.
+    let source = r#"
+      (let [calls (atom 0)
+            k (reify
+                IHash (-hash [_] 31)
+                IEquiv (-equiv [_ other]
+                         (let [n (swap! calls inc)]
+                           (and (> n 8) (= other 0)))))
+            m8 (array-map 0 :orig 1 1 2 2 3 3 4 4 5 5 6 6 7 7)
+            m (assoc m8 k :updated)]
+        [(count m) (get m 0) @calls (instance? PersistentArrayMap m)])"#;
+    // 8 misses in arrayIndex + 1 hit in putCollectionEntry's entryIndex + 1 hit in putEntry's entryIndex.
+    let expected = "[8 :updated 10 true]";
+    let root = artifact_root("array-promotion-threshold-equiv");
     let mut host = MacroHost::new();
     let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
     let unit = emit_js_unit(&program);
-    execute(&unit, "[18 :k31 [:promote-7 16 :lookup]]", &root);
+    execute(&unit, expected, &root);
 
     let wrapped = format!("(js/console.log (pr-str (do {source})))");
     let mut adv_host = MacroHost::new();
-    let adv_program = analyze_with_macros(&wrapped, &parse(&wrapped).unwrap(), &mut adv_host).unwrap();
+    let adv_program =
+        analyze_with_macros(&wrapped, &parse(&wrapped).unwrap(), &mut adv_host).unwrap();
     let js = light_cljs::prepare_application(
         &adv_program,
         light_cljs::ApplicationOptions::new(light_cljs::OptimizationLevel::Advanced),
     )
     .emit_js();
     let out = super::optimization::execute(&format!("{js};"));
-    assert_eq!(out.trim(), "[18 :k31 [:promote-7 16 :lookup]]");
+    assert_eq!(out.trim(), expected);
+}
+
+#[test]
+fn persistent_array_promotion_with_coalescing_keys() {
+    // Sol #3: When retained keys coalesce during reinsertion at the 8-entry
+    // threshold so the resulting count stays <= 8, preserve PersistentArrayMap,
+    // insertion order, and retained values.
+    let source = r#"
+      (let [coalesce (atom false)
+            k1 (reify
+                 IHash (-hash [_] 31)
+                 IEquiv (-equiv [this other]
+                          (or (identical? this other)
+                              (and @coalesce (= (hash other) 31)))))
+            k2 (reify
+                 IHash (-hash [_] 31)
+                 IEquiv (-equiv [this other]
+                          (or (identical? this other)
+                              (and @coalesce (= (hash other) 31)))))
+            m8 (array-map k1 :v1 :a 1 :b 2 :c 3 :d 4 :e 5 :f 6 k2 :v2)
+            _ (reset! coalesce true)
+            m (assoc m8 :ninth 9)]
+        [(instance? PersistentArrayMap m)
+         (instance? PersistentHashMap m)
+         (count m)
+         (get m k1)
+         (get m :ninth)
+         (vec (rest (keys m)))])"#;
+    let expected = "[true false 8 :v2 9 [:a :b :c :d :e :f :ninth]]";
+    let root = artifact_root("array-promotion-coalescing-keys");
+    let mut host = MacroHost::new();
+    let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
+    let unit = emit_js_unit(&program);
+    execute(&unit, expected, &root);
+
+    let wrapped = format!("(js/console.log (pr-str (do {source})))");
+    let mut adv_host = MacroHost::new();
+    let adv_program =
+        analyze_with_macros(&wrapped, &parse(&wrapped).unwrap(), &mut adv_host).unwrap();
+    let js = light_cljs::prepare_application(
+        &adv_program,
+        light_cljs::ApplicationOptions::new(light_cljs::OptimizationLevel::Advanced),
+    )
+    .emit_js();
+    let out = super::optimization::execute(&format!("{js};"));
+    assert_eq!(out.trim(), expected);
 }

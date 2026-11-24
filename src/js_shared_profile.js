@@ -613,6 +613,13 @@
   function mapFromEntries(entries, hash) {
     return hash ? makeMap(PersistentHashMapValue, entries, "hash-map") : makeMap(PersistentArrayMapValue, entries, "array-map");
   }
+  //@unit arrayMapPromote requires: mapAssocEntries
+  // Shared-heap promotion delegates to `mapAssocEntries` so promoted cloned
+  // array maps allocate through `sharedUpdatedMapFromEntries` as engine maps
+  // (Sol #4, light-cljs-1109).
+  function arrayMapPromote(self, _arr, key, item) {
+    return mapAssocEntries(self, key, item);
+  }
   //@unit sharedUpdatedMapFromEntries requires: hashTrie, mapFromEntries, PersistentArrayMapValue,
   //@ PersistentHashMapValue, sharedOwnedMap
   // updatedMap retains public counts and slots on its result. Its allocation

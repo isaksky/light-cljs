@@ -317,7 +317,7 @@ fn into_uses_custom_editable_protocol_and_real_transient_completion() {
         "[[0 1 2] {:source true} true :closed]",
     );
     // Target metadata must be read after persisting two-argument `into`, in both the
-    // reduction path and the flat-map fast path (Sol #4).
+    // reduction path and the flat-map fast path (Sol #4 / Sol #7).
     both_and_advanced(
         r#"
       (let [step (atom 0)
@@ -327,19 +327,53 @@ fn into_uses_custom_editable_protocol_and_real_transient_completion() {
                         (reset! step 1)
                         (f init 1)))
             r-vec (into target-vec src-seq)
-            ;; Flat-map fast path: IHash on a source key mutates the atom during into
-            step2 (atom 0)
-            target-map (specify! (hash-map :base 0) IMeta (-meta [_] {:step @step2}))
-            k (reify IHash (-hash [_] (reset! step2 2) 7) IEquiv (-equiv [a b] (identical? a b)))
-            r-map (into target-map (array-map k :v))
             ;; Failure during build must not evaluate target IMeta prematurely
             meta-calls (atom 0)
             bad-target (specify! {} IMeta (-meta [_] (swap! meta-calls inc) {:bad true}))
             bad-src (reify IReduce (-reduce [_ _ _] (throw (js/Error. "boom"))))
             outcome (try (into bad-target bad-src) :ok (catch js/Error _ :err))]
-        [(meta r-vec) (meta r-map) outcome @meta-calls])"#,
-        "[{:step 1} {:step 2} :err 0]",
+        [(meta r-vec) outcome @meta-calls])"#,
+        "[{:step 1} :err 0]",
     );
+    // Sol #7: Separate advanced program without `specify!` so `fieldComparisons.on` stays
+    // true and `kindHooks.intoMap` actually runs. A reified target implements
+    // IEditableCollection (returning a real transient hash map) and IMeta, verifying
+    // that `-meta` sees both the source key's IHash side effect and an already-persisted
+    // transient, and instrumentation proves the flat array-map walk executed.
+    let flat_meta_source = r#"
+      (let [step (atom 0)
+            escaped (atom nil)
+            target (reify
+                     IEditableCollection
+                     (-as-transient [_]
+                       (let [t (transient (hash-map :base 0))]
+                         (reset! escaped t)
+                         t))
+                     IMeta
+                     (-meta [_]
+                       {:step @step
+                        :closed (try (conj! @escaped [:late 1]) :open (catch js/Error _ :closed))}))
+            k (reify IHash (-hash [_] (reset! step 2) 7) IEquiv (-equiv [a b] (identical? a b)))
+            r (into target (array-map k :v))]
+        [(meta r) (get r k)])"#;
+    let mut flat_meta_opts = ApplicationOptions::new(OptimizationLevel::Advanced);
+    flat_meta_opts.pseudo_names = true;
+    let flat_meta_js = advanced_with_options(
+        flat_meta_source,
+        "[{:step 2, :closed :closed} :v]",
+        flat_meta_opts,
+    );
+    assert!(flat_meta_js.contains("if (arr === undefined || from.slots$"));
+    let instrumented_meta = flat_meta_js.replacen(
+        "if (arr === undefined || from.slots$",
+        "globalThis.__intoMapHits = (globalThis.__intoMapHits || 0) + 1; if (arr === undefined || from.slots$",
+        1,
+    );
+    let meta_out = execute(&format!(
+        "{instrumented_meta};\nconsole.log(globalThis.__intoMapHits || 0);"
+    ));
+    let meta_lines: Vec<_> = meta_out.trim().lines().collect();
+    assert_eq!(meta_lines, vec!["[{:step 2, :closed :closed} :v]", "1"]);
 }
 
 #[test]
@@ -488,7 +522,8 @@ fn advanced_map_builders_observe_mid_walk_protocol_extensions() {
         [(count m) (get m :seed) (get m k1) (contains? m :k2)])"#,
         "[2 0 :v1 false]",
     );
-    // Sol #2: `intoMap` hash-map source -> TransientHashMap `-conj!` installed mid-walk.
+    // Ordinary reduction path (hash-map sources stay outside `kindHooks.intoMap`, Sol #5):
+    // hash-map source -> TransientHashMap `-conj!` installed mid-walk.
     advanced(
         r#"
       (let [armed (atom false)
@@ -546,8 +581,10 @@ fn advanced_map_builders_observe_mid_walk_protocol_extensions() {
 
 #[test]
 fn advanced_map_builders_walk_flat_pairs() {
-    // Sol #12: Verify at `:advanced` that plain `into`, `conj`, and `merge` take the
-    // flat-pair shortcuts without calling `mapEntry`, while an override falls back.
+    // Sol #5, #8, #12: Verify at `:advanced` that plain `into`, `conj`, and `merge` take
+    // the flat-pair shortcuts without calling `mapEntry` or `mergeMaps`, that `merge` has
+    // no rest parameter, that `intoMap` stays scoped to array-map sources, and that
+    // protocol overrides fall back cleanly.
     let source = r#"
       (let [m7 {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7}
             m3 {:b 20 :h 8 :i 9}
@@ -567,11 +604,24 @@ fn advanced_map_builders_walk_flat_pairs() {
         "expected advanced output to retain kindHooks.intoMap"
     );
     assert!(
+        !js.contains("intoHashNode"),
+        "expected kindHooks.intoMap to stay limited to array-map sources"
+    );
+    assert!(
         js.contains("function arrayMapPromote(self, arr, key, item) {"),
         "expected advanced output to retain out-of-line arrayMapPromote"
     );
+    assert!(
+        js.contains("function merge() {"),
+        "expected direct merge without rest parameter"
+    );
+    assert!(
+        js.contains("function mergeMaps(values, combine) {"),
+        "expected mergeMaps fallback to be retained for instrumentation"
+    );
     // Instrument EntryCell construction, intoMap's flat array-map walk, mapConj's flat walk,
-    // and arrayMapPromote to prove the flat shortcuts run with zero map-entry allocation.
+    // arrayMapPromote, and mergeMaps to prove the flat shortcuts run with zero map-entry
+    // allocation and zero mergeMaps fallback calls.
     let instrumented = js
         .replace(
             "return new EntryCell(key, value);",
@@ -583,24 +633,29 @@ fn advanced_map_builders_walk_flat_pairs() {
             1,
         )
         .replacen(
-            "if (fk === 28) {",
-            "if (fk === 28) { globalThis.__intoMapArrayCalls = (globalThis.__intoMapArrayCalls || 0) + 1;",
+            "if (arr === undefined || from.slots$",
+            "globalThis.__intoMapArrayCalls = (globalThis.__intoMapArrayCalls || 0) + 1; if (arr === undefined || from.slots$",
             1,
         )
         .replacen(
             "const arr = member.arr$",
             "globalThis.__mapConjFlatCalls = (globalThis.__mapConjFlatCalls || 0) + 1; const arr = member.arr$",
             1,
+        )
+        .replacen(
+            "function mergeMaps(values, combine) {",
+            "function mergeMaps(values, combine) { globalThis.__mergeMapsCalls = (globalThis.__mergeMapsCalls || 0) + 1;",
+            1,
         );
     assert_ne!(instrumented, js);
     let check_script = format!(
-        "{instrumented};\nconsole.log(JSON.stringify([globalThis.__mapEntryCalls || 0, globalThis.__intoMapArrayCalls || 0, globalThis.__mapConjFlatCalls || 0, globalThis.__promoteCalls || 0]));"
+        "{instrumented};\nconsole.log(JSON.stringify([globalThis.__mapEntryCalls || 0, globalThis.__intoMapArrayCalls || 0, globalThis.__mapConjFlatCalls || 0, globalThis.__promoteCalls || 0, globalThis.__mergeMapsCalls || 0]));"
     );
     let out = execute(&check_script);
     let lines: Vec<_> = out.trim().lines().collect();
-    assert_eq!(lines, vec!["[7 9 9 9]", "[0,1,2,2]"]);
+    assert_eq!(lines, vec!["[7 9 9 9]", "[0,1,2,2,0]"]);
 
-    // Now verify that extending `MapEntry` `-nth` disables the flat shortcut and allocates entries.
+    // Verify that extending `MapEntry` `-nth` disables the flat shortcut and allocates entries.
     let fallback_source = r#"
       (let [i (atom 0)]
         (extend-type MapEntry
@@ -629,6 +684,74 @@ fn advanced_map_builders_walk_flat_pairs() {
     assert!(
         entry_calls >= 2,
         "expected fallback to construct MapEntry objects, got {entry_calls}"
+    );
+
+    // Sol #8: Verify that an IndexedSeq override routes direct `merge` through `mergeMaps`.
+    let indexed_seq_source = r#"
+      (extend-type IndexedSeq
+        IReduce
+        (-reduce [this _] {:via-indexed-seq (count this)}))
+      (merge {:a 1} {:b 2})"#;
+    let mut opts3 = ApplicationOptions::new(OptimizationLevel::Advanced);
+    opts3.pseudo_names = true;
+    let js3 = advanced_with_options(indexed_seq_source, "{:via-indexed-seq 2}", opts3);
+    assert!(js3.contains("function mergeMaps(values, combine) {"));
+    let instrumented3 = js3.replacen(
+        "function mergeMaps(values, combine) {",
+        "function mergeMaps(values, combine) { globalThis.__mergeMapsCalls = (globalThis.__mergeMapsCalls || 0) + 1;",
+        1,
+    );
+    let out3 = execute(&format!(
+        "{instrumented3};\nconsole.log(globalThis.__mergeMapsCalls || 0);"
+    ));
+    let lines3: Vec<_> = out3.trim().lines().collect();
+    assert_eq!(lines3, vec!["{:via-indexed-seq 2}", "1"]);
+}
+
+#[test]
+fn shared_profile_transient_extensions_and_promotion_contracts() {
+    // Sol #1: In the Pants shared-heap profile, `fieldComparisons` is frozen after boot and
+    // `hostExt.seq` is true. `specify!` on fresh TransientArrayMap and TransientHashMap must
+    // not write to `fieldComparisons` and must honor the instance-specific `-conj!`.
+    let source = r#"
+      (let [ta (transient {:a 1})
+            th (transient (hash-map :a 1))]
+        (specify! ta ITransientCollection (-conj! [t _] t))
+        (specify! th ITransientCollection (-conj! [t _] t))
+        [(count (persistent! (conj! ta [:b 2])))
+         (count (persistent! (conj! th [:b 2])))])"#;
+    let mut host = MacroHost::new();
+    let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
+    let sealed_runtime = RUNTIME_SOURCE.replacen(
+        "const fieldComparisons = {on: true};",
+        "const fieldComparisons = Object.freeze({on: true});",
+        1,
+    );
+    assert_ne!(sealed_runtime, RUNTIME_SOURCE);
+    let script = format!(
+        "const rt = {sealed_runtime}; console.log(rt.core.prStr(({})(rt)));",
+        emit_js_unit(&program)
+    );
+    let out = Command::new("node").args(["-e", &script]).output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), "[1 1]");
+
+    // Sol #1 & Sol #4: Verify the assembled shared-heap runtime keeps `tabledKind` free of
+    // kinds 31/32, gates transient-map invalidation on `!hostExt.seq`, and overrides
+    // `arrayMapPromote` to delegate to `mapAssocEntries` (which allocates engine maps via
+    // `sharedUpdatedMapFromEntries`).
+    let shared = light_cljs::runtime_manifest::SHARED_RUNTIME;
+    assert!(
+        shared.contains("1883361390 >>> kind & 1") && shared.contains("4114 >>> kind - 32 & 1"),
+        "expected shared profile tabledKind to exclude transient map kinds 31 and 32"
+    );
+    assert!(
+        shared.contains("function arrayMapPromote(self, _arr, key, item) {\n    return mapAssocEntries(self, key, item);"),
+        "expected shared profile arrayMapPromote to delegate to mapAssocEntries"
     );
 }
 

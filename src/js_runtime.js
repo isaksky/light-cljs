@@ -990,13 +990,11 @@
   hostExt.p0 = hostExt.p0 | -2147483648;
   //@unit tabledKind
   // Whether a keyed kind is one whose type had a kind table number until
-  // light-cljs-1015 removed the tables (plus transient array/hash maps 31, 32
-  // for `makeMap.intoMap`, light-cljs-1109): vectors, subvectors and map
-  // entries (1 to 3), indexed and chunked seqs (5, 6), lists, conses and
-  // ranges (12, 14, 15, 22), lazy seqs (16), array, hash and sorted maps (28
-  // to 30), transient array and hash maps (31, 32), hash and sorted sets (33,
-  // 44) and queues (36).
-  const tabledKind = kind => kind >= 0 && (kind < 32 ? (-264122258 >>> kind & 1) === 1 : kind < 64 && (4115 >>> kind - 32 & 1) === 1);
+  // light-cljs-1015 removed the tables: vectors, subvectors and map entries
+  // (1 to 3), indexed and chunked seqs (5, 6), lists, conses and ranges (12,
+  // 14, 15, 22), lazy seqs (16), array, hash and sorted maps (28 to 30),
+  // hash and sorted sets (33, 44) and queues (36).
+  const tabledKind = kind => kind >= 0 && (kind < 32 ? (1883361390 >>> kind & 1) === 1 : kind < 64 && (4114 >>> kind - 32 & 1) === 1);
   //@unit protocolMaskNames
   const protocolMaskNames = "IFn ICounted IEmptyableCollection ICollection IIndexed ASeq ISeq INext ILookup IAssociative IMap IMapEntry ISet IStack IVector IDeref IDerefWithTimeout IMeta IWithMeta IReduce IKVReduce IEquiv IHash ISeqable ISequential IList IRecord IReversible ISorted IPrintWithWriter IWriter IPrintWithWriter IPending IWatchable IEditableCollection ITransientCollection ITransientAssociative ITransientMap ITransientVector ITransientSet IMultiFn IChunkedSeq IChunkedNext IComparable INamed ICloneable IAtom IReset ISwap IIterable IDrop".split(" ");
   //@unit protocolMasks requires: protocolMaskNames
@@ -6813,8 +6811,8 @@
     putCollectionEntry(self, updated, key, item);
     return updatedMap(self, updated);
   }
-  //@unit arrayMapAssoc requires: arrayIndex, ArrayMapCell, hash, HashMapCell, hashNodeAssoc,
-  //@ mapAssocEntries, preserveMeta
+  //@unit arrayMapAssoc requires: arrayIndex, ArrayMapCell, arrayMapPromote, mapAssocEntries,
+  //@ preserveMeta
   // `assoc` of an array map that stays one (a key it has, or fewer than
   // eight): one copy of its keys and values, the key it has kept; a ninth key
   // promotes it out of line (`arrayMapPromote`) so V8 still inlines the small
@@ -6828,8 +6826,22 @@
     if (index >= 0) copy[index + 1] = item; else copy.push(key, item);
     return preserveMeta(self, new ArrayMapCell(copy.length >> 1, copy));
   }
+  //@unit arrayMapPromote requires: hash, HashMapCell, hashNodeAssoc, hostExt, keywordOf,
+  //@ keywordProgramEquiv, mapAssocEntries, preserveMeta
+  // Out-of-line promotion of an eight-key array map (`arrayMapAssoc`): plain
+  // primitive and unextended-keyword keys cannot invoke user `IEquiv` on a
+  // threshold probe or coalesce during trie insertion, so they promote
+  // directly through `hashNodeAssoc` with a persistent (`edit = null`) insert
+  // for the incoming ninth key; custom/composite keys and host `IEquiv`/`IHash`
+  // extensions delegate to `mapAssocEntries`. The shared-heap profile overrides
+  // this unit to delegate to `mapAssocEntries` so engine-map allocation holds.
   function arrayMapPromote(self, arr, key, item) {
-    const edit = {}, n = arr.length;
+    const plain = k => k == null || typeof k === "string" || typeof k === "number" || typeof k === "boolean"
+      || (keywordOf(k) !== undefined && !keywordProgramEquiv(k));
+    if ((hostExt.p0 & 6291456) || !plain(key)) return mapAssocEntries(self, key, item);
+    const n = arr.length;
+    for (let i = 0; i < n; i += 2) if (!plain(arr[i])) return mapAssocEntries(self, key, item);
+    const edit = {};
     let root = null, nil = null, cnt = 0;
     for (let i = 0; i < n; i += 2) {
       const k = arr[i], v = arr[i + 1];
@@ -13388,7 +13400,11 @@
     } else {
       if (typeof target !== "function" || target.prototype == null) throw new TypeError("extend-type requires a type constructor");
       // A type that had a kind table number, or `Object`, which every type inherits from.
-      if (target === Object || tabledKind(target.prototype.cljs$lang$kind$$LKEY)) fieldComparisons.on = false;
+      // Transient maps (kinds 31, 32) also invalidate `fieldComparisons` when
+      // flat map walks are active (`!hostExt.seq`), leaving sealed Pants boots
+      // untouched (Sol #1, light-cljs-1109).
+      const targetKind = target.prototype.cljs$lang$kind$$LKEY;
+      if (target === Object || tabledKind(targetKind) || (!hostExt.seq && (targetKind === 31 || targetKind === 32))) fieldComparisons.on = false;
       if (target === Object || target === String || target === Number || target === Boolean || target === Symbol || target === BigInt) {
         patchDeclaration(hostExt, "p0", desc(-1));
         patchDeclaration(hostExt, "p1", desc(-1));
@@ -13401,10 +13417,11 @@
     }
     return result;
   }
-  //@unit extendInstance mutator requires: fieldComparisons, installMethods, markSeqSlot,
+  //@unit extendInstance mutator requires: fieldComparisons, hostExt, installMethods, markSeqSlot,
   //@ protocolSentinel, tabledKind
   function extendInstance(target, methods, returnTarget) {
-    if (target != null && tabledKind(target.cljs$lang$kind$$LKEY)) fieldComparisons.on = false;
+    const targetKind = target?.cljs$lang$kind$$LKEY;
+    if (targetKind !== undefined && (tabledKind(targetKind) || (!hostExt.seq && (targetKind === 31 || targetKind === 32)))) fieldComparisons.on = false;
     const owned = target != null && target.cljs$lang$kind$$LKEY < 64;
     installMethods(target, methods, slot => markSeqSlot(slot, owned));
     return returnTarget ? target : methods.length ? (methods.at(-1)[1] === 0 ? protocolSentinel : methods.at(-1)[2]) : null;
@@ -14877,79 +14894,31 @@
   //@unit makeMap.intoMap effect: ArrayMapCell, makeMap, treeMapConstructor, recordMethods when: into
   //@ requires: conjBangOwn, fieldComparisons, hostExt, isReduced, kindHooks, mapEntry, missing,
   //@ reducedValue, slotFirst
-  // Fast path for `into` of an array or hash map onto an editable map: walks
-  // the source's flat pairs or existing trie directly and calls `assoc!`
-  // without allocating `MapEntry` objects or calling `nth`, when no protocol
-  // extensions have overridden map, transient-map, or map-entry dispatch;
-  // rechecks after each association and resumes through `conjBangOwn` if an
-  // extension is installed mid-walk (light-cljs-1109).
-  kindHooks.intoMap = (() => {
-    function canFast() {
-      return fieldComparisons.on && slotFirst.on && !hostExt.seq && !(hostExt.p0 & 526336) && !(hostExt.p1 & 131128);
-    }
-    function intoHashNode(t, node, state) {
-      if (node.kind === "collision") {
-        const entries = node.entries;
-        for (let i = 0, n = entries.length; i < n; i++) {
-          const e = entries[i];
-          if (state.fast) {
-            t = kindHooks.assocTransientMap(t, e.key, e.value);
-            if (!canFast()) state.fast = false;
-          } else {
-            t = conjBangOwn(t, mapEntry(e.key, e.value));
-            if (isReduced(t)) { state.stopped = true; return reducedValue(t); }
-          }
+  // Fast path for `into` of an array map onto an editable map: walks the
+  // source's flat pairs directly and calls `assoc!` without allocating
+  // `MapEntry` objects or calling `nth`, when no protocol extensions have
+  // overridden map, transient-map, or map-entry dispatch; rechecks after each
+  // association and resumes through `conjBangOwn` if an extension is installed
+  // mid-walk (light-cljs-1109).
+  kindHooks.intoMap = (t, from) => {
+    if (!fieldComparisons.on || !slotFirst.on || hostExt.seq || (hostExt.p0 & 526336) || (hostExt.p1 & 131128)) return missing;
+    const tk = t.cljs$lang$kind$$LKEY;
+    if ((tk !== 31 && tk !== 32) || from.cljs$lang$kind$$LKEY !== 28) return missing;
+    if (tk === 31 ? !t.editable$LKEY : t.edit$LKEY == null) return missing;
+    const arr = from.arr$LKEY;
+    if (arr === undefined || from.slots$LKEY) return missing;
+    for (let i = 0, n = arr.length; i < n; i += 2) {
+      t = kindHooks.assocTransientMap(t, arr[i], arr[i + 1]);
+      if (!fieldComparisons.on || !slotFirst.on || hostExt.seq || (hostExt.p0 & 526336) || (hostExt.p1 & 131128)) {
+        for (i += 2; i < n; i += 2) {
+          t = conjBangOwn(t, mapEntry(arr[i], arr[i + 1]));
+          if (isReduced(t)) return reducedValue(t);
         }
         return t;
       }
-      const slots = node.slots;
-      for (let i = 0, n = slots.length; i < n; i++) {
-        const slot = slots[i];
-        if (slot == null) continue;
-        if (slot.kind !== undefined) {
-          t = intoHashNode(t, slot, state);
-          if (state.stopped) return t;
-        } else if (state.fast) {
-          t = kindHooks.assocTransientMap(t, slot.key, slot.value);
-          if (!canFast()) state.fast = false;
-        } else {
-          t = conjBangOwn(t, mapEntry(slot.key, slot.value));
-          if (isReduced(t)) { state.stopped = true; return reducedValue(t); }
-        }
-      }
-      return t;
     }
-    return (t, from) => {
-      if (!canFast()) return missing;
-      const tk = t.cljs$lang$kind$$LKEY, fk = from.cljs$lang$kind$$LKEY;
-      if ((tk !== 31 && tk !== 32) || (fk !== 28 && fk !== 29)) return missing;
-      if (tk === 31 ? !t.editable$LKEY : t.edit$LKEY == null) return missing;
-      if (fk === 28) {
-        const arr = from.arr$LKEY;
-        if (arr === undefined || from.slots$LKEY) return missing;
-        for (let i = 0, n = arr.length; i < n; i += 2) {
-          t = kindHooks.assocTransientMap(t, arr[i], arr[i + 1]);
-          if (!fieldComparisons.on || !slotFirst.on || hostExt.seq || (hostExt.p0 & 526336) || (hostExt.p1 & 131128)) {
-            for (i += 2; i < n; i += 2) {
-              t = conjBangOwn(t, mapEntry(arr[i], arr[i + 1]));
-              if (isReduced(t)) return reducedValue(t);
-            }
-            return t;
-          }
-        }
-        return t;
-      }
-      if (from.cnt$LKEY === undefined || from.slots$LKEY) return missing;
-      let fast = true;
-      const nil = from.nil$LKEY;
-      if (nil) {
-        t = kindHooks.assocTransientMap(t, nil.key, nil.value);
-        if (!canFast()) fast = false;
-      }
-      if (!from.root$LKEY) return t;
-      return intoHashNode(t, from.root$LKEY, {fast, stopped: false});
-    };
-  })();
+    return t;
+  };
   //@unit into requires: conj, conjBangOwn, conjOwn, editableValue, invalidArity, kindHooks, meta,
   //@ methodKeys, missing, persistentBang, protocolHooks, reduce, slotFirst, transduce, transient,
   //@ vector, withMetaProtocol
