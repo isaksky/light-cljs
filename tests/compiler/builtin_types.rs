@@ -6758,3 +6758,70 @@ fn site_helpers_read_slot_once_and_chunked_seq_next_checks_kind_and_flags() {
         "[1 :late-rest]",
     );
 }
+
+#[test]
+fn hash_map_dissoc_collision_counts_and_two_arity_hash_map_reduce() {
+    // Sol #7: dissoc from a hash map with colliding user IHash/IEquiv keys,
+    // verifying exact count across 3->2->1->0 collision removals and missing
+    // colliding keys.
+    every_level(
+        r#"(deftype CollideKey [id h-calls eq-calls]
+             IHash (-hash [_] (swap! h-calls inc) 777)
+             IEquiv (-equiv [_ other]
+                      (swap! eq-calls inc)
+                      (and (instance? CollideKey other) (= id (.-id other)))))
+           (let [h-calls (atom 0)
+                 eq-calls (atom 0)
+                 k1 (CollideKey. 1 h-calls eq-calls)
+                 k2 (CollideKey. 2 h-calls eq-calls)
+                 k3 (CollideKey. 3 h-calls eq-calls)
+                 km (CollideKey. 99 h-calls eq-calls)
+                 base (into (hash-map k1 :v1 k2 :v2 k3 :v3)
+                            (map (fn [i] [(keyword (str "p" i)) i]) (range 16)))
+                 _ (reset! h-calls 0)
+                 _ (reset! eq-calls 0)
+                 d-miss (dissoc base km)
+                 miss-h @h-calls
+                 miss-eq @eq-calls
+                 d1 (dissoc base k1)
+                 d2 (dissoc d1 k2)
+                 d3 (dissoc d2 k3)
+                 d4 (dissoc d3 k3)]
+             (pr-str [(count base) (count d-miss) (> miss-h 0) (> miss-eq 0)
+                      (count d1) (get d1 k1) (get d1 k2) (get d1 k3)
+                      (count d2) (get d2 k2) (get d2 k3)
+                      (count d3) (get d3 k3) (count d4)]))"#,
+        "[19 19 true true 18 nil :v2 :v3 17 nil :v3 16 nil 16]",
+    );
+    // Sol #8: 2-arity reduce (no initial value) over PersistentHashMap
+    // (empty, singleton, multi-entry with nil key, reduced early exit, and
+    // extend-type ISeqable override).
+    every_level(
+        r#"(let [hm-empty (hash-map)
+                 hm-one (hash-map :only 42)
+                 hm (into (hash-map nil 10)
+                          (map (fn [i] [(keyword (str "k" i)) i]) (range 20)))
+                 sum-step (fn
+                            ([] :empty)
+                            ([a [_ v]] (+ (if (number? a) a (val a)) v)))
+                 early-calls (atom 0)
+                 early (reduce (fn [a [_ v]]
+                                 (swap! early-calls inc)
+                                 (if (>= @early-calls 3)
+                                   (reduced :stopped)
+                                   (+ (if (number? a) a (val a)) v)))
+                               hm)]
+             (pr-str [(reduce sum-step hm-empty)
+                      (vec (reduce sum-step hm-one))
+                      (reduce sum-step hm)
+                      early
+                      @early-calls]))"#,
+        "[:empty [:only 42] 200 :stopped 3]",
+    );
+    every_level(
+        r#"(let [hm (into (hash-map) (map (fn [i] [(keyword (str "k" i)) i]) (range 12)))]
+             (extend-type PersistentHashMap ISeqable (-seq [_] (list [:x 4] [:y 5] [:z 6])))
+             (pr-str (reduce (fn [a [_ v]] (+ (if (number? a) a (second a)) v)) hm)))"#,
+        "15",
+    );
+}
