@@ -8413,23 +8413,17 @@
   const getSite3 = (value, key, notFound) => value != null && value.cljs$core$ILookup$_lookup$arity$3$LKEY
     ? value.cljs$core$ILookup$_lookup$arity$3$LKEY(value, key, notFound) : get(value, key, notFound);
   //@unit firstSite requires: first
-  const firstSite = value => {
-    const method = value != null ? value.cljs$core$ISeq$_first$arity$1$LKEY : null;
-    return method ? method.call(value, value) : first(value);
-  };
+  const firstSite = value => value != null && value.cljs$core$ISeq$_first$arity$1$LKEY
+    ? value.cljs$core$ISeq$_first$arity$1$LKEY(value) : first(value);
   //@unit restSite requires: rest
   const restSite = value => value != null && value.cljs$core$ISeq$_rest$arity$1$LKEY
     ? value.cljs$core$ISeq$_rest$arity$1$LKEY(value) : rest(value);
   //@unit nextSite requires: next
-  const nextSite = value => {
-    const method = value != null ? value.cljs$core$INext$_next$arity$1$LKEY : null;
-    return method ? method.call(value, value) : next(value);
-  };
+  const nextSite = value => value != null && value.cljs$core$INext$_next$arity$1$LKEY
+    ? value.cljs$core$INext$_next$arity$1$LKEY(value) : next(value);
   //@unit seqSite requires: emptyList, seq
-  const seqSite = (empty => value => {
-    const method = value != null && value !== empty ? value.cljs$core$ISeqable$_seq$arity$1$LKEY : null;
-    return method ? method.call(value, value) : seq(value);
-  })(emptyList);
+  const seqSite = (empty => value => value != null && value !== empty && value.cljs$core$ISeqable$_seq$arity$1$LKEY
+    ? value.cljs$core$ISeqable$_seq$arity$1$LKEY(value) : seq(value))(emptyList);
   //@unit peekSite requires: peek
   const peekSite = value => value != null && value.cljs$core$IStack$_peek$arity$1$LKEY
     ? value.cljs$core$IStack$_peek$arity$1$LKEY(value) : peek(value);

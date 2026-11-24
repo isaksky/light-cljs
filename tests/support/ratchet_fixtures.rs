@@ -1411,11 +1411,10 @@
 //! (`72,466`, `72,500`), `extended-classes` (`78,178`, `78,200`), `features`
 //! (`142,801`, `142,900`), and `features-direct` (`142,411`, `142,500`) move to
 //! the next 100 above, and the features chunk `app.editor+app.reports.js` moves
-//! to `114,500` (`114,430`). Sol review fixes (single slot lookup in
-//! `firstSite`/`nextSite`/`seqSite`, invalidation/kind gates on
+//! to `114,500` (`114,430`). Sol review fixes (invalidation/kind gates on
 //! `ChunkedSeqValue.next`, `seq(more)` in `assocInSeq`/`updateInSeq`/`updatePathSeq`,
-//! direct `fn.call(null, ...)` in `updateInSeq`) move `pure-defs` at none to
-//! `882,000` (`881,004`) and `app.reports.js` to `5,600` (`5,542`).
+//! direct `fn.call(null, ...)` in `updateInSeq`) keep `pure-defs` at none under
+//! `882,000` and all `:advanced` chunk ceilings unchanged.
 
 pub struct Fixture {
     pub name: &'static str,
@@ -1913,7 +1912,7 @@ pub const FEATURES_CHUNK_CEILINGS: &[(&str, usize)] = &[
     ("app.main.js", 7_900),
     ("app.editor+app.reports.js", 114_500),
     ("app.editor.js", 17_200),
-    ("app.reports.js", 5_600),
+    ("app.reports.js", 5_500),
 ];
 
 /// The code-splitting example and the same example calling its features

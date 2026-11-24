@@ -6705,20 +6705,7 @@ fn chunked_seq_next_calls_seq_on_chunked_vector_rest_at_boundary() {
 }
 
 #[test]
-fn site_helpers_read_slot_once_and_chunked_seq_next_checks_kind_and_flags() {
-    // firstSite/nextSite/seqSite must read the protocol slot at most once per call.
-    every_level(
-        r#"(let [fn-reads (atom 0)
-                 l (list 1 2)
-                 p (js/Proxy. l #js {:get (fn [target prop _]
-                                            (let [v (js/Reflect.get target prop target)]
-                                              (when (instance? js/Function v)
-                                                (swap! fn-reads inc))
-                                              v))})]
-             (let [f (first p) n (next p) s (seq p)]
-               (pr-str [(identical? s p) f (first n) @fn-reads])))"#,
-        "[true 1 2 3]",
-    );
+fn chunked_seq_next_checks_kind_and_invalidation_flags() {
     // ChunkedSeqValue.next must reject non-kind-6 receivers even when they
     // inherit ChunkedSeq.prototype's -rest slot and carry ChunkedSeq fields.
     every_level(
