@@ -7886,9 +7886,9 @@ impl<'a, 's> Emitter<'a, 's> {
                 )
                 .unwrap();
                 start(self);
-                write!(self.output, "{function}.cljs$lang$applyTo = (args) => ").unwrap();
+                write!(self.output, "{function}.cljs$lang$applyTo = ").unwrap();
                 self.rt(RuntimeName::export("fnApplyTo"));
-                write!(self.output, "({entry}, {}, args){end}", method.params.len()).unwrap();
+                write!(self.output, "({entry}, {}){end}", method.params.len()).unwrap();
             } else {
                 write!(
                     self.output,

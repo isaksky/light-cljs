@@ -853,3 +853,151 @@ fn callable_combinators_preserve_arities_abi_and_lazy_tails() {
         "\"[[true false true false true false false 2 false false false true] [:ok :ok :ok :ok :ok 2] [[:a] [:a 1] [:a 1 2] [:a 1 2 3] [:a 1 2 3 4 5] [:a 1 2 3 4] [:a :b] [:a :b 1] [:a :b 1 2] [:a :b 1 2 3] [:a :b 1 2 3 4] [:a :b :c] [:a :b :c 1] [:a :b :c 1 2] [:a :b :c 1 2 3] [:a :b :c 1 2 3 4] [:a :b :c :d 1 2] [:a :b :c :d 1 2 3] [1 2 3 [10 11 12]] 9 3 0 [:a 8 9]] [:z 5 \\\"0\\\" \\\"2\\\" \\\"5\\\" \\\"9\\\" \\\"15\\\" \\\"10\\\" 1 2 2 2 3 4 7 3 0] [[5 6] [10 24] [10 20 30 3] 3] [[:d1] [false] [:d1 2 3 4] [:d1 :d2] [false :d2 3 4] true [:d1 :d2 :d3 4]] [nil true true true true true false] [[1 2] [1 2] 1 0] [:init [:done 5] 11 11 2] [[1 3 5] [2 4] [1 3 5]] [[1 2 3 4] [2 3 4] [2 3] :done] [4 4 4 4 4 4 4 4 4 4 4]]\"\n"
     );
 }
+
+#[test]
+fn apply_variadic_multifn_and_seq_tails_preserve_semantics_and_identity() {
+    let run = |source: &str| super::optimization::json_at_every_level(source);
+
+    // Emitted variadic functions (fixed 0..3, with and without fixed arities),
+    // MultiFn dispatch, and chained rest-seq / Cons / List / nil / vector / array tails.
+    assert_eq!(
+        run(r#"
+        (defn f0 [& xs] [:f0 (vec xs)])
+        (defn f1 [a & xs] [:f1 a (vec xs)])
+        (defn f2 ([a] [:f2-1 a]) ([a b] [:f2-2 a b]) ([a b & xs] [:f2-v a b (vec xs)]))
+        (defn f3 [a b c & xs] [:f3 a b c (vec xs)])
+        (defn fixed2 ([a] [:fx1 a]) ([a b] [:fx2 a b]) ([a b c] [:fx3 a b c]))
+        (defmulti reg (fn [kind & _] kind))
+        (defmethod reg :sub [_ id & args]
+          (apply f3 id :sub :q args))
+        (defmethod reg :plain [_ a b] [:plain a b])
+        (defn wrap-reg [kind & args] (apply reg kind args))
+        (defn wrap-sub [id & args] (apply wrap-reg :sub id args))
+        (let [s (seq [10 20])
+              c (cons 20 nil)
+              c-lazy (cons 20 (cons 30 (lazy-seq (throw (js/Error. "boom")))))
+              arr #js [7 8]
+              arr-seq (seq arr)
+              ident1 (fn [x & more] (identical? more s))
+              ident-c (fn [x & more] (identical? more c))
+              ident-rest (fn [x & more] (identical? (rest more) c))
+              lazy-first (fn [x & more] (first more))
+              mut-rest (fn [x & more] (aset arr 0 99) (first (rest more)))]
+          (pr-str
+            [(apply f0 nil)
+             (apply f0 (seq [1 2]))
+             (apply f0 :a (seq [1 2]))
+             (apply f0 :a :b (list 1 2))
+             (apply f1 :a nil)
+             (apply f1 :a (seq [1 2]))
+             (apply f1 :a :b (seq [1 2]))
+             (apply f1 (cons :a (cons :b nil)))
+             (apply f1 (list :a))
+             (apply f1 (list :a :b :c))
+             (apply f2 :a nil)
+             (apply f2 :a :b nil)
+             (apply f2 :a :b (seq [3 4]))
+             (apply f2 (list :a :b))
+             (apply f2 (list :a :b :c))
+             (apply f3 :a :b :c nil)
+             (apply f3 :a :b :c (seq [1 2]))
+             (apply fixed2 :x nil)
+             (apply fixed2 :x (seq [:y]))
+             (apply fixed2 (cons :x (list :y :z)))
+             (wrap-sub :todos :fn1 :fn2)
+             (wrap-sub :todos)
+             (wrap-reg :plain :p1 :p2)
+             (apply reg :plain (list :p1 :p2))
+             (apply ident1 1 s)
+             (apply ident-c 1 c)
+             (apply ident-rest 1 2 c)
+             (apply lazy-first 1 c-lazy)
+             (apply mut-rest 1 2 arr-seq)]))"#),
+        "\"[[:f0 []] [:f0 [1 2]] [:f0 [:a 1 2]] [:f0 [:a :b 1 2]] [:f1 :a []] [:f1 :a [1 2]] [:f1 :a [:b 1 2]] [:f1 :a [:b]] [:f1 :a []] [:f1 :a [:b :c]] [:f2-1 :a] [:f2-2 :a :b] [:f2-v :a :b [3 4]] [:f2-2 :a :b] [:f2-v :a :b [:c]] [:f3 :a :b :c []] [:f3 :a :b :c [1 2]] [:fx1 :x] [:fx2 :x :y] [:fx3 :x :y :z] [:f3 :todos :sub :q [:fn1 :fn2]] [:f3 :todos :sub :q []] [:plain :p1 :p2] [:plain :p1 :p2] true true true 20 99]\"\n"
+    );
+
+    // Custom cljs$lang$applyTo on an emitted variadic function and custom
+    // extend-type / specify! on IndexedSeq, Cons, and List disable fast paths.
+    assert_eq!(
+        run(r#"
+        (defn vf [a & xs] [a (vec xs)])
+        (set! (.-cljs$lang$applyTo vf) (fn [args] [:override (vec args)]))
+        (pr-str [(apply vf 1 (seq [2 3])) (apply vf 1 nil)])"#),
+        "\"[[:override [1 2 3]] [1 []]]\"\n"
+    );
+
+    assert_eq!(
+        run(r#"
+        (let [s (specify! (seq [1 2 3]) ISeq (-first [_] 99) (-rest [_] nil) INext (-next [_] nil))
+              c (specify! (cons 1 (list 2)) ISeq (-first [_] 88) (-rest [_] nil) INext (-next [_] nil))
+              l (specify! (list 1 2) ISeq (-first [_] 77) (-rest [_] nil) INext (-next [_] nil))]
+          (pr-str [(apply vector 0 s) (apply vector 0 c) (apply vector 0 l)]))"#),
+        "\"[[0 99] [0 88] [0 77]]\"\n"
+    );
+
+    assert_eq!(
+        run(r#"
+        (extend-type IndexedSeq
+          ISeq (-first [_] 42) (-rest [_] nil)
+          INext (-next [_] nil))
+        (let [r (apply vector 1 (seq [2 3]))]
+          (str (nth r 0) "," (nth r 1) "," (count r)))"#),
+        "\"1,42,2\"\n"
+    );
+
+    // Extending a builtin collection with a user protocol must keep
+    // fieldComparisons/applyDirect fast paths active without breaking
+    // subsequent core protocol extensions.
+    assert_eq!(
+        run(r#"
+        (defprotocol UserProto (user-op [this x]))
+        (extend-type PersistentVector
+          UserProto (user-op [this x] (+ (count this) x)))
+        (defn variadic-sum [a & more] (+ a (reduce + 0 more)))
+        (let [v [10 20]
+              s (seq [3 4])
+              r1 (str (user-op v 5) "," (apply variadic-sum 1 s) "," (apply variadic-sum 1 v) "," (= v [10 20]))]
+          (extend-type PersistentVector
+            ISeqable (-seq [_] (list 100)))
+          (str r1 "|" (apply variadic-sum 1 v)))"#),
+        "\"7,8,31,true|101\"\n"
+    );
+}
+
+#[test]
+fn lazy_method_key_marker_and_core_method_preserve_protocols() {
+    let run = |source: &str| super::optimization::json_at_every_level(source);
+
+    assert_eq!(
+        run(r#"
+        (defprotocol P (pm [this x]))
+        (deftype Box [v]
+          ICounted (-count [_] v)
+          ILookup (-lookup [_ k] [v k]) (-lookup [_ k nf] [v k nf])
+          P (pm [_ x] (+ v x)))
+        (defrecord Rec [a])
+        (extend-type Rec P (pm [this x] (+ (:a this) x)))
+        (defmulti mm identity)
+        (-add-method mm :k (fn [x] [:hit x]))
+        (let [b (Box. 5)
+              r (->Rec 10)
+              s (specify! #js {} ICounted (-count [_] 77) ISeqable (-seq [_] (list :a :b)))
+              t (transient [1])]
+          (-conj! t 2)
+          (pr-str
+            [(satisfies? ICounted b)
+             (implements? ICounted b)
+             (count b)
+             (get b :k)
+             (get b :k :nf)
+             (pm b 3)
+             (pm r 4)
+             (satisfies? P r)
+             (satisfies? ICounted s)
+             (count s)
+             (seq s)
+             (mm :k)
+             (persistent! t)]))"#),
+        "\"[true true 5 [5 :k] [5 :k :nf] 8 14 true true 77 (:a :b) [:hit :k] [1 2]]\"\n"
+    );
+}

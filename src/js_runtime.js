@@ -6220,7 +6220,7 @@
     }
     return result;
   }
-  //@unit count.seqs effect: arrayMapSeq, arrayMapSeqNext, hashMapSeq, hashMapSeqNext, ChunkedCons, compilerFormBridge, cons,
+  //@unit count.seqs effect: applyDirect, arrayMapSeq, arrayMapSeqNext, hashMapSeq, hashMapSeqNext, ChunkedCons, compilerFormBridge, cons,
   //@ listFromArray, Cons, cycleNode, emptyList, EmptyListValue, Eduction, extendInstance, extendType,
   //@ iterateNode, iteration, iteratorSeq, ISeqable, LazySeq, ListValue, mapProjection, rangeNode,
   //@ RepeatValue, reSeq, treeMapSeqConstructor when: countOf, countPath requires: accumulatingCount,
@@ -9071,7 +9071,7 @@
     }
     return !other;
   };
-  //@unit cons.equiv effect: arrayMapSeq, arrayMapSeqNext, hashMapSeq, hashMapSeqNext, emptyList, Cons, ListValue,
+  //@unit cons.equiv effect: applyDirect, arrayMapSeq, arrayMapSeqNext, hashMapSeq, hashMapSeqNext, emptyList, Cons, ListValue,
   //@ EmptyListValue, RepeatValue, cons, listFromArray, compilerFormBridge, mapProjection, cycleNode,
   //@ treeMapSeqConstructor, reSeq, iterateNode, ChunkedCons, rangeNode, view, ChunkedSeqValue,
   //@ IndexedSeqValue, queueFromArray, LazySeq, Eduction, ISequential, extendType, extendInstance
@@ -9116,7 +9116,7 @@
   function comparedSequential(value) {
     return holdsVector(value) || !!kindHooks.comparedSeq?.(value);
   }
-  //@unit cons.compared effect: arrayMapSeq, arrayMapSeqNext, hashMapSeq, hashMapSeqNext, emptyList, Cons, ListValue,
+  //@unit cons.compared effect: applyDirect, arrayMapSeq, arrayMapSeqNext, hashMapSeq, hashMapSeqNext, emptyList, Cons, ListValue,
   //@ EmptyListValue, RepeatValue, cons, listFromArray, compilerFormBridge, mapProjection, cycleNode,
   //@ treeMapSeqConstructor, reSeq, iterateNode, ChunkedCons, rangeNode, view, ChunkedSeqValue,
   //@ IndexedSeqValue, queueFromArray, LazySeq when: comparedSequential requires: cellOf, isCell,
@@ -9345,7 +9345,7 @@
     return objectHash(value);
   }
 
-  //@unit makeVector.hash effect: arrayMapSeq, arrayMapSeqNext, hashMapSeq, hashMapSeqNext, makeVector, mapEntry, emptyList, Cons,
+  //@unit makeVector.hash effect: applyDirect, arrayMapSeq, arrayMapSeqNext, hashMapSeq, hashMapSeqNext, makeVector, mapEntry, emptyList, Cons,
   //@ ListValue, EmptyListValue, RepeatValue, cons, listFromArray, compilerFormBridge, mapProjection,
   //@ cycleNode, treeMapSeqConstructor, reSeq, iterateNode, ChunkedCons, rangeNode, view,
   //@ ChunkedSeqValue, IndexedSeqValue, queueFromArray, LazySeq when: hashOf, hashStructural, seqHash,
@@ -13276,6 +13276,11 @@
   }
   //@unit fnApplyTo requires: first, next, rest, seq
   function fnApplyTo(delegate, fixed, args) {
+    if (arguments.length === 2) {
+      const applyToFn = rest => fnApplyTo(delegate, fixed, rest);
+      applyToFn.direct$LKEY = true;
+      return applyToFn;
+    }
     const prefix = [];
     // The final rest preserves sequence identity and laziness. For a positive
     // prefix, CLJS uses rest after the last fixed argument, not next.
@@ -13687,9 +13692,24 @@
     else if (proto === "ISeqable" || proto === "INext") hostExt.seq = true;
     else if (proto === "IMeta" && ownedRuntime) hostExt.imeta.on = true;
   }
+  //@unit isCoreExtension requires: protocolKeys
+  // True iff `methods` installs a core protocol, `IFn/-invoke`, or `Object/`
+  // method (user protocols carry a namespace slash or pre-baked slot and never
+  // alter core collection/seq fields).
+  function isCoreExtension(methods) {
+    for (let i = 0; i < methods.length; i++) {
+      const entry = methods[i];
+      if (typeof entry[3] === "string") continue;
+      const dispatch = entry[0], key = typeof dispatch === "string" ? dispatch : protocolKeys.get(dispatch);
+      if (typeof key !== "string" || key.startsWith("cljs.core/")) return true;
+      const slash = key.indexOf("/");
+      if (entry[1] === 0 ? slash < 0 : slash >= 0 && key.indexOf("/", slash + 1) < 0) return true;
+    }
+    return false;
+  }
   //@unit extendType mutator requires: coreDispatchers, coreProtocolsByName, dispatchCell,
-  //@ fieldComparisons, fnApply, fnCall, hostExt, installMethods, invalidArity, markSeqSlot,
-  //@ nativeMethods, patchDeclaration, protocolFunctions, protocolGetters, protocolMasks,
+  //@ fieldComparisons, fnApply, fnCall, hostExt, installMethods, invalidArity, isCoreExtension,
+  //@ markSeqSlot, nativeMethods, patchDeclaration, protocolFunctions, protocolGetters, protocolMasks,
   //@ protocolSentinel, protocolValues, setDeclaration, tabledKind
   function extendType(target, methods) {
     let result = null;
@@ -13769,7 +13789,7 @@
       // flat map walks are active (`!hostExt.seq`), leaving sealed Pants boots
       // untouched (Sol #1, light-cljs-1109).
       const targetKind = target.prototype.cljs$lang$kind$$LKEY;
-      if (target === Object || tabledKind(targetKind) || (!hostExt.seq && (targetKind === 31 || targetKind === 32))) fieldComparisons.on = false;
+      if ((target === Object || tabledKind(targetKind) || (!hostExt.seq && (targetKind === 31 || targetKind === 32))) && isCoreExtension(methods)) fieldComparisons.on = false;
       if (target === Object || target === String || target === Number || target === Boolean || target === Symbol || target === BigInt) {
         patchDeclaration(hostExt, "p0", desc(-1));
         patchDeclaration(hostExt, "p1", desc(-1));
@@ -13783,11 +13803,11 @@
     }
     return result;
   }
-  //@unit extendInstance mutator requires: fieldComparisons, hostExt, installMethods, markSeqSlot,
-  //@ protocolSentinel, tabledKind
+  //@unit extendInstance mutator requires: fieldComparisons, hostExt, installMethods,
+  //@ isCoreExtension, markSeqSlot, protocolSentinel, tabledKind
   function extendInstance(target, methods, returnTarget) {
     const targetKind = target?.cljs$lang$kind$$LKEY;
-    if (target === Object.prototype || (targetKind !== undefined && (tabledKind(targetKind) || (!hostExt.seq && (targetKind === 31 || targetKind === 32))))) fieldComparisons.on = false;
+    if ((target === Object.prototype || (targetKind !== undefined && (tabledKind(targetKind) || (!hostExt.seq && (targetKind === 31 || targetKind === 32))))) && isCoreExtension(methods)) fieldComparisons.on = false;
     if (target === Object.prototype) {
       hostExt.p0 = hostExt.p1 = -1; hostExt.fn = hostExt.seq = true; hostExt.imeta.on = true;
     } else if (target === String.prototype || target === Number.prototype || target === Boolean.prototype || target === Symbol.prototype || target === BigInt.prototype) {
@@ -14321,13 +14341,15 @@
     for (let i = 0; i < n; i++, args = rest(args)) values.push(first(args));
     return fn.call(null, ...values);
   }
-  //@unit applyDirect requires: call0, call1, call2, IndexedSeqCell
+  //@unit applyDirect requires: call0, call1, call2, ConsCell
   function applyDirect(fn, p, a, b, c, len, at, tailSeq) {
     const fixed = fn.cljs$lang$maxFixedArity, total = p + len;
     if (total <= fixed) {
       if (total === 0) return call0(fn);
       if (total === 1) return call1(fn, p ? a : at(0));
       if (total === 2) return call2(fn, p ? a : at(0), p === 2 ? b : at(p ? 0 : 1));
+      if (total === 3) return fn(p ? a : at(0), p > 1 ? b : at(1 - p), p > 2 ? c : at(2 - p));
+      if (total === 4) return fn(p ? a : at(0), p > 1 ? b : at(1 - p), p > 2 ? c : at(2 - p), at(3 - p));
       const out = new Array(total);
       if (p > 0) out[0] = a;
       if (p > 1) out[1] = b;
@@ -14338,7 +14360,10 @@
     const delegate = fn.cljs$core$IFn$_invoke$arity$variadic;
     if (p <= fixed) {
       const need = fixed - p, more = tailSeq(need);
+      if (fixed === 0) return delegate(more);
+      if (fixed === 1) return p === 0 ? delegate(at(0), more) : delegate(a, more);
       if (fixed === 2) return p === 0 ? delegate(at(0), at(1), more) : p === 1 ? delegate(a, at(0), more) : delegate(a, b, more);
+      if (fixed === 3) return p === 0 ? delegate(at(0), at(1), at(2), more) : p === 1 ? delegate(a, at(0), at(1), more) : p === 2 ? delegate(a, b, at(0), more) : delegate(a, b, c, more);
       const args = new Array(fixed + 1);
       if (p > 0) args[0] = a;
       if (p > 1) args[1] = b;
@@ -14347,41 +14372,83 @@
       args[fixed] = more;
       return delegate.apply(null, args);
     }
-    const excess = p - fixed, prefix = fixed === 0 ? [a, b, c] : fixed === 1 ? [b, c] : [c];
-    const more = new IndexedSeqCell(new Proxy({length: excess + len}, {
-      get(target, prop) {
-        if (typeof prop === "string") {
-          const idx = prop >>> 0;
-          if (String(idx) === prop && idx < target.length) return idx < excess ? prefix[idx] : at(idx - excess);
-        }
-        return target[prop];
-      }
-    }), 0, true, "indexed");
-    return fixed === 0 ? delegate(more) : fixed === 1 ? delegate(a, more) : delegate(a, b, more);
+    let more = len ? tailSeq(0) : null;
+    if (p === 3 && fixed < 3) more = new ConsCell(c, more);
+    if (p >= 2 && fixed < 2) more = new ConsCell(b, more);
+    if (fixed === 0) return delegate(new ConsCell(a, more));
+    if (fixed === 1) return delegate(a, more);
+    return delegate(a, b, more);
+  }
+  //@unit applyFixed
+  function applyFixed(fn, p, a, b, c, len, at) {
+    const total = p + len;
+    if (total === 0) { const e = fn.cljs$core$IFn$_invoke$arity$0; return e ? e.call(fn) : fn.call(fn); }
+    if (total === 1) { const x0 = p ? a : at(0), e = fn.cljs$core$IFn$_invoke$arity$1; return e ? e.call(fn, x0) : fn.call(fn, x0); }
+    if (total === 2) { const x0 = p ? a : at(0), x1 = p === 2 ? b : at(1 - p), e = fn.cljs$core$IFn$_invoke$arity$2; return e ? e.call(fn, x0, x1) : fn.call(fn, x0, x1); }
+    if (total === 3) { const x0 = p ? a : at(0), x1 = p > 1 ? b : at(1 - p), x2 = p > 2 ? c : at(2 - p), e = fn.cljs$core$IFn$_invoke$arity$3; return e ? e.call(fn, x0, x1, x2) : fn.call(fn, x0, x1, x2); }
+    if (total === 4) { const x0 = p ? a : at(0), x1 = p > 1 ? b : at(1 - p), x2 = p > 2 ? c : at(2 - p), x3 = at(3 - p), e = fn.cljs$core$IFn$_invoke$arity$4; return e ? e.call(fn, x0, x1, x2, x3) : fn.call(fn, x0, x1, x2, x3); }
+    const out = new Array(total);
+    if (p > 0) out[0] = a;
+    if (p > 1) out[1] = b;
+    if (p > 2) out[2] = c;
+    for (let i = 0; i < len; i++) out[p + i] = at(i);
+    if (total > 20) return fn.apply(fn, out);
+    const e = fn["cljs$core$IFn$_invoke$arity$" + total];
+    return e ? e.call(fn, ...out) : fn.call(fn, ...out);
   }
   //@unit makeVector.apply effect: makeVector, mapEntry when: apply requires: applyDirect,
-  //@ ChunkedSeqCell, IndexedSeqCell, kindHooks, vectorChunk, vectorNth
-  kindHooks.applyVector = (fn, p, a, b, c, tail) => {
+  //@ applyFixed, ChunkedSeqCell, IndexedSeqCell, kindHooks, vectorChunk, vectorNth
+  kindHooks.applyVector = (fn, p, a, b, c, tail, fixedOnly) => {
     const len = tail.cnt$LKEY;
-    return applyDirect(fn, p, a, b, c, len, i => vectorNth(tail, i, null),
-      i => len <= 32 ? new IndexedSeqCell(vectorChunk(tail, 0), i, true, "indexed")
-        : new ChunkedSeqCell(vectorChunk(tail, i & -32), i & 31, tail, i & -32));
+    return fixedOnly
+      ? applyFixed(fn, p, a, b, c, len, i => vectorNth(tail, i, null))
+      : applyDirect(fn, p, a, b, c, len, i => vectorNth(tail, i, null),
+          i => len <= 32 ? new IndexedSeqCell(vectorChunk(tail, 0), i, true, "indexed")
+            : new ChunkedSeqCell(vectorChunk(tail, i & -32), i & 31, tail, i & -32));
   };
-  //@unit apply requires: applyDirect, applyTo, boundedCount, call0, call1, call2, cons,
+  //@unit apply requires: applyDirect, applyFixed, applyTo, boundedCount, call0, call1, call2, cons,
   //@ fieldComparisons, fnCall, hostExt, IndexedSeqCell, kindHooks, ownSeqs, protocolSentinel, seq,
   //@ slotFirst, toArray
   function apply(fn, a, b, c, d) {
     const argc = arguments.length;
-    if (argc >= 2 && argc <= 5 && fn.cljs$lang$applyTo?.direct$LKEY === true && fn.call === fnCall
-      && slotFirst.on && !ownSeqs.on && !hostExt.seq) {
-      const tail = argc === 2 ? a : argc === 3 ? b : argc === 4 ? c : d;
-      if (tail != null) {
+    if (argc >= 2 && argc <= 5 && fn != null && slotFirst.on && !ownSeqs.on && !hostExt.seq) {
+      const applyToFn = fn.cljs$lang$applyTo;
+      if (!applyToFn || (applyToFn.direct$LKEY === true && fn.call === fnCall)) {
+        let p = argc - 2, a0 = a, a1 = b, a2 = c, tail = argc === 2 ? a : argc === 3 ? b : argc === 4 ? c : d;
+        const limit = applyToFn ? Math.min(3, fn.cljs$lang$maxFixedArity) : 3;
+        while (p < limit && tail != null && fieldComparisons.on) {
+          const k = tail.cljs$lang$kind$$LKEY;
+          if ((k === 14 || k === 12) && tail.rest$LKEY !== undefined) {
+            const v = tail.first$LKEY;
+            if (p === 0) a0 = v; else if (p === 1) a1 = v; else a2 = v;
+            p++;
+            tail = k === 12 && tail.count$LKEY === 1 ? null : tail.rest$LKEY;
+          } else break;
+        }
+        if (tail == null) {
+          return applyToFn ? applyDirect(fn, p, a0, a1, a2, 0, null, null) : applyFixed(fn, p, a0, a1, a2, 0, null);
+        }
         const kind = tail.cljs$lang$kind$$LKEY;
+        if (applyToFn && (kind === 14 || kind === 12) && fieldComparisons.on && tail.rest$LKEY !== undefined) {
+          const fixed = fn.cljs$lang$maxFixedArity, restTail = tail.rest$LKEY;
+          if (p >= fixed && (restTail == null || restTail.cljs$lang$kind$$LKEY === 5 || restTail.cljs$lang$kind$$LKEY === 12 || restTail.cljs$lang$kind$$LKEY === 14)) {
+            return applyDirect(fn, p, a0, a1, a2, 1, null, () => tail);
+          }
+        }
+        if (kind === 5 && fieldComparisons.on && tail.view$LKEY === "indexed" && Array.isArray(tail.arr$LKEY)) {
+          const arr = tail.arr$LKEY, start = tail.i$LKEY, len = arr.length - start;
+          if (len >= 0) {
+            return applyToFn
+              ? applyDirect(fn, p, a0, a1, a2, len, i => arr[start + i], i => i === 0 ? tail : new IndexedSeqCell(arr, start + i, true, "indexed"))
+              : applyFixed(fn, p, a0, a1, a2, len, i => arr[start + i]);
+          }
+        }
         if (kind === 1 && fieldComparisons.on && tail.tail$LKEY !== undefined && tail.callerTail$LKEY === undefined) {
           const cnt = tail.cnt$LKEY;
           if (cnt <= 32 && tail.tail$LKEY.length === cnt) {
             const arr = tail.tail$LKEY;
-            if (argc === 2) {
+            if (!applyToFn) return applyFixed(fn, p, a0, a1, a2, cnt, i => arr[i]);
+            if (p === 0) {
               if (cnt === 0) return call0(fn);
               if (cnt === 1) return call1(fn, arr[0]);
               if (cnt === 2) return call2(fn, arr[0], arr[1]);
@@ -14389,18 +14456,20 @@
               if (cnt === 4) return fn(arr[0], arr[1], arr[2], arr[3]);
               return fn.apply(null, arr);
             }
-            if (argc === 3 && cnt <= 3) return cnt === 0 ? call1(fn, a) : cnt === 1 ? call2(fn, a, arr[0]) : cnt === 2 ? fn(a, arr[0], arr[1]) : fn(a, arr[0], arr[1], arr[2]);
-            if (argc === 4 && cnt <= 2) return cnt === 0 ? call2(fn, a, b) : cnt === 1 ? fn(a, b, arr[0]) : fn(a, b, arr[0], arr[1]);
-            if (argc === 5 && cnt <= 1) return cnt === 0 ? fn(a, b, c) : fn(a, b, c, arr[0]);
+            if (p === 1 && cnt <= 3) return cnt === 0 ? call1(fn, a0) : cnt === 1 ? call2(fn, a0, arr[0]) : cnt === 2 ? fn(a0, arr[0], arr[1]) : fn(a0, arr[0], arr[1], arr[2]);
+            if (p === 2 && cnt <= 2) return cnt === 0 ? call2(fn, a0, a1) : cnt === 1 ? fn(a0, a1, arr[0]) : fn(a0, a1, arr[0], arr[1]);
+            if (p === 3 && cnt <= 1) return cnt === 0 ? fn(a0, a1, a2) : fn(a0, a1, a2, arr[0]);
           }
-          if (kindHooks.applyVector) return kindHooks.applyVector(fn, argc - 2, a, b, c, tail);
+          if (kindHooks.applyVector) return kindHooks.applyVector(fn, p, a0, a1, a2, tail, !applyToFn);
         }
         if (kind === 2 && fieldComparisons.on && tail.sub$LKEY !== undefined && tail.sub$LKEY.callerTail$LKEY === undefined && kindHooks.applyVector) {
-          return kindHooks.applyVector(fn, argc - 2, a, b, c, tail);
+          return kindHooks.applyVector(fn, p, a0, a1, a2, tail, !applyToFn);
         }
         if (Array.isArray(tail) && !(hostExt.p0 & 2) && !(tail.cljs$lang$protocol_mask$partition0$$LKEY & 8388802)
           && tail.cljs$core$ISeqable$$LKEY !== protocolSentinel && tail.cljs$core$ICounted$$LKEY !== protocolSentinel) {
-          return applyDirect(fn, argc - 2, a, b, c, tail.length, i => tail[i], i => new IndexedSeqCell(tail, i, true, "indexed"));
+          return applyToFn
+            ? applyDirect(fn, p, a0, a1, a2, tail.length, i => tail[i], i => new IndexedSeqCell(tail, i, true, "indexed"))
+            : applyFixed(fn, p, a0, a1, a2, tail.length, i => tail[i]);
         }
       }
     }
@@ -15077,7 +15146,7 @@
     fn.cljs$core$IFn$_invoke$arity$1 = m1;
     fn.cljs$core$IFn$_invoke$arity$2 = m2;
     fn.cljs$lang$maxFixedArity = 2;
-    fn.cljs$lang$applyTo = args => fnApplyTo(variadic, 2, args);
+    fn.cljs$lang$applyTo = fnApplyTo(variadic, 2);
     fn.cljs$core$IFn$_invoke$arity$variadic = variadic;
     return fn;
   }
@@ -15106,7 +15175,7 @@
     if (m3) fn.cljs$core$IFn$_invoke$arity$3 = m3;
     if (m4) fn.cljs$core$IFn$_invoke$arity$4 = m4;
     fn.cljs$lang$maxFixedArity = fixed;
-    fn.cljs$lang$applyTo = args => fnApplyTo(variadic, fixed, args);
+    fn.cljs$lang$applyTo = fnApplyTo(variadic, fixed);
     fn.cljs$core$IFn$_invoke$arity$variadic = variadic;
     return fn;
   }
@@ -15745,7 +15814,7 @@
     if (typeof value === "symbol") return write(writer, "#object[" + String(value) + "]");
     return write(writer, "#object[" + (value.constructor?.cljs$lang$ctorStr?.replaceAll("/", ".") || value.constructor?.name || "Object") + " " + String(value) + "]");
   }
-  //@unit printsMeta.print effect: arrayMapSeq, arrayMapSeqNext, hashMapSeq, hashMapSeqNext, Atom, ChunkedCons,
+  //@unit printsMeta.print effect: applyDirect, arrayMapSeq, arrayMapSeqNext, hashMapSeq, hashMapSeqNext, Atom, ChunkedCons,
   //@ collectionWithMeta, compilerFormBridge, Cons, cons, listFromArray, cycleNode, emptyList,
   //@ EmptyListValue, fnWithMeta, IndexedSeqValue, installMethods, iterateNode, LazySeq, ListValue,
   //@ makeIFn, makeMap, makeReify, makeSet, recordMethods, makeVar, makeVector, mapEntry,
@@ -15810,7 +15879,7 @@
     const storage = vectorStorage(value) ?? [];
     return printSequential(writer, printWriter, "[", " ", "]", options, Array.isArray(storage) ? storage : Array.from(storage));
   }, [1, 2, 3]);
-  //@unit cons.print effect: arrayMapSeq, arrayMapSeqNext, hashMapSeq, hashMapSeqNext, ChunkedCons, compilerFormBridge, Cons,
+  //@unit cons.print effect: applyDirect, arrayMapSeq, arrayMapSeqNext, hashMapSeq, hashMapSeqNext, ChunkedCons, compilerFormBridge, Cons,
   //@ cons, listFromArray, cycleNode, emptyList, EmptyListValue, IndexedSeqValue, iterateNode,
   //@ LazySeq, ListValue, mapProjection, queueFromArray, rangeNode, RepeatValue, reSeq,
   //@ treeMapSeqConstructor, view, ChunkedSeqValue when: printWriterImpl requires: isCell,
@@ -15931,7 +16000,7 @@
   }
   //@unit str requires: strOne
   function str(...values) { let text = ""; for (let i = 0; i < values.length; i++) text += strOne(values[i]); return text; }
-  //@unit str.collections effect: arrayMapSeq, arrayMapSeqNext, hashMapSeq, hashMapSeqNext, makeVector, mapEntry, emptyList,
+  //@unit str.collections effect: applyDirect, arrayMapSeq, arrayMapSeqNext, hashMapSeq, hashMapSeqNext, makeVector, mapEntry, emptyList,
   //@ Cons, ListValue, EmptyListValue, RepeatValue, cons, listFromArray, compilerFormBridge,
   //@ mapProjection, cycleNode, treeMapSeqConstructor, reSeq, iterateNode, ChunkedCons, rangeNode,
   //@ view, ChunkedSeqValue, IndexedSeqValue, queueFromArray, LazySeq, makeMap, treeMapConstructor,
@@ -15944,9 +16013,7 @@
   //@unit variadicCore mutator requires: fnApplyTo
   function variadicCore(fn, fixed, delegate, a2, a1, a0) {
     fn.cljs$lang$maxFixedArity = fixed;
-    const applyToFn = args => fnApplyTo(delegate, fixed, args);
-    applyToFn.direct$LKEY = true;
-    fn.cljs$lang$applyTo = applyToFn;
+    fn.cljs$lang$applyTo = fnApplyTo(delegate, fixed);
     fn.cljs$core$IFn$_invoke$arity$variadic = delegate;
     if (a2) fn.cljs$core$IFn$_invoke$arity$2 = a2;
     if (a1) fn.cljs$core$IFn$_invoke$arity$1 = a1;
