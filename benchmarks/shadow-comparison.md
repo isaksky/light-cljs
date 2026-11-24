@@ -20,10 +20,13 @@ in the source sections.
 ## Summary
 
 In short: light-cljs compiles large programs several times faster than
-shadow-cljs and reloads edits far sooner, but **the JavaScript it produces runs
-3.5 to 7 times slower**, its memory advantage is small once shadow-cljs's heap
-is sized to need, and small apps come out somewhat larger. The scale figures
-come from projects we generate ourselves, and none comes from a quiet machine.
+shadow-cljs and reloads edits far sooner; its release output now **beats
+shadow-cljs on TodoMVC's interactive steps (0.84x on adding 1,000 todos) and
+runs within 1.11 to 1.20 times on the generated workloads' steady state**
+(`4d8d02d5`, down from 3.5 to 7 times), while dev-build steady state is 1.47 to
+1.82 times slower, its memory advantage is small once shadow-cljs's heap is
+sized to need, and small apps come out larger. The scale figures come from
+projects we generate ourselves, and none comes from a quiet machine.
 
 **Where light-cljs is ahead**
 
@@ -45,10 +48,15 @@ come from projects we generate ourselves, and none comes from a quiet machine.
 
 **Where light-cljs loses** (recorded as found)
 
-- **Its output runs slower.** In steady state about 3.5 to 3.75 times
-  shadow-cljs's time on the generated programs in Node, and 6.95 times on
-  TodoMVC's "add 1,000 todos" in Chromium (`cdf39aae`, `181dc839`). Startup is
-  1.5 to 2.7 times. This is the largest loss.
+- **Some output paths are still slower, mostly in dev builds and startup.**
+  After the output-speed pellets (`4d8d02d5`, [runtime][r1019]), release output
+  beats shadow-cljs on all four interactive TodoMVC steps (0.84x on "add 1,000
+  todos", 0.96 to 0.97x on toggle/edit/clear), but remains 1.11 to 1.20 times
+  shadow-cljs's steady-state time on the generated programs in Node (1.05 to
+  1.12 times first output) and 1.26 times on TodoMVC page load to interactive.
+  Dev-build steady state is 1.47 times on generated workload 200k and 1.82 times
+  on TodoMVC "add 1,000 todos" (1.33 times on toggle all). Every remaining gap
+  has a profile and follow-up pellet (`light-cljs-1114` to `1119`).
 - **Its memory advantage shrinks once shadow-cljs gets only the heap it
   needs.** At shadow-cljs's smallest adequate heap light-cljs uses 0.45x,
   0.62x and 0.85x its peak memory (generated 200k, re-frame-shaped 200k,
@@ -92,8 +100,8 @@ uses `goog.*`, its port carries a small shim.
 | Peak memory against shadow's smallest adequate heap, 200k / re-frame 200k / 800k | 1.03 / 1.41 / 3.65 GB | 2.28 / 2.27 / 4.30 GB | 0.45 / 0.62 / 0.85 | `6ea2540d`, [heap sweep][g969] |
 | Clean-build growth, 200k to 800k (4.0x the lines), plain / re-frame shape | 4.37x / 4.29x | 4.70x / 5.69x | | `809302a4` [append][g996]; shadow [growth][g970] |
 | Output after gzip, generated 200k / 800k | 859,697 / 3,299,312 B | 1,002,909 / 3,894,315 B | 0.86 / 0.85 | `627b9ed5`, [baseline][g968] |
-| Output speed, steady state per iteration, workload 200k / 800k / re-frame-shaped 200k | | | 3.75 / 3.50 / 3.69 slower | `cdf39aae`, `181dc839`, [runtime][r998] |
-| TodoMVC, add 1,000 todos in Chromium | 6,473 ms | about 930 ms | 6.95 slower | `cdf39aae`, [runtime][r998] |
+| Output speed, release steady state per iteration, workload 200k / 800k / re-frame-shaped 200k | 26.5 / 117.1 / 302.8 ms | 23.9 / 104.3 / 252.3 ms | 1.11 / 1.12 / 1.20 | `4d8d02d5`, [runtime][r1019] |
+| TodoMVC release, add 1,000 todos in Chromium | 761 ms | 907 ms | 0.84 | `4d8d02d5`, [runtime][r1019] |
 | TodoMVC release after gzip / brotli, React included | 137,348 / 119,062 B | 137,088 / 114,615 B | 1.002 / 1.039 | `8b11492b`, [size][f984] |
 | Watch, generated re-frame 200k: save to new code running, view / widely required / macro | 83 / 77 / 255 ms | 2,388 / 6,463 / 2,281 ms | | `fa9856b4`, [watch][w1001] |
 | Watch startup / dev page load, same app | 18.6-20.0 s / 4.9-5.3 s | 37.0-45.7 s / 2.0 s | | `fa9856b4`, [watch][w1001], [page][w993] |
@@ -125,14 +133,15 @@ uses `goog.*`, its port carries a small shim.
 [r989]: runtime-vs-shadow.md#2026-11-14-small-maps-and-map-entries-light-cljs-989
 [r990]: runtime-vs-shadow.md#2026-11-14-one-kind-brand-for-the-runtimes-stores-light-cljs-990
 [r998]: runtime-vs-shadow.md#2026-11-14-the-protocol-hooks-on-the-runtimes-own-values-light-cljs-998
+[r1019]: runtime-vs-shadow.md#2026-11-24-the-real-workloads-after-the-output-speed-pellets-light-cljs-1019
 [w972]: watch-vs-shadow.md#2026-11-14-todomvc-and-the-generated-200k-re-frame-app
 [w991]: watch-vs-shadow.md#2026-11-14-later-watch-steps-after-light-cljs-991
 [w992]: watch-vs-shadow.md#2026-11-14-later-watch-startup-after-light-cljs-992
 [w993]: watch-vs-shadow.md#2026-11-14-later-dev-page-load-after-light-cljs-993
 [w1001]: watch-vs-shadow.md#2026-11-14-later-watch-steps-after-light-cljs-1001
 
-TodoMVC's shadow-cljs figure is computed from the light-cljs median and the
-ratio, both from the same alternated runs. The growth row's two sides come from
+The TodoMVC and generated-workload output-speed figures come from the same
+alternated 10-run sessions on `4d8d02d5`. The growth row's two sides come from
 different runs on the same day: light-cljs's from `809302a4` with `--stats`,
 shadow-cljs's from the growth section's alternated runs with `fc31d229`.
 
@@ -261,31 +270,45 @@ at which no build failed and the median wall time is within 10% of its best
 
 ### 4. "Output was judged by size only"
 
-**How fast the output runs** ([runtime][r975]). Both compilers' release
-builds were run 10 times each, alternated: the generated programs in Node, the
-re-frame-shaped app mounted in jsdom, TodoMVC driven through its own DOM events
-in headless Chromium. **light-cljs's output is slower everywhere measured.**
-Latest ratios, light/shadow:
+**How fast the output runs** ([runtime][r1019]). Both compilers' release builds
+were run 10 times each, alternated, on `4d8d02d5` (master `265007fd` differs
+only by a test file): the generated programs in Node, the re-frame-shaped app
+mounted in jsdom, and TodoMVC driven through its own DOM events in headless
+Chromium, plus dev-build runs of workload 200k and TodoMVC. After the
+output-speed-parity pellets (class layout, secret-key protocol slots, and
+follow-up runtime optimizations), **light-cljs's release output beats
+shadow-cljs on all four interactive TodoMVC steps and cuts the Node steady-state
+gap from 3.5 to 5.7 times down to 1.11 to 1.20 times.** Latest release ratios,
+light/shadow:
 
 | Workload | First output (startup and one iteration) | Steady state per iteration | Peak memory | Commit |
 | --- | --- | --- | --- | --- |
-| generated workload 200k | 1.50 | 3.75 | 1.20 | `67b1bbec`, `cdf39aae`, `c755984d` |
-| generated workload 800k | 1.51 | 3.50 | 1.17 | `67b1bbec`, `181dc839`, `c755984d` |
-| re-frame-shaped 200k app | 2.72 | 3.69 | 1.05 | `32cb0373`, `cdf39aae`, `c755984d` |
+| generated workload 200k | 1.06 (0.330 vs 0.311 s, ranges overlap) | 1.11 (26.5 vs 23.9 ms) | 0.97 | `4d8d02d5` |
+| generated workload 800k | 1.05 (1.013 vs 0.966 s, ranges overlap) | 1.12 (117.1 vs 104.3 ms) | 0.92 | `4d8d02d5` |
+| re-frame-shaped 200k app | 1.12 (1.455 vs 1.301 s) | 1.20 (302.8 vs 252.3 ms) | 1.09 | `4d8d02d5` |
 
-Peak memory is at the largest iteration count (40, 16 and 10). Each column's
-commit is the latest run that moved it; later runs left first output and peak
-memory within their ranges. In TodoMVC: page load to interactive 1.41, add
-1,000 todos 6.95, toggle all 2.68, edit one of 1,000 todos 1.21, JavaScript
-heap with 1,000 todos 1.24 times shadow-cljs's.
+Peak memory is at the largest iteration count (40, 16 and 10). In TodoMVC
+release: add 1,000 todos 0.84x (761 vs 907 ms), toggle all 0.97x (45.6 vs
+47.2 ms), edit one of 1,000 todos 0.96x (62.3 vs 64.9 ms), clear completed
+0.96x (25.6 vs 26.8 ms), whole-run wall time 0.91x (1.30 vs 1.43 s), peak
+memory 0.99x (253.7 vs 257.4 MB); page load to interactive is 1.26x (40.3 vs
+31.9 ms; script 20.5 vs 13.5 ms) and JavaScript heap is 1.16x after load (3.18
+vs 2.74 MB) and 1.10x with 1,000 todos (8.29 vs 7.52 MB). On the 81-operation
+core-ops gate (`4d8d02d5`), 72 operations are at or below 1.00x and nothing
+exceeds 1.10x (remaining gate gaps tracked in `light-cljs-1112` and
+`light-cljs-1113`).
 
-Four runtime changes in this group ([988][r988], [989][r989], [990][r990],
-[998][r998]) cut the steady-state ratios from 4.73 to 5.67 (`67b1bbec`) to
-3.50 to 3.75, and TodoMVC's add step from 10.9 to 6.95. **It is still the largest loss**, in cljs.core's place:
-the runtime's protocol lookup, map entries and value-kind tests, and closures.
-light-cljs-1002, building a map seq's entries only when they are read, is
-finished but **not on master**: it is held for the user because it showed no
-measured gain.
+In dev builds, TodoMVC page load is faster (0.77x, 93.0 vs 120.5 ms) and edit
+(0.93x) and clear completed (0.96x) beat shadow-cljs, while steady state is
+slower: 1.47x on generated workload 200k (45.4 vs 31.0 ms/iter; 1-iter first
+output 1.11x), and 1.82x on TodoMVC add 1,000 todos (1,789 vs 982 ms) and
+1.33x on toggle all (71.9 vs 54.1 ms), even with shadow-cljs's unmodified `:dev`
+build enabling re-frame tracing. Every remaining losing row is profiled and
+filed (`light-cljs-1114` to `1119`): `ExceptionInfo` eager stack/property
+copying, `callable` wrapper allocation and user-type protocol misses,
+`preserveMeta` and `equalPairOf` fallbacks, release startup initialization,
+dev-mode protocol/printer/keyword dispatch, and Node dev-build `define`
+startup.
 
 **Property renaming.** Closure's `:advanced` renames properties and leaves no
 `cljs$core$...` names; light-cljs never renames host-facing names, by design,
@@ -340,7 +363,8 @@ checksums of `app-db` and the rendered markup; both outputs must print them.
   800k (`fc31d229`), rebuild after a one-file edit 0.07 to 0.09x (the latest
   light-cljs figures against the growth run's shadow-cljs), peak memory 0.62x at
   shadow-cljs's smallest adequate heap, output 0.95x after gzip (`4d2669bc`
-  smoke row) and running 3.69x slower in steady state.
+  smoke row; 0.91x on `4d8d02d5`) and running 1.20x shadow-cljs's time in steady
+  state (`4d8d02d5`, [runtime][r1019]).
 
 ### 6. "The measurements are sloppy"
 
