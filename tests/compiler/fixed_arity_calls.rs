@@ -396,10 +396,30 @@ fn fixed_arity_callbacks_preserve_receivers_and_call_overrides() {
         (let [strict2 (js* "(function(a, b) { 'use strict'; return this === null ? a + b : -1; })")
               strict1 (js* "(function(x) { 'use strict'; return this === null ? x * 10 : -1; })")
               strict-cmp (js* "(function(a, b) { 'use strict'; return this === null ? b - a : 0; })")
+              recv-rf (fn
+                        ([] (this-as t (fn? t)))
+                        ([a] (this-as t [(fn? t) a]))
+                        ([a x] (+ a x)))
               obj (reify IFn
                     (-invoke [_] :orig0)
                     (-invoke [_ x] [:orig1 x])
-                    (-invoke [_ a b] [:orig2 a b]))]
+                    (-invoke [_ a b] [:orig2 a b]))
+              throwing-ifn (reify IFn
+                             (-invoke [_] :ok0)
+                             (-invoke [_ x] [:ok1 x])
+                             (-invoke [_ a b] (+ a b)))
+              throwing-fn (fn ([a] a) ([a b] (+ a b)))]
+          (js* "(() => {
+            for (const target of [~{}, ~{}]) {
+              for (const n of [0, 1, 2]) {
+                Object.defineProperty(target, 'cljs$core$IFn$_invoke$arity$' + n, {
+                  configurable: true,
+                  get() { throw new Error('probed-arity-' + n); }
+                });
+              }
+            }
+          })()" throwing-ifn throwing-fn)
+          (set! (.-call throwing-fn) (fn [_ & args] (case (count args) 0 :fn0 1 [:fn1 (first args)] 2 (+ (first args) (second args) 10))))
           (set! (.-call obj)
                 (fn [_ & args]
                   (case (count args)
@@ -414,8 +434,16 @@ fn fixed_arity_callbacks_preserve_receivers_and_call_overrides() {
              (vec (sort-by identity strict-cmp [1 3 2]))
              (reduce obj [])
              (reduce obj 0 [1 2 3])
-             (transduce (map inc) obj 0 [1 2])]))"#),
-        "\"[6 [10 20 30] [10 20 30] [1 2 3] [3 2 1] :override0 6 [:override1 5]]\"\n"
+             (transduce (map inc) obj 0 [1 2])
+             (reduce recv-rf [])
+             (transduce (map inc) recv-rf 0 [1 2])
+             (reduce throwing-ifn [])
+             (reduce throwing-ifn 0 [1 2])
+             (transduce (map inc) throwing-ifn 0 [1 2])
+             (reduce throwing-fn [])
+             (reduce throwing-fn 0 [1 2])
+             (transduce (map inc) throwing-fn 0 [1 2])]))"#),
+        "\"[6 [10 20 30] [10 20 30] [1 2 3] [3 2 1] :override0 6 [:override1 5] true [true 5] :ok0 3 [:ok1 5] :fn0 23 [:fn1 25]]\"\n"
     );
 }
 
@@ -495,11 +523,15 @@ fn apply_direct_tail_dispatches_across_leaf_boundaries() {
               r7 (count (apply vector v35))
               r8 (count (apply vector a35))
               r9 (count (apply vector sub-big))
-              after (c)
               r10 (apply + 1 2 3 v33)
               r11 (apply + 1 2 3 a33)
-              r12 (apply + 1 2 3 sub-big)]
-          (pr-str [(- after before) r1 r2 r3 r4 r5 r6 r7 r8 r9 r10 r11 r12]))"#;
+              r12 (apply + 1 2 3 sub-big)
+              r13 (apply + 1 2 3 [4 5])
+              r14 (apply vector 1 2 3 [4 5])
+              getter-arr (js* "(() => { const a = [2]; Object.defineProperty(a, 1, { enumerable: true, get() { throw new Error('excess-getter-read'); } }); a.length = 2; return a; })()")
+              r15 (apply < 1 2 3 getter-arr)
+              after (c)]
+          (pr-str [(- after before) r1 r2 r3 r4 r5 r6 r7 r8 r9 r10 r11 r12 r13 r14 r15]))"#;
     let program = analyze(source, &parse(source).unwrap()).unwrap();
     let mut options = ApplicationOptions::new(OptimizationLevel::Advanced);
     options.pseudo_names = true;
@@ -509,7 +541,7 @@ fn apply_direct_tail_dispatches_across_leaf_boundaries() {
     js = js.replace(head, &format!("{head} globalThis.__cons++;"));
     assert_eq!(
         execute(&format!("globalThis.__cons = 0; console.log({js});")),
-        "[0 529 981 529 598 38 598 35 35 40 534 534 986]\n"
+        "[0 529 981 529 598 38 598 35 35 40 534 534 986 15 [1 2 3 4 5] false]\n"
     );
 }
 
@@ -661,5 +693,85 @@ fn generality_edge_cases_for_reduce_apply_and_sort_by() {
              (mapv :id (sort-by :k (fn [a b] (< a b)) items))
              (mapv :id (sort-by :k (fn [a b] (> a b)) items))]))"#),
         "\"[10 4 0 2 2 21 [:sub-red 3] 31 16 10 21 3 [1 0 1] [2 4 1 3] [1 3 2 4]]\"\n"
+    );
+}
+
+#[test]
+fn apply_completing_preserves_the_reducer_receiver() {
+    let run = |source: &str| super::optimization::json_at_every_level(source);
+    assert_eq!(
+        run(r#"
+        (let [rf (fn ([a] a) ([_ _] (this-as t (identical? t js/globalThis))))]
+          (pr-str [(apply (completing rf) [0 1])
+                   (reduce (completing rf) 0 [1])]))"#),
+        "\"[true true]\"\n"
+    );
+}
+
+#[test]
+fn group_by_observes_ifn_overrides_between_items() {
+    let run = |source: &str| super::optimization::json_at_every_level(source);
+    assert_eq!(
+        run(r#"
+        (let [f (fn f ([x]
+                        (specify! f IFn (-invoke ([_ _] :patched)))
+                        :original)
+                    ([x _] x))]
+          (pr-str (group-by f [1 2])))"#),
+        "\"{:original [1], :patched [2]}\"\n"
+    );
+}
+
+#[test]
+fn array_reduce_reads_elements_before_resolving_call() {
+    let run = |source: &str| super::optimization::json_at_every_level(source);
+    assert_eq!(
+        run(r#"
+        (let [rf (fn rf ([a] a) ([a x] (+ a x)))
+              arr (js* "((rf, patch) => {
+                const a = [];
+                Object.defineProperty(a, 0, {
+                  enumerable: true,
+                  get() { patch(); return 1; }
+                });
+                a.length = 1;
+                return a;
+              })(~{}, ~{})" rf #(specify! rf IFn (-invoke ([_ a x] (+ a x 10)))))]
+          (pr-str (reduce rf 0 arr)))"#),
+        "\"11\"\n"
+    );
+}
+
+#[test]
+fn into_supplies_fixed_arity_reducers_to_custom_ireduce() {
+    let run = |source: &str| super::optimization::json_at_every_level(source);
+    assert_eq!(
+        run(r#"
+        (deftype FixedOnlySource [xs]
+          IReduce
+          (-reduce [_ rf init]
+            (let [f2 (.-cljs$core$IFn$_invoke$arity$2 rf)]
+              (if f2
+                (reduce (fn [acc x] (f2 acc x)) init xs)
+                :missing-arity-2))))
+        (let [src (FixedOnlySource. [1 2 3])]
+          (pr-str [(into [] src)
+                   (into () src)]))"#),
+        "\"[[1 2 3] (3 2 1)]\"\n"
+    );
+    assert_eq!(
+        run(r#"
+        (deftype FixedOnlySource [xs]
+          IReduce
+          (-reduce [_ rf init]
+            (let [f2 (.-cljs$core$IFn$_invoke$arity$2 rf)]
+              (if f2
+                (reduce (fn [acc x] (f2 acc x)) init xs)
+                :missing-arity-2))))
+        (let [touched (specify! [9] ICounted (-count [_] 1))
+              src (FixedOnlySource. [1 2 3])]
+          (pr-str [(count touched)
+                   (into () src)]))"#),
+        "\"[1 (3 2 1)]\"\n"
     );
 }

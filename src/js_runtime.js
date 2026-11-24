@@ -2910,16 +2910,16 @@
   //@unit fnCall
   const fnCall = Function.prototype.call;
   //@unit fixedFn1 requires: fnCall
-  const fixedFn1 = fn => { const f = fn?.cljs$core$IFn$_invoke$arity$1; return f && typeof fn === "function" && fn.call === fnCall ? f : null; };
+  const fixedFn1 = fn => typeof fn === "function" && fn.call === fnCall ? fn.cljs$core$IFn$_invoke$arity$1 || null : null;
   //@unit fixedFn2 requires: fnCall
-  const fixedFn2 = fn => { const f = fn?.cljs$core$IFn$_invoke$arity$2; return f && typeof fn === "function" && fn.call === fnCall ? f : null; };
+  const fixedFn2 = fn => typeof fn === "function" && fn.call === fnCall ? fn.cljs$core$IFn$_invoke$arity$2 || null : null;
   //@unit call0 requires: fnCall
-  const call0 = fn => { const f = fn?.cljs$core$IFn$_invoke$arity$0; return f && typeof fn === "function" && fn.call === fnCall ? f() : fn.call(null); };
+  const call0 = fn => { if (typeof fn === "function" && fn.call === fnCall) { const f = fn.cljs$core$IFn$_invoke$arity$0; if (f) return f.call(fn); } return fn.call(null); };
   //@unit call1 requires: fixedFn1
-  const call1 = (fn, a) => { const f = fixedFn1(fn); return f ? f(a) : fn.call(null, a); };
+  const call1 = (fn, a) => { const f = fixedFn1(fn); return f ? f.call(fn, a) : fn.call(null, a); };
   //@unit call2 requires: fixedFn2
   const call2 = (fn, a, b) => { const f = fixedFn2(fn); return f ? f(a, b) : fn.call(null, a, b); };
-  //@unit reduceOf requires: call0, fixedFn2, hostExt, isReduced, iterator, iterReduce, methodKeys,
+  //@unit reduceOf requires: call0, call2, hostExt, isReduced, iterator, iterReduce, methodKeys,
   //@ ownSeqs, protocolHooks, protocolSentinel, reducedValue, reduceWalk, seqReduce, slotFirst
   // Upstream's `reduce` of a value without a `-reduce` slot holding a
   // method: a value of a runtime class whose instance slot holds nil or
@@ -2952,9 +2952,8 @@
       && source.cljs$core$ISeqable$$LKEY !== protocolSentinel) {
       let i = 0;
       if (arity === 2) { if (source.length === 0) return call0(rf); init = source[0]; i = 1; }
-      const step = fixedFn2(rf);
       for (; i < source.length; i++) {
-        init = step ? step(init, source[i]) : rf.call(null, init, source[i]);
+        init = call2(rf, init, source[i]);
         if (isReduced(init)) return reducedValue(init);
       }
       return init;
@@ -3009,7 +3008,7 @@
     }
     return seqReduceFrom(seq(source), rf, init);
   }
-  //@unit reduceWalk requires: call0, cellOf, first, fixedFn2, isReduced, next, reducedValue, seq,
+  //@unit reduceWalk requires: call0, call2, cellOf, first, isReduced, next, reducedValue, seq,
   //@ viewOf
   // The old path's last walk, of a vector, a map, a map seq or another
   // view: the value's seq, a cell's and a view's items read from their
@@ -3020,7 +3019,6 @@
     // A chunked seq over a vector's leaf continues past its storage.
     const walked = value => { const slice = viewOf(value); return slice?.vec$LKEY ? undefined : slice; };
     let slice = walked(current), offset = slice?.i$LKEY;
-    const step = fixedFn2(rf);
     // Traverse immutable storage directly. No recursive calls, per-step seq
     // wrappers, captured closures or persistent traversal caches are needed.
     while (current !== null) {
@@ -3030,7 +3028,7 @@
         result = item;
         initialized = true;
       } else {
-        result = step ? step(result, item) : rf.call(null, result, item);
+        result = call2(rf, result, item);
         if (isReduced(result)) return reducedValue(result);
       }
       if (cell || !slice) {
@@ -3237,7 +3235,7 @@
     if (arguments.length === 1) cf = result => result;
     else if (arguments.length !== 2) return invalidArity(arguments.length);
     const r2 = fixedFn2(rf);
-    return reducingFunction(rf, r2 || ((result, input) => rf.call(null, result, input)), result => call1(cf, result));
+    return reducingFunction(rf, (result, input) => r2 ? r2(result, input) : rf.call(null, result, input), result => call1(cf, result));
   }
   //@unit transduce requires: call0, call1, invalidArity, reduce
   function transduce(xf, rf, init, coll) {
@@ -8405,15 +8403,14 @@
     const s = parsingString(value);
     return s === "true" ? true : s === "false" ? false : null;
   }
-  //@unit groupBy requires: assocBang, conj, fixedFn1, get, mapFromArray, persistentBang, reduce,
-  //@ transient, vector
+  //@unit groupBy requires: assocBang, conj, get, mapFromArray, persistentBang, reduce, transient,
+  //@ vector
   // As upstream: the groups gather in a transient map (light-cljs-1023),
   // where each item made a new persistent map, and only a new group makes
   // an empty vector (a group is never nil).
   function groupBy(fn, coll) {
-    const f1 = fixedFn1(fn);
     const step = (result, value) => {
-      const key = f1 ? f1(value) : fn.call(null, value), group = get(result, key, null);
+      const key = fn.call(null, value), group = get(result, key, null);
       return assocBang(result, key, conj(group === null ? vector() : group, value));
     };
     step.cljs$core$IFn$_invoke$arity$2 = step;
@@ -13823,7 +13820,7 @@
     for (let i = 0; i < n; i++, args = rest(args)) values.push(first(args));
     return fn.call(null, ...values);
   }
-  //@unit applyDirect requires: call0, call1, call2, cons
+  //@unit applyDirect requires: call0, call1, call2, IndexedSeqCell
   function applyDirect(fn, p, a, b, c, len, at, tailSeq) {
     const fixed = fn.cljs$lang$maxFixedArity, total = p + len;
     if (total <= fixed) {
@@ -13849,10 +13846,16 @@
       args[fixed] = more;
       return delegate.apply(null, args);
     }
-    let more = len === 0 ? null : tailSeq(0);
-    if (p > 2 && fixed <= 2) more = cons(c, more);
-    if (p > 1 && fixed <= 1) more = cons(b, more);
-    if (p > 0 && fixed === 0) more = cons(a, more);
+    const excess = p - fixed, prefix = fixed === 0 ? [a, b, c] : fixed === 1 ? [b, c] : [c];
+    const more = new IndexedSeqCell(new Proxy({length: excess + len}, {
+      get(target, prop) {
+        if (typeof prop === "string") {
+          const idx = prop >>> 0;
+          if (String(idx) === prop && idx < target.length) return idx < excess ? prefix[idx] : at(idx - excess);
+        }
+        return target[prop];
+      }
+    }), 0, true, "indexed");
     return fixed === 0 ? delegate(more) : fixed === 1 ? delegate(a, more) : delegate(a, b, more);
   }
   //@unit makeVector.apply effect: makeVector, mapEntry when: apply requires: applyDirect,
@@ -14289,9 +14292,7 @@
       if (s !== null) {
         if (isChunkedSeq(s)) {
           const chunk = chunkFirst(s), store = chunkStore(chunk), size = count(chunk), values = [];
-          const p1 = fixedFn1(pred);
-          if (p1) { for (let i = 0; i < size; i++) { const v = chunkItem(chunk, store, i); if (truth(p1(v))) values.push(v); } }
-          else { for (let i = 0; i < size; i++) { const v = chunkItem(chunk, store, i); if (truth(pred.call(null, v))) values.push(v); } }
+          for (let i = 0; i < size; i++) { const v = chunkItem(chunk, store, i); if (truth(pred.call(null, v))) values.push(v); }
           return chunkCons(arrayChunk(values), filter(pred, chunkRest(s)));
         }
         // Upstream obtains rest before invoking the predicate.
