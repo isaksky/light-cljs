@@ -107,6 +107,7 @@ mod equality_contracts;
 mod extensions;
 mod features_example;
 mod find_effects;
+mod fixed_arity_calls;
 mod folding_inlining;
 mod generated_names;
 mod generated_optimization;

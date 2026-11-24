@@ -1868,6 +1868,9 @@
     }
     return kind === "list" ? new ListCell(head, tail, count(tail) + 1) : new ConsCell(head, tail);
   }
+  function listCons(head, tail) {
+    return new ListCell(head, tail, (tail.count$LKEY ?? count(tail)) + 1);
+  }
 
   //@unit implementsSeq requires: methodKeys, protocolHooks, seqValue, slotFirst
   // `implements?` of ISeq of a value that is not nil: its mask bit
@@ -2298,8 +2301,8 @@
   //@unit reduced requires: ReducedCell
   function reduced(value) { return new ReducedCell(value); }
 
-  //@unit isReduced requires: reducedValues
-  function isReduced(value) { return typeof value === "object" && value !== null && reducedValues.has(value); }
+  //@unit isReduced
+  function isReduced(value) { return typeof value === "object" && value !== null && value.cljs$lang$kind$$LKEY === 35 && "val$LKEY" in value; }
   //@unit ensureReduced requires: isReduced, reduced
   function ensureReduced(value) { return isReduced(value) ? value : reduced(value); }
   //@unit unreduced requires: isReduced, reducedValues
@@ -2365,37 +2368,43 @@
     return result;
   }
 
-  //@unit numericFold
+  //@unit subtract
   // Numeric core functions use JavaScript Number/coercion rules. In particular,
   // single-arity CLJS functions accept missing/extra JS arguments, and the
   // variadic dispatcher falls through to its two leading slots at arity zero.
-  function numericFold(operation, x, y, more) {
-    let value = operation(x, y);
-    for (const item of more) value = operation(value, item);
-    return value;
+  function subtract(x, y) {
+    if (arguments.length === 1) return -x;
+    let result = x - y;
+    for (let i = 2; i < arguments.length; i++) result -= arguments[i];
+    return result;
   }
-  //@unit subtract requires: numericFold
-  function subtract(x, y, ...more) {
-    return arguments.length === 1 ? -x : numericFold((a, b) => a - b, x, y, more);
-  }
-  //@unit multiply requires: numericFold
-  function multiply(x, y, ...more) {
+  //@unit multiply
+  function multiply(x, y) {
     if (arguments.length === 0) return 1;
-    return arguments.length === 1 ? x : numericFold((a, b) => a * b, x, y, more);
+    if (arguments.length === 1) return x;
+    let result = x * y;
+    for (let i = 2; i < arguments.length; i++) result *= arguments[i];
+    return result;
   }
-  //@unit divide requires: numericFold
-  function divide(x, y, ...more) {
-    return arguments.length === 1 ? 1 / x : numericFold((a, b) => a / b, x, y, more);
+  //@unit divide
+  function divide(x, y) {
+    if (arguments.length === 1) return 1 / x;
+    let result = x / y;
+    for (let i = 2; i < arguments.length; i++) result /= arguments[i];
+    return result;
   }
   //@unit comparison
   function comparison(test) {
-    const fn = function (x, y, ...more) {
+    return function (x, y) {
       if (arguments.length === 1) return true;
       if (!test(x, y)) return false;
-      for (const item of more) { if (!test(y, item)) return false; y = item; }
+      for (let i = 2; i < arguments.length; i++) {
+        const item = arguments[i];
+        if (!test(y, item)) return false;
+        y = item;
+      }
       return true;
     };
-    return fn;
   }
   //@unit comparisonVariadic mutator requires: first, next, seq, variadicCore
   function comparisonVariadic(fn, test) {
@@ -2407,14 +2416,22 @@
         y = item;
       }
       return true;
-    });
+    }, test, () => true);
   }
-  //@unit extrema requires: numericFold
+  //@unit extrema
   function extrema(test) {
-    return function (x, y, ...more) {
+    const pick = (a, b) => isNaN(a) ? a : isNaN(b) ? b : test(a, b) ? a : b;
+    return function (x, y) {
       if (arguments.length === 1) return x;
-      return numericFold((a, b) => isNaN(a) ? a : isNaN(b) ? b : test(a, b) ? a : b, x, y, more);
+      let value = pick(x, y);
+      for (let i = 2; i < arguments.length; i++) value = pick(value, arguments[i]);
+      return value;
     };
+  }
+  //@unit extremaVariadic mutator requires: foldSeq, variadicCore
+  function extremaVariadic(fn, test) {
+    const step = (a, b) => isNaN(a) ? a : isNaN(b) ? b : test(a, b) ? a : b;
+    return variadicCore(fn, 2, (x, y, more) => foldSeq(step, x, y, more), step, x => x);
   }
   //@unit isInteger
   // parseInt/parseFloat are intentional: CLJS integer? excludes numbers printed
@@ -2448,9 +2465,13 @@
     if (typeof x === "string" && x.length === 1) return x;
     throw new Error("Argument to char must be a character or number");
   }
-  //@unit bitOperation requires: numericFold
+  //@unit bitOperation
   function bitOperation(operation) {
-    return (x, y, ...more) => numericFold(operation, x, y, more);
+    return function (x, y) {
+      let value = operation(x, y);
+      for (let i = 2; i < arguments.length; i++) value = operation(value, arguments[i]);
+      return value;
+    };
   }
   //@unit bitCount
   function bitCount(v) {
@@ -2479,12 +2500,38 @@
   const greaterEqual = comparison((x, y) => x >= y);
   //@unit greaterEqual.variadic install: greaterEqual requires: comparisonVariadic, greaterEqual
   comparisonVariadic(greaterEqual, (x, y) => x >= y);
-  //@unit numericEqual requires: equal
-  const numericEqual = function (...values) { return values.length !== 0 && equal(...values); };
+  //@unit numericEqual requires: equalPair
+  function numericEqual(x, y) {
+    const n = arguments.length;
+    if (n === 0) return false;
+    if (n === 1) return true;
+    if (!equalPair(x, y)) return false;
+    for (let i = 2; i < n; i++) {
+      const item = arguments[i];
+      if (!equalPair(y, item)) return false;
+      y = item;
+    }
+    return true;
+  }
+  //@unit numericEqual.variadic install: numericEqual requires: equalPair, first, next, numericEqual,
+  //@ seq, variadicCore
+  variadicCore(numericEqual, 2, (x, y, more) => {
+    if (!equalPair(x, y)) return false;
+    for (let s = seq(more); s !== null; s = next(s)) {
+      const item = first(s);
+      if (!equalPair(y, item)) return false;
+      y = item;
+    }
+    return true;
+  }, equalPair, () => true);
   //@unit max requires: extrema
   const max = extrema((x, y) => x > y);
+  //@unit max.variadic install: max requires: extremaVariadic, max
+  extremaVariadic(max, (x, y) => x > y);
   //@unit min requires: extrema
   const min = extrema((x, y) => x < y);
+  //@unit min.variadic install: min requires: extremaVariadic, min
+  extremaVariadic(min, (x, y) => x < y);
   //@unit abs
   const abs = x => Math.abs(x);
   //@unit int
@@ -2563,20 +2610,20 @@
   const rem = (n, d) => n - d * quot(n, d);
   //@unit bitXor requires: bitOperation
   const bitXor = bitOperation((x, y) => x ^ y);
-  //@unit bitXor.variadic install: bitXor requires: bitXor, foldSeq, variadicCore
-  variadicCore(bitXor, 2, (x, y, more) => foldSeq((x, y) => x ^ y, x, y, more));
+  //@unit bitXor.variadic install: bitXor requires: bitXor, variadicFold
+  variadicFold(bitXor, (a, b) => a ^ b);
   //@unit bitAnd requires: bitOperation
   const bitAnd = bitOperation((x, y) => x & y);
-  //@unit bitAnd.variadic install: bitAnd requires: bitAnd, foldSeq, variadicCore
-  variadicCore(bitAnd, 2, (x, y, more) => foldSeq((x, y) => x & y, x, y, more));
+  //@unit bitAnd.variadic install: bitAnd requires: bitAnd, variadicFold
+  variadicFold(bitAnd, (a, b) => a & b);
   //@unit bitOr requires: bitOperation
   const bitOr = bitOperation((x, y) => x | y);
-  //@unit bitOr.variadic install: bitOr requires: bitOr, foldSeq, variadicCore
-  variadicCore(bitOr, 2, (x, y, more) => foldSeq((x, y) => x | y, x, y, more));
+  //@unit bitOr.variadic install: bitOr requires: bitOr, variadicFold
+  variadicFold(bitOr, (a, b) => a | b);
   //@unit bitAndNot requires: bitOperation
   const bitAndNot = bitOperation((x, y) => x & ~y);
-  //@unit bitAndNot.variadic install: bitAndNot requires: bitAndNot, foldSeq, variadicCore
-  variadicCore(bitAndNot, 2, (x, y, more) => foldSeq((x, y) => x & ~y, x, y, more));
+  //@unit bitAndNot.variadic install: bitAndNot requires: bitAndNot, variadicFold
+  variadicFold(bitAndNot, (a, b) => a & ~b);
   //@unit bitNot
   const bitNot = x => ~x;
   //@unit bitClear
@@ -2863,8 +2910,16 @@
     }
     return reduceOf(rf, init, collection);
   }
-  //@unit reduceOf requires: hostExt, isReduced, iterator, iterReduce, methodKeys, ownSeqs,
-  //@ protocolHooks, protocolSentinel, reducedValue, reduceWalk, seqReduce, slotFirst
+  //@unit stepFn1
+  const stepFn1 = fn => typeof fn === "function" ? (fn.cljs$core$IFn$_invoke$arity$1 || fn) : a => fn.call(null, a);
+  //@unit stepFn2
+  const stepFn2 = fn => typeof fn === "function" ? (fn.cljs$core$IFn$_invoke$arity$2 || fn) : (a, b) => fn.call(null, a, b);
+  //@unit call0
+  const call0 = fn => fn.cljs$core$IFn$_invoke$arity$0 ? fn.cljs$core$IFn$_invoke$arity$0() : fn.call(null);
+  //@unit call1
+  const call1 = (fn, a) => fn.cljs$core$IFn$_invoke$arity$1 ? fn.cljs$core$IFn$_invoke$arity$1(a) : fn.call(null, a);
+  //@unit reduceOf requires: call0, hostExt, isReduced, iterator, iterReduce, methodKeys, ownSeqs,
+  //@ protocolHooks, protocolSentinel, reducedValue, reduceWalk, seqReduce, slotFirst, stepFn2
   // Upstream's `reduce` of a value without a `-reduce` slot holding a
   // method: a value of a runtime class whose instance slot holds nil or
   // false takes its class's slot, as the old path answered by the class; a
@@ -2895,9 +2950,10 @@
       && source.cljs$core$IReduce$$LKEY !== protocolSentinel
       && source.cljs$core$ISeqable$$LKEY !== protocolSentinel) {
       let i = 0;
-      if (arity === 2) { if (source.length === 0) return rf.call(null); init = source[0]; i = 1; }
+      if (arity === 2) { if (source.length === 0) return call0(rf); init = source[0]; i = 1; }
+      const step = stepFn2(rf);
       for (; i < source.length; i++) {
-        init = rf.call(null, init, source[i]);
+        init = step(init, source[i]);
         if (isReduced(init)) return reducedValue(init);
       }
       return init;
@@ -2919,29 +2975,37 @@
     // `SeqIter` of their seq.
     return kind >= 32 && kind < 64 && (4114 >>> kind - 32 & 1) === 1 ? iterReduce(iterator(source), rf, init, arity) : seqReduce(source, rf, init, arity);
   }
-  //@unit iterReduce requires: isReduced, reducedValue
+  //@unit iterReduce requires: call0, isReduced, reducedValue, stepFn2
   // `reduce` of an iterator's items: from `init` where `arity` is 3, else
   // from the first of them.
   function iterReduce(iter, rf, init, arity) {
-    if (arity === 2) { if (!iter.hasNext()) return rf.call(null); init = iter.next(); }
-    while (iter.hasNext()) { init = rf.call(null, init, iter.next()); if (isReduced(init)) return reducedValue(init); }
-    return init;
-  }
-  //@unit seqReduceFrom requires: first, isReduced, next, reducedValue
-  // The tail walk of `seqReduce` from an already-obtained seq `current`,
-  // without calling `seq` on it again (light-cljs-1081).
-  function seqReduceFrom(current, rf, init) {
-    for (; current != null; current = next(current)) {
-      init = rf.call(null, init, first(current));
+    if (arity === 2) { if (!iter.hasNext()) return call0(rf); init = iter.next(); }
+    const step = stepFn2(rf);
+    while (iter.hasNext()) {
+      init = step(init, iter.next());
       if (isReduced(init)) return reducedValue(init);
     }
     return init;
   }
-  //@unit seqReduce requires: first, next, reduce, seq, seqReduceFrom
+  //@unit seqReduceFrom requires: first, isReduced, next, reducedValue, stepFn2
+  // The tail walk of `seqReduce` from an already-obtained seq `current`,
+  // without calling `seq` on it again (light-cljs-1081).
+  function seqReduceFrom(current, rf, init) {
+    const step = stepFn2(rf);
+    for (; current != null; current = next(current)) {
+      init = step(init, first(current));
+      if (isReduced(init)) return reducedValue(init);
+    }
+    return init;
+  }
+  //@unit seqReduce requires: call0, first, next, reduce, seq, seqReduceFrom
   // Upstream's `seq-reduce`: the walk of a value's seq with `first` and
   // `next`; without `init`, its first item and the `reduce` of its next.
   function seqReduce(source, rf, init, arity) {
-    if (arity === 2) { const current = seq(source); return current == null ? rf.call(null) : reduce(rf, first(current), next(current)); }
+    if (arity === 2) {
+      const current = seq(source);
+      return current == null ? call0(rf) : reduce(rf, first(current), next(current));
+    }
     return seqReduceFrom(seq(source), rf, init);
   }
   //@unit reduceWalk requires: cellOf, first, isReduced, next, reducedValue, seq, viewOf
@@ -2979,21 +3043,22 @@
     }
     return initialized ? result : rf.call(null);
   }
-  //@unit rangeReduce requires: isReduced, reducedValue
+  //@unit rangeReduce requires: call0, isReduced, reducedValue, stepFn2
   // An integer range's items: without `init`, its `count` items from its
   // first; with one, as upstream's IntegerRange, from start to end.
   function rangeReduce(range, rf, init, arity) {
+    const step = stepFn2(rf);
     if (arity === 2) {
-      if (range.count$LKEY === 0) return rf.call(null);
+      if (range.count$LKEY === 0) return call0(rf);
       init = range.first$LKEY;
       for (let i = 1; i < range.count$LKEY; i++) {
-        init = rf.call(null, init, range.first$LKEY + i * range.step$LKEY);
+        init = step(init, range.first$LKEY + i * range.step$LKEY);
         if (isReduced(init)) return reducedValue(init);
       }
       return init;
     }
     for (let i = range.first$LKEY; range.step$LKEY > 0 ? i < range.end$LKEY : i > range.end$LKEY; i += range.step$LKEY) {
-      init = rf.call(null, init, i);
+      init = step(init, i);
       if (isReduced(init)) return reducedValue(init);
     }
     return init;
@@ -3007,7 +3072,7 @@
     while (n === -1 || i++ < n) { init = rf.call(null, init, item); if (isReduced(init)) return reducedValue(init); }
     return init;
   }
-  //@unit chunkReduce requires: isReduced, reducedValue, seqReduce
+  //@unit chunkReduce requires: isReduced, reducedValue, seqReduce, stepFn2
   // An array chunk's items from its offset; a range's chunk, whose `step`
   // is a number, has no items of its own: the walk of its seq, as the old
   // path.
@@ -3015,7 +3080,11 @@
     if (chunk.step$LKEY !== null) return seqReduce(chunk, rf, init, arity);
     let i = chunk.off$LKEY;
     if (arity === 2) init = chunk.arr$LKEY[i++];
-    for (; i < chunk.arr$LKEY.length; i++) { init = rf.call(null, init, chunk.arr$LKEY[i]); if (isReduced(init)) return reducedValue(init); }
+    const step = stepFn2(rf);
+    for (; i < chunk.arr$LKEY.length; i++) {
+      init = step(init, chunk.arr$LKEY[i]);
+      if (isReduced(init)) return reducedValue(init);
+    }
     return init;
   }
   //@unit iterateReduce requires: first, isReduced, reducedValue
@@ -3081,8 +3150,8 @@
     const own = operationPaths.reduceOwn;
     return arity === 3 ? own(rf, init, self) : own(rf, self);
   }
-  //@unit itemsReduce requires: isReduced, iterator, iterReduce, reducedValue, reduceOwnPath,
-  //@ reduceWalk, slotFirst
+  //@unit itemsReduce requires: call0, isReduced, iterator, iterReduce, reducedValue, reduceOwnPath,
+  //@ reduceWalk, slotFirst, stepFn2
   // The walk of a hash or array set's and an indexed seq's `-reduce` slots
   // (light-cljs-1059), whose call's argument count is `arity` (2 without an
   // initial value): `items` from index `i` on (each entry's `key` where
@@ -3097,8 +3166,12 @@
   function itemsReduce(self, own, items, i, keyed, rf, init, arity) {
     if (!slotFirst.on) return reduceOwnPath(self, rf, init, arity);
     if (!own) return keyed || self.view$LKEY === "queue" ? iterReduce(iterator(self), rf, init, arity) : reduceWalk(self, rf, init, arity);
-    if (arity === 2) { if (!(i < items.length)) return rf.call(null); init = keyed ? items[i++].key : items[i++]; }
-    for (; i < items.length; i++) { init = rf.call(null, init, keyed ? items[i].key : items[i]); if (isReduced(init)) return reducedValue(init); }
+    if (arity === 2) { if (!(i < items.length)) return call0(rf); init = keyed ? items[i++].key : items[i++]; }
+    const step = stepFn2(rf);
+    for (; i < items.length; i++) {
+      init = step(init, keyed ? items[i].key : items[i]);
+      if (isReduced(init)) return reducedValue(init);
+    }
     return init;
   }
 
@@ -3114,18 +3187,24 @@
     if (method) return arity === 3 ? method.call(source, source, rf, init) : method.call(source, source, rf);
     return operation.apply(null, arguments);
   }, "name", {value: operation.name}))(reducePath);
-  //@unit reducingFunction requires: invalidArity
+  //@unit reducingFunction requires: call0, call1, invalidArity
   // Reducers and transforms use the same .call ABI as emitted functions and
-  // custom IFn values. State is allocated when a transform receives its reducer.
-  function reducingFunction(rf, step, complete = result => rf.call(null, result)) {
-    return function (result, input) {
+  // custom IFn values, and publish fixed-arity entries so `reduce` and
+  // `transduce` invoke their steps without `arguments` dispatch.
+  function reducingFunction(rf, step, complete = result => call1(rf, result)) {
+    const init = () => call0(rf);
+    const fn = function (result, input) {
       switch (arguments.length) {
-        case 0: return rf.call(null);
+        case 0: return init();
         case 1: return complete(result);
         case 2: return step(result, input);
         default: return invalidArity(arguments.length);
       }
     };
+    fn.cljs$core$IFn$_invoke$arity$0 = init;
+    fn.cljs$core$IFn$_invoke$arity$1 = complete;
+    fn.cljs$core$IFn$_invoke$arity$2 = step;
+    return fn;
   }
   //@unit transform
   function transform(factory) {
@@ -3133,45 +3212,49 @@
       return factory(rf);
     };
   }
-  //@unit completing requires: invalidArity, reducingFunction
+  //@unit completing requires: call1, invalidArity, reducingFunction, stepFn2
   function completing(rf, cf) {
     if (arguments.length === 1) cf = result => result;
     else if (arguments.length !== 2) return invalidArity(arguments.length);
-    return reducingFunction(rf, (result, input) => rf.call(null, result, input), result => cf.call(null, result));
+    const r2 = stepFn2(rf);
+    return reducingFunction(rf, (result, input) => r2(result, input), result => call1(cf, result));
   }
-  //@unit transduce requires: invalidArity, reduce
+  //@unit transduce requires: call0, call1, invalidArity, reduce
   function transduce(xf, rf, init, coll) {
-    if (arguments.length === 3) { coll = init; init = rf.call(null); }
+    if (arguments.length === 3) { coll = init; init = call0(rf); }
     else if (arguments.length !== 4) return invalidArity(arguments.length);
-    const transformed = xf.call(null, rf);
-    return transformed.call(null, reduce(transformed, init, coll));
+    const transformed = call1(xf, rf);
+    return call1(transformed, reduce(transformed, init, coll));
   }
-  //@unit indexedTransform requires: reducingFunction, transform
+  //@unit indexedTransform requires: reducingFunction, stepFn1, stepFn2, transform
   function indexedTransform(fn, keepOnly, indexed) {
+    const f = indexed ? stepFn2(fn) : stepFn1(fn);
     return transform(rf => {
       let index = -1;
+      const r2 = stepFn2(rf);
       return reducingFunction(rf, (result, input) => {
-        const value = indexed ? fn.call(null, ++index, input) : fn.call(null, input);
-        return keepOnly && value == null ? result : rf.call(null, result, value);
+        const value = indexed ? f(++index, input) : f(input);
+        return keepOnly && value == null ? result : r2(result, value);
       });
     });
   }
-  //@unit bufferedTransform requires: equalPair, isReduced, keyword, keywordIdentical,
-  //@ reducingFunction, transform, unreduced, vectorFromArray
+  //@unit bufferedTransform requires: call1, equalPair, isReduced, keyword, keywordIdentical,
+  //@ reducingFunction, stepFn1, stepFn2, transform, unreduced, vectorFromArray
   function bufferedTransform(group) {
+    const kf = group.kind === "key" ? stepFn1(group.fn) : null;
     return transform(rf => {
-      const none = keyword("cljs.core", "none");
+      const none = keyword("cljs.core", "none"), r2 = stepFn2(rf);
       let buffer = [], prior = none;
       const flush = result => {
         const value = vectorFromArray(buffer); buffer = [];
-        return rf.call(null, result, value);
+        return r2(result, value);
       };
       return reducingFunction(rf, (result, input) => {
         if (group.kind === "count") {
           buffer.push(input);
           return buffer.length === group.n ? flush(result) : result;
         }
-        const previous = prior, key = group.fn.call(null, input); prior = key;
+        const previous = prior, key = kf(input); prior = key;
         if (keywordIdentical(previous, none) || equalPair(previous, key)) { buffer.push(input); return result; }
         const ret = flush(result);
         if (!isReduced(ret)) buffer.push(input);
@@ -3179,29 +3262,33 @@
       }, result => {
         // Clear before invoking the downstream step, including reentry/failure.
         if (buffer.length) result = unreduced(flush(result));
-        return rf.call(null, result);
+        return call1(rf, result);
       });
     });
   }
-  //@unit haltWhen requires: contains, get, hashMap, invalidArity, isMap, keyword, reduced,
-  //@ reducingFunction, transform, truth
+  //@unit haltWhen requires: call1, contains, get, hashMap, invalidArity, isMap, keyword, reduced,
+  //@ reducingFunction, stepFn1, stepFn2, transform, truth
   function haltWhen(pred, retf) {
     if (arguments.length !== 1 && arguments.length !== 2) return invalidArity(arguments.length);
-    const halt = keyword("cljs.core", "halt");
-    return transform(rf => reducingFunction(rf, (result, input) =>
-      truth(pred.call(null, input))
-        ? reduced(hashMap(halt, truth(retf) ? retf.call(null, rf.call(null, result), input) : input))
-        : rf.call(null, result, input),
-      result => isMap(result) && contains(result, halt) ? get(result, halt) : rf.call(null, result)));
+    const halt = keyword("cljs.core", "halt"), p1 = stepFn1(pred);
+    return transform(rf => {
+      const r2 = stepFn2(rf);
+      return reducingFunction(rf, (result, input) =>
+        truth(p1(input))
+          ? reduced(hashMap(halt, truth(retf) ? retf.call(null, call1(rf, result), input) : input))
+          : r2(result, input),
+        result => isMap(result) && contains(result, halt) ? get(result, halt) : call1(rf, result));
+    });
   }
   //@unit dedupe requires: cons, equalPair, first, invalidArity, keyword, lazySequence,
-  //@ reducingFunction, rest, seq, transform
+  //@ reducingFunction, rest, seq, stepFn2, transform
   function dedupe(coll) {
     if (arguments.length === 0) return transform(rf => {
       let prior = keyword("cljs.core", "none");
+      const r2 = stepFn2(rf);
       return reducingFunction(rf, (result, input) => {
         const previous = prior; prior = input;
-        return equalPair(previous, input) ? result : rf.call(null, result, input);
+        return equalPair(previous, input) ? result : r2(result, input);
       });
     });
     if (arguments.length !== 1) return invalidArity(arguments.length);
@@ -3397,6 +3484,10 @@
     }
     return conjOf(coll, item);
   }
+  //@unit conj.arity install: conj requires: conj, conj2, makeVector
+  conj.cljs$core$IFn$_invoke$arity$0 = () => makeVector([]);
+  conj.cljs$core$IFn$_invoke$arity$1 = x => x;
+  conj.cljs$core$IFn$_invoke$arity$2 = conj2;
   //@unit conjOf requires: conj, cons, emptyList, fallbackMethod, isCell, isChunkedCons, isLazy,
   //@ isView, makeVector, protocolHooks, unsupported
   // Upstream's `conj`: none or one argument, each item in turn, nil the
@@ -5195,6 +5286,10 @@
     for (let i = 1; i < n; i++) value = conjBangOwn(value, arguments[i]);
     return value;
   }
+  //@unit conjBang.arity install: conjBang requires: conjBang, conjBangOwn, transient, vector
+  conjBang.cljs$core$IFn$_invoke$arity$0 = () => transient(vector());
+  conjBang.cljs$core$IFn$_invoke$arity$1 = x => x;
+  conjBang.cljs$core$IFn$_invoke$arity$2 = conjBangOwn;
   //@unit assocBang requires: assocBangOwn
   function assocBang(value, key, item) {
     const n = arguments.length;
@@ -5503,17 +5598,34 @@
     if (!sub.callerTail$LKEY) store.built$LKEY = trie;
     return trie;
   }
-  //@unit vectorReduce requires: isReduced, reducedValue, vectorLeaf, vectorNth
+  //@unit vectorReduce requires: call0, isReduced, reducedValue, stepFn2, vectorLeaf, vectorNth
   // `reduce` of a store's items from index `i`: from `init` where `arity` is
   // 3, else from the first of them. A view's walks the store it views.
   function vectorReduce(store, rf, init, i, arity) {
     let end = store.cnt$LKEY;
     if (store.sub$LKEY) { i += store.begin$LKEY; end += store.begin$LKEY; store = store.sub$LKEY; }
-    if (arity === 2) { if (i >= end) return rf.call(null); init = vectorNth(store, i++, null); }
-    for (let leaf = vectorLeaf(store, i); i < end;) {
-      init = rf.call(null, init, leaf[i & 31]);
-      if (isReduced(init)) return reducedValue(init);
-      if (!(++i & 31)) leaf = vectorLeaf(store, i);
+    if (arity === 2) {
+      if (i >= end) return call0(rf);
+      init = vectorNth(store, i++, null);
+    }
+    const step = stepFn2(rf);
+    if (store.cnt$LKEY <= 32) {
+      const leaf = store.tail$LKEY;
+      for (; i < end; i++) {
+        init = step(init, leaf[i]);
+        if (isReduced(init)) return reducedValue(init);
+      }
+      return init;
+    }
+    while (i < end) {
+      const leaf = vectorLeaf(store, i);
+      let j = i & 31;
+      const stop = Math.min(32, j + end - i);
+      i += stop - j;
+      for (; j < stop; j++) {
+        init = step(init, leaf[j]);
+        if (isReduced(init)) return reducedValue(init);
+      }
     }
     return init;
   }
@@ -6787,8 +6899,8 @@
   // An array or hash map's `-reduce` and `-kv-reduce` slots, and a sorted
   // map's (light-cljs-1055, light-cljs-1072), which `reduce` and
   // `reduce-kv` call before any protocol lookup.
-  //@unit mapReduceSlot requires: isReduced, iterator, iterReduce, mapEntry, reducedValue,
-  //@ reduceOwnPath, reduceWalk, slotFirst
+  //@unit mapReduceSlot requires: call0, isReduced, iterator, iterReduce, mapEntry, reducedValue,
+  //@ reduceOwnPath, reduceWalk, slotFirst, stepFn2
   // `reduce` of an array or a hash map: an entry of each of its keys and
   // values (`pairs`, as `mapPairs` gives them), as its seq holds them
   // (`seqMap`), without the seq; of a public constructor's array map (its
@@ -6807,9 +6919,10 @@
       if (!iterable) return iterReduce(iterator(self), rf, init, arity);
       pairs = slots.arr; n = slots.cnt * 2;
     } else if (!own) return reduceWalk(self, rf, init, arity);
-    if (arity === 2) { if (!(i < n)) return rf.call(null); init = mapEntry(pairs[0], pairs[1]); i = 2; }
+    if (arity === 2) { if (!(i < n)) return call0(rf); init = mapEntry(pairs[0], pairs[1]); i = 2; }
+    const step = stepFn2(rf);
     for (; i < n; i += 2) {
-      init = rf.call(null, init, mapEntry(pairs[i], pairs[i + 1]));
+      init = step(init, mapEntry(pairs[i], pairs[i + 1]));
       if (isReduced(init)) return reducedValue(init);
     }
     return init;
@@ -7374,18 +7487,26 @@
   }
   //@unit PersistentVectorValue.reduceSlot effect: PersistentVectorValue when: reduce, reduceOf
   //@ requires: builtinSlot, PersistentVectorValue, vectorReduceSlot
-  // One method for both arities (the arguments' count); `own` is the
-  // class's `-seq` slot as it loads, which `extend-type` replaces.
-  PersistentVectorValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = builtinSlot((own => function (self, rf, init) {
-    return vectorReduceSlot(self, rf, init, arguments.length, self.cljs$core$ISeqable$_seq$arity$1$LKEY === own);
-  })(PersistentVectorValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY));
-  PersistentVectorValue.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = PersistentVectorValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY;
+  // One method per arity (no `arguments.length`); `own` is the class's `-seq`
+  // slot as it loads, which `extend-type` replaces.
+  (own => {
+    PersistentVectorValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = builtinSlot(function (self, rf) {
+      return vectorReduceSlot(self, rf, undefined, 2, self.cljs$core$ISeqable$_seq$arity$1$LKEY === own);
+    });
+    PersistentVectorValue.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = builtinSlot(function (self, rf, init) {
+      return vectorReduceSlot(self, rf, init, 3, self.cljs$core$ISeqable$_seq$arity$1$LKEY === own);
+    });
+  })(PersistentVectorValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY);
   //@unit SubvecValue.reduceSlot effect: SubvecValue when: reduce, reduceOf requires: builtinSlot,
   //@ SubvecValue, vectorReduceSlot
-  SubvecValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = builtinSlot((own => function (self, rf, init) {
-    return vectorReduceSlot(self, rf, init, arguments.length, self.cljs$core$ISeqable$_seq$arity$1$LKEY === own);
-  })(SubvecValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY));
-  SubvecValue.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = SubvecValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY;
+  (own => {
+    SubvecValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = builtinSlot(function (self, rf) {
+      return vectorReduceSlot(self, rf, undefined, 2, self.cljs$core$ISeqable$_seq$arity$1$LKEY === own);
+    });
+    SubvecValue.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = builtinSlot(function (self, rf, init) {
+      return vectorReduceSlot(self, rf, init, 3, self.cljs$core$ISeqable$_seq$arity$1$LKEY === own);
+    });
+  })(SubvecValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY);
   //@unit vectorKvReduce requires: isReduced, reducedValue, vectorItems, vectorLeaf
   // `reduce-kv` of a vector or a subvector: each index and item of its
   // store, as `reduceKv` gives them; of a store that reads a caller's array
@@ -7631,8 +7752,10 @@
   // EmptyList's: the list of the item onto it, with its metadata, and its
   // rest, which an empty list's count refuses, as `conj` and `pop` gave
   // them before.
-  //@unit listConjSlot requires: builtinSlot, conjMeta, cons
-  const listConjSlot = builtinSlot(function (self, item) { return conjMeta(self, cons(item, self, "list")); });
+  //@unit listConjSlot requires: builtinSlot, conjMeta, listCons
+  const listConjSlot = builtinSlot(function (self, item) {
+    return conjMeta(self, listCons(item, self));
+  });
   //@unit ListValue.conjSlot effect: ListValue when: conj, conjOf, conjOwn, conjSite,
   //@ treeMapSeqConstructor requires: listConjSlot, ListValue
   ListValue.prototype.cljs$core$ICollection$_conj$arity$2$LKEY = listConjSlot;
@@ -8156,34 +8279,39 @@
   function isDistinct(x, y, ...more) {
     return arguments.length === 1 ? true : distinctMore(x, y, fnRest(more, 0));
   }
-  //@unit fnComparator requires: compareKeys, truth
+  //@unit fnComparator requires: compareKeys, stepFn2, truth
   function fnComparator(fn) {
     if (fn === compareKeys) return fn;
+    const f2 = stepFn2(fn);
     return (x, y) => {
-      const result = fn.call(null, x, y);
-      return typeof result === "number" ? result : truth(result) ? -1 : truth(fn.call(null, y, x)) ? 1 : 0;
+      const result = f2(x, y);
+      return typeof result === "number" ? result : truth(result) ? -1 : truth(f2(y, x)) ? 1 : 0;
     };
   }
-  //@unit sort requires: collectionWithMeta, compareKeys, emptyList, fnComparator, invalidArity,
-  //@ meta, seq, toArray
+  //@unit sortWith requires: collectionWithMeta, emptyList, meta, seq, toArray
+  function sortWith(cmp, coll) {
+    if (seq(coll) === null) return emptyList;
+    const values = toArray(coll);
+    values.sort(cmp);
+    return collectionWithMeta(seq(values), meta(coll));
+  }
+  //@unit sort requires: compareKeys, fnComparator, invalidArity, sortWith
   function sort(fn, coll) {
     if (arguments.length === 1) { coll = fn; fn = compareKeys; }
     else if (arguments.length !== 2) return invalidArity(arguments.length);
-    if (seq(coll) === null) return emptyList;
-    const values = toArray(coll);
-    values.sort(fnComparator(fn));
-    return collectionWithMeta(seq(values), meta(coll));
+    return sortWith(fnComparator(fn), coll);
   }
-  //@unit sortBy requires: compareKeys, fnComparator, invalidArity, sort
+  //@unit sortBy requires: compareKeys, fnComparator, invalidArity, sortWith, stepFn1
   function sortBy(key, fn, coll) {
     if (arguments.length === 2) { coll = fn; fn = compareKeys; }
     else if (arguments.length !== 3) return invalidArity(arguments.length);
-    const cmp = fnComparator(fn);
-    return sort((x, y) => cmp(key.call(null, x), key.call(null, y)), coll);
+    const cmp = fnComparator(fn), kf = stepFn1(key);
+    return sortWith((x, y) => cmp(kf(x), kf(y)), coll);
   }
   //@unit comparator requires: truth
   function comparator(predicate) {
-    return (x, y) => truth(predicate.call(null, x, y)) ? -1 : truth(predicate.call(null, y, x)) ? 1 : 0;
+    return (x, y) => truth(predicate.cljs$core$IFn$_invoke$arity$2 ? predicate.cljs$core$IFn$_invoke$arity$2(x, y) : predicate.call(null, x, y))
+      ? -1 : truth(predicate.cljs$core$IFn$_invoke$arity$2 ? predicate.cljs$core$IFn$_invoke$arity$2(y, x) : predicate.call(null, y, x)) ? 1 : 0;
   }
   //@unit isJsSymbol
   // Public core utilities follow the pinned core.cljs Number/UTF-16 contracts.
@@ -8487,9 +8615,14 @@
   };
 
   //@unit equal requires: equalPair
-  function equal(...values) {
-    for (let i = 1; i < values.length; i++) {
-      if (!equalPair(values[i - 1], values[i])) return false;
+  function equal(x, y) {
+    const n = arguments.length;
+    if (n <= 1) return true;
+    if (!equalPair(x, y)) return false;
+    for (let i = 2; i < n; i++) {
+      const item = arguments[i];
+      if (!equalPair(y, item)) return false;
+      y = item;
     }
     return true;
   }
@@ -9811,8 +9944,9 @@
   //@unit KeySeqCell.seqSlot effect: KeySeqCell when: seq, seqOf, seqSite requires: cellSeqSlot,
   //@ KeySeqCell
   KeySeqCell.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = cellSeqSlot;
-  //@unit keySeqReduce requires: entryKey, entryVal, hostExt, isEntryCell, isReduced, mapProjection,
-  //@ next, protocolHooks, reducedValue, seqReduce, seqReduceFrom, slotFirst, viewAt, viewOf
+  //@unit keySeqReduce requires: call0, entryKey, entryVal, hostExt, isEntryCell, isReduced,
+  //@ mapProjection, next, protocolHooks, reducedValue, seqReduce, seqReduceFrom, slotFirst, stepFn2,
+  //@ viewAt, viewOf
   // Fast reduction for `KeySeqCell` over non-chunked view seqs (`IndexedSeq`
   // or shared-profile map seqs) when no `ISeq`/`ISeqable`/`INext` extension
   // is active (`!hostExt.seq`); rechecks `hostExt.seq` after every callback so
@@ -9824,16 +9958,17 @@
       const arr = slice.arr$LKEY, keyed = ks.cell$LKEY === "keys", len = arr.length, start = slice.i$LKEY;
       let i = start;
       if (arity === 2) {
-        if (i >= len) return rf.call(null);
+        if (i >= len) return call0(rf);
         const e = arr[i++];
         const m = isEntryCell(e) ? (keyed ? e.cljs$core$IMapEntry$_key$arity$1$LKEY : e.cljs$core$IMapEntry$_val$arity$1$LKEY) : null;
         init = m ? m.call(e, e) : isEntryCell(e) ? (keyed ? entryKey(e) : entryVal(e)) : keyed ? (protocolHooks.keyProtocol ?? entryKey)(e) : (protocolHooks.valProtocol ?? entryVal)(e);
       }
+      const step = stepFn2(rf);
       for (; i < len; i++) {
         const e = arr[i];
         const m = isEntryCell(e) ? (keyed ? e.cljs$core$IMapEntry$_key$arity$1$LKEY : e.cljs$core$IMapEntry$_val$arity$1$LKEY) : null;
         const item = m ? m.call(e, e) : isEntryCell(e) ? (keyed ? entryKey(e) : entryVal(e)) : keyed ? (protocolHooks.keyProtocol ?? entryKey)(e) : (protocolHooks.valProtocol ?? entryVal)(e);
-        init = rf.call(null, init, item);
+        init = step(init, item);
         if (isReduced(init)) return reducedValue(init);
         if (!slotFirst.on || hostExt.seq)
           return seqReduceFrom(next(i === start ? ks : mapProjection(viewAt(slice, i), keyed ? 0 : 1, true)), rf, init);
@@ -9875,9 +10010,10 @@
           return seqReduce(self, rf, init, arity);
         const n = pairs.length, item = keyed ? 0 : 1;
         let i = start;
-        if (arity === 2) { if (i >= n) return rf.call(null); init = pairs[i + item]; i += 2; }
+        if (arity === 2) { if (i >= n) return rf.cljs$core$IFn$_invoke$arity$0 ? rf.cljs$core$IFn$_invoke$arity$0() : rf.call(null); init = pairs[i + item]; i += 2; }
         for (; i < n; i += 2) {
-          init = rf.call(null, init, pairs[i + item]);
+          const elem = pairs[i + item];
+          init = rf.cljs$core$IFn$_invoke$arity$2 ? rf.cljs$core$IFn$_invoke$arity$2(init, elem) : rf.call(null, init, elem);
           if (isReduced(init)) return reducedValue(init);
           const cur = i === start ? self : keySeqWitness, seqCur = i === start ? entries : arraySeqWitness;
           if (!slotFirst.on || root.entries$LKEY !== null
@@ -9896,9 +10032,10 @@
         return seqReduce(self, rf, init, arity);
       const n = nodes.length, Cell = entries.cljs$lang$cell$$LKEY, seqWitness = Object.create(Object.getPrototypeOf(entries));
       let i = start;
-      if (arity === 2) { if (i >= n) return rf.call(null); init = keyed ? nodes[i].key : nodes[i].value; i++; }
+      if (arity === 2) { if (i >= n) return rf.cljs$core$IFn$_invoke$arity$0 ? rf.cljs$core$IFn$_invoke$arity$0() : rf.call(null); init = keyed ? nodes[i].key : nodes[i].value; i++; }
       for (; i < n; i++) {
-        init = rf.call(null, init, keyed ? nodes[i].key : nodes[i].value);
+        const elem = keyed ? nodes[i].key : nodes[i].value;
+        init = rf.cljs$core$IFn$_invoke$arity$2 ? rf.cljs$core$IFn$_invoke$arity$2(init, elem) : rf.call(null, init, elem);
         if (isReduced(init)) return reducedValue(init);
         const cur = i === start ? self : keySeqWitness, seqCur = i === start ? entries : seqWitness;
         if (!slotFirst.on || root.entries$LKEY !== null
@@ -12470,12 +12607,30 @@
     });
     return new ReSeqCell(value, tail);
   }
-  //@unit toArray requires: first, next, seq
+  //@unit toArray requires: fieldComparisons, first, hostExt, kindHooks, next, ownSeqs, seq,
+  //@ slotFirst
   function toArray(value) {
+    if (value != null && fieldComparisons.on && slotFirst.on && !ownSeqs.on && !hostExt.seq
+      && value.cljs$lang$kind$$LKEY === 1 && value.tail$LKEY !== undefined
+      && value.callerTail$LKEY === undefined) {
+      const cnt = value.cnt$LKEY;
+      if (cnt <= 32 && value.tail$LKEY.length === cnt) return value.tail$LKEY.slice();
+      if (cnt > 32 && kindHooks.vectorToArray) return kindHooks.vectorToArray(value, cnt);
+    }
     const result = [];
     for (let current = seq(value); current !== null; current = next(current)) result.push(first(current));
     return result;
   }
+  //@unit makeVector.toArray effect: makeVector, mapEntry when: toArray requires: kindHooks, vectorLeaf
+  kindHooks.vectorToArray = (store, cnt) => {
+    const out = new Array(cnt);
+    for (let i = 0; i < cnt;) {
+      const leaf = vectorLeaf(store, i);
+      const stop = Math.min(32, cnt - i);
+      for (let j = 0; j < stop; j++) out[i++] = leaf[j];
+    }
+    return out;
+  };
   //@unit vec requires: into, isMapEntry, isVector, keyProtocol, valProtocol, vector, withMeta
   function vec(value) {
     if (isMapEntry(value)) return vector(keyProtocol(value), valProtocol(value));
@@ -13611,8 +13766,37 @@
     for (let i = 0; i < n; i++, args = rest(args)) values.push(first(args));
     return fn.call(null, ...values);
   }
-  //@unit apply requires: applyTo, boundedCount, cons, seq, toArray
-  function apply(fn, ...args) {
+  //@unit directTail requires: fieldComparisons, hostExt, ownSeqs, protocolSentinel, slotFirst
+  function directTail(tail) {
+    if (tail == null || !slotFirst.on || ownSeqs.on || hostExt.seq) return null;
+    if (tail.cljs$lang$kind$$LKEY === 1)
+      return fieldComparisons.on && tail.tail$LKEY !== undefined && tail.cnt$LKEY <= 32 && tail.tail$LKEY.length === tail.cnt$LKEY && tail.callerTail$LKEY === undefined ? tail.tail$LKEY : null;
+    return Array.isArray(tail) && tail.length <= 32 && !(hostExt.p0 & 2) && !(tail.cljs$lang$protocol_mask$partition0$$LKEY & 8388802)
+      && tail.cljs$core$ISeqable$$LKEY !== protocolSentinel && tail.cljs$core$ICounted$$LKEY !== protocolSentinel ? tail : null;
+  }
+  //@unit apply requires: applyTo, boundedCount, call0, call1, cons, directTail, seq, stepFn2, toArray
+  function apply(fn, a, b, c, d) {
+    const argc = arguments.length;
+    if (argc >= 2 && argc <= 5 && fn.cljs$lang$applyTo?.direct$LKEY === true) {
+      const arr = directTail(argc === 2 ? a : argc === 3 ? b : argc === 4 ? c : d);
+      if (arr !== null) {
+        const len = arr.length;
+        if (argc === 2) {
+          if (len === 0) return call0(fn);
+          if (len === 1) return call1(fn, arr[0]);
+          if (len === 2) return stepFn2(fn)(arr[0], arr[1]);
+          if (len === 3) return fn(arr[0], arr[1], arr[2]);
+          if (len === 4) return fn(arr[0], arr[1], arr[2], arr[3]);
+          return fn.apply(null, arr);
+        }
+        if (argc === 3) return len === 0 ? call1(fn, a) : len === 1 ? stepFn2(fn)(a, arr[0]) : len === 2 ? fn(a, arr[0], arr[1]) : fn.apply(null, [a, ...arr]);
+        if (argc === 4) return len === 0 ? stepFn2(fn)(a, b) : len === 1 ? fn(a, b, arr[0]) : fn.apply(null, [a, b, ...arr]);
+        return len === 0 ? fn(a, b, c) : fn.apply(null, [a, b, c, ...arr]);
+      }
+    }
+    return applySlow.apply(null, arguments);
+  }
+  function applySlow(fn, ...args) {
     // The upstream variadic default also receives calls with fewer than two
     // arguments. Keep its missing leading slots rather than adding validation.
     if (args.length === 0) args = [undefined, undefined, undefined, undefined, null];
@@ -13875,15 +14059,16 @@
     if (args !== 2) return invalidArity(args);
   }
   //@unit take requires: collectionArity, cons, ensureReduced, first, invalidArity, lazySequence,
-  //@ numberArgument, reducingFunction, rest, seq, transform
+  //@ numberArgument, reducingFunction, rest, seq, stepFn2, transform
   function take(n, coll) {
     if (arguments.length !== 1 && arguments.length !== 2) return invalidArity(arguments.length);
     numberArgument(n);
     if (arguments.length === 1) return transform(rf => {
       let remaining = n;
+      const r2 = stepFn2(rf);
       return reducingFunction(rf, (result, input) => {
         const prior = remaining; remaining--;
-        const ret = prior > 0 ? rf.call(null, result, input) : result;
+        const ret = prior > 0 ? r2(result, input) : result;
         return remaining > 0 ? ret : ensureReduced(ret);
       });
     });
@@ -13894,28 +14079,39 @@
     });
   }
   //@unit drop requires: collectionArity, dropProtocol, dropValue, emptyList, invalidArity,
-  //@ lazySequence, methodKeys, numberArgument, protocolHooks, reducingFunction, rest, seq,
+  //@ lazySequence, methodKeys, numberArgument, protocolHooks, reducingFunction, rest, seq, stepFn2,
   //@ transform
   function drop(n, coll) {
     if (arguments.length !== 1 && arguments.length !== 2) return invalidArity(arguments.length);
     numberArgument(n);
     if (arguments.length === 1) return transform(rf => {
       let remaining = n;
-      return reducingFunction(rf, (result, input) => { const prior = remaining; remaining--; return prior > 0 ? result : rf.call(null, result, input); });
+      const r2 = stepFn2(rf);
+      return reducingFunction(rf, (result, input) => {
+        const prior = remaining; remaining--;
+        return prior > 0 ? result : r2(result, input);
+      });
     });
     collectionArity("drop", arguments.length);
     if (protocolHooks.implements?.(methodKeys[13], coll) ?? dropValue(coll)) return (n > 0 ? dropProtocol(coll, Math.ceil(n)) : seq(coll)) ?? emptyList;
     return lazySequence(() => { let s = seq(coll), remaining = n; while (remaining > 0 && s !== null) { s = seq(rest(s)); remaining--; } return s; });
   }
-  //@unit mapSeq requires: apply, arrayChunk, callable, chunkCons, chunkFirst, chunkItem, chunkRest,
-  //@ chunkStore, cons, count, first, invalidArity, isChunkedSeq, lazySequence, listFromArray,
-  //@ mapManySteps, rest, seq, transform
+  //@unit mapSeq requires: apply, arrayChunk, call0, call1, callable, chunkCons, chunkFirst, chunkItem,
+  //@ chunkRest, chunkStore, cons, count, first, invalidArity, isChunkedSeq, lazySequence,
+  //@ listFromArray, mapManySteps, rest, seq, stepFn1, stepFn2, transform
   function mapSeq(fn, ...colls) {
     if (arguments.length === 0) return lazySequence(() => null);
-    if (arguments.length === 1) return transform(rf => callable(2, {
-      0: () => rf.call(null), 1: result => rf.call(null, result),
-      2: (result, input) => rf.call(null, result, fn.call(null, input))
-    }, (result, input, inputs) => rf.call(null, result, apply(fn, input, inputs))));
+    if (arguments.length === 1) {
+      const f1 = stepFn1(fn);
+      return transform(rf => {
+        const r2 = stepFn2(rf);
+        return callable(2, {
+          0: () => call0(rf),
+          1: result => call1(rf, result),
+          2: (result, input) => r2(result, f1(input))
+        }, (result, input, inputs) => r2(result, apply(fn, input, inputs)));
+      });
+    }
     if (!colls.length) return invalidArity(arguments.length);
     // The variadic branch maps a lazy sequence of argument tuples and uses
     // apply. This preserves bounded rest arguments and host receiver behavior.
@@ -13926,7 +14122,8 @@
       if (sources.some(value => value === null)) return null;
       if (sources.length === 1 && isChunkedSeq(sources[0])) {
         const chunk = chunkFirst(sources[0]), store = chunkStore(chunk), size = count(chunk), items = [];
-        for (let i = 0; i < size; i++) items.push(fn.call(null, chunkItem(chunk, store, i)));
+        const f1 = stepFn1(fn);
+        for (let i = 0; i < size; i++) items.push(f1(chunkItem(chunk, store, i)));
         return chunkCons(arrayChunk(items), mapSeq(fn, chunkRest(sources[0])));
       }
       return cons(fn.call(null, ...sources.map(first)), mapSeq(fn, ...sources.map(rest)));
@@ -13963,23 +14160,33 @@
   function keepIndexed(fn, coll) { if (arguments.length === 1) return indexedTransform(fn, true, true); collectionArity("keep-indexed", arguments.length); return indexedSequence(fn, coll, 0, true); }
   //@unit keep requires: collectionArity, indexedSequence, indexedTransform
   function keep(fn, coll) { if (arguments.length === 1) return indexedTransform(fn, true, false); collectionArity("keep", arguments.length); return indexedSequence(fn, coll, 0, true, false); }
-  //@unit filter requires: arrayChunk, chunkCons, chunkFirst, chunkItem, chunkRest, chunkStore,
+  //@unit filter requires: arrayChunk, call1, chunkCons, chunkFirst, chunkItem, chunkRest, chunkStore,
   //@ collectionArity, cons, count, first, isChunkedSeq, lazySequence, reducingFunction, rest, seq,
-  //@ transform, truth
+  //@ stepFn1, stepFn2, transform, truth
   function filter(pred, coll) {
-    if (arguments.length === 1) return transform(rf => reducingFunction(rf, (result, input) => truth(pred.call(null, input)) ? rf.call(null, result, input) : result));
+    if (arguments.length === 1) {
+      const p1 = stepFn1(pred);
+      return transform(rf => {
+        const r2 = stepFn2(rf);
+        return reducingFunction(rf, (result, input) => truth(p1(input)) ? r2(result, input) : result);
+      });
+    }
     collectionArity("filter", arguments.length);
     return lazySequence(() => {
       const s = seq(coll);
       if (s !== null) {
         if (isChunkedSeq(s)) {
           const chunk = chunkFirst(s), store = chunkStore(chunk), size = count(chunk), values = [];
-          for (let i = 0; i < size; i++) { const value = chunkItem(chunk, store, i); if (truth(pred.call(null, value))) values.push(value); }
+          const p1 = stepFn1(pred);
+          for (let i = 0; i < size; i++) {
+            const value = chunkItem(chunk, store, i);
+            if (truth(p1(value))) values.push(value);
+          }
           return chunkCons(arrayChunk(values), filter(pred, chunkRest(s)));
         }
         // Upstream obtains rest before invoking the predicate.
         const value = first(s), tail = rest(s);
-        if (truth(pred.call(null, value))) return cons(value, filter(pred, tail));
+        if (truth(call1(pred, value))) return cons(value, filter(pred, tail));
         return filter(pred, tail);
       }
       return null;
@@ -13988,22 +14195,33 @@
   //@unit remove requires: collectionArity, complement, filter
   function remove(pred, coll) { if (arguments.length === 1) return filter(complement(pred)); collectionArity("remove", arguments.length); return filter(complement(pred), coll); }
   //@unit takeWhile requires: collectionArity, cons, first, lazySequence, reduced, reducingFunction,
-  //@ rest, seq, transform, truth
+  //@ rest, seq, stepFn1, stepFn2, transform, truth
   function takeWhile(pred, coll) {
-    if (arguments.length === 1) return transform(rf => reducingFunction(rf, (result, input) => truth(pred.call(null, input)) ? rf.call(null, result, input) : reduced(result)));
+    if (arguments.length === 1) {
+      const p1 = stepFn1(pred);
+      return transform(rf => {
+        const r2 = stepFn2(rf);
+        return reducingFunction(rf, (result, input) => truth(p1(input)) ? r2(result, input) : reduced(result));
+      });
+    }
     collectionArity("take-while", arguments.length);
     return lazySequence(() => { const s = seq(coll); return s !== null && truth(pred.call(null, first(s))) ? cons(first(s), takeWhile(pred, rest(s))) : null; });
   }
   //@unit dropWhile requires: collectionArity, first, lazySequence, reducingFunction, rest, seq,
-  //@ transform, truth
+  //@ stepFn1, stepFn2, transform, truth
   function dropWhile(pred, coll) {
-    if (arguments.length === 1) return transform(rf => {
-      let dropping = true;
-      return reducingFunction(rf, (result, input) => {
-        if (dropping && truth(pred.call(null, input))) return result;
-        dropping = false; return rf.call(null, result, input);
+    if (arguments.length === 1) {
+      const p1 = stepFn1(pred);
+      return transform(rf => {
+        let dropping = true;
+        const r2 = stepFn2(rf);
+        return reducingFunction(rf, (result, input) => {
+          if (dropping && truth(p1(input))) return result;
+          dropping = false;
+          return r2(result, input);
+        });
       });
-    });
+    }
     collectionArity("drop-while", arguments.length);
     return lazySequence(() => { let s = seq(coll); while (s !== null && truth(pred.call(null, first(s)))) s = seq(rest(s)); return s; });
   }
@@ -14016,13 +14234,14 @@
   //@unit replicate requires: repeat, take
   function replicate(n, value) { return take(n, repeat(value)); }
   //@unit takeNth requires: collectionArity, cons, drop, first, invalidArity, lazySequence,
-  //@ numberArgument, reducingFunction, seq, transform
+  //@ numberArgument, reducingFunction, seq, stepFn2, transform
   function takeNth(n, coll) {
     if (arguments.length !== 1 && arguments.length !== 2) return invalidArity(arguments.length);
     numberArgument(n);
     if (arguments.length === 1) return transform(rf => {
       let index = -1;
-      return reducingFunction(rf, (result, input) => ++index % n === 0 ? rf.call(null, result, input) : result);
+      const r2 = stepFn2(rf);
+      return reducingFunction(rf, (result, input) => ++index % n === 0 ? r2(result, input) : result);
     });
     collectionArity("take-nth", arguments.length);
     return lazySequence(() => { const s = seq(coll); return s === null ? null : cons(first(s), takeNth(n, drop(n, s))); });
@@ -14122,14 +14341,17 @@
     });
   }
   //@unit interpose requires: collectionArity, drop, interleave, isReduced, reducingFunction,
-  //@ repeat, transform
+  //@ repeat, stepFn2, transform
   function interpose(sep, coll) {
     if (arguments.length === 1) return transform(rf => {
       let started = false;
+      const r2 = stepFn2(rf);
       return reducingFunction(rf, (result, input) => {
-        if (started) { result = rf.call(null, result, sep); if (isReduced(result)) return result; }
-        else started = true;
-        return rf.call(null, result, input);
+        if (started) {
+          result = r2(result, sep);
+          if (isReduced(result)) return result;
+        } else started = true;
+        return r2(result, input);
       });
     });
     collectionArity("interpose", arguments.length);
@@ -14147,18 +14369,25 @@
   function last(coll) { let s = seq(coll); while (s !== null) { const tail = next(s); if (tail === null) return first(s); s = tail; } return null; }
   //@unit butlast requires: seq, toArray, vectorFromArray
   function butlast(coll) { const values = toArray(coll); values.pop(); return seq(vectorFromArray(values)); }
-  //@unit mapv requires: conjBangOwn, into, mapSeq, persistentBang, reduce, transient, vector
+  //@unit mapv requires: conjBangOwn, into, mapSeq, persistentBang, reduce, stepFn1, transient, vector
   // As upstream: of one collection, a reduction into a transient vector.
-  function mapv(fn, ...colls) {
-    return colls.length === 1 ? persistentBang(reduce((v, x) => conjBangOwn(v, fn.call(null, x)), transient(vector()), colls[0]))
-      : into(vector(), mapSeq(fn, ...colls));
+  function mapv(fn, coll) {
+    if (arguments.length === 2) {
+      const f1 = stepFn1(fn);
+      return persistentBang(reduce((v, x) => conjBangOwn(v, f1(x)), transient(vector()), coll));
+    }
+    return into(vector(), mapSeq(fn, ...Array.prototype.slice.call(arguments, 1)));
   }
-  //@unit filterv requires: conjBangOwn, persistentBang, reduce, transient, truth, vector
-  function filterv(fn, coll) { return persistentBang(reduce((v, x) => truth(fn.call(null, x)) ? conjBangOwn(v, x) : v, transient(vector()), coll)); }
-  //@unit cat requires: isReduced, reduce, reduced, reducingFunction
+  //@unit filterv requires: conjBangOwn, persistentBang, reduce, stepFn1, transient, truth, vector
+  function filterv(fn, coll) {
+    const f1 = stepFn1(fn);
+    return persistentBang(reduce((v, x) => truth(f1(x)) ? conjBangOwn(v, x) : v, transient(vector()), coll));
+  }
+  //@unit cat requires: isReduced, reduce, reduced, reducingFunction, stepFn2
   function cat(rf) {
+    const r2 = stepFn2(rf);
     return reducingFunction(rf, (result, input) => reduce((acc, value) => {
-      const ret = rf.call(null, acc, value);
+      const ret = r2(acc, value);
       return isReduced(ret) ? reduced(ret) : ret;
     }, result, input));
   }
@@ -14452,11 +14681,17 @@
   }
   function into3(to, xform, from) {
     const editable = editableTarget(to), metadata = editable ? meta(to) : null;
-    const rf = !editable ? conj : function (result, input) {
-      if (arguments.length === 2) return conjBangOwn(result, input);
-      if (arguments.length === 1) return withMetaProtocol(persistentBang(result), metadata);
-      return invalidArity(arguments.length);
-    };
+    let rf = conj;
+    if (editable) {
+      const complete = result => withMetaProtocol(persistentBang(result), metadata);
+      rf = function (result, input) {
+        if (arguments.length === 2) return conjBangOwn(result, input);
+        if (arguments.length === 1) return complete(result);
+        return invalidArity(arguments.length);
+      };
+      rf.cljs$core$IFn$_invoke$arity$1 = complete;
+      rf.cljs$core$IFn$_invoke$arity$2 = conjBangOwn;
+    }
     return transduce(xform, rf, editable ? transient(to) : to, from);
   }
   //@unit exceptionMessages
@@ -14980,10 +15215,15 @@
   const displayStr = value => value == null ? "" : String(value);
 
   //@unit variadicCore mutator requires: fnApplyTo
-  function variadicCore(fn, fixed, delegate) {
+  function variadicCore(fn, fixed, delegate, a2, a1, a0) {
     fn.cljs$lang$maxFixedArity = fixed;
-    fn.cljs$lang$applyTo = args => fnApplyTo(delegate, fixed, args);
+    const applyToFn = args => fnApplyTo(delegate, fixed, args);
+    applyToFn.direct$LKEY = true;
+    fn.cljs$lang$applyTo = applyToFn;
     fn.cljs$core$IFn$_invoke$arity$variadic = delegate;
+    if (a2) fn.cljs$core$IFn$_invoke$arity$2 = a2;
+    if (a1) fn.cljs$core$IFn$_invoke$arity$1 = a1;
+    if (a0) fn.cljs$core$IFn$_invoke$arity$0 = a0;
     return fn;
   }
   //@unit foldSeq requires: first, next, seq
@@ -14992,14 +15232,18 @@
     for (let s = seq(more); s !== null; s = next(s)) result = operation(result, first(s));
     return result;
   }
-  //@unit add.variadic install: add requires: add, foldSeq, variadicCore
-  variadicCore(add, 2, (x, y, more) => foldSeq((a, b) => a + b, x, y, more));
-  //@unit subtract.variadic install: subtract requires: foldSeq, subtract, variadicCore
-  variadicCore(subtract, 2, (x, y, more) => foldSeq((a, b) => a - b, x, y, more));
-  //@unit multiply.variadic install: multiply requires: foldSeq, multiply, variadicCore
-  variadicCore(multiply, 2, (x, y, more) => foldSeq((a, b) => a * b, x, y, more));
-  //@unit divide.variadic install: divide requires: divide, foldSeq, variadicCore
-  variadicCore(divide, 2, (x, y, more) => foldSeq((a, b) => a / b, x, y, more));
+  //@unit variadicFold mutator requires: foldSeq, variadicCore
+  function variadicFold(fn, op, a1, a0) {
+    return variadicCore(fn, 2, (x, y, more) => foldSeq(op, x, y, more), op, a1, a0);
+  }
+  //@unit add.variadic install: add requires: add, variadicFold
+  variadicFold(add, (a, b) => a + b, x => x, () => 0);
+  //@unit subtract.variadic install: subtract requires: subtract, variadicFold
+  variadicFold(subtract, (a, b) => a - b, x => -x);
+  //@unit multiply.variadic install: multiply requires: multiply, variadicFold
+  variadicFold(multiply, (a, b) => a * b, x => x, () => 1);
+  //@unit divide.variadic install: divide requires: divide, variadicFold
+  variadicFold(divide, (a, b) => a / b, x => 1 / x);
   //@unit equal.variadic install: equal requires: equal, equalPair, first, next, seq, variadicCore
   variadicCore(equal, 2, (x, y, more) => {
     if (!equalPair(x, y)) return false;
@@ -15009,7 +15253,7 @@
       y = item;
     }
     return true;
-  });
+  }, equalPair, () => true, () => true);
   //@unit vector.variadic install: vector requires: toArray, variadicCore, vector, vectorFromArray
   variadicCore(vector, 0, args => vectorFromArray(toArray(args)));
   //@unit list.variadic install: list requires: list, listFromArray, toArray, variadicCore

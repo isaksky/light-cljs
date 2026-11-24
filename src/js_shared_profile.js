@@ -1404,6 +1404,8 @@
   function reduced(value) {
     return __rt.cljReduced(value);
   }
+  //@unit isReduced requires: reducedValues
+  function isReduced(value) { return typeof value === "object" && value !== null && reducedValues.has(value); }
   //@unit ifnValues requires: sharedStore
   const ifnValues = sharedStore(), ifnVariadics = sharedStore();
   //@unit typeNames requires: sharedRegistryStore
@@ -1555,6 +1557,9 @@
       return new ListCell(head, tail, count(tail) + 1);
     }
     return __rt.cljCons(head, sharedSeqForm(tail));
+  }
+  function listCons(head, tail) {
+    return cons(head, tail, "list");
   }
   //@unit subvec requires: count, isVector, makeVector, methodKeys, nth, protocolHooks,
   //@ vectorFromArray, vectorStore, vectorView
