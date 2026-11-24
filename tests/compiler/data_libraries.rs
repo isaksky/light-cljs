@@ -36,17 +36,8 @@ fn both(body: &str, expected: &str) {
             .unwrap();
         assert_eq!(evaluator.string(value).unwrap(), expected, "QuickJS {body}");
     }
-    let out = Command::new("node")
-        .args(["--eval", &format!("console.log(JSON.stringify({js}));")])
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
     assert_eq!(
-        String::from_utf8(out.stdout).unwrap().trim(),
+        crate::canonical_json::node_stdout(&format!("console.log(JSON.stringify({js}));")).trim(),
         expected,
         "Node {body}"
     );

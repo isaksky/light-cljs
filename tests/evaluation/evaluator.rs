@@ -225,9 +225,10 @@ fn deadline_allocation_and_panics_produce_owned_failures() {
     std::thread::sleep(Duration::from_millis(110));
     assert!(e.evaluate_js("42").unwrap_err().0.contains("deadline"));
     // A heap the runtime loads in (5.30 MB at its peak since light-cljs-1014,
-    // 5.21 MB before) and the million objects below exceed.
+    // just over 6 MiB since light-cljs-1108/1109/1110) and the million objects
+    // below exceed.
     let e = Evaluator::new(EvaluatorOptions {
-        memory_limit: 6 * 1024 * 1024,
+        memory_limit: 8 * 1024 * 1024,
         ..Default::default()
     })
     .unwrap();
