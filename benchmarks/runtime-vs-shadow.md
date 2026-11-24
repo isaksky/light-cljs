@@ -6100,3 +6100,24 @@ Steady state, from the median wall times at 1 and 40 iterations: light-cljs 26.5
 | 16 | 1.10 | 1.09 | 1.08 | 0.92 |
 
 Steady state, from the median wall times at 1 and 16 iterations: light-cljs 117.1 ms per iteration, shadow-cljs 104.3 ms per iteration (light/shadow 1.12).
+
+### Generated re-frame-shaped app, 200k lines (jsdom in Node)
+
+light-cljs output: 5,722,546 bytes raw (1,067,247 gzip -9; 185/2,515 waste markers retained, 0 removable); shadow-cljs output: 6,963,403 bytes raw (1,172,502 gzip -9). 10 runs per iteration count, compilers alternated, unreserved (1-minute load 3.31-7.06). Every run matched oracle checksums for `app-db` and rendered markup.
+
+| Iterations | Compiler | First output | Wall time | User CPU | System CPU | Peak memory | 1-minute load before |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | light-cljs | 1.455 s (1.434-1.748) | 1.470 s (1.446-1.763) | 2.15 s (2.10-2.27) | 0.13 s (0.12-0.20) | 0.481 GB (0.477-0.489) | 5.54-7.06 |
+| 1 | shadow-cljs | 1.301 s (1.292-1.442) | 1.315 s (1.306-1.457) | 2.01 s (1.99-2.20) | 0.12 s (0.11-0.17) | 0.461 GB (0.452-0.477) | 5.54-7.06 |
+| 4 | light-cljs | 2.403 s (2.336-2.533) | 2.421 s (2.354-2.551) | 3.45 s (3.29-3.56) | 0.19 s (0.17-0.23) | 0.599 GB (0.566-0.609) | 4.40-5.54 |
+| 4 | shadow-cljs | 2.116 s (2.047-2.173) | 2.137 s (2.064-2.192) | 3.05 s (2.97-3.15) | 0.18 s (0.15-0.20) | 0.569 GB (0.566-0.579) | 4.40-5.34 |
+| 10 | light-cljs | 4.172 s (4.119-4.218) | 4.196 s (4.145-4.243) | 5.72 s (5.44-5.79) | 0.26 s (0.23-0.29) | 0.790 GB (0.692-0.809) | 3.36-4.40 |
+| 10 | shadow-cljs | 3.563 s (3.507-3.652) | 3.586 s (3.530-3.674) | 4.81 s (4.76-4.92) | 0.25 s (0.22-0.25) | 0.726 GB (0.721-0.734) | 3.31-4.21 |
+
+| Iterations | light/shadow first output | light/shadow wall time | light/shadow CPU (user + system) | light/shadow peak memory |
+| --- | --- | --- | --- | --- |
+| 1 | 1.12 | 1.12 | 1.07 | 1.04 |
+| 4 | 1.14 | 1.13 | 1.13 | 1.05 |
+| 10 | 1.17 | 1.17 | 1.18 | 1.09 |
+
+Steady state, from the median wall times at 1 and 10 iterations: light-cljs 302.8 ms per iteration, shadow-cljs 252.3 ms per iteration (light/shadow 1.20).
