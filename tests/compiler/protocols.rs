@@ -399,6 +399,120 @@ fn deref_of_a_value_without_ideref_names_the_protocol_method() {
     );
 }
 
+/// Protocol misses on user types and records (via `default`, `object`, and host
+/// type extensions) honour later `extend-type`, `specify!`, `extend-type
+/// js/Object`, re-extensions, `satisfies?`, `implements?`, `this-as`,
+/// enumeration, and multi-arity dispatch at every optimization level.
+#[test]
+fn user_type_protocol_misses_honour_later_extensions_and_semantics() {
+    let run_all = |source: &str| super::optimization::json_at_every_level(source);
+    // 1. Default/object miss on defrecord and deftype, then later extend-type
+    //    on the record, then re-extend default, then extend object, then extend
+    //    js/Object, plus specify! on a single instance, satisfies?/implements?,
+    //    and non-enumerability of any cached slots.
+    assert_eq!(
+        run_all(
+            r#"
+        (defprotocol P
+          (f [this])
+          (g [this] [this x] [this x y]))
+        (defrecord RecA [v])
+        (defrecord RecB [v])
+        (deftype TypA [v])
+        (deftype TypB [v])
+        (extend-type default P
+          (f [this] [:def1 (.-v this) (this-as t (identical? t js/globalThis))])
+          (g ([this] [:def1-1 (.-v this)])
+             ([this x] [:def1-2 (.-v this) x])
+             ([this x y] [:def1-3 (.-v this) x y])))
+        (let [ra (->RecA 1)
+              rb (->RecB 2)
+              ta (TypA. 3)
+              tb (TypB. 4)
+              keys-before [(vec (js-keys ra)) (vec (js-keys (.-prototype RecA)))
+                           (vec (js-keys (.-prototype TypA)))]
+              ;; Warm misses on all four types across single and multi-arity methods
+              r1 [(f ra) (f rb) (f ta) (f tb) (g ra) (g ra 10) (g ta 20 30)]
+              ;; satisfies? is true, implements? is false, and keys stay unchanged
+              r2 [(satisfies? P ra) (implements? P ra) (implements? P ta)
+                  (= keys-before [(vec (js-keys ra)) (vec (js-keys (.-prototype RecA)))
+                                  (vec (js-keys (.-prototype TypA)))])]
+              ;; Now install a direct implementation on RecA AFTER it missed
+              _ (extend-type RecA P
+                  (f [this] [:reca (.-v this)])
+                  (g ([this] [:reca-1 (.-v this)])
+                     ([this x] [:reca-2 (.-v this) x])))
+              r3 [(f ra) (g ra) (g ra 9) (g ra 8 7) (implements? P ra) (f rb)]
+              ;; Re-extend default: RecB/TypA/TypB must see :def2, RecA keeps :reca
+              _ (extend-type default P
+                  (f [this] [:def2 (.-v this)])
+                  (g ([this] [:def2-1 (.-v this)])
+                     ([this x] [:def2-2 (.-v this) x])
+                     ([this x y] [:def2-3 (.-v this) x y])))
+              r4 [(f ra) (f rb) (f ta) (g ra 8 7) (g rb 5)]
+              ;; Extend object: RecB/TypA/TypB must now hit object instead of default
+              _ (extend-type object P
+                  (f [this] [:obj (.-v this)])
+                  (g ([this] [:obj-1 (.-v this)])
+                     ([this x] [:obj-2 (.-v this) x])))
+              r5 [(f ra) (f rb) (f ta) (g rb 6)
+                  (try (g rb 6 7) (catch :default e (.-message e)))]
+              ;; specify! on one RecB instance must only affect that instance
+              rb-sp (specify! (->RecB 22) P (f [_] :specified))
+              r6 [(f rb-sp) (f rb)]
+              ;; Extend js/Object: TypB must now see Object.prototype slot
+              _ (extend-type js/Object P (f [this] [:js-obj (.-v this)]))
+              r7 [(f ra) (f tb) (f rb-sp)]]
+          (pr-str [r1 r2 r3 r4 r5 r6 r7]))"#
+        ),
+        "\"[[[:def1 1 true] [:def1 2 true] [:def1 3 true] [:def1 4 true] [:def1-1 1] [:def1-2 1 10] [:def1-3 3 20 30]] [true false false true] [[:reca 1] [:reca-1 1] [:reca-2 1 9] [:def1-3 1 8 7] true [:def1 2 true]] [[:reca 1] [:def2 2] [:def2 3] [:def2-3 1 8 7] [:def2-2 2 5]] [[:reca 1] [:obj 2] [:obj 3] [:obj-2 2 6] \\\"Invalid arity: 3\\\"] [:specified [:obj 2]] [[:reca 1] [:js-obj 4] :specified]]\"\n"
+    );
+    // 2. Host primitive/array/nil/default multi-arity dispatch (arities 1..5),
+    //    single-arity padding/cutting, and protocol redefinition.
+    assert_eq!(
+        run_all(
+            r#"
+        (defprotocol H
+          (h1 [this a])
+          (hm [this] [this a] [this a b] [this a b c] [this a b c d]))
+        (extend-protocol H
+          number
+          (h1 [n a] (+ n (or a 0)))
+          (hm ([n] n) ([n a] (+ n a)) ([n a b] (+ n a b)) ([n a b c] (+ n a b c)) ([n a b c d] (+ n a b c d)))
+          string
+          (h1 [s a] (str s ":" a))
+          (hm ([s] (count s)) ([s a] (str s a)))
+          nil
+          (h1 [_ a] [:nil a])
+          array
+          (h1 [arr a] (+ (alength arr) a))
+          default
+          (h1 [_ a] [:def a]))
+        (let [saved h1]
+          (pr-str [(h1 10 5) (h1 10) (h1 10 5 99)
+                   (hm 1) (hm 1 2) (hm 1 2 3) (hm 1 2 3 4) (hm 1 2 3 4 5)
+                   (h1 "ab" 3) (hm "abc") (hm "ab" "cd")
+                   (try (hm "ab" 1 2) (catch :default e (.-message e)))
+                   (h1 nil 7) (h1 #js [1 2 3] 4) (h1 true 8)
+                   (saved 20 1)]))"#
+        ),
+        "\"[15 10 15 1 3 6 10 15 \\\"ab:3\\\" 3 \\\"abcd\\\" \\\"Invalid arity: 3\\\" [:nil 7] 7 [:def 8] 21]\"\n"
+    );
+    // 3. Protocol redefinition: saved old method sees extensions on the new Var.
+    assert_eq!(
+        run("(defprotocol R (rm [this]))
+             (defrecord Box [n])
+             (extend-type default R (rm [this] [:v1 (.-n this)]))
+             (def old-rm rm)
+             (def b (->Box 5))
+             (def before (old-rm b))
+             (defprotocol R (rm [this]))
+             (extend-type default R (rm [this] [:v2 (.-n this)]))
+             (pr-str [before (old-rm b) (rm b)])"),
+        "\"[[:v1 5] [:v2 5] [:v2 5]]\"\n"
+    );
+}
+
 /// Complete sources in both compiler phases and both host lifecycles, each run in
 /// QuickJS and Node (see `tests/support/phase_oracle.rs`).
 mod phase_oracles {

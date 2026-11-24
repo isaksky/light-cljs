@@ -13603,9 +13603,21 @@
   //@unit metadataMethod.install effect: metadataMethod when: protocolMethod requires: metadataMethod,
   //@ typeHooks
   typeHooks.metadataMethod = metadataMethod;
-  //@unit protocolMethod mutator requires: demandMethod, invalidArity, nativeType,
-  //@ protocolFunctions, protocolGetters, protocolKeys, protocolSlot, protocolVariables,
-  //@ setDeclaration, typeHooks
+  //@unit protocolExternal
+  // Resolve a host-type or `default` implementation on a protocol dispatcher
+  // `current` using named dot loads for the hot receiver types (light-cljs-1115).
+  function protocolExternal(current, receiver) {
+    const t = typeof receiver;
+    return (t === "object"
+      ? (receiver === null ? current.null : Array.isArray(receiver) ? current.array : current.object)
+      : t === "number" ? current.number
+      : t === "string" ? current.string
+      : t === "undefined" ? current.null
+      : current[t]) ?? current._;
+  }
+  //@unit protocolMethod mutator requires: declarationJournal, demandMethod, invalidArity,
+  //@ protocolExternal, protocolFunctions, protocolGetters, protocolKeys, protocolSlot,
+  //@ protocolVariables, setDeclaration, typeHooks
   // `fast` (light-cljs-265) makes a dispatcher that calls a slot, else its first argument.
   // `names` (`:advanced`) are the slots of `arities` as the text names them.
   // With `direct`, `fast` is that dispatcher itself, which the emitter
@@ -13617,14 +13629,25 @@
   function protocolMethod(key, metadataName, arities, viaMetadata = false, variadic = null, getter = null, fast = null, names = null, direct = false) {
     const rest = variadic == null ? -1 : variadic + 2, fixed = arities ? arities.filter(n => n !== rest) : [];
     const single = rest < 0 && fixed.length === 1 ? fixed[0] : 0, slots = new Map((arities ?? []).map((n, i) => [n, protocolSlot(key, n, names?.[i])]));
+    const prior = protocolVariables.get(metadataName);
+    const state = prior?.protocolState$LKEY ?? {v: null, live: false, def: null, onlyDefault: true};
+    let slotMask = 0;
+    for (let i = 0; i < fixed.length; i++) if (fixed[i] < 31) slotMask |= 1 << fixed[i];
     // Saved method values retain their direct slot while dynamic dispatch
     // observes the current method Var, as the CLJS macro expansion does.
-    const external = (receiver, args) => {
-      const current = getter ? getter() : protocolVariables.get(metadataName) ?? method;
-      const implementation = current[nativeType(receiver)] ?? current._;
-      if (implementation != null) return implementation.apply(null, args);
+    const resolve = receiver => {
+      if (!getter && !state.live) {
+        const d = state.def;
+        if (d !== null) return d;
+        const impl = protocolExternal(state.v, receiver);
+        if (impl != null) return impl;
+      } else {
+        const impl = protocolExternal(getter ? getter() : protocolVariables.get(metadataName) ?? method, receiver);
+        if (impl != null) return impl;
+      }
       throw new Error("No protocol method " + metadataName + " defined for this value");
     };
+    const external = (receiver, args) => resolve(receiver).apply(null, args);
     const dispatch = function (receiver) {
       let args = arguments, arity = args.length;
       if (single) {
@@ -13643,8 +13666,26 @@
       const direct = receiver == null ? undefined : receiver[slots.get(arity) ?? protocolSlot(key, arity)];
       return direct != null ? direct.apply(receiver, args) : external(receiver, args);
     };
-    const miss = fast && function (receiver) { return single || slots.has(arguments.length) ? external(receiver, arguments) : dispatch.apply(null, arguments); };
+    const miss = fast && (
+      single === 1 ? r0 => resolve(r0).call(null, r0)
+      : single === 2 ? (r0, a1) => resolve(r0).call(null, r0, a1)
+      : single === 3 ? (r0, a1, a2) => resolve(r0).call(null, r0, a1, a2)
+      : function (r0, a1, a2, a3) {
+        const n = arguments.length;
+        if (!single && (n < 31 ? (slotMask & (1 << n)) === 0 : !slots.has(n))) return dispatch.apply(null, arguments);
+        const impl = resolve(r0);
+        return n === 1 ? impl.call(null, r0)
+          : n === 2 ? impl.call(null, r0, a1)
+          : n === 3 ? impl.call(null, r0, a1, a2)
+          : n === 4 ? impl.call(null, r0, a1, a2, a3)
+          : impl.apply(null, arguments);
+      }
+    );
     const method = !fast ? dispatch : direct ? fast : fast(miss, ...fixed.map(n => slots.get(n)));
+    if (prior) { state.def = null; state.onlyDefault = true; }
+    if (declarationJournal !== null) { state.live = true; state.def = null; state.onlyDefault = false; }
+    state.v = method;
+    Object.defineProperty(method, "protocolState$LKEY", {value: state, writable: true, configurable: true});
     if (direct) Object.defineProperty(method, "protocolMiss$LKEY", {value: miss, writable: true, configurable: true});
     protocolKeys.set(method, key); setDeclaration(protocolFunctions, key, metadataName); setDeclaration(protocolVariables, metadataName, method);
     setDeclaration(protocolGetters, key, getter ?? (() => protocolVariables.get(metadataName)));
@@ -13659,10 +13700,10 @@
     else if (proto === "ISeqable" || proto === "INext") hostExt.seq = true;
     else if (proto === "IMeta" && ownedRuntime) hostExt.imeta.on = true;
   }
-  //@unit extendType mutator requires: coreDispatchers, coreProtocolsByName, dispatchCell,
-  //@ fieldComparisons, hostExt, installMethods, invalidArity, markSeqSlot, nativeMethods,
-  //@ patchDeclaration, protocolFunctions, protocolGetters, protocolMasks, protocolSentinel,
-  //@ protocolValues, setDeclaration, tabledKind
+  //@unit extendType mutator requires: coreDispatchers, coreProtocolsByName, declarationJournal,
+  //@ dispatchCell, fieldComparisons, hostExt, installMethods, invalidArity, markSeqSlot,
+  //@ nativeMethods, patchDeclaration, protocolFunctions, protocolGetters, protocolMasks,
+  //@ protocolSentinel, protocolValues, setDeclaration, tabledKind
   function extendType(target, methods) {
     let result = null;
     const desc = value => ({value, writable: true, configurable: true, enumerable: true});
@@ -13688,15 +13729,32 @@
       for (const [key, implementations] of grouped) {
         if (implementations.has(0)) continue;
         const dispatch = protocolGetters.get(key)?.() ?? coreDispatchers.get(key)?.dispatcher;
-        // No rest array, spread or iterator per call: a host type's
-        // implementation is called on every dispatch to it (light-cljs-1017).
+        // No rest array, spread, wrapper or Map.get per call: a host type's
+        // single-arity implementation is installed directly and multi-arity
+        // dispatches fixed arities 1..4 without `apply` (light-cljs-1017, light-cljs-1115).
         const only = implementations.size === 1 ? implementations.values().next().value : undefined;
-        const implementation = only ? function () { return only.apply(null, arguments); } : function () {
-          const method = implementations.get(arguments.length);
-          return method ? method.apply(null, arguments) : invalidArity(arguments.length);
-        };
+        let implementation = only;
+        if (!implementation) {
+          const m1 = implementations.get(1), m2 = implementations.get(2), m3 = implementations.get(3), m4 = implementations.get(4);
+          implementation = function (a, b, c, d) {
+            const n = arguments.length;
+            if (n === 1 && m1) return m1.call(null, a);
+            if (n === 2 && m2) return m2.call(null, a, b);
+            if (n === 3 && m3) return m3.call(null, a, b, c);
+            if (n === 4 && m4) return m4.call(null, a, b, c, d);
+            const method = implementations.get(n);
+            return method ? method.apply(null, arguments) : invalidArity(n);
+          };
+        }
         result = implementation;
-        if (dispatch) patchDeclaration(dispatch, target, desc(implementation));
+        if (dispatch) {
+          patchDeclaration(dispatch, target, desc(implementation));
+          const state = dispatch.protocolState$LKEY;
+          if (state) {
+            if (target === "_" && state.onlyDefault && declarationJournal === null) state.def = implementation;
+            else { state.onlyDefault = false; state.def = null; }
+          }
+        }
         if (!protocolFunctions.has(key)) {
           // A key's implementations go in its entry and its dispatch cell
           // alike, each through the journal (`dispatchCell`).
