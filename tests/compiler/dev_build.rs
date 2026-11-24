@@ -93,6 +93,8 @@ fn dev_build(root: &Path, out: &Path) {
 fn edited_example(dir: &Path, view: &str) -> PathBuf {
     let root = dir.join("src");
     fs::create_dir_all(root.join("app")).unwrap();
+    // The analyzer reports canonical source paths; `$TMPDIR` may sit behind a symlink.
+    let root = root.canonicalize().unwrap();
     for name in ["state", "macros", "view", "main"] {
         let file = format!("app/{name}.cljs");
         fs::copy(Path::new(EXAMPLE).join(&file), root.join(&file)).unwrap();
@@ -285,6 +287,8 @@ fn hooks_run_in_order_around_the_applied_units() {
     let dir = TempDir::new("dev-hooks");
     let root = dir.join("src");
     fs::create_dir_all(root.join("app")).unwrap();
+    // The analyzer reports canonical source paths; `$TMPDIR` may sit behind a symlink.
+    let root = root.canonicalize().unwrap();
     fs::write(
         root.join("app/main.cljs"),
         r#"(ns app.main)
@@ -713,6 +717,8 @@ fn unit_source_maps_point_node_stack_traces_at_the_sources() {
     let dir = TempDir::new("dev-maps");
     let root = dir.join("src");
     fs::create_dir_all(root.join("app")).unwrap();
+    // The analyzer reports canonical source paths; `$TMPDIR` may sit behind a symlink.
+    let root = root.canonicalize().unwrap();
     fs::write(
         root.join("app/util.cljs"),
         "(ns app.util)\n\n(defn check [x]\n  (when (neg? x)\n    (throw (js/Error. (str \"negative \" x))))\n  x)\n",
@@ -817,6 +823,8 @@ fn parallel_dev_build_matches_single_slot_byte_for_byte() {
     let dir = TempDir::new("dev-parallel-determinism");
     let root = dir.join("src");
     fs::create_dir_all(root.join("app")).unwrap();
+    // The analyzer reports canonical source paths; `$TMPDIR` may sit behind a symlink.
+    let root = root.canonicalize().unwrap();
     // 40 namespaces so coarse batching creates multiple batches across 8 slots.
     let count = 40usize;
     fs::write(
@@ -983,6 +991,8 @@ fn parallel_dev_build_preserves_accepted_nesting() {
     let dir = TempDir::new("dev-parallel-nesting");
     let root = dir.join("src");
     fs::create_dir_all(root.join("app")).unwrap();
+    // The analyzer reports canonical source paths; `$TMPDIR` may sit behind a symlink.
+    let root = root.canonicalize().unwrap();
     let deep_127 = format!("{}0{}", "(let* [] ".repeat(127), ")".repeat(127));
     let deep_126 = format!("{}42{}", "(let* [] ".repeat(126), ")".repeat(126));
     fs::write(
@@ -1037,6 +1047,8 @@ fn streaming_dev_build_propagates_namespace_write_errors() {
     let dir = TempDir::new("dev-stream-write-error");
     let root = dir.join("src");
     fs::create_dir_all(root.join("app")).unwrap();
+    // The analyzer reports canonical source paths; `$TMPDIR` may sit behind a symlink.
+    let root = root.canonicalize().unwrap();
     let count = 24usize;
     let mut requires = String::new();
     for i in 0..count {
@@ -1125,6 +1137,8 @@ fn dev_build_and_cached_warning_mode_avoid_single_unit_pool_ping_pong() {
     let dir = TempDir::new("dev-warning-mode-drain-pooling");
     let root = dir.join("src");
     fs::create_dir_all(root.join("app")).unwrap();
+    // The analyzer reports canonical source paths; `$TMPDIR` may sit behind a symlink.
+    let root = root.canonicalize().unwrap();
     let count = 8usize;
     let mut requires = String::new();
     let mut calls = String::new();
