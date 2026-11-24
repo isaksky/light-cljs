@@ -996,7 +996,7 @@
   // ranges (12, 14, 15, 22), lazy seqs (16), array, hash and sorted maps (28
   // to 30), transient array and hash maps (31, 32), hash and sorted sets (33,
   // 44) and queues (36).
-  const tabledKind = kind => kind >= 0 && (kind < 32 ? ((1883361390 >>> kind & 1) === 1 || kind === 31) : kind < 64 && (4115 >>> kind - 32 & 1) === 1);
+  const tabledKind = kind => kind >= 0 && (kind < 32 ? (-264122258 >>> kind & 1) === 1 : kind < 64 && (4115 >>> kind - 32 & 1) === 1);
   //@unit protocolMaskNames
   const protocolMaskNames = "IFn ICounted IEmptyableCollection ICollection IIndexed ASeq ISeq INext ILookup IAssociative IMap IMapEntry ISet IStack IVector IDeref IDerefWithTimeout IMeta IWithMeta IReduce IKVReduce IEquiv IHash ISeqable ISequential IList IRecord IReversible ISorted IPrintWithWriter IWriter IPrintWithWriter IPending IWatchable IEditableCollection ITransientCollection ITransientAssociative ITransientMap ITransientVector ITransientSet IMultiFn IChunkedSeq IChunkedNext IComparable INamed ICloneable IAtom IReset ISwap IIterable IDrop".split(" ");
   //@unit protocolMasks requires: protocolMaskNames
@@ -6726,9 +6726,16 @@
     return index < 0 ? notFound : arr[index + 1];
   });
   //@unit TransientHashMapType.lookup effect: TransientHashMapType when: arrayMapContains, get,
-  //@ getOf, getSite, getSite3 requires: builtinSlot, kindHooks, TransientHashMapType
-  TransientHashMapType.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) { return kindHooks.transientMapLookup(self, key, null); });
-  TransientHashMapType.prototype.cljs$core$ILookup$_lookup$arity$3$LKEY = builtinSlot(function (self, key, notFound) { return kindHooks.transientMapLookup(self, key, notFound); });
+  //@ getOf, getSite, getSite3 requires: builtinSlot, editableTransient, kindHooks,
+  //@ TransientHashMapType
+  TransientHashMapType.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) {
+    if (self.edit$LKEY === undefined) editableTransient(self, "lookup");
+    return kindHooks.transientMapLookup(self, key, null);
+  });
+  TransientHashMapType.prototype.cljs$core$ILookup$_lookup$arity$3$LKEY = builtinSlot(function (self, key, notFound) {
+    if (self.edit$LKEY === undefined) editableTransient(self, "lookup");
+    return kindHooks.transientMapLookup(self, key, notFound);
+  });
   //@unit TransientHashSetType.lookup effect: TransientHashSetType when: arrayMapContains, get,
   //@ getOf, getSite, getSite3 requires: TransientHashSetType, transientLookupSlots
   TransientHashSetType.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = transientLookupSlots[0];
