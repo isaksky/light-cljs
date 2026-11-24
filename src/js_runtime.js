@@ -1860,7 +1860,7 @@
   //@unit macroexpand1 requires: expansionService
   const macroexpand1 = expansionService("macroexpand1", "macroexpand-1");
 
-  //@unit cons requires: ConsCell, count, implementsSeq, ListCell, seq
+  //@unit cons requires: ConsCell, count, implementsSeq, ListCell, listCount, seq
   function cons(head, tail, kind = "cons") {
     if (kind === "cons") {
       if (tail == null) kind = "list";
@@ -1869,7 +1869,7 @@
     return kind === "list" ? new ListCell(head, tail, count(tail) + 1) : new ConsCell(head, tail);
   }
   function listCons(head, tail) {
-    return new ListCell(head, tail, (tail.count$LKEY ?? count(tail)) + 1);
+    return new ListCell(head, tail, listCount(tail) + 1);
   }
 
   //@unit implementsSeq requires: methodKeys, protocolHooks, seqValue, slotFirst
@@ -2428,10 +2428,14 @@
       return value;
     };
   }
-  //@unit extremaVariadic mutator requires: foldSeq, variadicCore
+  //@unit extremaVariadic mutator requires: first, next, seq, variadicCore
   function extremaVariadic(fn, test) {
     const step = (a, b) => isNaN(a) ? a : isNaN(b) ? b : test(a, b) ? a : b;
-    return variadicCore(fn, 2, (x, y, more) => foldSeq(step, x, y, more), step, x => x);
+    return variadicCore(fn, 2, (x, y, more) => {
+      let result = step(x, y);
+      for (let s = seq(more); s !== null; s = next(s)) result = step(result, first(s));
+      return result;
+    }, step, x => x);
   }
   //@unit isInteger
   // parseInt/parseFloat are intentional: CLJS integer? excludes numbers printed
@@ -2513,17 +2517,10 @@
     }
     return true;
   }
-  //@unit numericEqual.variadic install: numericEqual requires: equalPair, first, next, numericEqual,
-  //@ seq, variadicCore
-  variadicCore(numericEqual, 2, (x, y, more) => {
-    if (!equalPair(x, y)) return false;
-    for (let s = seq(more); s !== null; s = next(s)) {
-      const item = first(s);
-      if (!equalPair(y, item)) return false;
-      y = item;
-    }
-    return true;
-  }, equalPair, () => true);
+  //@unit numericEqual.arity install: numericEqual requires: equalPair, numericEqual
+  numericEqual.cljs$core$IFn$_invoke$arity$0 = () => false;
+  numericEqual.cljs$core$IFn$_invoke$arity$1 = () => true;
+  numericEqual.cljs$core$IFn$_invoke$arity$2 = equalPair;
   //@unit max requires: extrema
   const max = extrema((x, y) => x > y);
   //@unit max.variadic install: max requires: extremaVariadic, max
@@ -2913,13 +2910,13 @@
   //@unit fnCall
   const fnCall = Function.prototype.call;
   //@unit stepFn1 requires: fnCall
-  const stepFn1 = fn => typeof fn === "function" && fn.call === fnCall ? (fn.cljs$core$IFn$_invoke$arity$1 || fn) : a => fn.call(null, a);
+  const stepFn1 = fn => typeof fn === "function" && fn.call === fnCall && fn.cljs$core$IFn$_invoke$arity$1 || (a => fn.call(null, a));
   //@unit stepFn2 requires: fnCall
-  const stepFn2 = fn => typeof fn === "function" && fn.call === fnCall ? (fn.cljs$core$IFn$_invoke$arity$2 || fn) : (a, b) => fn.call(null, a, b);
+  const stepFn2 = fn => typeof fn === "function" && fn.call === fnCall && fn.cljs$core$IFn$_invoke$arity$2 || ((a, b) => fn.call(null, a, b));
   //@unit call0 requires: fnCall
-  const call0 = fn => (typeof fn !== "function" || fn.call === fnCall) && fn.cljs$core$IFn$_invoke$arity$0 ? fn.cljs$core$IFn$_invoke$arity$0() : fn.call(null);
+  const call0 = fn => typeof fn === "function" && fn.call === fnCall && fn.cljs$core$IFn$_invoke$arity$0 ? fn.cljs$core$IFn$_invoke$arity$0() : fn.call(null);
   //@unit call1 requires: fnCall
-  const call1 = (fn, a) => (typeof fn !== "function" || fn.call === fnCall) && fn.cljs$core$IFn$_invoke$arity$1 ? fn.cljs$core$IFn$_invoke$arity$1(a) : fn.call(null, a);
+  const call1 = (fn, a) => typeof fn === "function" && fn.call === fnCall && fn.cljs$core$IFn$_invoke$arity$1 ? fn.cljs$core$IFn$_invoke$arity$1(a) : fn.call(null, a);
   //@unit reduceOf requires: call0, hostExt, isReduced, iterator, iterReduce, methodKeys, ownSeqs,
   //@ protocolHooks, protocolSentinel, reducedValue, reduceWalk, seqReduce, slotFirst, stepFn2
   // Upstream's `reduce` of a value without a `-reduce` slot holding a
@@ -3010,7 +3007,8 @@
     }
     return seqReduceFrom(seq(source), rf, init);
   }
-  //@unit reduceWalk requires: cellOf, first, isReduced, next, reducedValue, seq, viewOf
+  //@unit reduceWalk requires: call0, cellOf, first, isReduced, next, reducedValue, seq, stepFn2,
+  //@ viewOf
   // The old path's last walk, of a vector, a map, a map seq or another
   // view: the value's seq, a cell's and a view's items read from their
   // fields, any other step's with `first` and `next`.
@@ -3020,6 +3018,7 @@
     // A chunked seq over a vector's leaf continues past its storage.
     const walked = value => { const slice = viewOf(value); return slice?.vec$LKEY ? undefined : slice; };
     let slice = walked(current), offset = slice?.i$LKEY;
+    const step = stepFn2(rf);
     // Traverse immutable storage directly. No recursive calls, per-step seq
     // wrappers, captured closures or persistent traversal caches are needed.
     while (current !== null) {
@@ -3029,9 +3028,7 @@
         result = item;
         initialized = true;
       } else {
-        // Read .call on every invocation, after the source/arguments have been
-        // evaluated. Callable data and user functions share this ordinary ABI.
-        result = rf.call(null, result, item);
+        result = step(result, item);
         if (isReduced(result)) return reducedValue(result);
       }
       if (cell || !slice) {
@@ -3043,7 +3040,7 @@
         slice = undefined;
       }
     }
-    return initialized ? result : rf.call(null);
+    return initialized ? result : call0(rf);
   }
   //@unit rangeReduce requires: call0, isReduced, reducedValue, stepFn2
   // An integer range's items: without `init`, its `count` items from its
@@ -3065,13 +3062,13 @@
     }
     return init;
   }
-  //@unit repeatReduce requires: isReduced, reducedValue
+  //@unit repeatReduce requires: isReduced, reducedValue, stepFn2
   // A repeat's item, `remaining` times (without end where -1).
   function repeatReduce(repeat, rf, init, arity) {
-    const n = repeat.remaining$LKEY, item = repeat.first$LKEY;
+    const n = repeat.remaining$LKEY, item = repeat.first$LKEY, step = stepFn2(rf);
     let i = arity === 2 ? 1 : 0;
     if (arity === 2) init = item;
-    while (n === -1 || i++ < n) { init = rf.call(null, init, item); if (isReduced(init)) return reducedValue(init); }
+    while (n === -1 || i++ < n) { init = step(init, item); if (isReduced(init)) return reducedValue(init); }
     return init;
   }
   //@unit chunkReduce requires: isReduced, reducedValue, seqReduce, stepFn2
@@ -3089,20 +3086,22 @@
     }
     return init;
   }
-  //@unit iterateReduce requires: first, isReduced, reducedValue
+  //@unit iterateReduce requires: first, isReduced, reducedValue, stepFn1, stepFn2
   // An iterate's items, without end: its first, then `f` of each.
   function iterateReduce(source, rf, init, arity) {
     let value = first(source);
-    if (arity === 2) { init = value; value = source.f$LKEY.call(null, value); }
-    while (true) { init = rf.call(null, init, value); if (isReduced(init)) return reducedValue(init); value = source.f$LKEY.call(null, value); }
+    const f1 = stepFn1(source.f$LKEY), step = stepFn2(rf);
+    if (arity === 2) { init = value; value = f1(value); }
+    while (true) { init = step(init, value); if (isReduced(init)) return reducedValue(init); value = f1(value); }
   }
-  //@unit cycleReduce requires: cycleCurrent, first, isReduced, next, reducedValue
+  //@unit cycleReduce requires: cycleCurrent, first, isReduced, next, reducedValue, stepFn2
   // A cycle's items, without end: its current seq's, then its whole seq's
   // again.
   function cycleReduce(producer, rf, init, arity) {
     let current = cycleCurrent(producer);
+    const step = stepFn2(rf);
     if (arity === 2) { init = first(current); current = next(current) ?? producer.all$LKEY; }
-    while (true) { init = rf.call(null, init, first(current)); if (isReduced(init)) return reducedValue(init); current = next(current) ?? producer.all$LKEY; }
+    while (true) { init = step(init, first(current)); if (isReduced(init)) return reducedValue(init); current = next(current) ?? producer.all$LKEY; }
   }
   //@unit reducePath requires: cellOf, chunkOf, chunkReduce, invalidArity, isCell, isChunkedCons,
   //@ isLazy, iterableValue, iterator, iteratorProtocol, iterReduce, kindHooks, methodKeys,
@@ -5847,6 +5846,11 @@
     }
     return countOf(value);
   }
+  function listCount(tail) {
+    const m = slotFirst.on ? tail.cljs$core$ICounted$_count$arity$1$LKEY : null;
+    return slotFirst.on && tail.count$LKEY != null && (m === undefined || m?.builtin$LKEY === true)
+      ? tail.count$LKEY : count(tail);
+  }
   //@unit countOf requires: kindHooks, methodKeys, protocolHooks, protocolSentinel, seqableValue,
   //@ unsupported
   // Upstream's `count`: a value of a runtime class whose instance slot
@@ -7261,8 +7265,8 @@
   const hashMapSeqCountSlot = builtinSlot(function (self) {
     return Math.max(0, self.nodes$LKEY.length - self.i$LKEY);
   });
-  //@unit hashMapSeqReduce requires: isReduced, mapEntry, next, reducedValue, reduceSlot, seqReduce,
-  //@ seqReduceFrom, slotFirst
+  //@unit hashMapSeqReduce requires: call0, isReduced, mapEntry, next, reducedValue, reduceSlot,
+  //@ seqReduce, seqReduceFrom, slotFirst, stepFn2
   // A hash map's seqs' `-reduce`, as upstream's NodeSeq and ArrayNodeSeq
   // implement IReduce (light-cljs-1081): caches realized entries on `root`
   // and revalidates protocol slots via `valid`/`step` after every callback so
@@ -7276,16 +7280,17 @@
       let i = start, entries = root.entries$LKEY;
       if (entries === null) entries = root.entries$LKEY = Object.create(null);
       if (arity === 2) {
-        if (i >= n) return rf.call(null);
+        if (i >= n) return call0(rf);
         let entry = entries[i];
         if (entry === undefined) { const node = nodes[i]; entry = entries[i] = mapEntry(node.key, node.value); }
         init = entry;
         i++;
       }
+      const step2 = stepFn2(rf);
       for (; i < n; i++) {
         let entry = entries[i];
         if (entry === undefined) { const node = nodes[i]; entry = entries[i] = mapEntry(node.key, node.value); }
-        init = rf.call(null, init, entry);
+        init = step2(init, entry);
         if (isReduced(init)) return reducedValue(init);
         if (!slotFirst.on || !step(i === start ? self : null))
           return seqReduceFrom(next(i === start ? self : new Cell(nodes, i, root)), rf, init);
@@ -7342,8 +7347,8 @@
   });
   //@unit PersistentArrayMapSeqType.reduceSlot effect: PersistentArrayMapSeqType when: reduce,
   //@ reduceOf requires: ArrayMapIndexCell, arrayMapSeqFirst, arrayMapSeqNext, arraySeqWitness,
-  //@ cellSeqSlot, isReduced, mapEntry, next, PersistentArrayMapSeqType, reducedValue, reduceSlot,
-  //@ seqReduce, seqReduceFrom, slotFirst
+  //@ call0, cellSeqSlot, isReduced, mapEntry, next, PersistentArrayMapSeqType, reducedValue,
+  //@ reduceSlot, seqReduce, seqReduceFrom, slotFirst, stepFn2
   // An array map's seq's `-reduce` (light-cljs-1081): the entries of its
   // keys and values from its index, cached in a prototype-free map on the
   // shared root cell and revalidating protocol slots after every callback so
@@ -7360,14 +7365,15 @@
     let i = start, entries = root.entries$LKEY;
     if (entries === null) entries = root.entries$LKEY = Object.create(null);
     if (arity === 2) {
-      if (i >= n) return rf.call(null);
+      if (i >= n) return call0(rf);
       const k = i >> 1;
       init = entries[k] ?? (entries[k] = mapEntry(pairs[i], pairs[i + 1]));
       i += 2;
     }
+    const step = stepFn2(rf);
     for (; i < n; i += 2) {
       const k = i >> 1;
-      init = rf.call(null, init, entries[k] ?? (entries[k] = mapEntry(pairs[i], pairs[i + 1])));
+      init = step(init, entries[k] ?? (entries[k] = mapEntry(pairs[i], pairs[i + 1])));
       if (isReduced(init)) return reducedValue(init);
       if (!slotFirst.on
         || (i === start ? self : arraySeqWitness).cljs$core$INext$_next$arity$1$LKEY !== arrayMapSeqNext
@@ -8246,14 +8252,15 @@
     return mapSeq(replaceOne, coll);
   }
   //@unit distinct requires: conj, cons, contains, first, invalidArity, lazySequence, makeSet,
-  //@ PersistentHashSetValue, reducingFunction, rest, seq, transform
+  //@ PersistentHashSetValue, reducingFunction, rest, seq, stepFn2, transform
   function distinct(coll) {
     if (arguments.length === 0) return transform(rf => {
       let seen = makeSet(PersistentHashSetValue, [], "array-map");
+      const r2 = stepFn2(rf);
       return reducingFunction(rf, (result, input) => {
         if (contains(seen, input)) return result;
         seen = conj(seen, input);
-        return rf.call(null, result, input);
+        return r2(result, input);
       });
     });
     if (arguments.length !== 1) return invalidArity(arguments.length);
@@ -13768,33 +13775,90 @@
     for (let i = 0; i < n; i++, args = rest(args)) values.push(first(args));
     return fn.call(null, ...values);
   }
-  //@unit directTail requires: fieldComparisons, hostExt, ownSeqs, protocolSentinel, slotFirst
-  function directTail(tail) {
-    if (tail == null || !slotFirst.on || ownSeqs.on || hostExt.seq) return null;
-    if (tail.cljs$lang$kind$$LKEY === 1)
-      return fieldComparisons.on && tail.tail$LKEY !== undefined && tail.cnt$LKEY <= 32 && tail.tail$LKEY.length === tail.cnt$LKEY && tail.callerTail$LKEY === undefined ? tail.tail$LKEY : null;
-    return Array.isArray(tail) && tail.length <= 32 && !(hostExt.p0 & 2) && !(tail.cljs$lang$protocol_mask$partition0$$LKEY & 8388802)
-      && tail.cljs$core$ISeqable$$LKEY !== protocolSentinel && tail.cljs$core$ICounted$$LKEY !== protocolSentinel ? tail : null;
+  //@unit applyArrayPrefix
+  function applyArrayPrefix(fn, p, a, b, c, arr, len) {
+    const out = new Array(p + len);
+    if (p > 0) out[0] = a;
+    if (p > 1) out[1] = b;
+    if (p > 2) out[2] = c;
+    for (let i = 0; i < len; i++) out[p + i] = arr[i];
+    return fn.apply(null, out);
   }
-  //@unit apply requires: applyTo, boundedCount, call0, call1, cons, directTail, fnCall, seq, stepFn2,
-  //@ toArray
+  //@unit applyDirect requires: call0, call1, cons, stepFn2
+  function applyDirect(fn, p, a, b, c, len, at, tailSeq) {
+    const fixed = fn.cljs$lang$maxFixedArity, total = p + len;
+    if (total <= fixed) {
+      if (total === 0) return call0(fn);
+      if (total === 1) return call1(fn, p ? a : at(0));
+      if (total === 2) return stepFn2(fn)(p ? a : at(0), p === 2 ? b : at(p ? 0 : 1));
+      const out = new Array(total);
+      if (p > 0) out[0] = a;
+      if (p > 1) out[1] = b;
+      if (p > 2) out[2] = c;
+      for (let i = 0; i < len; i++) out[p + i] = at(i);
+      return fn.apply(null, out);
+    }
+    const delegate = fn.cljs$core$IFn$_invoke$arity$variadic;
+    if (p <= fixed) {
+      const need = fixed - p, more = tailSeq(need);
+      if (fixed === 2) return p === 0 ? delegate(at(0), at(1), more) : p === 1 ? delegate(a, at(0), more) : delegate(a, b, more);
+      const args = new Array(fixed + 1);
+      if (p > 0) args[0] = a;
+      if (p > 1) args[1] = b;
+      if (p > 2) args[2] = c;
+      for (let i = 0; i < need; i++) args[p + i] = at(i);
+      args[fixed] = more;
+      return delegate.apply(null, args);
+    }
+    let more = len === 0 ? null : tailSeq(0);
+    if (p > 2 && fixed <= 2) more = cons(c, more);
+    if (p > 1 && fixed <= 1) more = cons(b, more);
+    if (p > 0 && fixed === 0) more = cons(a, more);
+    return fixed === 0 ? delegate(more) : fixed === 1 ? delegate(a, more) : delegate(a, b, more);
+  }
+  //@unit makeVector.apply effect: makeVector, mapEntry when: apply requires: applyDirect,
+  //@ ChunkedSeqCell, IndexedSeqCell, kindHooks, vectorChunk, vectorNth
+  kindHooks.applyVector = (fn, p, a, b, c, tail) => {
+    const len = tail.cnt$LKEY;
+    return applyDirect(fn, p, a, b, c, len, i => vectorNth(tail, i, null),
+      i => len <= 32 ? new IndexedSeqCell(vectorChunk(tail, 0), i, true, "indexed")
+        : new ChunkedSeqCell(vectorChunk(tail, i & -32), i & 31, tail, i & -32));
+  };
+  //@unit apply requires: applyArrayPrefix, applyDirect, applyTo, boundedCount, call0, call1, cons,
+  //@ fieldComparisons, fnCall, hostExt, IndexedSeqCell, kindHooks, ownSeqs, protocolSentinel, seq,
+  //@ slotFirst, stepFn2, toArray
   function apply(fn, a, b, c, d) {
     const argc = arguments.length;
-    if (argc >= 2 && argc <= 5 && fn.cljs$lang$applyTo?.direct$LKEY === true && fn.call === fnCall) {
-      const arr = directTail(argc === 2 ? a : argc === 3 ? b : argc === 4 ? c : d);
-      if (arr !== null) {
-        const len = arr.length;
-        if (argc === 2) {
-          if (len === 0) return call0(fn);
-          if (len === 1) return call1(fn, arr[0]);
-          if (len === 2) return stepFn2(fn)(arr[0], arr[1]);
-          if (len === 3) return fn(arr[0], arr[1], arr[2]);
-          if (len === 4) return fn(arr[0], arr[1], arr[2], arr[3]);
-          return fn.apply(null, arr);
+    if (argc >= 2 && argc <= 5 && fn.cljs$lang$applyTo?.direct$LKEY === true && fn.call === fnCall
+      && slotFirst.on && !ownSeqs.on && !hostExt.seq) {
+      const tail = argc === 2 ? a : argc === 3 ? b : argc === 4 ? c : d;
+      if (tail != null) {
+        const kind = tail.cljs$lang$kind$$LKEY;
+        if (kind === 1 && fieldComparisons.on && tail.tail$LKEY !== undefined && tail.callerTail$LKEY === undefined) {
+          const cnt = tail.cnt$LKEY;
+          if (cnt <= 32 && tail.tail$LKEY.length === cnt) {
+            const arr = tail.tail$LKEY;
+            if (argc === 2) {
+              if (cnt === 0) return call0(fn);
+              if (cnt === 1) return call1(fn, arr[0]);
+              if (cnt === 2) return stepFn2(fn)(arr[0], arr[1]);
+              if (cnt === 3) return fn(arr[0], arr[1], arr[2]);
+              if (cnt === 4) return fn(arr[0], arr[1], arr[2], arr[3]);
+              return fn.apply(null, arr);
+            }
+            if (argc === 3) return cnt === 0 ? call1(fn, a) : cnt === 1 ? stepFn2(fn)(a, arr[0]) : cnt === 2 ? fn(a, arr[0], arr[1]) : cnt === 3 ? fn(a, arr[0], arr[1], arr[2]) : applyArrayPrefix(fn, 1, a, b, c, arr, cnt);
+            if (argc === 4) return cnt === 0 ? stepFn2(fn)(a, b) : cnt === 1 ? fn(a, b, arr[0]) : cnt === 2 ? fn(a, b, arr[0], arr[1]) : applyArrayPrefix(fn, 2, a, b, c, arr, cnt);
+            return cnt === 0 ? fn(a, b, c) : cnt === 1 ? fn(a, b, c, arr[0]) : applyArrayPrefix(fn, 3, a, b, c, arr, cnt);
+          }
+          if (kindHooks.applyVector) return kindHooks.applyVector(fn, argc - 2, a, b, c, tail);
         }
-        if (argc === 3) return len === 0 ? call1(fn, a) : len === 1 ? stepFn2(fn)(a, arr[0]) : len === 2 ? fn(a, arr[0], arr[1]) : fn.apply(null, [a, ...arr]);
-        if (argc === 4) return len === 0 ? stepFn2(fn)(a, b) : len === 1 ? fn(a, b, arr[0]) : fn.apply(null, [a, b, ...arr]);
-        return len === 0 ? fn(a, b, c) : fn.apply(null, [a, b, c, ...arr]);
+        if (kind === 2 && fieldComparisons.on && tail.sub$LKEY !== undefined && tail.sub$LKEY.callerTail$LKEY === undefined && kindHooks.applyVector) {
+          return kindHooks.applyVector(fn, argc - 2, a, b, c, tail);
+        }
+        if (Array.isArray(tail) && !(hostExt.p0 & 2) && !(tail.cljs$lang$protocol_mask$partition0$$LKEY & 8388802)
+          && tail.cljs$core$ISeqable$$LKEY !== protocolSentinel && tail.cljs$core$ICounted$$LKEY !== protocolSentinel) {
+          return applyDirect(fn, argc - 2, a, b, c, tail.length, i => tail[i], i => new IndexedSeqCell(tail, i, true, "indexed"));
+        }
       }
     }
     return applySlow.apply(null, arguments);
@@ -14280,7 +14344,7 @@
   //@unit jsIterable
   const jsIterable = value => value != null && value[Symbol.iterator] != null;
   //@unit iteration requires: cons, deref, get, installMethods, isReduced, keyword, lazySequence,
-  //@ listFromArray, seqToMap, truth
+  //@ listFromArray, seqToMap, stepFn2, truth
   function iteration(step, ...options) {
     const opts = seqToMap(listFromArray(options)), option = (name, fallback) => get(opts, keyword(null, name), fallback);
     const somef = option("somef", value => value != null), vf = option("vf", value => value), kf = option("kf", value => value), initk = option("initk", null);
@@ -14292,9 +14356,10 @@
     return installMethods({}, [["ISeqable", 0, null], ["IReduce", 0, null],
       ["ISeqable/-seq", 1, () => sequence(step.call(null, initk))],
       ["IReduce/-reduce", 3, (_self, rf, init) => {
+        const r2 = stepFn2(rf);
         let acc = init, ret = step.call(null, initk);
         while (truth(somef.call(null, ret))) {
-          acc = rf.call(null, acc, vf.call(null, ret));
+          acc = r2(acc, vf.call(null, ret));
           if (isReduced(acc)) return deref(acc);
           const key = kf.call(null, ret); if (key == null) return acc;
           ret = step.call(null, key);

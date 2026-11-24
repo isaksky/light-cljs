@@ -3155,7 +3155,7 @@ fn terse_chunks_write_their_runtime_units_at_module_level() {
     // on the page (130,400), and light-cljs-1086 the compareKeys,
     // treeMapConjSlot and editableTarget fast paths (131,813), and
     // light-cljs-1084 fixed-arity function-value calls across reduce,
-    // transducers, core variadics, apply and sort-by (134,791).
+    // transducers, core variadics, apply and sort-by (135,834).
     assert!(
         total + 1_000
             <= 73_207
@@ -3181,7 +3181,7 @@ fn terse_chunks_write_their_runtime_units_at_module_level() {
                 + 1_000
                 + 1_000
                 + 2_000
-                + 2_000,
+                + 3_000,
         "{total} bytes\n{listing}"
     );
     // Startup's `lazy$` is 242 bytes since light-cljs-353 (687 before).

@@ -1366,8 +1366,8 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // `Atom.deref`, and the two printer hook units (`printSeq.hook`,
     // `printWriter.hook`); and the three map seqs' `-reduce` slot units and
     // the array map seq's `seq` and `drop` hooks (light-cljs-1081); and
-    // `makeVector.toArray` (light-cljs-1084).
-    assert_eq!(checked, 635);
+    // `makeVector.toArray` and `makeVector.apply` (light-cljs-1084).
+    assert_eq!(checked, 636);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s
@@ -1779,6 +1779,7 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
     ),
     ("iteratorVector", Kind::Stores(&["vectors"])),
     ("vectorToArray", Kind::Stores(&["vectors"])),
+    ("applyVector", Kind::Stores(&["vectors"])),
     ("dropArrayMapSeq", Kind::Units(&["ArrayMapIndexCell"])),
     ("dropChunkedSeq", Kind::Units(&["ChunkedSeqValue"])),
     ("dropVector", Kind::Stores(&["vectors"])),

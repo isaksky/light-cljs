@@ -6,6 +6,9 @@
 //! optimization levels including protocol overrides (`extend-type`, `specify!`),
 //! laziness, custom `IFn`/`applyTo`, `subvec`, and metadata preservation.
 
+use super::optimization::execute;
+use light_cljs::{ApplicationOptions, OptimizationLevel, analyze, parse, prepare_application};
+
 #[test]
 fn core_variadics_fixed_arity_in_reduce_transduce_and_sort_by() {
     let run = |source: &str| super::optimization::json_at_every_level(source);
@@ -379,5 +382,225 @@ fn non_number_variadics_ifn_values_extended_protocols_and_sort_by_semantics() {
              (= (mapv :id (sort-by :k big))
                 (vec (for [r (range 5) i (range 40) :when (= (mod i 5) r)] i)))]))"#),
         "\"[[2 4 1 3 5] [2 4 1 3 5] [1 3 5 2 4] [1 3 5 2 4] [2 4 1 3 5] [2 4 1 3 5] true]\"\n"
+    );
+}
+
+#[test]
+fn fixed_arity_callbacks_preserve_receivers_and_call_overrides() {
+    let run = |source: &str| super::optimization::json_at_every_level(source);
+
+    // Strict JS functions without fixed-arity entries still receive `this === null`,
+    // and reified IFn objects honor a replaced `.call` method in call0/call1/stepFn.
+    assert_eq!(
+        run(r#"
+        (let [strict2 (js* "(function(a, b) { 'use strict'; return this === null ? a + b : -1; })")
+              strict1 (js* "(function(x) { 'use strict'; return this === null ? x * 10 : -1; })")
+              strict-cmp (js* "(function(a, b) { 'use strict'; return this === null ? b - a : 0; })")
+              obj (reify IFn
+                    (-invoke [_] :orig0)
+                    (-invoke [_ x] [:orig1 x])
+                    (-invoke [_ a b] [:orig2 a b]))]
+          (set! (.-call obj)
+                (fn [_ & args]
+                  (case (count args)
+                    0 :override0
+                    1 [:override1 (first args)]
+                    2 (+ (first args) (second args)))))
+          (pr-str
+            [(reduce strict2 0 [1 2 3])
+             (into [] (map strict1) [1 2 3])
+             (mapv strict1 [1 2 3])
+             (vec (sort-by strict1 [3 1 2]))
+             (vec (sort-by identity strict-cmp [1 3 2]))
+             (reduce obj [])
+             (reduce obj 0 [1 2 3])
+             (transduce (map inc) obj 0 [1 2])]))"#),
+        "\"[6 [10 20 30] [10 20 30] [1 2 3] [3 2 1] :override0 6 [:override1 5]]\"\n"
+    );
+}
+
+#[test]
+fn apply_direct_array_tails_preserve_indexed_reads() {
+    let run = |source: &str| super::optimization::json_at_every_level(source);
+
+    // Throwing getter at index 1 is never read when `<` short-circuits on (10 < 2),
+    // and custom array Symbol.iterator is never consulted by apply on arrays.
+    assert_eq!(
+        run(r#"
+        (let [getter-arr (js* "(() => { const a = [2]; Object.defineProperty(a, 1, { enumerable: true, get() { throw new Error('read-index-1'); } }); a.length = 2; return a; })()")
+              iter-arr (js* "(() => { const a = [2, 3, 4]; a[Symbol.iterator] = function*() { yield 100; }; return a; })()")
+              iter-long (js* "(() => { const a = Array.from({length: 35}, (_, i) => i); a[Symbol.iterator] = function*() { throw new Error('iter-used'); }; return a; })()")]
+          (pr-str
+            [(apply < 10 getter-arr)
+             (apply + iter-arr)
+             (apply + 1 iter-arr)
+             (apply + 1 2 iter-arr)
+             (apply + 1 2 3 iter-arr)
+             (apply + 1 iter-long)
+             (apply + 1 2 3 iter-long)]))"#),
+        "\"[false 9 10 12 15 596 601]\"\n"
+    );
+}
+
+#[test]
+fn apply_numeric_equality_realizes_the_existing_tail() {
+    let run = |source: &str| super::optimization::json_at_every_level(source);
+
+    // `==` keeps its non-variadic `apply` tail realization (materializes all elements).
+    assert_eq!(
+        run(r#"
+        (let [seen (atom 0)
+              s (map (fn [x] (swap! seen inc) x) (list 2 3 4 5 6 7))]
+          (pr-str [(apply == 1 s) @seen]))"#),
+        "\"[false 6]\"\n"
+    );
+}
+
+#[test]
+fn list_conj_preserves_tail_count_overrides() {
+    let run = |source: &str| super::optimization::json_at_every_level(source);
+
+    assert_eq!(
+        run(r#"
+        (let [xs (specify! (list 2) ICounted (-count [_] 100))]
+          (pr-str [(count (conj xs 1)) (count (conj (conj xs 1) 0))]))"#),
+        "\"[101 102]\"\n"
+    );
+    assert_eq!(
+        run(r#"
+        (extend-type List ICounted (-count [_] 100))
+        (pr-str [(.-count (conj (list 2) 1))])"#),
+        "\"[101]\"\n"
+    );
+}
+
+#[test]
+fn apply_direct_tail_dispatches_across_leaf_boundaries() {
+    let source = r#"
+        (let [v33 (vec (range 33))
+              v50 (vec (range 50))
+              sub-big (subvec v50 5 45)
+              sub-small (subvec v50 5 10)
+              a33 (to-array v33)
+              a35 (to-array (range 35))
+              v35 (vec (range 35))
+              c #(aget js/globalThis "__cons")
+              before (c)
+              r1 (apply + 1 v33)
+              r2 (apply + 1 sub-big)
+              r3 (apply + 1 a33)
+              r4 (apply + 1 2 v35)
+              r5 (apply + 1 2 sub-small)
+              r6 (apply + 1 2 a35)
+              r7 (count (apply vector v35))
+              r8 (count (apply vector a35))
+              r9 (count (apply vector sub-big))
+              after (c)
+              r10 (apply + 1 2 3 v33)
+              r11 (apply + 1 2 3 a33)
+              r12 (apply + 1 2 3 sub-big)]
+          (pr-str [(- after before) r1 r2 r3 r4 r5 r6 r7 r8 r9 r10 r11 r12]))"#;
+    let program = analyze(source, &parse(source).unwrap()).unwrap();
+    let mut options = ApplicationOptions::new(OptimizationLevel::Advanced);
+    options.pseudo_names = true;
+    let mut js = prepare_application(&program, options).emit_js();
+    let head = "function cons(head, tail, kind = \"cons\") {";
+    assert!(js.contains(head), "missing {head}");
+    js = js.replace(head, &format!("{head} globalThis.__cons++;"));
+    assert_eq!(
+        execute(&format!("globalThis.__cons = 0; console.log({js});")),
+        "[0 529 981 529 598 38 598 35 35 40 534 534 986]\n"
+    );
+}
+
+#[test]
+fn native_reduce_loops_use_fixed_arity_entries() {
+    let source = r#"
+        (let [make-rf (fn []
+                        (let [hits (atom 0)
+                              f (fn ([a] a) ([a b] (+ a b)))
+                              orig (.-cljs$core$IFn$_invoke$arity$2 f)]
+                          (set! (.-cljs$core$IFn$_invoke$arity$2 f)
+                                (fn [a b] (swap! hits inc) (orig a b)))
+                          [f hits]))
+              check (fn [run-fn]
+                      (let [[f hits] (make-rf)]
+                        [(run-fn f) @hits]))
+              am (array-map :a 1 :b 2 :c 3)
+              hm (zipmap (range 12) (range 12))
+              sp-vec (specify! [1 2 3] ISeqable (-seq [_] (list 10 20 30)))
+              iter-obj (iteration (fn [k] (when (< k 4) k)) :kf #(inc %) :vf identity :initk 0)]
+          (pr-str
+            [(check #(reduce % 0 (repeat 5 2)))
+             (check #(transduce (take 4) % 0 (iterate inc 1)))
+             (check #(transduce (take 5) % 0 (cycle [1 2])))
+             (check #(reduce % 0 sp-vec))
+             (let [hits (atom 0)
+                   rf (fn ([a] a) ([a e] (+ a (val e))))
+                   orig (.-cljs$core$IFn$_invoke$arity$2 rf)]
+               (set! (.-cljs$core$IFn$_invoke$arity$2 rf)
+                     (fn [a e] (swap! hits inc) (orig a e)))
+               [(reduce rf 0 (seq am)) @hits])
+             (let [hits (atom 0)
+                   rf (fn ([a] a) ([a e] (+ a (val e))))
+                   orig (.-cljs$core$IFn$_invoke$arity$2 rf)]
+               (set! (.-cljs$core$IFn$_invoke$arity$2 rf)
+                     (fn [a e] (swap! hits inc) (orig a e)))
+               [(reduce rf 0 (seq hm)) @hits])
+             (check #(transduce (distinct) % 0 [1 2 1 3 2]))
+             (check #(reduce % 0 iter-obj))]))"#;
+    let program = analyze(source, &parse(source).unwrap()).unwrap();
+    let options = ApplicationOptions::new(OptimizationLevel::Advanced);
+    let js = prepare_application(&program, options).emit_js();
+    assert_eq!(
+        execute(&format!("console.log({js});")),
+        "[[10 5] [10 4] [7 5] [60 3] [6 3] [66 12] [6 3] [6 4]]\n"
+    );
+}
+
+#[test]
+fn advanced_hot_calls_reach_fixed_arity_entries() {
+    let source = r#"
+        (let [v100 (vec (range 100))
+              a2 (.-cljs$core$IFn$_invoke$arity$2 +)
+              s1 (.-cljs$core$IFn$_invoke$arity$1 -)
+              hits (js-obj "add2" 0 "sub1" 0 "map2" 0)]
+          (set! (.-cljs$core$IFn$_invoke$arity$2 +)
+                (fn [a b] (aset hits "add2" (inc (aget hits "add2"))) (a2 a b)))
+          (set! (.-cljs$core$IFn$_invoke$arity$1 -)
+                (fn [x] (aset hits "sub1" (inc (aget hits "sub1"))) (s1 x)))
+          (let [r-sum (reduce + 0 v100)
+                xf (map inc)
+                wrapped-xf (fn [rf]
+                             (let [step (xf rf)
+                                   orig2 (.-cljs$core$IFn$_invoke$arity$2 step)]
+                               (set! (.-cljs$core$IFn$_invoke$arity$2 step)
+                                     (fn [acc x]
+                                       (aset hits "map2" (inc (aget hits "map2")))
+                                       (orig2 acc x)))
+                               step))
+                r-into (count (into [] wrapped-xf v100))
+                r-sort (first (sort-by - v100))]
+            (pr-str [r-sum r-into r-sort
+                     (aget hits "add2")
+                     (aget hits "map2")
+                     (> (aget hits "sub1") 100)
+                     (aget js/globalThis "__addDispatch")
+                     (aget js/globalThis "__subDispatch")])))"#;
+    let program = analyze(source, &parse(source).unwrap()).unwrap();
+    let mut options = ApplicationOptions::new(OptimizationLevel::Advanced);
+    options.pseudo_names = true;
+    let mut js = prepare_application(&program, options).emit_js();
+    let add_head = "function add(x, y) {";
+    let sub_head = "function subtract(x, y) {";
+    assert!(js.contains(add_head), "missing {add_head}");
+    assert!(js.contains(sub_head), "missing {sub_head}");
+    js = js.replace(add_head, &format!("{add_head} globalThis.__addDispatch++;"));
+    js = js.replace(sub_head, &format!("{sub_head} globalThis.__subDispatch++;"));
+    assert_eq!(
+        execute(&format!(
+            "globalThis.__addDispatch = 0; globalThis.__subDispatch = 0; console.log({js});"
+        )),
+        "[4950 100 99 100 100 true 0 0]\n"
     );
 }
