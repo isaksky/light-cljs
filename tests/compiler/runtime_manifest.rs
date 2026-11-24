@@ -1365,9 +1365,10 @@ fn conditional_effects_name_every_unit_that_can_use_them() {
     // `hostExtPrintEscaped.on`, `hostExt.hook`, `slotWrites.hostExt`),
     // `Atom.deref`, and the two printer hook units (`printSeq.hook`,
     // `printWriter.hook`); and the three map seqs' `-reduce` slot units and
-    // the array map seq's `seq` and `drop` hooks (light-cljs-1081); and
-    // `makeVector.toArray` and `makeVector.apply` (light-cljs-1084).
-    assert_eq!(checked, 636);
+    // the array map seq's `seq` and `drop` hooks (light-cljs-1081);
+    // `makeVector.toArray` and `makeVector.apply` (light-cljs-1084); and
+    // `makeMap.intoMap` (light-cljs-1109).
+    assert_eq!(checked, 637);
 }
 
 /// The decorations of a type the runtime owns for a library, `light.lazy`'s
@@ -1718,6 +1719,7 @@ const KIND_HOOKS: &[(&str, Kind)] = &[
     ("transientMapLookup", Kind::Stores(&["maps"])),
     ("assocTransientMap", Kind::Stores(&["maps"])),
     ("dissocTransientMap", Kind::Stores(&["maps"])),
+    ("intoMap", Kind::Stores(&["maps"])),
     ("persistSet", Kind::Stores(&["sets"])),
     ("transientVector", Kind::Stores(&["vectors"])),
     ("conjTransientVector", Kind::Stores(&["vectors"])),

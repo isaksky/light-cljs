@@ -1,7 +1,11 @@
 //! Canonical transient collection ownership, public dispatch and macro parity.
+use super::optimization::execute;
 use crate::temp_dir::TempDir;
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions, RUNTIME_SOURCE};
-use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
+use light_cljs::{
+    ApplicationOptions, MacroHost, OptimizationLevel, analyze_with_macros, emitter::emit_js_unit,
+    parse, prepare_application,
+};
 use std::{
     fs,
     io::Write,
@@ -38,6 +42,32 @@ fn both(source: &str, expected: &str) {
         expected,
         "Node: {source}"
     );
+}
+
+fn advanced_with_options(source: &str, expected: &str, options: ApplicationOptions) -> String {
+    let wrapped = format!("(js/console.log (pr-str (do {source})))");
+    let mut host = MacroHost::new();
+    let program = analyze_with_macros(&wrapped, &parse(&wrapped).unwrap(), &mut host).unwrap();
+    let js = prepare_application(&program, options).emit_js();
+    assert_eq!(
+        execute(&format!("{js};")).trim(),
+        expected,
+        "Advanced: {source}"
+    );
+    js
+}
+
+fn advanced(source: &str, expected: &str) {
+    advanced_with_options(
+        source,
+        expected,
+        ApplicationOptions::new(OptimizationLevel::Advanced),
+    );
+}
+
+fn both_and_advanced(source: &str, expected: &str) {
+    both(source, expected);
+    advanced(source, expected);
 }
 
 const CONTRACT: &str = r#"
@@ -285,6 +315,320 @@ fn into_uses_custom_editable_protocol_and_real_transient_completion() {
         [result (meta result) (satisfies? ITransientCollection @escaped)
          (try (conj! @escaped 3) (catch js/Error e :closed))])"#,
         "[[0 1 2] {:source true} true :closed]",
+    );
+    // Target metadata must be read after persisting two-argument `into`, in both the
+    // reduction path and the flat-map fast path (Sol #4).
+    both_and_advanced(
+        r#"
+      (let [step (atom 0)
+            target-vec (specify! [0] IMeta (-meta [_] {:step @step}))
+            src-seq (reify IReduce
+                      (-reduce [_ f init]
+                        (reset! step 1)
+                        (f init 1)))
+            r-vec (into target-vec src-seq)
+            ;; Flat-map fast path: IHash on a source key mutates the atom during into
+            step2 (atom 0)
+            target-map (specify! (hash-map :base 0) IMeta (-meta [_] {:step @step2}))
+            k (reify IHash (-hash [_] (reset! step2 2) 7) IEquiv (-equiv [a b] (identical? a b)))
+            r-map (into target-map (array-map k :v))
+            ;; Failure during build must not evaluate target IMeta prematurely
+            meta-calls (atom 0)
+            bad-target (specify! {} IMeta (-meta [_] (swap! meta-calls inc) {:bad true}))
+            bad-src (reify IReduce (-reduce [_ _ _] (throw (js/Error. "boom"))))
+            outcome (try (into bad-target bad-src) :ok (catch js/Error _ :err))]
+        [(meta r-vec) (meta r-map) outcome @meta-calls])"#,
+        "[{:step 1} {:step 2} :err 0]",
+    );
+}
+
+#[test]
+fn into_map_merge_and_map_conj_semantics_at_all_levels() {
+    both_and_advanced(
+        r#"
+      (defrecord Rec [a b])
+      (deftype Collide [id]
+        IHash (-hash [_] 42)
+        IEquiv (-equiv [this other] (and (instance? Collide other) (= id (.-id other)))))
+      (let [m7 (with-meta {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7} {:src :m7})
+            m3 (with-meta {:b 20 :h 8 :i 9} {:src :m3})
+            m-nil {:a 1 nil :n1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7}
+            c1 (Collide. 1) c2 (Collide. 2)
+            hm (into (hash-map c1 :c1 c2 :c2) (for [i (range 20)] [i (* i 10)]))
+            hm-nil (assoc hm nil :nil-v)
+            sm (sorted-map :x 10 :y 20)
+            rec (->Rec 100 200)
+            ;; Signed zero keys and values across into, merge, conj, and 8->9 promotion
+            z-into (into (array-map 0 0) (array-map -0 -0))
+            z-merge (merge (array-map 0 0) (array-map -0 -0))
+            z-conj (conj (array-map 0 0) (array-map -0 -0))
+            z-prom (assoc {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8} -0 -0)
+            z-prom-into (into {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8} (array-map -0 -0))
+            ;; into: array->array, array->hash promotion, hash->array, hash->hash, record, sorted-map, seq of entries, seq of 2-vectors
+            r1 (into (with-meta {} {:empty true}) m7)
+            r2 (into m7 m3)
+            r3 (into {} hm-nil)
+            r4 (into hm {:a :from-arr 0 :overwrite})
+            r5 (into (with-meta hm {:hm true}) hm-nil)
+            r-rec (into {} rec)
+            r-sm (into {} sm)
+            r-entries (into {} (seq {:p 1 :q 2}))
+            r-vecs (into {} (list [:u 3] [:v 4]))
+            ;; merge: nil/false, 0/1/many args, 8->9 promotion, nil keys/values, hash/record/sorted-map sources
+            mg [(merge) (merge nil) (merge nil false) (merge {:a 1})
+                (merge nil {:a 1}) (merge false {:a 1}) (merge {:a 1} nil)
+                (merge nil {:a 1} nil {:b 2 :a 10})]
+            mg9 (merge m7 m3)
+            mg-nil (merge m-nil {:i 9 nil nil})
+            mg-hm (merge {:x 1} hm-nil)
+            mg-rec (merge {:z 0} rec)
+            mg-sm (merge {:z 0} sm)
+            ;; conj: array map, hash map, nil, vector, map-entry, record, sorted-map
+            cj1 (conj m7 m3)
+            cj2 (conj m7 nil)
+            cj3 (conj {:a 1} [:b 2])
+            cj4 (conj {:a 1} (first {:b 2}))
+            cj5 (conj {:a 1} hm)
+            cj6 (conj {:z 0} rec)
+            cj7 (conj {:z 0} sm)
+            ;; specify! on source array-map / hash-map bypasses flat shortcuts
+            spec-arr (specify! {:a 1 :b 2}
+                       ISeqable (-seq [_] (list [:override 99])))
+            spec-hm (specify! (into {} (for [i (range 12)] [i i]))
+                      IReduce (-reduce [_ f init] (f init [:reduced 77])))]
+        [(= r1 {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7}) (= (meta r1) {:empty true})
+         (= (count r2) 9) (= (:b r2) 20) (= (:i r2) 9) (= (meta r2) {:src :m7})
+         (= (count r3) 23) (= (get r3 nil) :nil-v) (= (get r3 c1) :c1) (= (get r3 c2) :c2)
+         (= (count r4) 23) (= (get r4 0) :overwrite) (= (:a r4) :from-arr)
+         (= (count r5) 23) (= (get r5 nil) :nil-v) (= (meta r5) {:hm true})
+         (= r-rec {:a 100 :b 200}) (= r-sm {:x 10 :y 20})
+         (= r-entries {:p 1 :q 2}) (= r-vecs {:u 3 :v 4})
+         (js/Object.is (get z-into 0) -0) (js/Object.is (key (first z-into)) 0)
+         (js/Object.is (get z-merge 0) -0) (js/Object.is (key (first z-merge)) 0)
+         (js/Object.is (get z-conj 0) -0) (js/Object.is (key (first z-conj)) 0)
+         (js/Object.is (get z-prom 0) -0) (js/Object.is (get z-prom-into 0) -0)
+         mg
+         (= (count mg9) 9) (= (:b mg9) 20) (= (meta mg9) {:src :m7})
+         (= (count mg-nil) 9) (contains? mg-nil nil) (nil? (get mg-nil nil :miss))
+         (= (count mg-hm) 24) (= (get mg-hm nil) :nil-v) (= (:x mg-hm) 1)
+         (= mg-rec {:z 0 :a 100 :b 200}) (= mg-sm {:z 0 :x 10 :y 20})
+         (= cj1 mg9) (= cj2 m7) (= cj3 {:a 1 :b 2}) (= cj4 {:a 1 :b 2})
+         (= (count cj5) 23) (= cj6 {:z 0 :a 100 :b 200}) (= cj7 {:z 0 :x 10 :y 20})
+         (into {} spec-arr) (conj {:k 0} spec-arr) (merge {:k 0} spec-arr)
+         (into {} spec-hm)])"#,
+        "[true true true true true true true true true true true true true true true true true true true true true true true true true true true true [nil nil nil {:a 1} {:a 1} {:a 1} {:a 1} {:a 10, :b 2}] true true true true true true true true true true true true true true true true true true {:override 99} {:k 0, :override 99} {:k 0, :override 99} {:reduced 77}]",
+    );
+}
+
+#[test]
+fn merge_direct_and_apply_preserve_reduction_semantics() {
+    // Sol #3: direct merge must stop on `reduced` results and honor IndexedSeq dispatch.
+    both_and_advanced(
+        r#"
+      (let [calls (atom 0)
+            stopper (reify ICollection
+                      (-conj [_ x]
+                        (swap! calls inc)
+                        (reduced {:done true :saw x})))
+            direct (merge stopper {:a 1} {:b 2})
+            c1 @calls
+            _ (reset! calls 0)
+            applied (apply merge [stopper {:a 1} {:b 2}])
+            c2 @calls]
+        [direct c1 applied c2])"#,
+        "[{:done true, :saw {:a 1}} 1 {:done true, :saw {:a 1}} 1]",
+    );
+    // Separate program so `extend-type IndexedSeq` does not pollute the fast-path test above.
+    both_and_advanced(
+        r#"
+      (let [reduced-hits (atom 0)]
+        (extend-type IndexedSeq
+          IReduce
+          (-reduce [this f]
+            (swap! reduced-hits inc)
+            {:via-indexed-seq (count this)}))
+        [(merge {:a 1} {:b 2}) @reduced-hits])"#,
+        "[{:via-indexed-seq 2} 1]",
+    );
+}
+
+#[test]
+fn advanced_map_builders_observe_mid_walk_protocol_extensions() {
+    // Sol #2: `intoMap` array-map source -> TransientHashMap `-conj!` installed mid-walk.
+    advanced(
+        r#"
+      (let [installed (atom false)
+            k1 (reify
+                 IHash (-hash [_]
+                         (when (not @installed)
+                           (reset! installed true)
+                           (extend-type TransientHashMap
+                             ITransientCollection
+                             (-conj! [t _] t)))
+                         7)
+                 IEquiv (-equiv [a b] (identical? a b)))
+            m (into (hash-map) (array-map k1 :v1 :k2 :v2))]
+        [(count m) (get m k1) (contains? m :k2)])"#,
+        "[1 :v1 false]",
+    );
+    // Sol #2: `intoMap` array-map source -> TransientArrayMap `-conj!` returning `(reduced nil)` mid-walk.
+    advanced(
+        r#"
+      (let [installed (atom false)
+            k1 (reify
+                 IHash (-hash [_] 7)
+                 IEquiv (-equiv [a b]
+                          (when (not @installed)
+                            (reset! installed true)
+                            (extend-type TransientArrayMap
+                              ITransientCollection
+                              (-conj! [t _] (reduced t))))
+                          (identical? a b)))
+            m (into {:seed 0} (array-map k1 :v1 :k2 :v2))]
+        [(count m) (get m :seed) (get m k1) (contains? m :k2)])"#,
+        "[2 0 :v1 false]",
+    );
+    // Sol #2: `intoMap` hash-map source -> TransientHashMap `-conj!` installed mid-walk.
+    advanced(
+        r#"
+      (let [armed (atom false)
+            installed (atom false)
+            k1 (reify
+                 IHash (-hash [_]
+                         (when (and @armed (not @installed))
+                           (reset! installed true)
+                           (extend-type TransientHashMap
+                             ITransientCollection
+                             (-conj! [t _] t)))
+                         1)
+                 IEquiv (-equiv [a b] (identical? a b)))
+            src (hash-map k1 :v1 :b 2 :c 3)
+            _ (reset! armed true)
+            m (into (hash-map) src)]
+        [(count m) (get m k1)])"#,
+        "[1 :v1]",
+    );
+    // Sol #2: `mapConj` (via `conj` and `merge`) -> `MapEntry` `-nth` installed mid-walk.
+    advanced(
+        r#"
+      (let [installed (atom false)
+            k1 (reify
+                 IHash (-hash [_] 7)
+                 IEquiv (-equiv [a b]
+                          (when (not @installed)
+                            (reset! installed true)
+                            (extend-type MapEntry
+                              IIndexed
+                              (-nth [_ idx] (if (= idx 0) :overridden-k :overridden-v))))
+                          (identical? a b)))
+            m (conj {:seed 0} (array-map k1 :v1 :k2 :v2))]
+        [(get m :seed) (get m k1) (contains? m :k2) (get m :overridden-k)])"#,
+        "[0 :v1 false :overridden-v]",
+    );
+    // Sol #2: `mapConj` -> `PersistentArrayMapSeq` `-next` installed mid-walk.
+    advanced(
+        r#"
+      (let [installed (atom false)
+            k1 (reify
+                 IHash (-hash [_] 7)
+                 IEquiv (-equiv [a b]
+                          (when (not @installed)
+                            (reset! installed true)
+                            (extend-type PersistentArrayMapSeq
+                              INext
+                              (-next [_] nil)))
+                          (identical? a b)))
+            m (merge {:seed 0} (array-map k1 :v1 :k2 :v2))]
+        [(count m) (get m :seed) (get m k1) (contains? m :k2)])"#,
+        "[2 0 :v1 false]",
+    );
+}
+
+#[test]
+fn advanced_map_builders_walk_flat_pairs() {
+    // Sol #12: Verify at `:advanced` that plain `into`, `conj`, and `merge` take the
+    // flat-pair shortcuts without calling `mapEntry`, while an override falls back.
+    let source = r#"
+      (let [m7 {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7}
+            m3 {:b 20 :h 8 :i 9}
+            r-into (into {} m7)
+            r-conj (conj m7 m3)
+            r-merge (merge m7 m3)]
+        [(count r-into) (count r-conj) (count r-merge) (:i r-merge)])"#;
+    let mut opts = ApplicationOptions::new(OptimizationLevel::Advanced);
+    opts.pseudo_names = true;
+    let js = advanced_with_options(source, "[7 9 9 9]", opts);
+    assert!(
+        js.contains("return new EntryCell(key, value);"),
+        "expected advanced output to retain EntryCell construction for instrumentation"
+    );
+    assert!(
+        js.contains("kindHooks.intoMap"),
+        "expected advanced output to retain kindHooks.intoMap"
+    );
+    assert!(
+        js.contains("function arrayMapPromote(self, arr, key, item) {"),
+        "expected advanced output to retain out-of-line arrayMapPromote"
+    );
+    // Instrument EntryCell construction, intoMap's flat array-map walk, mapConj's flat walk,
+    // and arrayMapPromote to prove the flat shortcuts run with zero map-entry allocation.
+    let instrumented = js
+        .replace(
+            "return new EntryCell(key, value);",
+            "{ globalThis.__mapEntryCalls = (globalThis.__mapEntryCalls || 0) + 1; return new EntryCell(key, value); }",
+        )
+        .replacen(
+            "function arrayMapPromote(self, arr, key, item) {",
+            "function arrayMapPromote(self, arr, key, item) { globalThis.__promoteCalls = (globalThis.__promoteCalls || 0) + 1;",
+            1,
+        )
+        .replacen(
+            "if (fk === 28) {",
+            "if (fk === 28) { globalThis.__intoMapArrayCalls = (globalThis.__intoMapArrayCalls || 0) + 1;",
+            1,
+        )
+        .replacen(
+            "const arr = member.arr$",
+            "globalThis.__mapConjFlatCalls = (globalThis.__mapConjFlatCalls || 0) + 1; const arr = member.arr$",
+            1,
+        );
+    assert_ne!(instrumented, js);
+    let check_script = format!(
+        "{instrumented};\nconsole.log(JSON.stringify([globalThis.__mapEntryCalls || 0, globalThis.__intoMapArrayCalls || 0, globalThis.__mapConjFlatCalls || 0, globalThis.__promoteCalls || 0]));"
+    );
+    let out = execute(&check_script);
+    let lines: Vec<_> = out.trim().lines().collect();
+    assert_eq!(lines, vec!["[7 9 9 9]", "[0,1,2,2]"]);
+
+    // Now verify that extending `MapEntry` `-nth` disables the flat shortcut and allocates entries.
+    let fallback_source = r#"
+      (let [i (atom 0)]
+        (extend-type MapEntry
+          IIndexed
+          (-nth [_ idx]
+            (if (= idx 0)
+              (keyword (str "k" (swap! i inc)))
+              (* @i 10))))
+        (let [m (merge {:a 1} {:b 2 :c 3})]
+          [(:a m) (:k1 m) (:k2 m) (contains? m :b)]))"#;
+    let mut opts2 = ApplicationOptions::new(OptimizationLevel::Advanced);
+    opts2.pseudo_names = true;
+    let js2 = advanced_with_options(fallback_source, "[1 10 20 false]", opts2);
+    assert!(js2.contains("return new EntryCell(key, value);"));
+    let instrumented2 = js2.replace(
+        "return new EntryCell(key, value);",
+        "{ globalThis.__mapEntryCalls = (globalThis.__mapEntryCalls || 0) + 1; return new EntryCell(key, value); }",
+    );
+    let out2 = execute(&format!(
+        "{instrumented2};\nconsole.log(globalThis.__mapEntryCalls || 0);"
+    ));
+    let lines2: Vec<_> = out2.trim().lines().collect();
+    assert_eq!(lines2.len(), 2);
+    assert_eq!(lines2[0], "[1 10 20 false]");
+    let entry_calls: usize = lines2[1].parse().unwrap();
+    assert!(
+        entry_calls >= 2,
+        "expected fallback to construct MapEntry objects, got {entry_calls}"
     );
 }
 

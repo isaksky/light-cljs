@@ -990,11 +990,13 @@
   hostExt.p0 = hostExt.p0 | -2147483648;
   //@unit tabledKind
   // Whether a keyed kind is one whose type had a kind table number until
-  // light-cljs-1015 removed the tables: vectors, subvectors and map entries
-  // (1 to 3), indexed and chunked seqs (5, 6), lists, conses and ranges (12,
-  // 14, 15, 22), lazy seqs (16), array, hash and sorted maps (28 to 30),
-  // hash and sorted sets (33, 44) and queues (36).
-  const tabledKind = kind => kind >= 0 && (kind < 32 ? (1883361390 >>> kind & 1) === 1 : kind < 64 && (4114 >>> kind - 32 & 1) === 1);
+  // light-cljs-1015 removed the tables (plus transient array/hash maps 31, 32
+  // for `makeMap.intoMap`, light-cljs-1109): vectors, subvectors and map
+  // entries (1 to 3), indexed and chunked seqs (5, 6), lists, conses and
+  // ranges (12, 14, 15, 22), lazy seqs (16), array, hash and sorted maps (28
+  // to 30), transient array and hash maps (31, 32), hash and sorted sets (33,
+  // 44) and queues (36).
+  const tabledKind = kind => kind >= 0 && (kind < 32 ? ((1883361390 >>> kind & 1) === 1 || kind === 31) : kind < 64 && (4115 >>> kind - 32 & 1) === 1);
   //@unit protocolMaskNames
   const protocolMaskNames = "IFn ICounted IEmptyableCollection ICollection IIndexed ASeq ISeq INext ILookup IAssociative IMap IMapEntry ISet IStack IVector IDeref IDerefWithTimeout IMeta IWithMeta IReduce IKVReduce IEquiv IHash ISeqable ISequential IList IRecord IReversible ISorted IPrintWithWriter IWriter IPrintWithWriter IPending IWatchable IEditableCollection ITransientCollection ITransientAssociative ITransientMap ITransientVector ITransientSet IMultiFn IChunkedSeq IChunkedNext IComparable INamed ICloneable IAtom IReset ISwap IIterable IDrop".split(" ");
   //@unit protocolMasks requires: protocolMaskNames
@@ -2056,9 +2058,9 @@
   // (`ArrayMapIndexCell`, light-cljs-1081), of a copy of the array a public
   // constructor's map was given (its `slots`), which a program can write,
   // so that the seq reads it as it was when made, as its entries did.
-  function arrayMapSeq(value) {
+  function arrayMapSeq(value, start = 0) {
     const pairs = value.arr$LKEY;
-    return pairs.length ? new ArrayMapIndexCell(value.slots$LKEY === undefined ? pairs : pairs.slice(), 0, null) : null;
+    return start < pairs.length ? new ArrayMapIndexCell(value.slots$LKEY === undefined ? pairs : pairs.slice(), start, null) : null;
   }
   //@unit ArrayMapCell.seq effect: ArrayMapCell, makeMap, PersistentArrayMapValue when: seqPath
   //@ requires: arrayMapSeq, kindHooks
@@ -4629,10 +4631,29 @@
     return updatedMap(value, entries);
   }
 
-  //@unit mapConj requires: assoc, builtinSlots, first, holdsVector, indexedNth, indexedValue,
-  //@ methodKeys, next, nth, protocolHooks, seq, slotFirst
+  //@unit mapConj requires: arrayMapSeq, assoc, builtinSlots, fieldComparisons, first,
+  //@ holdsVector, hostExt, indexedNth, indexedValue, methodKeys, next, nth, protocolHooks, seq,
+  //@ slotFirst
   function mapConj(value, member) {
     if (member == null) return value;
+    if (slotFirst.on && fieldComparisons.on && !hostExt.seq && !(hostExt.p0 & 16400)
+      && member.cljs$lang$kind$$LKEY === 28 && member.arr$LKEY !== undefined && !member.slots$LKEY) {
+      const arr = member.arr$LKEY;
+      let result = value;
+      for (let i = 0, n = arr.length; i < n; i += 2) {
+        result = assoc(result, arr[i], arr[i + 1]);
+        if (!fieldComparisons.on || hostExt.seq || (hostExt.p0 & 16400)) {
+          const nthOf = protocolHooks.nthProtocol ? entryNth : nth;
+          for (let current = next(arrayMapSeq(member, i)); current !== null; current = next(current)) {
+            const pair = first(current);
+            if (!isVectorLike(pair)) throw new Error("Map conj requires vector entries");
+            result = assoc(result, nthOf(pair, 0), nthOf(pair, 1));
+          }
+          return result;
+        }
+      }
+      return result;
+    }
     // A vector's `-nth` is `nth`'s own (see `protocolHooks`), which is
     // slot-first: where `-nth`'s dispatcher is, `entryNth` reads the slot
     // first as the dispatcher's lookup would.
@@ -4982,7 +5003,9 @@
   //@unit asTransient requires: copyEntries, holdsVector, kindHooks, makeTransient, maps, setKinds,
   //@ sets, vectorStore
   function asTransient(value) {
-    if (value != null && value.cljs$lang$kind$$LKEY === 1 && value.cnt$LKEY !== undefined) return kindHooks.transientVector(value);
+    const kind = value?.cljs$lang$kind$$LKEY;
+    if (kind === 1 && value.cnt$LKEY !== undefined) return kindHooks.transientVector(value);
+    if ((kind === 28 && value.arr$LKEY !== undefined) || (kind === 29 && (value.cnt$LKEY !== undefined || "cnt$LKEY" in value))) return kindHooks.transientMap(value);
     if (holdsVector(value)) return kindHooks.transientVector(vectorStore(value));
     if (maps.has(value)) return kindHooks.transientMap(value);
     return makeTransient("set", copyEntries(sets.get(value)), setKinds.get(value));
@@ -5030,8 +5053,9 @@
     const trie = store.sub$LKEY ? viewTrie(store) : store, cnt = trie.cnt$LKEY;
     return new TransientVectorCell(cnt, trie.shift$LKEY, trie.root$LKEY, cnt ? trie.tail$LKEY.slice() : []);
   };
-  //@unit makeMap.persist effect: ArrayMapCell, makeMap, treeMapConstructor, recordMethods when: persistTransient
-  //@ requires: ArrayMapCell, HashMapCell, kindHooks
+  //@unit makeMap.persist effect: ArrayMapCell, makeMap, treeMapConstructor, recordMethods when: persistTransient,
+  //@ TransientArrayMapType.persistentBang, TransientHashMapType.persistentBang requires: ArrayMapCell,
+  //@ HashMapCell, kindHooks
   // `persistent!` of an editable map transient: the map of its fields, as
   // upstream's, which shares them, since nothing edits them once the
   // transient is no longer editable (an array map's `arr`, a hash map's
@@ -5059,7 +5083,7 @@
     if (kind === 28 && value.arr$LKEY !== undefined) {
       // A public constructor's array of odd length ends in a key without a
       // value, which its entries gave undefined (`arrayMapEntries`).
-      const arr = value.arr$LKEY.slice();
+      const src = value.arr$LKEY, arr = src.length ? src.slice() : [];
       if (arr.length & 1) arr.push(undefined);
       return new TransientArrayMapCell(arr);
     }
@@ -5095,7 +5119,8 @@
     return kindHooks.transientEntryIndex(state, key) < 0 ? notFound : key;
   }
   //@unit makeMap.transientLookup effect: ArrayMapCell, makeMap, treeMapConstructor, recordMethods
-  //@ when: transientLookup requires: arrayIndex, editableTransient, hash, hashNodeFind, kindHooks
+  //@ when: transientLookup, TransientHashMapType.lookup requires: arrayIndex, editableTransient,
+  //@ hash, hashNodeFind, kindHooks
   // A map transient's lookup, of its fields: TransientHashMap retains
   // readable lookup after persistence in both pinned versions;
   // TransientArrayMap rejects it.
@@ -5122,36 +5147,42 @@
     return value;
   }
   //@unit makeMap.assocTransient effect: ArrayMapCell, makeMap, treeMapConstructor, recordMethods
-  //@ when: assocTransient requires: arrayIndex, editableTransient, hash, hashNodeAssoc, kindHooks,
+  //@ when: assocTransient, TransientArrayMapType.assocBang, TransientHashMapType.assocBang,
+  //@ makeMap.intoMap requires: arrayIndex, editableTransient, hash, hashNodeAssoc, kindHooks,
   //@ TransientHashMapCell
   // `assoc!` of a map transient, which edits its own fields, as upstream's:
   // an array map's pairs in place, keeping the key it has; at a ninth key a
   // transient hash map of its pairs (`TransientHashMapCell`) that gets the
   // key, while this one stays as it is; a hash map's trie along the key's
   // path, in the nodes its `edit` owns or copies once.
-  kindHooks.assocTransientMap = (value, key, item) => {
-    if (value.cljs$lang$kind$$LKEY === 31) {
-      if (!value.editable$LKEY) editableTransient(value, "assoc!");
-      const arr = value.arr$LKEY, index = arrayIndex(arr, key);
-      if (index >= 0) { arr[index + 1] = item; return value; }
-      if (arr.length < 16) { arr.push(key, item); return value; }
-      const promoted = new TransientHashMapCell({}, 0, null, null);
-      for (let i = 0; i < arr.length; i += 2) kindHooks.assocTransientMap(promoted, arr[i], arr[i + 1]);
-      return kindHooks.assocTransientMap(promoted, key, item);
-    }
-    const edit = value.edit$LKEY;
-    if (edit === null) editableTransient(value, "assoc!");
-    if (key == null) {
-      const nil = value.nil$LKEY;
-      value.nil$LKEY = {key: nil ? nil.key : key, value: item, hash: 0};
-      if (!nil) value.cnt$LKEY++;
+  kindHooks.assocTransientMap = (() => {
+    function assocTransientHashMap(value, key, item) {
+      const edit = value.edit$LKEY;
+      if (edit === null) editableTransient(value, "assoc!");
+      if (key == null) {
+        const nil = value.nil$LKEY;
+        value.nil$LKEY = {key: nil ? nil.key : key, value: item, hash: 0};
+        if (!nil) value.cnt$LKEY++;
+        return value;
+      }
+      const keyHash = hash(key), result = {};
+      value.root$LKEY = hashNodeAssoc(value.root$LKEY, 0, keyHash, {key, value: item, hash: keyHash}, edit, result);
+      if (!result.old) value.cnt$LKEY++;
       return value;
     }
-    const keyHash = hash(key), result = {};
-    value.root$LKEY = hashNodeAssoc(value.root$LKEY, 0, keyHash, {key, value: item, hash: keyHash}, edit, result);
-    if (!result.old) value.cnt$LKEY++;
-    return value;
-  };
+    return (value, key, item) => {
+      if (value.cljs$lang$kind$$LKEY === 31) {
+        if (!value.editable$LKEY) editableTransient(value, "assoc!");
+        const arr = value.arr$LKEY, index = arrayIndex(arr, key);
+        if (index >= 0) { arr[index + 1] = item; return value; }
+        if (arr.length < 16) { arr.push(key, item); return value; }
+        const promoted = new TransientHashMapCell({}, 0, null, null);
+        for (let i = 0; i < arr.length; i += 2) assocTransientHashMap(promoted, arr[i], arr[i + 1]);
+        return assocTransientHashMap(promoted, key, item);
+      }
+      return assocTransientHashMap(value, key, item);
+    };
+  })();
   //@unit conjTransient requires: editableTransient, isMapTransient, kindHooks
   function conjTransient(value, member) {
     const state = editableTransient(value, "conj!");
@@ -5235,14 +5266,15 @@
     return assoc(value, keyProtocol(entry), valProtocol(entry));
   }
   //@unit makeMap.conjTransient effect: ArrayMapCell, makeMap, treeMapConstructor, recordMethods
-  //@ when: conjTransient requires: assocBangOwn, assocEntry, assocTransient, first, isMapEntry,
-  //@ isVector, kindHooks, next, protocolHooks, seq, truth
+  //@ when: conjTransient, TransientArrayMapType.conjBang, TransientHashMapType.conjBang requires: assocBangOwn,
+  //@ assocEntry, assocTransient, first, isEntryCell, isMapEntry, isVector, kindHooks, next,
+  //@ protocolHooks, seq, truth
   // Each pair through `assoc!`, the transient's slot first (`assocBangOwn`),
   // or past the protocol dispatch where no protocol implementation can
   // answer for the transient.
   kindHooks.conjTransientMap = (value, member) => {
     const assoc = protocolHooks.builtin ? assocBangOwn : assocTransient;
-    if (isMapEntry(member)) return assocEntry(assoc, value, member);
+    if (isEntryCell(member) || isMapEntry(member)) return assocEntry(assoc, value, member);
     if (isVector(member)) return assoc(value, member.call(null, 0), member.call(null, 1));
     for (let s = seq(member); s !== null && truth(first(s)); s = next(s)) value = assocEntry(assoc, value, first(s));
     return value;
@@ -6593,24 +6625,48 @@
     }
     return transientPersistentSlot(self);
   });
-  //@unit TransientArrayMapType.conjBang effect: TransientArrayMapType when: conjBangOwn requires: TransientArrayMapType,
-  //@ transientConjSlot
-  TransientArrayMapType.prototype.cljs$core$ITransientCollection$_conj_BANG_$arity$2$LKEY = transientConjSlot;
-  //@unit TransientArrayMapType.assocBang effect: TransientArrayMapType when: assocBangOwn requires: TransientArrayMapType,
-  //@ transientAssocSlot
-  TransientArrayMapType.prototype.cljs$core$ITransientAssociative$_assoc_BANG_$arity$3$LKEY = transientAssocSlot;
+  //@unit TransientArrayMapType.conjBang effect: TransientArrayMapType when: conjBangOwn
+  //@ requires: builtinSlot, editableTransient, kindHooks, noBranch, TransientArrayMapType
+  TransientArrayMapType.prototype.cljs$core$ITransientCollection$_conj_BANG_$arity$2$LKEY = builtinSlot(function (self, member) {
+    const editable = self.editable$LKEY;
+    if (editable !== true) { if (editable === undefined) return noBranch; editableTransient(self, "conj!"); }
+    return kindHooks.conjTransientMap(self, member);
+  });
+  //@unit TransientArrayMapType.assocBang effect: TransientArrayMapType when: assocBangOwn
+  //@ requires: builtinSlot, editableTransient, kindHooks, noBranch, TransientArrayMapType
+  TransientArrayMapType.prototype.cljs$core$ITransientAssociative$_assoc_BANG_$arity$3$LKEY = builtinSlot(function (self, key, item) {
+    const editable = self.editable$LKEY;
+    if (editable !== true) { if (editable === undefined) return noBranch; editableTransient(self, "assoc!"); }
+    return kindHooks.assocTransientMap(self, key, item);
+  });
   //@unit TransientArrayMapType.persistentBang effect: TransientArrayMapType when: persistentBang
-  //@ requires: TransientArrayMapType, transientPersistentSlot
-  TransientArrayMapType.prototype.cljs$core$ITransientCollection$_persistent_BANG_$arity$1$LKEY = transientPersistentSlot;
-  //@unit TransientHashMapType.conjBang effect: TransientHashMapType when: conjBangOwn requires: transientConjSlot,
-  //@ TransientHashMapType
-  TransientHashMapType.prototype.cljs$core$ITransientCollection$_conj_BANG_$arity$2$LKEY = transientConjSlot;
-  //@unit TransientHashMapType.assocBang effect: TransientHashMapType when: assocBangOwn requires: transientAssocSlot,
-  //@ TransientHashMapType
-  TransientHashMapType.prototype.cljs$core$ITransientAssociative$_assoc_BANG_$arity$3$LKEY = transientAssocSlot;
+  //@ requires: builtinSlot, editableTransient, kindHooks, noBranch, TransientArrayMapType
+  TransientArrayMapType.prototype.cljs$core$ITransientCollection$_persistent_BANG_$arity$1$LKEY = builtinSlot(function (self) {
+    const editable = self.editable$LKEY;
+    if (editable !== true) { if (editable === undefined) return noBranch; editableTransient(self, "persistent!"); }
+    return kindHooks.persistMap(self);
+  });
+  //@unit TransientHashMapType.conjBang effect: TransientHashMapType when: conjBangOwn
+  //@ requires: builtinSlot, editableTransient, kindHooks, noBranch, TransientHashMapType
+  TransientHashMapType.prototype.cljs$core$ITransientCollection$_conj_BANG_$arity$2$LKEY = builtinSlot(function (self, member) {
+    const edit = self.edit$LKEY;
+    if (edit === null || edit === undefined) { if (edit === undefined) return noBranch; editableTransient(self, "conj!"); }
+    return kindHooks.conjTransientMap(self, member);
+  });
+  //@unit TransientHashMapType.assocBang effect: TransientHashMapType when: assocBangOwn
+  //@ requires: builtinSlot, editableTransient, kindHooks, noBranch, TransientHashMapType
+  TransientHashMapType.prototype.cljs$core$ITransientAssociative$_assoc_BANG_$arity$3$LKEY = builtinSlot(function (self, key, item) {
+    const edit = self.edit$LKEY;
+    if (edit === null || edit === undefined) { if (edit === undefined) return noBranch; editableTransient(self, "assoc!"); }
+    return kindHooks.assocTransientMap(self, key, item);
+  });
   //@unit TransientHashMapType.persistentBang effect: TransientHashMapType when: persistentBang
-  //@ requires: TransientHashMapType, transientPersistentSlot
-  TransientHashMapType.prototype.cljs$core$ITransientCollection$_persistent_BANG_$arity$1$LKEY = transientPersistentSlot;
+  //@ requires: builtinSlot, editableTransient, kindHooks, noBranch, TransientHashMapType
+  TransientHashMapType.prototype.cljs$core$ITransientCollection$_persistent_BANG_$arity$1$LKEY = builtinSlot(function (self) {
+    const edit = self.edit$LKEY;
+    if (edit === null || edit === undefined) { if (edit === undefined) return noBranch; editableTransient(self, "persistent!"); }
+    return kindHooks.persistMap(self);
+  });
   //@unit TransientHashSetType.conjBang effect: TransientHashSetType when: conjBangOwn requires: transientConjSlot,
   //@ TransientHashSetType
   TransientHashSetType.prototype.cljs$core$ITransientCollection$_conj_BANG_$arity$2$LKEY = transientConjSlot;
@@ -6657,13 +6713,22 @@
   TransientHashSetType.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = transientNthSlots[0];
   TransientHashSetType.prototype.cljs$core$IIndexed$_nth$arity$3$LKEY = transientNthSlots[1];
   //@unit TransientArrayMapType.lookup effect: TransientArrayMapType when: arrayMapContains, get,
-  //@ getOf, getSite, getSite3 requires: TransientArrayMapType, transientLookupSlots
-  TransientArrayMapType.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = transientLookupSlots[0];
-  TransientArrayMapType.prototype.cljs$core$ILookup$_lookup$arity$3$LKEY = transientLookupSlots[1];
+  //@ getOf, getSite, getSite3 requires: arrayIndex, builtinSlot, editableTransient,
+  //@ TransientArrayMapType
+  TransientArrayMapType.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) {
+    if (!self.editable$LKEY) editableTransient(self, "lookup");
+    const arr = self.arr$LKEY, index = arrayIndex(arr, key);
+    return index < 0 ? null : arr[index + 1];
+  });
+  TransientArrayMapType.prototype.cljs$core$ILookup$_lookup$arity$3$LKEY = builtinSlot(function (self, key, notFound) {
+    if (!self.editable$LKEY) editableTransient(self, "lookup");
+    const arr = self.arr$LKEY, index = arrayIndex(arr, key);
+    return index < 0 ? notFound : arr[index + 1];
+  });
   //@unit TransientHashMapType.lookup effect: TransientHashMapType when: arrayMapContains, get,
-  //@ getOf, getSite, getSite3 requires: TransientHashMapType, transientLookupSlots
-  TransientHashMapType.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = transientLookupSlots[0];
-  TransientHashMapType.prototype.cljs$core$ILookup$_lookup$arity$3$LKEY = transientLookupSlots[1];
+  //@ getOf, getSite, getSite3 requires: builtinSlot, kindHooks, TransientHashMapType
+  TransientHashMapType.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = builtinSlot(function (self, key) { return kindHooks.transientMapLookup(self, key, null); });
+  TransientHashMapType.prototype.cljs$core$ILookup$_lookup$arity$3$LKEY = builtinSlot(function (self, key, notFound) { return kindHooks.transientMapLookup(self, key, notFound); });
   //@unit TransientHashSetType.lookup effect: TransientHashSetType when: arrayMapContains, get,
   //@ getOf, getSite, getSite3 requires: TransientHashSetType, transientLookupSlots
   TransientHashSetType.prototype.cljs$core$ILookup$_lookup$arity$2$LKEY = transientLookupSlots[0];
@@ -6741,18 +6806,44 @@
     putCollectionEntry(self, updated, key, item);
     return updatedMap(self, updated);
   }
-  //@unit arrayMapAssoc requires: arrayIndex, ArrayMapCell, mapAssocEntries, preserveMeta
+  //@unit arrayMapAssoc requires: arrayIndex, ArrayMapCell, hash, HashMapCell, hashNodeAssoc,
+  //@ mapAssocEntries, preserveMeta
   // `assoc` of an array map that stays one (a key it has, or fewer than
-  // eight): one copy of its keys and values, the key it has kept, as
-  // `mapAssocEntries` would build it; a ninth key promotes it there.
+  // eight): one copy of its keys and values, the key it has kept; a ninth key
+  // promotes it out of line (`arrayMapPromote`) so V8 still inlines the small
+  // case without building `ArrayMapEntry` or `hashRoots` intermediates.
   function arrayMapAssoc(self, key, item) {
     const arr = self.arr$LKEY;
     if (self.slots$LKEY) return mapAssocEntries(self, key, item);
-    const index = arrayIndex(arr, key), n = arr.length;
-    if (index < 0 && n >= 16) return mapAssocEntries(self, key, item);
+    const index = arrayIndex(arr, key);
+    if (index < 0 && arr.length >= 16) return arrayMapPromote(self, arr, key, item);
     const copy = arr.slice();
     if (index >= 0) copy[index + 1] = item; else copy.push(key, item);
     return preserveMeta(self, new ArrayMapCell(copy.length >> 1, copy));
+  }
+  function arrayMapPromote(self, arr, key, item) {
+    const edit = {}, n = arr.length;
+    let root = null, nil = null, cnt = 0;
+    for (let i = 0; i < n; i += 2) {
+      const k = arr[i], v = arr[i + 1];
+      if (k == null) {
+        if (!nil) cnt++;
+        nil = {key: nil ? nil.key : k, value: v, hash: 0};
+      } else {
+        const keyHash = hash(k), result = {};
+        root = hashNodeAssoc(root, 0, keyHash, {key: k, value: v, hash: keyHash}, edit, result);
+        if (!result.old) cnt++;
+      }
+    }
+    if (key == null) {
+      if (!nil) cnt++;
+      nil = {key: nil ? nil.key : key, value: item, hash: 0};
+    } else {
+      const keyHash = hash(key), result = {};
+      root = hashNodeAssoc(root, 0, keyHash, {key, value: item, hash: keyHash}, null, result);
+      if (!result.old) cnt++;
+    }
+    return preserveMeta(self, new HashMapCell(cnt, root, nil, null));
   }
   //@unit hashMapAssoc requires: hash, HashMapCell, hashNodeAssoc, preserveMeta
   // `assoc` of a hash map: a hash map of its fields with the new entry along
@@ -8403,7 +8494,7 @@
     const s = parsingString(value);
     return s === "true" ? true : s === "false" ? false : null;
   }
-  //@unit groupBy requires: assocBang, conj, get, mapFromArray, persistentBang, reduce, transient,
+  //@unit groupBy requires: assocBangOwn, conj, get, mapFromArray, persistentBang, reduce, transient,
   //@ vector
   // As upstream: the groups gather in a transient map (light-cljs-1023),
   // where each item made a new persistent map, and only a new group makes
@@ -8411,7 +8502,7 @@
   function groupBy(fn, coll) {
     const step = (result, value) => {
       const key = fn.call(null, value), group = get(result, key, null);
-      return assocBang(result, key, conj(group === null ? vector() : group, value));
+      return assocBangOwn(result, key, conj(group === null ? vector() : group, value));
     };
     step.cljs$core$IFn$_invoke$arity$2 = step;
     return persistentBang(reduce(step, transient(mapFromArray([])), coll));
@@ -8430,8 +8521,23 @@
   function updateKeys(coll, fn) {
     return collectionWithMeta(reduceKv((result, key, value) => assoc(result, fn.call(null, key), value), mapFromArray([]), coll), meta(coll));
   }
-  //@unit merge requires: fnRest, mergeMaps, missing
-  function merge(...values) { return mergeMaps(fnRest(values, 0), missing); }
+  //@unit merge requires: conj, fieldComparisons, fnRest, hostExt, isReduced, makeMap, mergeMaps,
+  //@ missing, PersistentArrayMapValue, reducedValue, slotFirst, truth
+  function merge() {
+    if (!slotFirst.on || !fieldComparisons.on || hostExt.seq || (hostExt.p0 & 524288) || (hostExt.p1 & 131072)) {
+      return mergeMaps(fnRest(arguments, 0), missing);
+    }
+    const n = arguments.length;
+    let present = false;
+    for (let i = 0; i < n; i++) if (truth(arguments[i])) { present = true; break; }
+    if (!present) return null;
+    let result = arguments[0];
+    for (let i = 1; i < n; i++) {
+      result = conj(truth(result) ? result : makeMap(PersistentArrayMapValue, [], "array-map"), arguments[i]);
+      if (isReduced(result)) return reducedValue(result);
+    }
+    return result;
+  }
   //@unit mergeWith requires: fnRest, mergeMaps
   function mergeWith(fn, ...values) { return mergeMaps(fnRest(values, 0), fn); }
   //@unit zipmap requires: assoc, first, makeMap, next, PersistentArrayMapValue, seq
@@ -14761,9 +14867,85 @@
   }
   //@unit conjOwn.arity install: conjOwn requires: conjOwn
   conjOwn.cljs$core$IFn$_invoke$arity$2 = conjOwn;
-  //@unit into requires: conj, conjBangOwn, conjOwn, editableValue, invalidArity, meta, methodKeys,
-  //@ persistentBang, protocolHooks, reduce, slotFirst, transduce, transient, vector,
-  //@ withMetaProtocol
+  //@unit makeMap.intoMap effect: ArrayMapCell, makeMap, treeMapConstructor, recordMethods when: into
+  //@ requires: conjBangOwn, fieldComparisons, hostExt, isReduced, kindHooks, mapEntry, missing,
+  //@ reducedValue, slotFirst
+  // Fast path for `into` of an array or hash map onto an editable map: walks
+  // the source's flat pairs or existing trie directly and calls `assoc!`
+  // without allocating `MapEntry` objects or calling `nth`, when no protocol
+  // extensions have overridden map, transient-map, or map-entry dispatch;
+  // rechecks after each association and resumes through `conjBangOwn` if an
+  // extension is installed mid-walk (light-cljs-1109).
+  kindHooks.intoMap = (() => {
+    function canFast() {
+      return fieldComparisons.on && slotFirst.on && !hostExt.seq && !(hostExt.p0 & 526336) && !(hostExt.p1 & 131128);
+    }
+    function intoHashNode(t, node, state) {
+      if (node.kind === "collision") {
+        const entries = node.entries;
+        for (let i = 0, n = entries.length; i < n; i++) {
+          const e = entries[i];
+          if (state.fast) {
+            t = kindHooks.assocTransientMap(t, e.key, e.value);
+            if (!canFast()) state.fast = false;
+          } else {
+            t = conjBangOwn(t, mapEntry(e.key, e.value));
+            if (isReduced(t)) { state.stopped = true; return reducedValue(t); }
+          }
+        }
+        return t;
+      }
+      const slots = node.slots;
+      for (let i = 0, n = slots.length; i < n; i++) {
+        const slot = slots[i];
+        if (slot == null) continue;
+        if (slot.kind !== undefined) {
+          t = intoHashNode(t, slot, state);
+          if (state.stopped) return t;
+        } else if (state.fast) {
+          t = kindHooks.assocTransientMap(t, slot.key, slot.value);
+          if (!canFast()) state.fast = false;
+        } else {
+          t = conjBangOwn(t, mapEntry(slot.key, slot.value));
+          if (isReduced(t)) { state.stopped = true; return reducedValue(t); }
+        }
+      }
+      return t;
+    }
+    return (t, from) => {
+      if (!canFast()) return missing;
+      const tk = t.cljs$lang$kind$$LKEY, fk = from.cljs$lang$kind$$LKEY;
+      if ((tk !== 31 && tk !== 32) || (fk !== 28 && fk !== 29)) return missing;
+      if (tk === 31 ? !t.editable$LKEY : t.edit$LKEY == null) return missing;
+      if (fk === 28) {
+        const arr = from.arr$LKEY;
+        if (arr === undefined || from.slots$LKEY) return missing;
+        for (let i = 0, n = arr.length; i < n; i += 2) {
+          t = kindHooks.assocTransientMap(t, arr[i], arr[i + 1]);
+          if (!fieldComparisons.on || !slotFirst.on || hostExt.seq || (hostExt.p0 & 526336) || (hostExt.p1 & 131128)) {
+            for (i += 2; i < n; i += 2) {
+              t = conjBangOwn(t, mapEntry(arr[i], arr[i + 1]));
+              if (isReduced(t)) return reducedValue(t);
+            }
+            return t;
+          }
+        }
+        return t;
+      }
+      if (from.cnt$LKEY === undefined || from.slots$LKEY) return missing;
+      let fast = true;
+      const nil = from.nil$LKEY;
+      if (nil) {
+        t = kindHooks.assocTransientMap(t, nil.key, nil.value);
+        if (!canFast()) fast = false;
+      }
+      if (!from.root$LKEY) return t;
+      return intoHashNode(t, from.root$LKEY, {fast, stopped: false});
+    };
+  })();
+  //@unit into requires: conj, conjBangOwn, conjOwn, editableValue, invalidArity, kindHooks, meta,
+  //@ methodKeys, missing, persistentBang, protocolHooks, reduce, slotFirst, transduce, transient,
+  //@ vector, withMetaProtocol
   // Upstream's `into`, one function per arity: onto a target that
   // implements IEditableCollection, `conj!` of each item onto its
   // `transient`, then `persistent!` and `-with-meta` of its `meta`, each of
@@ -14797,7 +14979,14 @@
     return protocolHooks.implements?.(methodKeys[14], to) ?? editableValue(to);
   }
   function into2(to, from) {
-    if (editableTarget(to)) return withMetaProtocol(persistentBang(reduce(conjBangOwn, transient(to), from)), meta(to));
+    if (editableTarget(to)) {
+      const t = transient(to);
+      if (slotFirst.on && from != null && t != null && kindHooks.intoMap) {
+        const built = kindHooks.intoMap(t, from);
+        if (built !== missing) return withMetaProtocol(persistentBang(built), meta(to));
+      }
+      return withMetaProtocol(persistentBang(reduce(conjBangOwn, t, from)), meta(to));
+    }
     return reduce(to == null ? conj : conjOwn, to, from);
   }
   function into3(to, xform, from) {
@@ -16446,7 +16635,8 @@
   //@ equalPairPath, firstOf, firstSeq, hashOf, hashPath, hashStructural, iterator,
   //@ keywordLookupEquiv, keywordProgramEquiv, Loadable.dispatch, mapConj, metaSupported, name,
   //@ namespace, notifyWatches, objectEquiv, peekOf, peekPath, pop, popOf, popPath,
-  //@ removeWatchProtocol, restOf, restSeq, rseq, stateProtocol, vresetProtocol, withMetaSupported
+  //@ removeWatchProtocol, restOf, restSeq, rseq, stateProtocol, TransientArrayMapType.conjBang,
+  //@ TransientHashMapType.conjBang, vresetProtocol, withMetaSupported
   //@ requires: builtin, protocolHooks
   protocolHooks.builtin = builtin;
   //@unit protocolHooks.keyMethod effect: installMethods when: keywordLookupEquiv requires: keyMethod,

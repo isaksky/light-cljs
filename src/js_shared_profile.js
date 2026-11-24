@@ -770,7 +770,8 @@
       : kind === "array-map" ? PersistentArrayMapSeqType : IndexedSeqValue,
       Object.freeze(entries.map(entry => mapEntry(entry.key, entry.value))), 0, false, kind) : null;
   };
-  //@unit makeMap.persist effect: ArrayMapCell, makeMap, treeMapConstructor, recordMethods when: persistTransient
+  //@unit makeMap.persist effect: ArrayMapCell, makeMap, treeMapConstructor, recordMethods when: persistTransient,
+  //@ TransientArrayMapType.persistentBang, TransientHashMapType.persistentBang
   //@ requires: ArrayMapEntry, kindHooks, makeMap, PersistentArrayMapValue, PersistentHashMapValue
   // The V8 profile's, through `makeMap`, so that a persisted map transient
   // is an engine map where the profile makes one, as before the transients

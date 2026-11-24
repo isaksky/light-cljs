@@ -208,3 +208,44 @@ mod phase_oracles {
         )]);
     }
 }
+
+#[test]
+fn persistent_array_promotion_then_transient_growth() {
+    // Sol #8: Promoting an 8-key array map persistently must insert the 9th key
+    // persistently (capacity 9, not 12) so a later transient expands and rehashes
+    // retained keys on insertion 16 rather than deferring to 17.
+    let source = r#"
+      (let [step (atom :init)
+            hashes (atom [])
+            k31 (reify
+                  IHash (-hash [_] (swap! hashes conj @step) 31)
+                  IEquiv (-equiv [a b] (identical? a b)))
+            m8 (array-map 0 0 1 1 2 2 3 3 4 4 5 5 6 6 k31 :k31)
+            _ (reset! step :promote-7)
+            m9 (assoc m8 7 7)
+            t (transient m9)
+            t (reduce (fn [acc k]
+                        (reset! step k)
+                        (assoc! acc k k))
+                      t
+                      (range 8 17))
+            m18 (persistent! t)
+            _ (reset! step :lookup)]
+        [(count m18) (get m18 k31) @hashes])"#;
+    let root = artifact_root("array-promotion-transient-growth");
+    let mut host = MacroHost::new();
+    let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
+    let unit = emit_js_unit(&program);
+    execute(&unit, "[18 :k31 [:promote-7 16 :lookup]]", &root);
+
+    let wrapped = format!("(js/console.log (pr-str (do {source})))");
+    let mut adv_host = MacroHost::new();
+    let adv_program = analyze_with_macros(&wrapped, &parse(&wrapped).unwrap(), &mut adv_host).unwrap();
+    let js = light_cljs::prepare_application(
+        &adv_program,
+        light_cljs::ApplicationOptions::new(light_cljs::OptimizationLevel::Advanced),
+    )
+    .emit_js();
+    let out = super::optimization::execute(&format!("{js};"));
+    assert_eq!(out.trim(), "[18 :k31 [:promote-7 16 :lookup]]");
+}
