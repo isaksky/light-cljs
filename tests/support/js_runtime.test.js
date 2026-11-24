@@ -3018,3 +3018,16 @@ console.log('public sorted map trees update as nodes and entry fields take shado
   }
 }
 console.log('transient vector edit tokens stay hidden, preserve constructor tails, reuse owned leaves, and allocate lazily');
+{
+  // Sol #3 (light-cljs-1115): single-arity core protocol extensions must keep
+  // a null JS `this` receiver even when core consumers call the table entry
+  // with the protocol value as `this`.
+  const rtCore = (0, eval)(fs.readFileSync(path.join(__dirname, '../../src/js_runtime.js'), 'utf8'));
+  rtCore.extendType('number', [
+    ['ICounted', 0, true],
+    ['ICounted/-count', 1, function () { 'use strict'; return this === null ? 1 : 2; }],
+  ]);
+  assert.equal(rtCore.core.countProtocol(7), 1);
+  assert.equal(rtCore.core.count(7), 1);
+  console.log('single-arity core protocol extension keeps null receiver');
+}

@@ -200,4 +200,24 @@ assert.equal(metaSlice.v, originalVector);
 assert.equal(c.clone(metaSlice).v, originalVector);
 assert.equal(c.subvec(metaSlice, 1).v, originalVector);
 equivalent(metaSlice, c.vector(1, 2));
+{
+  // Sol #4 (light-cljs-1115): chunked filter must invoke a proxied predicate's
+  // apply trap rather than bypassing it through its arity-1 property.
+  const bigVec = c.vec(Array.from({length: 40}, (_, i) => i));
+  const proxiedPred = new Proxy(c.complement(() => false), { apply() { return false; } });
+  assert.equal(c.count(c.filter(proxiedPred, bigVec)), 0);
+}
+{
+  // Sol #5 (light-cljs-1115): specialized 2-fn comp must read the outer
+  // function's `.call` property after the inner call returns.
+  for (const args of [[], [1], [1, 2], [1, 2, 3], [1, 2, 3, 4]]) {
+    const outer = function () { return 'old'; };
+    const inner = function () {
+      outer.call = function (_this, v) { return 'new:' + v; };
+      return args.length;
+    };
+    const composed = c.comp(outer, inner);
+    assert.equal(composed.apply(null, args), 'new:' + args.length);
+  }
+}
 console.log("core helper semantics passed");

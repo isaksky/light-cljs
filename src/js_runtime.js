@@ -13257,8 +13257,8 @@
   // An eduction is a class of its type's prototype (`EductionCell`,
   // light-cljs-1013).
   viewType(Eduction, EductionCell, 43);
-  //@unit eduction requires: callable0, comp, Eduction, toArray
-  const eduction = callable0(args => {
+  //@unit eduction requires: callable, comp, Eduction, toArray
+  const eduction = callable(0, {}, args => {
     const values = toArray(args);
     return new Eduction(comp(...values.slice(0, -1)), values.length ? values.at(-1) : null);
   });
@@ -13615,7 +13615,7 @@
       : t === "undefined" ? current.null
       : current[t]) ?? current._;
   }
-  //@unit protocolMethod mutator requires: declarationJournal, demandMethod, invalidArity,
+  //@unit protocolMethod mutator requires: declarationJournal, demandMethod, fnCall, invalidArity,
   //@ protocolExternal, protocolFunctions, protocolGetters, protocolKeys, protocolSlot,
   //@ protocolVariables, setDeclaration, typeHooks
   // `fast` (light-cljs-265) makes a dispatcher that calls a slot, else its first argument.
@@ -13630,21 +13630,16 @@
     const rest = variadic == null ? -1 : variadic + 2, fixed = arities ? arities.filter(n => n !== rest) : [];
     const single = rest < 0 && fixed.length === 1 ? fixed[0] : 0, slots = new Map((arities ?? []).map((n, i) => [n, protocolSlot(key, n, names?.[i])]));
     const prior = protocolVariables.get(metadataName);
-    const state = prior?.protocolState$LKEY ?? {v: null, live: false, def: null, onlyDefault: true};
+    const state = prior?.protocolState$LKEY ?? {v: null, live: false};
     let slotMask = 0;
     for (let i = 0; i < fixed.length; i++) if (fixed[i] < 31) slotMask |= 1 << fixed[i];
     // Saved method values retain their direct slot while dynamic dispatch
-    // observes the current method Var, as the CLJS macro expansion does.
+    // observes the current method Var and live public host table, as the CLJS
+    // macro expansion does.
     const resolve = receiver => {
-      if (!getter && !state.live) {
-        const d = state.def;
-        if (d !== null) return d;
-        const impl = protocolExternal(state.v, receiver);
-        if (impl != null) return impl;
-      } else {
-        const impl = protocolExternal(getter ? getter() : protocolVariables.get(metadataName) ?? method, receiver);
-        if (impl != null) return impl;
-      }
+      const current = !getter && !state.live ? state.v : (getter ? getter() : protocolVariables.get(metadataName) ?? method);
+      const impl = protocolExternal(current, receiver);
+      if (impl != null) return impl;
       throw new Error("No protocol method " + metadataName + " defined for this value");
     };
     const external = (receiver, args) => resolve(receiver).apply(null, args);
@@ -13666,24 +13661,20 @@
       const direct = receiver == null ? undefined : receiver[slots.get(arity) ?? protocolSlot(key, arity)];
       return direct != null ? direct.apply(receiver, args) : external(receiver, args);
     };
-    const miss = fast && (
-      single === 1 ? r0 => resolve(r0).call(null, r0)
-      : single === 2 ? (r0, a1) => resolve(r0).call(null, r0, a1)
-      : single === 3 ? (r0, a1, a2) => resolve(r0).call(null, r0, a1, a2)
-      : function (r0, a1, a2, a3) {
-        const n = arguments.length;
-        if (!single && (n < 31 ? (slotMask & (1 << n)) === 0 : !slots.has(n))) return dispatch.apply(null, arguments);
-        const impl = resolve(r0);
-        return n === 1 ? impl.call(null, r0)
-          : n === 2 ? impl.call(null, r0, a1)
-          : n === 3 ? impl.call(null, r0, a1, a2)
-          : n === 4 ? impl.call(null, r0, a1, a2, a3)
-          : impl.apply(null, arguments);
+    const miss = fast && function (r0, a1, a2, a3) {
+      const n = arguments.length;
+      if (!single && (n < 31 ? (slotMask & (1 << n)) === 0 : !slots.has(n))) return dispatch.apply(null, arguments);
+      const impl = resolve(r0);
+      if (impl.call === fnCall) {
+        if (n === 1) return impl.call(null, r0);
+        if (n === 2) return impl.call(null, r0, a1);
+        if (n === 3) return impl.call(null, r0, a1, a2);
+        if (n === 4) return impl.call(null, r0, a1, a2, a3);
       }
-    );
+      return impl.apply(null, arguments);
+    };
     const method = !fast ? dispatch : direct ? fast : fast(miss, ...fixed.map(n => slots.get(n)));
-    if (prior) { state.def = null; state.onlyDefault = true; }
-    if (declarationJournal !== null) { state.live = true; state.def = null; state.onlyDefault = false; }
+    if (declarationJournal !== null) state.live = true;
     state.v = method;
     Object.defineProperty(method, "protocolState$LKEY", {value: state, writable: true, configurable: true});
     if (direct) Object.defineProperty(method, "protocolMiss$LKEY", {value: miss, writable: true, configurable: true});
@@ -13700,10 +13691,10 @@
     else if (proto === "ISeqable" || proto === "INext") hostExt.seq = true;
     else if (proto === "IMeta" && ownedRuntime) hostExt.imeta.on = true;
   }
-  //@unit extendType mutator requires: coreDispatchers, coreProtocolsByName, declarationJournal,
-  //@ dispatchCell, fieldComparisons, hostExt, installMethods, invalidArity, markSeqSlot,
-  //@ nativeMethods, patchDeclaration, protocolFunctions, protocolGetters, protocolMasks,
-  //@ protocolSentinel, protocolValues, setDeclaration, tabledKind
+  //@unit extendType mutator requires: coreDispatchers, coreProtocolsByName, dispatchCell,
+  //@ fieldComparisons, hostExt, installMethods, invalidArity, markSeqSlot, nativeMethods,
+  //@ patchDeclaration, protocolFunctions, protocolGetters, protocolMasks, protocolSentinel,
+  //@ protocolValues, setDeclaration, tabledKind
   function extendType(target, methods) {
     let result = null;
     const desc = value => ({value, writable: true, configurable: true, enumerable: true});
@@ -13729,12 +13720,15 @@
       for (const [key, implementations] of grouped) {
         if (implementations.has(0)) continue;
         const dispatch = protocolGetters.get(key)?.() ?? coreDispatchers.get(key)?.dispatcher;
-        // No rest array, spread, wrapper or Map.get per call: a host type's
-        // single-arity implementation is installed directly and multi-arity
-        // dispatches fixed arities 1..4 without `apply` (light-cljs-1017, light-cljs-1115).
+        // User-protocol single-arity host extensions are always invoked with a
+        // null receiver and can be installed directly; core dispatchers invoke
+        // table entries with the protocol value as `this` and keep the null-this
+        // wrapper (light-cljs-1017, light-cljs-1115).
         const only = implementations.size === 1 ? implementations.values().next().value : undefined;
-        let implementation = only;
-        if (!implementation) {
+        let implementation;
+        if (only) {
+          implementation = protocolFunctions.has(key) ? only : function () { return only.apply(null, arguments); };
+        } else {
           const m1 = implementations.get(1), m2 = implementations.get(2), m3 = implementations.get(3), m4 = implementations.get(4);
           implementation = function (a, b, c, d) {
             const n = arguments.length;
@@ -13747,14 +13741,7 @@
           };
         }
         result = implementation;
-        if (dispatch) {
-          patchDeclaration(dispatch, target, desc(implementation));
-          const state = dispatch.protocolState$LKEY;
-          if (state) {
-            if (target === "_" && state.onlyDefault && declarationJournal === null) state.def = implementation;
-            else { state.onlyDefault = false; state.def = null; }
-          }
-        }
+        if (dispatch) patchDeclaration(dispatch, target, desc(implementation));
         if (!protocolFunctions.has(key)) {
           // A key's implementations go in its entry and its dispatch cell
           // alike, each through the journal (`dispatchCell`).
@@ -14798,9 +14785,7 @@
       if (s !== null) {
         if (isChunkedSeq(s)) {
           const chunk = chunkFirst(s), store = chunkStore(chunk), size = count(chunk), values = [];
-          const p1 = fixedFn1(pred);
-          if (p1) { for (let i = 0; i < size; i++) { const v = chunkItem(chunk, store, i); if (truth(p1.call(pred, v))) values.push(v); } }
-          else { for (let i = 0; i < size; i++) { const v = chunkItem(chunk, store, i); if (truth(pred.call(null, v))) values.push(v); } }
+          for (let i = 0; i < size; i++) { const v = chunkItem(chunk, store, i); if (truth(pred.call(null, v))) values.push(v); }
           return chunkCons(arrayChunk(values), filter(pred, chunkRest(s)));
         }
         // Upstream obtains rest before invoking the predicate.
@@ -15066,20 +15051,13 @@
     if (!(step > 0 || step < 0)) return repeat(start);
     return rangeNode(start, end, step, isInteger(start) && isInteger(end) && isInteger(step));
   }
-  //@unit callable0 requires: fnApplyTo, fnRest
-  // Fixed-shape variadic wrapper with 0 fixed arities (light-cljs-1115).
-  function callable0(variadic) {
-    const fn = function () { return variadic(fnRest(arguments, 0)); };
-    fn.cljs$lang$maxFixedArity = 0;
-    fn.cljs$lang$applyTo = args => fnApplyTo(variadic, 0, args);
-    fn.cljs$core$IFn$_invoke$arity$variadic = variadic;
-    return fn;
-  }
   //@unit callable2 requires: fnApplyTo, fnRest
-  // Fixed-shape wrapper for arities 0..2 + variadic, avoiding per-call
-  // `Object.entries` and computed property stores (light-cljs-1115).
+  // Fixed-shape 0..2 + variadic wrapper for hot 2-arity combinators
+  // (`complement`, `constantly`, `concat`, `mapSeq` transducer), keeping
+  // `fn.length === 4` and fast properties without a `methods` object literal
+  // (light-cljs-1115).
   function callable2(m0, m1, m2, variadic) {
-    const fn = function (a, b) {
+    const fn = function (a, b, c, d) {
       const n = arguments.length;
       if (n === 1) return m1(a);
       if (n === 2) return m2(a, b);
@@ -15094,30 +15072,10 @@
     fn.cljs$core$IFn$_invoke$arity$variadic = variadic;
     return fn;
   }
-  //@unit callable3 requires: fnApplyTo, fnRest
-  // Fixed-shape wrapper for arities 0..3 + variadic (light-cljs-1115).
-  function callable3(m0, m1, m2, m3, variadic) {
-    const fn = function (a, b, c) {
-      const n = arguments.length;
-      if (n === 1) return m1(a);
-      if (n === 2) return m2(a, b);
-      if (n === 0) return m0();
-      if (n === 3) return m3(a, b, c);
-      return variadic(a, b, c, fnRest(arguments, 3));
-    };
-    fn.cljs$core$IFn$_invoke$arity$0 = m0;
-    fn.cljs$core$IFn$_invoke$arity$1 = m1;
-    fn.cljs$core$IFn$_invoke$arity$2 = m2;
-    fn.cljs$core$IFn$_invoke$arity$3 = m3;
-    fn.cljs$lang$maxFixedArity = 3;
-    fn.cljs$lang$applyTo = args => fnApplyTo(variadic, 3, args);
-    fn.cljs$core$IFn$_invoke$arity$variadic = variadic;
-    return fn;
-  }
   //@unit callable requires: fnApplyTo, fnRest
-  // Construct the same fixed/variadic split as an emitted CLJS function for
-  // sparse or 4-arity combinators, using static property names to avoid
-  // dictionary-mode transitions (light-cljs-1115).
+  // Construct the same fixed/variadic split as an emitted CLJS function using
+  // static property names so short-lived combinator wrappers stay in fast
+  // property mode without `Object.entries` or `Array(fixed)` (light-cljs-1115).
   function callable(fixed, methods, variadic) {
     const m0 = methods[0], m1 = methods[1], m2 = methods[2], m3 = methods[3], m4 = methods[4];
     const fn = function (a, b, c, d) {
@@ -15156,7 +15114,7 @@
   }
   //@unit constantly requires: callable2
   function constantly(x) { const f = () => x; return callable2(f, f, f, f); }
-  //@unit predicateCombination requires: callable3, first, next, seq, truth
+  //@unit predicateCombination requires: callable, first, next, seq, truth
   function predicateCombination(predicates, small, existential) {
     // The first three arguments visit each predicate in turn. CLJS's 1-3
     // predicate variants then visit each tail argument; the 4+ variant instead
@@ -15195,8 +15153,8 @@
       }
       return existential ? null : true;
     };
-    return callable3(() => existential ? null : true, x => fixed([x]),
-      (x, y) => fixed([x, y]), (x, y, z) => fixed([x, y, z]),
+    return callable(3, {0: () => existential ? null : true, 1: x => fixed([x]),
+      2: (x, y) => fixed([x, y]), 3: (x, y, z) => fixed([x, y, z])},
     (x, y, z, args) => {
       const result = fixed([x, y, z]);
       return truth(result) === existential ? result : tail(args);
@@ -15210,10 +15168,10 @@
   }
   //@unit someFn requires: predicateConstructor
   const someFn = predicateConstructor(true), everyPred = predicateConstructor(false);
-  //@unit memoize requires: apply, assoc, callable0, get, mapFromArray, missing
+  //@unit memoize requires: apply, assoc, callable, get, mapFromArray, missing
   function memoize(fn) {
     let cache = mapFromArray([]);
-    return callable0(args => {
+    return callable(0, {}, args => {
       const cached = get(cache, args, missing);
       if (cached !== missing) return cached;
       const result = apply(fn, args);
@@ -15231,88 +15189,69 @@
   }
   //@unit trampoline requires: apply, callable, trampolineLoop
   const trampoline = callable(1, {1: trampolineLoop}, (fn, args) => trampolineLoop(() => apply(fn, args)));
-  //@unit comp requires: apply, callable0, callable3, directOrApply, identity
+  //@unit comp requires: apply, callable, directOrApply, identity, missing
   function comp(...fns) {
     if (!fns.length) return identity;
     if (fns.length === 1) return fns[0];
     if (fns.length === 2) {
       const f = fns[0], g = fns[1];
-      return callable3(
-        () => f.call(null, g.call(null)),
-        x => f.call(null, g.call(null, x)),
-        (x, y) => f.call(null, g.call(null, x, y)),
-        (x, y, z) => f.call(null, g.call(null, x, y, z)),
-        (x, y, z, tail) => f.call(null, apply(g, x, y, z, tail))
-      );
-    }
-    if (fns.length === 3) {
-      const f = fns[0], g = fns[1], h = fns[2];
-      return callable3(
-        () => f.call(null, g.call(null, h.call(null))),
-        x => f.call(null, g.call(null, h.call(null, x))),
-        (x, y) => f.call(null, g.call(null, h.call(null, x, y))),
-        (x, y, z) => f.call(null, g.call(null, h.call(null, x, y, z))),
-        (x, y, z, tail) => f.call(null, g.call(null, apply(h, x, y, z, tail)))
-      );
+      return callable(3, {
+        0: () => { const v = g.call(null); return f.call(null, v); },
+        1: x => { const v = g.call(null, x); return f.call(null, v); },
+        2: (x, y) => { const v = g.call(null, x, y); return f.call(null, v); },
+        3: (x, y, z) => { const v = g.call(null, x, y, z); return f.call(null, v); }
+      }, (x, y, z, tail) => { const v = apply(g, x, y, z, tail); return f.call(null, v); });
     }
     const run = (args, tail) => {
       let result = directOrApply(fns[fns.length - 1], args, tail);
       for (let i = fns.length - 2; i >= 0; i--) result = fns[i].call(null, result);
       return result;
     };
-    return callable0(args => run([], args));
+    return fns.length <= 3
+      ? callable(3, {0: () => run([], missing), 1: x => run([x], missing), 2: (x, y) => run([x, y], missing), 3: (x, y, z) => run([x, y, z], missing)},
+        (x, y, z, tail) => run([x, y, z], tail))
+      : callable(0, {}, args => run([], args));
   }
-  //@unit partial3 requires: apply, callable3
-  function partial3(fn, a, b, c) {
-    return callable3(
-      () => fn.call(null, a, b, c),
-      x => fn.call(null, a, b, c, x),
-      (x, y) => fn.call(null, a, b, c, x, y),
-      (x, y, z) => fn.call(null, a, b, c, x, y, z),
-      (x, y, z, tail) => apply(fn, a, b, c, x, y, z, tail)
-    );
+  //@unit partialFixed requires: callable, directOrApply, missing
+  function partialFixed(fn, prefix) {
+    const run = (args, tail) => directOrApply(fn, [...prefix, ...args], tail);
+    return callable(3, {0: () => run([], missing), 1: x => run([x], missing), 2: (x, y) => run([x, y], missing), 3: (x, y, z) => run([x, y, z], missing)},
+      (x, y, z, tail) => run([x, y, z], tail));
   }
-  //@unit partial requires: apply, callable, callable0, callable3, concat, partial3
+  //@unit partial requires: apply, callable, concat, partialFixed
   // Constructors need the same sequence ABI as their returned functions: apply
   // may supply an infinite tail which construction must only capture.
   const partial = callable(4, {
-    0: () => partial3(undefined, undefined, undefined, undefined),
+    0: () => partialFixed(undefined, [undefined, undefined, undefined]),
     1: fn => fn,
-    2: (fn, a) => callable3(
-      () => fn.call(null, a),
-      x => fn.call(null, a, x),
-      (x, y) => fn.call(null, a, x, y),
-      (x, y, z) => fn.call(null, a, x, y, z),
-      (x, y, z, tail) => apply(fn, a, x, y, z, tail)
-    ),
-    3: (fn, a, b) => callable3(
-      () => fn.call(null, a, b),
-      x => fn.call(null, a, b, x),
-      (x, y) => fn.call(null, a, b, x, y),
-      (x, y, z) => fn.call(null, a, b, x, y, z),
-      (x, y, z, tail) => apply(fn, a, b, x, y, z, tail)
-    ),
-    4: partial3
-  }, (fn, a, b, c, more) => callable0(args => apply(fn, a, b, c, concat(more, args))));
-  //@unit juxtFixed requires: callable3, directOrApply, missing, vectorFromArray
+    2: (fn, a) => callable(3, {
+      0: () => fn.call(null, a),
+      1: x => fn.call(null, a, x),
+      2: (x, y) => fn.call(null, a, x, y),
+      3: (x, y, z) => fn.call(null, a, x, y, z)
+    }, (x, y, z, tail) => apply(fn, a, x, y, z, tail)),
+    3: (fn, a, b) => partialFixed(fn, [a, b]),
+    4: (fn, a, b, c) => partialFixed(fn, [a, b, c])
+  }, (fn, a, b, c, more) => callable(0, {}, args => apply(fn, a, b, c, concat(more, args))));
+  //@unit juxtFixed requires: callable, directOrApply, missing, vectorFromArray
   function juxtFixed(fns) {
     const run = (args, tail) => vectorFromArray(fns.map(fn => directOrApply(fn, args, tail)));
-    return callable3(() => run([], missing), x => run([x], missing), (x, y) => run([x, y], missing), (x, y, z) => run([x, y, z], missing),
+    return callable(3, {0: () => run([], missing), 1: x => run([x], missing), 2: (x, y) => run([x, y], missing), 3: (x, y, z) => run([x, y, z], missing)},
       (x, y, z, tail) => run([x, y, z], tail));
   }
-  //@unit juxt requires: callable3, directOrApply, juxtFixed, listStar, mapSeq, missing, toArray,
+  //@unit juxt requires: callable, directOrApply, juxtFixed, listStar, mapSeq, missing, toArray,
   //@ vectorFromArray
-  const juxt = callable3(
-    () => juxtFixed([undefined, undefined, undefined]),
-    f => juxtFixed([f]),
-    (f, g) => juxtFixed([f, g]),
-    (f, g, h) => juxtFixed([f, g, h]),
-    (f, g, h, more) => {
-      const fns = listStar(f, g, h, more);
-      const run = (args, tail) => vectorFromArray(toArray(mapSeq(fn => directOrApply(fn, args, tail), fns)));
-      return callable3(() => run([], missing), x => run([x], missing), (x, y) => run([x, y], missing), (x, y, z) => run([x, y, z], missing),
-        (x, y, z, tail) => run([x, y, z], tail));
-    });
+  const juxt = callable(3, {
+    0: () => juxtFixed([undefined, undefined, undefined]),
+    1: f => juxtFixed([f]),
+    2: (f, g) => juxtFixed([f, g]),
+    3: (f, g, h) => juxtFixed([f, g, h])
+  }, (f, g, h, more) => {
+    const fns = listStar(f, g, h, more);
+    const run = (args, tail) => vectorFromArray(toArray(mapSeq(fn => directOrApply(fn, args, tail), fns)));
+    return callable(3, {0: () => run([], missing), 1: x => run([x], missing), 2: (x, y) => run([x, y], missing), 3: (x, y, z) => run([x, y, z], missing)},
+      (x, y, z, tail) => run([x, y, z], tail));
+  });
   //@unit fnil requires: apply, callable, invalidArity
   function fnil(fn, ...defaults) {
     if (defaults.length < 1 || defaults.length > 3) return invalidArity(arguments.length);

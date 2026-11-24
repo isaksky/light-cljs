@@ -2235,7 +2235,6 @@ fn units_assigning_a_binding_share_its_unit() {
             "countOf <- slotWrites.count",
             "declarationJournal <- MultiFn.tables",
             "declarationJournal <- declarationTransaction",
-            "declarationJournal <- extendType",
             "declarationJournal <- installMethods",
             "declarationJournal <- multiState",
             "declarationJournal <- protocolMethod",

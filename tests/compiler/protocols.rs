@@ -47,6 +47,62 @@ fn protocol_dispatch_uses_public_slots_and_native_tables() {
         ),
         "[\"OK\",true,false]\n"
     );
+    // Sol #2 & #6 (light-cljs-1115): direct public-table writes after a warmed
+    // default must be observed live, and host entries with a shadowed `.call`
+    // property remain invocable through `.apply` at every optimization level.
+    assert_eq!(
+        run(r#"
+        (defprotocol Live (live-f [this]))
+        (defrecord R [x])
+        (extend-type default Live (live-f [_] :default))
+        (let [r (->R 1)
+              first-res (live-f r)
+              _ (aset live-f "object" (fn [_] :object))
+              after-obj (live-f r)
+              _ (aset live-f "_" (fn [_] :default2))
+              after-def (live-f 42)
+              no-call (js/Object.assign (fn [_] 7) #js {:call nil})
+              _ (aset live-f "object" no-call)
+              after-no-call (live-f #js {})]
+          (pr-str [first-res after-obj after-def after-no-call]))"#),
+        "\"[:default :object :default2 7]\"\n"
+    );
+}
+
+#[test]
+fn protocol_misses_preserve_arities_at_the_mask_boundary() {
+    // Sol #10 (light-cljs-1115): multi-arity misses switch from a 31-bit mask
+    // to the slots Map at arity 31; arity 33 must not alias arity 1 and
+    // undeclared arity 32 must throw at every optimization level.
+    assert_eq!(
+        run(r#"
+        (defprotocol Wide
+          (wide
+            [x]
+            [x a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11 a12 a13 a14 a15 a16 a17 a18 a19 a20 a21 a22 a23 a24 a25 a26 a27 a28 a29]
+            [x a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11 a12 a13 a14 a15 a16 a17 a18 a19 a20 a21 a22 a23 a24 a25 a26 a27 a28 a29 a30]
+            [x a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11 a12 a13 a14 a15 a16 a17 a18 a19 a20 a21 a22 a23 a24 a25 a26 a27 a28 a29 a30 a31 a32]))
+        (defrecord R [v])
+        (extend-type default
+          Wide
+          (wide
+            ([x] [:a1 (:v x)])
+            ([x _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ a29] [:a30 (:v x) a29])
+            ([x _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ a30] [:a31 (:v x) a30])
+            ([x _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ a32] [:a33 (:v x) a32])))
+        (let [r (->R :ok)
+              a32-err (try
+                        (wide r 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31)
+                        :no-error
+                        (catch :default _ :threw))]
+          (pr-str
+            [(wide r)
+             (wide r 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29)
+             (wide r 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30)
+             (wide r 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32)
+             a32-err]))"#),
+        "\"[[:a1 :ok] [:a30 :ok 29] [:a31 :ok 30] [:a33 :ok 32] :threw]\"\n"
+    );
 }
 
 /// A dispatcher tests its receiver as upstream's `x != null` (light-cljs-1022):

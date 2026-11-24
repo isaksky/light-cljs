@@ -846,7 +846,10 @@ fn callable_combinators_preserve_arities_abi_and_lazy_tails() {
              [(mf) (mf 5) (mf 5 6) (mf 5 1 2 3) (.-cljs$lang$maxFixedArity mf)]
              [rem-vec rem-lazy rem-xf]
              [(vec (concat [1] [2] [3] [4])) (vec (sequence (map inc) [1 2 3])) (vec (eduction (map inc) [1 2]))
-              (trampoline (fn step [n] (if (pos? n) #(step (dec n)) :done)) 3)]]))"#),
-        "\"[[true false true false true false false 2 false false false true] [:ok :ok :ok :ok :ok 2] [[:a] [:a 1] [:a 1 2] [:a 1 2 3] [:a 1 2 3 4 5] [:a 1 2 3 4] [:a :b] [:a :b 1] [:a :b 1 2] [:a :b 1 2 3] [:a :b 1 2 3 4] [:a :b :c] [:a :b :c 1] [:a :b :c 1 2] [:a :b :c 1 2 3] [:a :b :c 1 2 3 4] [:a :b :c :d 1 2] [:a :b :c :d 1 2 3] [1 2 3 [10 11 12]] 9 3 0 [:a 8 9]] [:z 5 \\\"0\\\" \\\"2\\\" \\\"5\\\" \\\"9\\\" \\\"15\\\" \\\"10\\\" 1 2 2 2 3 4 7 3 0] [[5 6] [10 24] [10 20 30 3] 3] [[:d1] [false] [:d1 2 3 4] [:d1 :d2] [false :d2 3 4] true [:d1 :d2 :d3 4]] [nil true true true true true false] [[1 2] [1 2] 1 0] [:init [:done 5] 11 11 2] [[1 3 5] [2 4] [1 3 5]] [[1 2 3 4] [2 3 4] [2 3] :done]]\"\n"
+              (trampoline (fn step [n] (if (pos? n) #(step (dec n)) :done)) 3)]
+             ;; Sol #7: JS function `.length` remains 4 across callable wrappers.
+             [(.-length c) (.-length k) (.-length p1) (.-length p4) (.-length c2) (.-length c4)
+              (.-length j2) (.-length mem) (.-length mf) (.-length concat) (.-length eduction)]]))"#),
+        "\"[[true false true false true false false 2 false false false true] [:ok :ok :ok :ok :ok 2] [[:a] [:a 1] [:a 1 2] [:a 1 2 3] [:a 1 2 3 4 5] [:a 1 2 3 4] [:a :b] [:a :b 1] [:a :b 1 2] [:a :b 1 2 3] [:a :b 1 2 3 4] [:a :b :c] [:a :b :c 1] [:a :b :c 1 2] [:a :b :c 1 2 3] [:a :b :c 1 2 3 4] [:a :b :c :d 1 2] [:a :b :c :d 1 2 3] [1 2 3 [10 11 12]] 9 3 0 [:a 8 9]] [:z 5 \\\"0\\\" \\\"2\\\" \\\"5\\\" \\\"9\\\" \\\"15\\\" \\\"10\\\" 1 2 2 2 3 4 7 3 0] [[5 6] [10 24] [10 20 30 3] 3] [[:d1] [false] [:d1 2 3 4] [:d1 :d2] [false :d2 3 4] true [:d1 :d2 :d3 4]] [nil true true true true true false] [[1 2] [1 2] 1 0] [:init [:done 5] 11 11 2] [[1 3 5] [2 4] [1 3 5]] [[1 2 3 4] [2 3 4] [2 3] :done] [4 4 4 4 4 4 4 4 4 4 4]]\"\n"
     );
 }
