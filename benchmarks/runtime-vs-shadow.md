@@ -6326,3 +6326,56 @@ Compiled with `--elide-asserts --no-cache` from private copies of `research/shad
 - `flow`: raw 1,255,707 -> 1,256,950 (+1,243 B), gzip -9 292,155 -> 292,435 (+280 B, +0.10%).
 
 All three apps stay below the +0.5% gzip threshold. Size ratchet ceilings are synced in `tests/support/ratchet_fixtures.rs` and `tests/compiler/chunks.rs`.
+
+
+## 2026-11-24: fixed-shape `callable` wrappers and fast protocol-miss dispatch (light-cljs-1115)
+
+Rebased onto `light-cljs-1116` (`master` `491ce268`, SHA-256 `682a5565e495da49...`). Two changes in `src/js_runtime.js` (and removal of the now-redundant `complement` scalar-adapter rewrite in `build.rs`):
+
+1. **Fixed-shape `callable` wrappers (`70c51bca`, hardened in `c6c1f802`):** Replaced per-call `Object.entries(methods)`, computed `fn["cljs$core$IFn$_invoke$arity$" + arity] = method` writes, and `Array(fixed)` prefix copying with fixed-shape `callable2` (for hot 2-arity combinators: `complement`, `constantly`, `concat`, `mapSeq` transducer) and static-shape `callable` (both keeping `fn.length === 4` and V8 fast properties `%HasFastProperties === true`), specialized 2-fn `comp` (binding the inner result before reading the outer `.call`), and specialized 1-arg `partial`.
+2. **Protocol-miss fast paths (`4d648d10`, hardened in `c6c1f802`):** Replaced keyed `current[nativeType(receiver)]` with named dot loads in `protocolExternal`; added a per-method non-enumerable `protocolState$LKEY` cell (`{v, live}`) on `protocolMethod` so misses outside `declarationTransaction` skip `protocolVariables.get` while still reading the live public host table on every miss; replaced `slots.has` with a 31-bit `slotMask` (falling back to `slots.has` at arity >= 31) and dispatched arities 1-4 via `.call(null, ...)` guarded by `impl.call === fnCall` (falling back to `.apply` for shadowed `.call` entries); and updated `extendType` to install single-arity user-protocol host functions directly (preserving the null-receiver wrapper for core dispatchers) and dispatch multi-arity arities 1-4 without `.apply`.
+
+Environment: light-cljs `c6c1f802` (`light-1115`, SHA-256 `5da152370010de3e...`), baseline light-cljs `491ce268` (`light-491ce268`, SHA-256 `682a5565e495da49...`), shadow-cljs 3.5.3, openjdk 25.0.2, Node v26.12.1, Clojure CLI 1.12.4.1618, Babashka 1.13.229; Apple M3 Ultra (Virtual) (VirtualMac2,1), 24 CPUs, 32 GiB, macOS 15.7.3. All runs are **unreserved** (compilers alternated, 1-minute load average recorded, every checksum equal to oracle).
+
+### Generated workloads 200k and 800k (release, 10 runs alternated)
+
+#### Workload 200k (`workload-200k-seed42`, 1/10/40 iterations; load 6.32-6.92)
+
+| Iterations | Compiler | First output | Wall time | User + System CPU | Peak memory | light/shadow wall |
+| --- | --- | --- | --- | --- | --- | ---: |
+| 1 | light-cljs | 0.337 s (0.330-0.343) | 0.342 s (0.335-0.347) | 0.42 s (0.39+0.03) | 0.141 GB (0.140-0.143) | 1.07 |
+| 1 | shadow-cljs | 0.314 s (0.312-0.330) | 0.319 s (0.316-0.334) | 0.39 s (0.36+0.03) | 0.124 GB (0.123-0.128) | |
+| 10 | light-cljs | 0.651 s (0.625-0.681) | 0.668 s (0.642-0.701) | 0.99 s (0.92+0.07) | 0.230 GB (0.227-0.234) | 1.10 |
+| 10 | shadow-cljs | 0.602 s (0.578-0.631) | 0.610 s (0.585-0.641) | 0.87 s (0.80+0.07) | 0.209 GB (0.202-0.212) | |
+| 40 | light-cljs | 1.388 s (1.339-1.434) | 1.400 s (1.347-1.444) | 2.00 s (1.90+0.10) | 0.259 GB (0.254-0.265) | 1.06 |
+| 40 | shadow-cljs | 1.308 s (1.272-1.367) | 1.319 s (1.282-1.377) | 1.91 s (1.80+0.11) | 0.274 GB (0.272-0.278) | |
+
+- Steady state (1 to 40 iterations): **27.1 vs 25.6 ms/iter (1.06x)**, down from **1.11x** on `491ce268` and `4d8d02d5` (40-iter wall ranges overlap: 1.347-1.444 vs 1.282-1.377 s; CPU 1.05x, peak memory 0.95x). Pre-rebase Part A alone (`07dc90ab`, 5 runs at load 4.91-5.70): 24.2 vs 23.0 ms/iter (1.06x).
+
+#### Workload 800k (`workload-800k-seed42`, 1/4/16 iterations; load 5.49-6.89)
+
+| Iterations | Compiler | First output | Wall time | User + System CPU | Peak memory | light/shadow wall |
+| --- | --- | --- | --- | --- | --- | ---: |
+| 1 | light-cljs | 1.086 s (1.068-1.149) | 1.097 s (1.081-1.161) | 1.34 s (1.26+0.08) | 0.359 GB (0.339-0.392) | 1.05 |
+| 1 | shadow-cljs | 1.041 s (1.022-1.071) | 1.050 s (1.030-1.081) | 1.24 s (1.17+0.07) | 0.330 GB (0.302-0.341) | |
+| 4 | light-cljs | 1.452 s (1.416-1.707) | 1.471 s (1.427-1.749) | 1.92 s (1.81+0.11) | 0.432 GB (0.383-0.440) | 1.05 |
+| 4 | shadow-cljs | 1.389 s (1.369-1.504) | 1.400 s (1.381-1.515) | 1.81 s (1.71+0.10) | 0.403 GB (0.374-0.405) | |
+| 16 | light-cljs | 2.832 s (2.765-5.181) | 2.848 s (2.780-5.263) | 3.91 s (3.72+0.19) | 0.524 GB (0.437-0.533) | 1.05 |
+| 16 | shadow-cljs | 2.694 s (2.629-7.977) | 2.711 s (2.646-8.138) | 3.80 s (3.61+0.19) | 0.568 GB (0.518-0.573) | |
+
+- Steady state (1 to 16 iterations): **116.7 vs 110.7 ms/iter (1.05x)**, down from **1.12x** on `4d8d02d5` (16-iter wall ranges overlap: 2.780-5.263 vs 2.646-8.138 s; CPU 1.03x, peak memory 0.92x). Pre-rebase Part A alone (`07dc90ab`, 5 runs at load 4.91-5.70): 114.8 vs 107.9 ms/iter (1.06x).
+- Pseudo-names CPU profiles confirm both `callable` (40.4 -> ~10 ms on 200k; 41.9 -> ~7 ms on 800k) and `implementation <- external <- miss` (76.7 -> ~23 ms on 800k) dropped out of the top-18 self-time functions. With `light-cljs-1116` (`meta`/`equalPairOf`) landed in `491ce268`, the remaining 5-6% steady-state gap on 200k and 800k is dominated by `ExceptionInfo` (`light-cljs-1114`).
+
+### Core-ops gate (80 ops, `c6c1f802` vs `491ce268`, 5 runs alternated, load 5.04-9.75, unreserved)
+
+Every checksum matched shadow-cljs. **0 of 80 operations regressed beyond their `491ce268` baseline range** (`into-map-small` 164.8 [162.7-183.6] vs `491ce268` 175.3 ns/op, -6%, 0.51x shadow-cljs; `into-xform-1000` 13,108 vs 13,469 ns/op, -3%, 0.72x shadow-cljs; `update-in-3` 130.4 vs 131.6 ns/op, -1%, 0.94x shadow-cljs; `vec-conj-64` 1,268 vs 1,279 ns/op, -1%, 0.98x shadow-cljs; `protocol-on-record` 2.40 vs 2.39 ns/op, 1.00x shadow-cljs).
+
+### Release output sizes (`:advanced --elide-asserts --no-cache`, output as written without React)
+
+| App | Before raw (`491ce268`) | After raw (`c6c1f802`) | Before gzip -9 | After gzip -9 | gzip delta | After brotli -q 11 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `simple` (`simple-port-973`) | 276,660 | 278,510 (+1,850) | 74,671 | 75,165 | +494 B (+0.66%) | 64,473 (+279) |
+| `todomvc` (`todomvc-port-980`) | 393,761 | 395,608 (+1,847) | 104,892 | 105,430 | +538 B (+0.51%) | 90,194 (+494) |
+| `flow` (`flow-port-980`) | 1,256,971 | 1,258,819 (+1,848) | 292,445 | 292,963 | +518 B (+0.18%) | 235,304 (+714) |
+
+Growth slightly above 0.5% gzip on `simple` (+0.66%) and `todomvc` (+0.51%) is the fixed ~1.85 KB raw (~494-538 B gzip) runtime prefix from `callable2`, static-shape `callable`, 2-fn `comp`, 1-arg `partial`, `protocolExternal`, `slotMask`/direct `.call` `miss`, and multi-arity host dispatch in `extendType` (constant across app sizes, dropping to +0.18% on `flow`).

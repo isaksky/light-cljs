@@ -3165,7 +3165,10 @@ fn terse_chunks_write_their_runtime_units_at_module_level() {
     // `hashNodeRemove`, and non-allocating `updateIn`/`assocIn` (144,888),
     // and light-cljs-1116 direct metadata field propagation in
     // `preserveMeta`/map updates and `equalPairOf` host/primitive fast path
-    // (145,479).
+    // (145,479), and light-cljs-1115 fixed-shape `callable2`/`callable`
+    // wrappers, 2-fn `comp`, 1-arg `partial`, and fast protocol-miss dispatch
+    // (`protocolExternal`, `protocolState$LKEY`, `slotMask`, direct
+    // user-protocol single/multi-arity host `extendType`; 146,663).
     assert!(
         total + 1_000
             <= 73_207
@@ -3195,6 +3198,7 @@ fn terse_chunks_write_their_runtime_units_at_module_level() {
                 + 5_000
                 + 2_000
                 + 4_000
+                + 1_000
                 + 1_000,
         "{total} bytes\n{listing}"
     );
