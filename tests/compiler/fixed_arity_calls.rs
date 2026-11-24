@@ -997,7 +997,8 @@ fn lazy_method_key_marker_and_core_method_preserve_protocols() {
              (count s)
              (seq s)
              (mm :k)
-             (persistent! t)]))"#),
-        "\"[true true 5 [5 :k] [5 :k :nf] 8 14 true true 77 (:a :b) [:hit :k] [1 2]]\"\n"
+             (persistent! t)
+             (demunge "foo_bar$baz_QMARK_")]))"#),
+        "\"[true true 5 [5 :k] [5 :k :nf] 8 14 true true 77 (:a :b) [:hit :k] [1 2] \\\"foo-bar/baz?\\\"]\"\n"
     );
 }

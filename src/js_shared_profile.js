@@ -324,6 +324,7 @@
     const maxArity = Math.max(21, sharedMethodKeys.maxArity);
     for (const key of [...methodKeys, ...sharedMethodKeys]) {
       if (key == null) continue;
+      key.marker ??= protocolSlot(key.name, 0);
       for (let arity = 0; arity <= maxArity; arity++) keySlot(key, arity);
       key.cell ??= dispatchCell(key.key);
       key.cell.protocol ??= coreProtocolsByName.get(key.name) ?? null;

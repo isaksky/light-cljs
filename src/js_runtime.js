@@ -1037,10 +1037,10 @@
   //@unit protocolSlot requires: mungeMember, protocolSlotCodes, protocolSlots, runtimeKey
   // `spelled`, the slot as the text names it, is the answer from then on.
   function protocolSlot(key, arity, spelled) {
-    let slots = protocolSlots.get(key);
-    if (!slots) { slots = new Map(); protocolSlots.set(key, slots); }
-    if (spelled) { slots.set(arity, spelled); return spelled; }
-    if (slots.has(arity)) return slots.get(arity);
+    const cacheKey = arity === 0 ? key : key + "\0" + arity;
+    if (spelled) { protocolSlots.set(cacheKey, spelled); return spelled; }
+    const cached = protocolSlots.get(cacheKey);
+    if (cached !== undefined) return cached;
     const slash = key.indexOf("/");
     const qualified = arity === 0 ? slash >= 0 : key.indexOf("/", slash + 1) >= 0;
     const namespace = qualified ? key.slice(0, slash) : "cljs.core";
@@ -1048,21 +1048,21 @@
     const separator = remainder.startsWith("//") ? 1 : remainder.indexOf("/");
     const name = arity === 0 ? remainder : remainder.slice(0, separator);
     const method = remainder.slice(separator + 1);
-    const prefix = mungeMember(namespace).replaceAll(".", "$") + "$" + mungeMember(name) + "$";
+    const prefix = (qualified ? mungeMember(namespace).replaceAll(".", "$") : "cljs$core") + "$" + mungeMember(name) + "$";
     const stem = arity === 0 ? prefix : prefix + (method === "/" ? "_SLASH_" : mungeMember(method)) + "$arity$" + arity;
     // The functions' invoke convention is not keyed (docs/value-layout.md,
     // section 1), as `installMethods` writes it and the analyzer reads it.
     const code = protocolSlotCodes.indexOf(" " + stem + " ") + stem.length + 2;
     const slot = arity !== 0 && stem.startsWith("cljs$core$IFn$_invoke$arity$") ? stem
       : code > stem.length + 1 ? runtimeKey + protocolSlotCodes.slice(code, protocolSlotCodes.indexOf(" ", code)) : stem + "$LKEY";
-    slots.set(arity, slot); return slot;
+    protocolSlots.set(cacheKey, slot); return slot;
   }
   //@unit methodKeys
   // The resolved keys (`methodKey`) the generic operations dispatch, by a
   // number each: the key of `ILookup/-lookup` is number 30, which the unit
   // `installMethods.ILookupLookupKey` installs.
   const methodKeys = [];
-  //@unit methodKey requires: protocolMasks, protocolSlot
+  //@unit methodKey requires: protocolMasks
   // A core protocol method's key, or a core protocol's name, resolved once
   // (light-cljs-358): the protocol lookups (`ownMethod`, `extendedMethod`,
   // `builtin`, `ownProtocol` and the `satisfies` hooks) take it in place of
@@ -1073,16 +1073,12 @@
   // loads, into `methodKeys` under a number of its own, from which the
   // operation reads it with a constant index; a program without protocol
   // implementations resolves none, and the operation, which then finds no
-  // protocol lookup, reads none. `info` is that of `extendedMethod` and the
-  // `satisfies` hooks, which `extend-type` and `specify!` keep, filled in on
-  // their first call with the key, as it reads protocols that load later.
+  // protocol lookup, reads none. `marker`, `slots`, and `info` are filled in
+  // on first use (`keyMarker`, `keySlot`, `extendedMethod`) so loading avoids
+  // eager `protocolSlot` and `Object.create(null)` work (light-cljs-1117).
   function methodKey(key) {
-    const name = key.split("/")[0], mask = protocolMasks.get(name) ?? ["", 0];
-    // `slots` holds the method's slot name by arity, each named on its first
-    // dispatch (`keySlot`): naming every arity of every key as the runtime
-    // loads took more memory than the evaluator's smallest heaps allow. It
-    // inherits nothing a program could give arrays.
-    return {key, name, mask: mask[0], bit: mask[1], marker: protocolSlot(name, 0), meta: name === "IMeta", info: undefined, cell: undefined, slots: Object.create(null)};
+    const slash = key.indexOf("/"), name = slash < 0 ? key : key.slice(0, slash), mask = protocolMasks.get(name) ?? ["", 0];
+    return {key, name, mask: mask[0], bit: mask[1], marker: undefined, meta: name === "IMeta", info: undefined, cell: undefined, slots: Object.create(null)};
   }
   //@unit keySlot requires: protocolSlot
   // The slot name of a resolved key's method for `arity`, named once.
@@ -11472,7 +11468,7 @@
   //@unit operationPaths.reduceKv effect: reduceKvOf when: setDeclarationDemand requires: operationPaths,
   //@ reduceKvOf
   reduceKvOf = (operation => function (rf, init, collection) { return (operationPaths.reduceKv ?? operation)(rf, init, collection); })(reduceKvOf);
-  //@unit slotWrites requires: protocolSentinel, runtimeKind
+  //@unit slotWrites requires: protocolSentinel, protocolSlot, runtimeKind
   // A program that writes a core protocol method's member by name
   // (`ProgramFacts::core_method_write`, the root an `Advanced` slice keeps
   // for it) can set a lookup's or an update's slot to nil, false or
@@ -11487,7 +11483,7 @@
   // prototype whose class does not declare the protocol takes the
   // upstream-shaped path at every level.
   const slotWrites = (value, key) => value?.cljs$lang$kind$$LKEY < 64 && (runtimeKind(value) !== 0
-    || (value[key.mask] & key.bit) !== 0 || value[key.marker] === protocolSentinel);
+    || (value[key.mask] & key.bit) !== 0 || value[key.marker ?? (key.marker = protocolSlot(key.name, 0))] === protocolSentinel);
   //@unit slotWrites.count effect: slotWrites when: countOf requires: countOf, countPath,
   //@ methodKeys, slotWrites
   countOf = (operation => function (value) {
@@ -13393,12 +13389,12 @@
     const method = value == null ? undefined : value[keySlot(key, arity)];
     return method !== undefined && builtinSlots.has(method) ? undefined : method;
   }
-  //@unit keyMarker requires: demandMethod, protocolSentinel
+  //@unit keyMarker requires: demandMethod, protocolSentinel, protocolSlot
   // `directMethod` of a resolved key's protocol (arity 0): whether the value
   // holds the protocol's marker.
   function keyMarker(value, key) {
     demandMethod(key.name, 0, value);
-    return value != null && value[key.marker] === protocolSentinel;
+    return value != null && value[key.marker ?? (key.marker = protocolSlot(key.name, 0))] === protocolSentinel;
   }
   //@unit builtin requires: builtinSlots, demandMethod, keySlot, protocolHooks
   // The value's own implementation of a resolved key (`methodKey`), else one
@@ -13957,7 +13953,7 @@
   //@unit demungeCharacters requires: mungeCharacters
   const demungeCharacters = Object.fromEntries(Object.entries(mungeCharacters).map(([a, b]) => [b, a]));
   //@unit demungePattern requires: demungeCharacters
-  const demungePattern = new RegExp(Object.keys(demungeCharacters).sort((a, b) => b.length - a.length).join("|") + "|\\$", "g");
+  const demungePattern = (() => { let re; return () => re ??= new RegExp(Object.keys(demungeCharacters).sort((a, b) => b.length - a.length).join("|") + "|\\$", "g"); })();
   //@unit reservedNames
   const reservedNames = new Set("arguments abstract await boolean break byte case catch char class const continue debugger default delete do double else enum export extends final finally float for function goto if implements import in instanceof int interface let long native new package private protected public return short static super switch synchronized this throw throws transient try typeof var void volatile while with yield methods null constructor".split(" "));
   //@unit mungeStr requires: mungeCharacters
@@ -13965,7 +13961,7 @@
   //@unit munge requires: mungeStr, reservedNames, str, symbolCore, symbolOf
   function munge(value) { let result = mungeStr(str(value)); result = result === ".." ? "_DOT__DOT_" : reservedNames.has(result) ? result + "$" : result; return symbolOf(value) !== undefined ? symbolCore(result) : result; }
   //@unit demunge requires: demungeCharacters, demungePattern, str, symbolCore, symbolOf
-  function demunge(value) { let result = str(value); result = result === "_DOT__DOT_" ? ".." : result.replace(/\$$/, "").replace(demungePattern, key => key === "$" ? "/" : demungeCharacters[key]); return symbolOf(value) !== undefined ? symbolCore(result) : result; }
+  function demunge(value) { let result = str(value); result = result === "_DOT__DOT_" ? ".." : result.replace(/\$$/, "").replace(demungePattern(), key => key === "$" ? "/" : demungeCharacters[key]); return symbolOf(value) !== undefined ? symbolCore(result) : result; }
   //@unit mapEntry
   // A map entry is a vector of its key and value of type `MapEntryType`: one
   // `makeVector` builds where the program can build vectors
@@ -16271,11 +16267,9 @@
   // A protocol implementation (`protocolHooks`), else `fallback` where the
   // protocol's own test (`countedValue`) answers it.
   function coreMethod(key, arities, fallback, native) {
-    // The key, resolved (`methodKey`) as the dispatcher is made where the
-    // protocol machinery (`installMethods`), which alone resolves keys, has
-    // loaded, else on the first call that can find an implementation (a
-    // chunk can load the machinery after the dispatcher's own).
-    let resolved = protocolHooks.methodKey?.(key);
+    // Resolve the key lazily on first protocol lookup so loading avoids eager
+    // `methodKey` / `protocolSlot` work for unused dispatchers (light-cljs-1117).
+    let resolved;
     const dispatch = function (value, ...args) {
       const arity = arities.length === 1 ? arities[0] : arguments.length;
       if (!arities.includes(arity)) return invalidArity(arguments.length);
@@ -17032,7 +17026,7 @@
   // first call, as `coreMethod` does; the shared-heap profile registers it in
   // `sharedMethodKeys` so boot seals it.
   if (multiHooks.getMethodProtocol) {
-    let resolved = protocolHooks.methodKey?.("IMultiFn/-get-method");
+    let resolved;
     multiHooks.getMethodProtocol = (mf, dispatch) => {
       const method = protocolHooks.builtin?.(mf, resolved || (resolved = protocolHooks.methodKey("IMultiFn/-get-method")), 2);
       return method != null ? method.call(mf, mf, dispatch) : multiFnValue(mf) ? getMethod(mf, dispatch) : getMethodProtocol(mf, dispatch);
