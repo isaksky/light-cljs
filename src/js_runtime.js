@@ -8904,7 +8904,8 @@
     }
     return equalPairOf(left, right);
   }
-  //@unit equalPairOf requires: kindHooks, methodKeys, operationPaths, protocolHooks, recordTypeOf
+  //@unit equalPairOf requires: hostExt, kindHooks, methodKeys, operationPaths, protocolHooks,
+  //@ recordTypeOf, slotFirst
   // Upstream's `=` of two values that are not identical, the first without
   // an `-equiv` slot holding a method, in the old path's order: nil equals
   // only nil and undefined; a value of a runtime class whose instance slot
@@ -8917,21 +8918,34 @@
   // a record, as the old path's `equivSequential` did, before any lookup:
   // they implement `IEquiv` natively, so no `extend-type` of `object` or
   // `default` reaches them, and the compile-time lookup would demand
-  // declarations in the middle of a comparison. Then a program's method
-  // (`extend-type` of a host type, `object` or `default`, which reaches a
-  // cycle or an iterate too, a program type's); a UUID or a var
-  // another of its text or symbol (`equivNamed`); a date another date of
-  // its time; cycles, iterates and every other value are equal only to
-  // themselves.
+  // declarations in the middle of a comparison. When `slotFirst.on` and no
+  // host/default `IEquiv` extension is installed (`!(hostExt.p0 & 2097152)`),
+  // primitives return false and host objects/functions check their own/proto
+  // `-equiv` slot and `Date` directly without entering `protocolHooks.builtin`
+  // (light-cljs-1116). Otherwise a program's method (`extend-type` of a host
+  // type, `object` or `default`, which reaches a cycle or an iterate too, a
+  // program type's); a UUID or a var another of its text or symbol
+  // (`equivNamed`); a date another date of its time; cycles, iterates and
+  // every other value are equal only to themselves.
   function equalPairOf(left, right) {
     const path = operationPaths.equalPair;
     if (path !== undefined) return path(left, right);
     if (left == null) return right == null;
+    const fast = slotFirst.on && !(hostExt.p0 & 2097152), type = typeof left;
+    if (fast && type !== "object" && type !== "function") return false;
     const kind = left.cljs$lang$kind$$LKEY;
     if (kind < 64) {
       const method = Object.getPrototypeOf(left)?.cljs$core$IEquiv$_equiv$arity$2$LKEY;
       if (method) return method.call(left, left, right);
       if (kind < 32 ? (214171630 >>> kind & 1) === 1 : kind === 36) return recordTypeOf(right) === undefined && (kindHooks.equivSequential ?? kindHooks.equivVectors)(left, right);
+    }
+    if (fast) {
+      if (kind === undefined) {
+        const own = left.cljs$core$IEquiv$_equiv$arity$2$LKEY;
+        if (own) return own.call(left, left, right);
+        return type === "object" && left instanceof Date && right instanceof Date && left.valueOf() === right.valueOf();
+      }
+      return kind < 64 ? (kindHooks.equivNamed?.(left, right) ?? false) : false;
     }
     const equiv = protocolHooks.builtin?.(left, methodKeys[18], 2);
     if (equiv) return equiv.call(left, left, right);

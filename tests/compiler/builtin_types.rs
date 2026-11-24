@@ -6938,3 +6938,124 @@ fn preserve_meta_direct_field_propagation_and_extensions() {
         "{:mid-assoc true}",
     );
 }
+
+/// light-cljs-1116 (Part B): `equalPairOf` fast-paths non-extended host and
+/// primitive values without entering `protocolHooks.builtin`, while honoring
+/// `specify!`, JS constructor `extend-type`, host/default `extend-type`,
+/// `Date`/`UUID`/`Var` equality, and escaped `-equiv` mutation.
+#[test]
+fn equal_pair_of_host_and_primitive_fast_path_and_extensions() {
+    // 1. Unextended primitives, host objects, functions, null-proto objects,
+    //    Dates, UUIDs, atoms, and plain deftypes.
+    every_level(
+        r#"(deftype PlainBox [x])
+           (let [d1 (js/Date. 1000)
+                 d2 (js/Date. 1000)
+                 d3 (js/Date. 2000)
+                 dn1 (js/Date. js/NaN)
+                 dn2 (js/Date. js/NaN)
+                 u1 (uuid "00000000-0000-0000-0000-000000000001")
+                 u2 (uuid "00000000-0000-0000-0000-000000000001")
+                 u3 (uuid "00000000-0000-0000-0000-000000000002")]
+             (pr-str [(= "a" "b")
+                      (= 1 2)
+                      (= true false)
+                      (= js/NaN js/NaN)
+                      (= -0.0 0.0)
+                      (= (js/BigInt 1) (js/BigInt 2))
+                      (= (js/Symbol "a") (js/Symbol "a"))
+                      (= #js {:a 1} #js {:a 1})
+                      (= #js [1] #js [1])
+                      (= (fn [] 1) (fn [] 1))
+                      (= (js/Object.create nil) (js/Object.create nil))
+                      (= d1 d2)
+                      (= d1 d3)
+                      (= dn1 dn2)
+                      (= u1 u2)
+                      (= u1 u3)
+                      (= (atom 1) (atom 1))
+                      (= (PlainBox. 1) (PlainBox. 1))]))"#,
+        "[false false false false true false false false false false false true false false true false false false]",
+    );
+    // 2. specify! on plain JS object, Date (overriding Date equality), and
+    //    null-prototype object after warm unextended comparisons.
+    every_level(
+        r#"(let [warm [(= #js {:a 1} #js {:a 1}) (= (js/Date. 1000) (js/Date. 1000))]
+                 o1 (specify! #js {:k 5} IEquiv (-equiv [this other] (= (.-k this) (.-k other))))
+                 d1 (specify! (js/Date. 1000) IEquiv (-equiv [_ _] false))
+                 np (specify! (js/Object.create nil) IEquiv (-equiv [_ other] (identical? other :ok)))]
+             (pr-str [warm (= o1 #js {:k 5}) (= o1 #js {:k 6}) (= d1 (js/Date. 1000)) (= np :ok) (= np :no)]))"#,
+        "[[false true] true false false true false]",
+    );
+    // 3. Late extend-type on JS constructors (js/Array, js/Date, js/Function,
+    //    and a deftype) after warm unextended comparisons.
+    every_level(
+        r#"(deftype LateBox [x])
+           (let [warm [(= #js [1] #js [1])
+                       (= (js/Date. 1000) (js/Date. 1000))
+                       (= (fn [] 1) (fn [] 1))
+                       (= (LateBox. 1) (LateBox. 1))]]
+             (extend-type js/Array
+               IEquiv (-equiv [a b] (and (array? b) (= (alength a) (alength b)))))
+             (extend-type js/Date
+               IEquiv (-equiv [_ _] false))
+             (extend-type js/Function
+               IEquiv (-equiv [_ other] (fn? other)))
+             (extend-type LateBox
+               IEquiv (-equiv [a b] (and (instance? LateBox b) (= (.-x a) (.-x b)))))
+             (pr-str [warm
+                      (= #js [1 2] #js [3 4])
+                      (= (js/Date. 1000) (js/Date. 1000))
+                      (= (fn [] 1) (fn [] 2))
+                      (= (LateBox. 9) (LateBox. 9))]))"#,
+        "[[false true false false] true false true true]",
+    );
+    // 4. Late extend-type on primitive/host/default string targets after warm calls.
+    every_level(
+        r#"(let [warm [(= "ab" "cd") (= -5 5) (= #js {:id 7} #js {:id 7})]]
+             (extend-type string
+               IEquiv (-equiv [a b] (and (string? b) (identical? (.-length a) (.-length b)))))
+             (extend-type number
+               IEquiv (-equiv [a b] (and (number? b) (identical? (js/Math.abs a) (js/Math.abs b)))))
+             (extend-type object
+               IEquiv (-equiv [a b] (and (some? b) (identical? (.-id a) (.-id b)))))
+             (pr-str [warm
+                      (= "ab" "cd")
+                      (= "ab" "cde")
+                      (= -5 5)
+                      (= -5 6)
+                      (= #js {:id 7} #js {:id 7})
+                      (= #js {:id 7} #js {:id 8})]))"#,
+        "[[false false false] true false true false true false]",
+    );
+    every_level(
+        r#"(deftype DefaultBox [x])
+           (let [warm (= (DefaultBox. 1) (DefaultBox. 2))]
+             (extend-type default
+               IEquiv (-equiv [a b] (and (instance? DefaultBox a) (instance? DefaultBox b))))
+             (pr-str [warm (= (DefaultBox. 1) (DefaultBox. 2))]))"#,
+        "[false true]",
+    );
+    // 5. Late extend-type on js/Object and js/String after warm calls.
+    every_level(
+        r#"(let [warm [(= "a" "b") (= #js {} #js {})]]
+             (extend-type js/String
+               IEquiv (-equiv [_ _] true))
+             (extend-type js/Object
+               IEquiv (-equiv [_ _] true))
+             (pr-str [warm (= "a" "b") (= #js {} #js {})]))"#,
+        "[[false false] true true]",
+    );
+    // 6. Direct host mutation of escaped cljs.core/-equiv dispatcher is observed.
+    every_level(
+        r#"(let [xs #js ["ab" "cd" "x"]
+                 a (aget xs 0)
+                 b (aget xs 1)
+                 c (aget xs 2)
+                 before (= a b)
+                 d cljs.core/-equiv]
+             (aset d "string" (fn [x y] (and (string? y) (identical? (.-length x) (.-length y)))))
+             (pr-str [before (= a b) (= a c)]))"#,
+        "[false true false]",
+    );
+}
