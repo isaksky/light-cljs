@@ -2910,14 +2910,16 @@
     }
     return reduceOf(rf, init, collection);
   }
-  //@unit stepFn1
-  const stepFn1 = fn => typeof fn === "function" ? (fn.cljs$core$IFn$_invoke$arity$1 || fn) : a => fn.call(null, a);
-  //@unit stepFn2
-  const stepFn2 = fn => typeof fn === "function" ? (fn.cljs$core$IFn$_invoke$arity$2 || fn) : (a, b) => fn.call(null, a, b);
-  //@unit call0
-  const call0 = fn => fn.cljs$core$IFn$_invoke$arity$0 ? fn.cljs$core$IFn$_invoke$arity$0() : fn.call(null);
-  //@unit call1
-  const call1 = (fn, a) => fn.cljs$core$IFn$_invoke$arity$1 ? fn.cljs$core$IFn$_invoke$arity$1(a) : fn.call(null, a);
+  //@unit fnCall
+  const fnCall = Function.prototype.call;
+  //@unit stepFn1 requires: fnCall
+  const stepFn1 = fn => typeof fn === "function" && fn.call === fnCall ? (fn.cljs$core$IFn$_invoke$arity$1 || fn) : a => fn.call(null, a);
+  //@unit stepFn2 requires: fnCall
+  const stepFn2 = fn => typeof fn === "function" && fn.call === fnCall ? (fn.cljs$core$IFn$_invoke$arity$2 || fn) : (a, b) => fn.call(null, a, b);
+  //@unit call0 requires: fnCall
+  const call0 = fn => (typeof fn !== "function" || fn.call === fnCall) && fn.cljs$core$IFn$_invoke$arity$0 ? fn.cljs$core$IFn$_invoke$arity$0() : fn.call(null);
+  //@unit call1 requires: fnCall
+  const call1 = (fn, a) => (typeof fn !== "function" || fn.call === fnCall) && fn.cljs$core$IFn$_invoke$arity$1 ? fn.cljs$core$IFn$_invoke$arity$1(a) : fn.call(null, a);
   //@unit reduceOf requires: call0, hostExt, isReduced, iterator, iterReduce, methodKeys, ownSeqs,
   //@ protocolHooks, protocolSentinel, reducedValue, reduceWalk, seqReduce, slotFirst, stepFn2
   // Upstream's `reduce` of a value without a `-reduce` slot holding a
@@ -8308,10 +8310,10 @@
     const cmp = fnComparator(fn), kf = stepFn1(key);
     return sortWith((x, y) => cmp(kf(x), kf(y)), coll);
   }
-  //@unit comparator requires: truth
+  //@unit comparator requires: stepFn2, truth
   function comparator(predicate) {
-    return (x, y) => truth(predicate.cljs$core$IFn$_invoke$arity$2 ? predicate.cljs$core$IFn$_invoke$arity$2(x, y) : predicate.call(null, x, y))
-      ? -1 : truth(predicate.cljs$core$IFn$_invoke$arity$2 ? predicate.cljs$core$IFn$_invoke$arity$2(y, x) : predicate.call(null, y, x)) ? 1 : 0;
+    const p2 = stepFn2(predicate);
+    return (x, y) => truth(p2(x, y)) ? -1 : truth(p2(y, x)) ? 1 : 0;
   }
   //@unit isJsSymbol
   // Public core utilities follow the pinned core.cljs Number/UTF-16 contracts.
@@ -9978,9 +9980,9 @@
     return seqReduce(ks, rf, init, arity);
   }
   //@unit KeySeqCell.reduceSlot effect: KeySeqCell when: reduce, reduceOf requires: ArrayMapIndexCell,
-  //@ arrayMapSeqFirst, arrayMapSeqNext, arraySeqWitness, cellSeqSlot, hashMapSeqFirst,
+  //@ arrayMapSeqFirst, arrayMapSeqNext, arraySeqWitness, call0, cellSeqSlot, hashMapSeqFirst,
   //@ hashMapSeqNext, isReduced, KeySeqCell, keySeqReduce, keySeqWitness, next, ownEntryItems,
-  //@ reducedValue, reduceSlot, seqReduce, seqReduceFrom, slotFirst
+  //@ reducedValue, reduceSlot, seqReduce, seqReduceFrom, slotFirst, stepFn2
   // Its `-reduce`: of an array-map or hash-map seq whose steps its slots would
   // take directly from its flat pairs or traversal nodes, where no `specify!`
   // replaced the key seq's own or cached an entry, those keys or values from
@@ -10010,10 +10012,10 @@
           return seqReduce(self, rf, init, arity);
         const n = pairs.length, item = keyed ? 0 : 1;
         let i = start;
-        if (arity === 2) { if (i >= n) return rf.cljs$core$IFn$_invoke$arity$0 ? rf.cljs$core$IFn$_invoke$arity$0() : rf.call(null); init = pairs[i + item]; i += 2; }
+        if (arity === 2) { if (i >= n) return call0(rf); init = pairs[i + item]; i += 2; }
+        const step = stepFn2(rf);
         for (; i < n; i += 2) {
-          const elem = pairs[i + item];
-          init = rf.cljs$core$IFn$_invoke$arity$2 ? rf.cljs$core$IFn$_invoke$arity$2(init, elem) : rf.call(null, init, elem);
+          init = step(init, pairs[i + item]);
           if (isReduced(init)) return reducedValue(init);
           const cur = i === start ? self : keySeqWitness, seqCur = i === start ? entries : arraySeqWitness;
           if (!slotFirst.on || root.entries$LKEY !== null
@@ -10032,10 +10034,10 @@
         return seqReduce(self, rf, init, arity);
       const n = nodes.length, Cell = entries.cljs$lang$cell$$LKEY, seqWitness = Object.create(Object.getPrototypeOf(entries));
       let i = start;
-      if (arity === 2) { if (i >= n) return rf.cljs$core$IFn$_invoke$arity$0 ? rf.cljs$core$IFn$_invoke$arity$0() : rf.call(null); init = keyed ? nodes[i].key : nodes[i].value; i++; }
+      if (arity === 2) { if (i >= n) return call0(rf); init = keyed ? nodes[i].key : nodes[i].value; i++; }
+      const step = stepFn2(rf);
       for (; i < n; i++) {
-        const elem = keyed ? nodes[i].key : nodes[i].value;
-        init = rf.cljs$core$IFn$_invoke$arity$2 ? rf.cljs$core$IFn$_invoke$arity$2(init, elem) : rf.call(null, init, elem);
+        init = step(init, keyed ? nodes[i].key : nodes[i].value);
         if (isReduced(init)) return reducedValue(init);
         const cur = i === start ? self : keySeqWitness, seqCur = i === start ? entries : seqWitness;
         if (!slotFirst.on || root.entries$LKEY !== null
@@ -13774,10 +13776,11 @@
     return Array.isArray(tail) && tail.length <= 32 && !(hostExt.p0 & 2) && !(tail.cljs$lang$protocol_mask$partition0$$LKEY & 8388802)
       && tail.cljs$core$ISeqable$$LKEY !== protocolSentinel && tail.cljs$core$ICounted$$LKEY !== protocolSentinel ? tail : null;
   }
-  //@unit apply requires: applyTo, boundedCount, call0, call1, cons, directTail, seq, stepFn2, toArray
+  //@unit apply requires: applyTo, boundedCount, call0, call1, cons, directTail, fnCall, seq, stepFn2,
+  //@ toArray
   function apply(fn, a, b, c, d) {
     const argc = arguments.length;
-    if (argc >= 2 && argc <= 5 && fn.cljs$lang$applyTo?.direct$LKEY === true) {
+    if (argc >= 2 && argc <= 5 && fn.cljs$lang$applyTo?.direct$LKEY === true && fn.call === fnCall) {
       const arr = directTail(argc === 2 ? a : argc === 3 ? b : argc === 4 ? c : d);
       if (arr !== null) {
         const len = arr.length;

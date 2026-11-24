@@ -250,3 +250,134 @@ fn apply_direct_tail_matches_seq_semantics_and_protocol_overrides() {
         "\"[25 [20 3 1] 2]\"\n"
     );
 }
+
+#[test]
+fn non_number_variadics_ifn_values_extended_protocols_and_sort_by_semantics() {
+    let run = |source: &str| super::optimization::json_at_every_level(source);
+
+    // Non-number + behaviour, reduced across vector/range/array/map/key-seq,
+    // variadic user fns called at 2 args, and non-JS-function IFn values
+    // (keywords, maps, sets, vectors, vars, multimethods, MetaFn, reify IFn).
+    assert_eq!(
+        run(r#"
+        (defmulti mm (fn [a b] (keyword (str a))))
+        (defmethod mm :0 [_ b] (+ 10 b))
+        (defmethod mm :default [a b] (+ a b))
+        (defn add-var [a b] (+ a b))
+        (let [v-small (vec (range 10))
+              v-big (vec (range 50))
+              var-fn (fn [a b & more] (+ a b (count more)))
+              multi-var (fn ([x] (* x 3)) ([a b & more] (+ a b (count more))))
+              rest-only (fn [& args] (count args))
+              m {:a 10 :b 20}
+              s #{1 2 3}]
+          (pr-str
+            [(reduce + "a" ["b" "c"])
+             (reduce + [nil 1 2])
+             (js/isNaN (reduce + [1 ##NaN 2]))
+             (js/Object.is (reduce + [-0.0 -0.0]) -0.0)
+             (reduce (fn [a x] (if (= x 4) (reduced [:small a]) (+ a x))) 0 v-small)
+             (reduce (fn [a x] (if (= x 40) (reduced [:big a]) (+ a x))) 0 v-big)
+             (reduce (fn [a x] (if (= x 5) (reduced [:arr a]) (+ a x))) 0 #js [1 2 3 4 5 6])
+             (reduce (fn [a x] (if (= x 5) (reduced [:rng a]) (+ a x))) 0 (range 20))
+             (reduce (fn [a k] (if (= k :b) (reduced :hit) (conj a k))) [] (keys {:a 1 :b 2 :c 3}))
+             (reduce var-fn 0 [1 2 3])
+             (reduce multi-var 0 [1 2 3])
+             (transduce (map multi-var) + 0 [1 2 3])
+             (reduce rest-only 0 [1 2 3])
+             (reduce mm 0 [1 2 3])
+             (reduce #'add-var 0 [1 2 3])
+             (reduce m :a [:miss])
+             (reduce s 2 [:miss])
+             (reduce [:z :y :x] 1 [:miss])
+             (reduce :b {:a 1} [:fallback])
+             (into [] (map m) [:a :b])
+             (into [] (filter s) [0 1 2 4])
+             (into [] (map [:x :y :z]) [2 0 1])
+             (reduce + 0 (vals {:a 1 :b 2 :c 3}))]))"#),
+        "\"[\\\"abc\\\" 3 true true [:small 6] [:big 780] [:arr 10] [:rng 10] :hit 6 6 18 2 16 6 10 2 :y :fallback [10 20] [1 2] [:z :x :y] 6]\"\n"
+    );
+
+    // JS function with specify! IFn preserves receiver and IFn override in
+    // reduce, transducers, sort-by, and apply.
+    assert_eq!(
+        run(r#"
+        (let [f (specify! (fn ([x] x) ([a b] (+ a b)))
+                  IFn
+                  (-invoke ([_] :zero)
+                           ([_ x] (* x 100))
+                           ([_ a b] (+ a (* b 10)))))]
+          (pr-str
+            [(reduce f 0 [1 2 3])
+             (reduce f [])
+             (into [] (map f) [1 2])
+             (vec (sort-by f [3 1 2]))]))"#),
+        "\"[60 :zero [100 200] [1 2 3]]\"\n"
+    );
+
+    // Extended IReduce on PersistentVector (both extend-type and specify!) bypasses
+    // vectorReduce for both <=32 and >32 vectors.
+    assert_eq!(
+        run(r#"
+        (let [v-small (specify! [1 2 3]
+                        IReduce
+                        (-reduce ([_ f] :spec-2)
+                                 ([_ f init] [:spec-3 init])))
+              v-big (specify! (vec (range 40))
+                      IReduce
+                      (-reduce ([_ f init] [:big-spec init])))]
+          (pr-str [(reduce + v-small) (reduce + 9 v-small) (reduce + 7 v-big)]))"#),
+        "\"[:spec-2 [:spec-3 9] [:big-spec 7]]\"\n"
+    );
+    assert_eq!(
+        run(r#"
+        (extend-type PersistentVector
+          IReduce
+          (-reduce ([_ f] :ext-2)
+                   ([_ f init] [:ext-3 init])))
+        (pr-str [(reduce + [1 2 3]) (reduce + 0 [1 2 3]) (reduce + 0 (vec (range 40)))])"#),
+        "\"[:ext-2 [:ext-3 0] [:ext-3 0]]\"\n"
+    );
+
+    // apply with infinite lazy tails, >32 tails with 1..3 prefix args, and
+    // non-number / 0-arg variadic core functions.
+    assert_eq!(
+        run(r#"
+        (let [v40 (vec (range 40))
+              a40 (to-array v40)]
+          (pr-str
+            [(apply < 10 (range))
+             (apply (fn [a b & more] [a b (vec (take 3 more))]) 1 (range))
+             (apply + 10 v40)
+             (apply + 10 20 v40)
+             (apply + 10 20 30 v40)
+             (apply + 10 a40)
+             (apply + 10 20 a40)
+             (apply + "a" ["b" "c"])
+             (js/isNaN (apply - []))
+             (js/isNaN (apply / []))
+             (apply < [])
+             (apply = [])
+             (apply == [])
+             (apply bit-and [5])]))"#),
+        "\"[false [1 0 [1 2 3]] 790 810 840 790 810 \\\"abc\\\" true true false true false 0]\"\n"
+    );
+
+    // sort-by stability (<=32 and >32), boolean/numeric/truthy comparators,
+    // and `comparator` wrapper.
+    assert_eq!(
+        run(r#"
+        (let [small [{:k 2 :id 1} {:k 1 :id 2} {:k 2 :id 3} {:k 1 :id 4} {:k 2 :id 5}]
+              big (vec (for [i (range 40)] {:k (mod i 5) :id i}))]
+          (pr-str
+            [(mapv :id (sort-by :k small))
+             (mapv :id (sort-by :k < small))
+             (mapv :id (sort-by :k > small))
+             (mapv :id (sort-by :k (fn [a b] (- b a)) small))
+             (mapv :id (sort-by :k (fn [a b] (when (< a b) :yes)) small))
+             (mapv :id (sort-by :k (comparator <) small))
+             (= (mapv :id (sort-by :k big))
+                (vec (for [r (range 5) i (range 40) :when (= (mod i 5) r)] i)))]))"#),
+        "\"[[2 4 1 3 5] [2 4 1 3 5] [1 3 5 2 4] [1 3 5 2 4] [2 4 1 3 5] [2 4 1 3 5] true]\"\n"
+    );
+}
