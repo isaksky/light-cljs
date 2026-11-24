@@ -6821,3 +6821,120 @@ fn hash_map_dissoc_collision_counts_and_two_arity_hash_map_reduce() {
         "15",
     );
 }
+
+/// light-cljs-1116 (Part A): `preserveMeta` / map update fast paths read own
+/// `meta` fields directly when no `IMeta` extension or explicit `undefined`
+/// metadata applies, and fall back soundly for all edge cases.
+#[test]
+fn preserve_meta_direct_field_propagation_and_extensions() {
+    // 1. Metadata propagation across array-map, promotion, hash-map, vector, set:
+    //    none, map, falsy non-nil (false/0/""), nil, and js/undefined.
+    every_level(
+        r#"(let [plain {:a 1 :b 2}
+                 m-map (with-meta {:a 1 :b 2} {:tag :x})
+                 m-false (with-meta {:a 1} false)
+                 m-zero (with-meta {:a 1} 0)
+                 m-empty (with-meta {:a 1} "")
+                 m-nil (with-meta {:a 1} nil)
+                 m-eight (with-meta {:k1 1 :k2 2 :k3 3 :k4 4 :k5 5 :k6 6 :k7 7 :k8 8} {:p true})
+                 promoted (assoc m-eight :k9 9)
+                 hm-upd (assoc promoted :k10 10)
+                 hm-dis (dissoc hm-upd :k1)
+                 v-meta (with-meta [1 2] {:v true})
+                 s-meta (with-meta #{1 2} {:s true})]
+             (pr-str [(meta (assoc plain :a 9))
+                      (meta (assoc plain :c 3))
+                      (meta (dissoc plain :a))
+                      (meta (assoc m-map :a 9))
+                      (meta (assoc m-map :c 3))
+                      (meta (dissoc m-map :a))
+                      (meta (dissoc m-map :missing))
+                      (meta (assoc m-false :b 2))
+                      (meta (assoc m-zero :b 2))
+                      (meta (assoc m-empty :b 2))
+                      (meta (assoc m-nil :b 2))
+                      (meta promoted)
+                      (meta hm-upd)
+                      (meta hm-dis)
+                      (meta (conj v-meta 3))
+                      (meta (assoc v-meta 0 9))
+                      (meta (conj s-meta 3))]))"#,
+        r#"[nil nil nil {:tag :x} {:tag :x} {:tag :x} {:tag :x} false 0 "" nil {:p true} {:p true} {:p true} {:v true} {:v true} {:s true}]"#,
+    );
+    // 2. Explicit js/undefined metadata (via with-meta and public constructors)
+    //    must still be distinguished from absent metadata and propagated.
+    every_level(
+        r#"(let [warm (assoc {:a 1} :b 2)
+                 m-undef (with-meta {:a 1} js/undefined)
+                 m-a (assoc m-undef :b 2)
+                 m-d (dissoc m-a :a)
+                 pam (PersistentArrayMap. js/undefined 1 (array :a 1) nil)
+                 pv (PersistentVector. js/undefined 1 5 nil (array 1) nil)
+                 sv (Subvec. js/undefined [1 2 3] 0 2 nil)]
+             (pr-str [(nil? (meta warm))
+                      (identical? js/undefined (meta m-undef))
+                      (identical? js/undefined (meta m-a))
+                      (identical? js/undefined (meta m-d))
+                      (identical? js/undefined (meta (assoc pam :b 2)))
+                      (identical? js/undefined (meta (conj pv 2)))
+                      (identical? js/undefined (meta (conj sv 9)))]))"#,
+        "[true true true true true true true]",
+    );
+    // 3. Late extend-type IMeta on PersistentArrayMap after warm fast-path calls.
+    every_level(
+        r#"(let [before (meta (assoc {:a 1} :b 2))]
+             (extend-type PersistentArrayMap
+               IMeta (-meta [_] {:pam-ext true}))
+             (let [a (assoc {:a 1} :b 2)
+                   d (dissoc {:a 1 :b 2} :a)]
+               (pr-str [before (meta a) (meta d)])))"#,
+        "[nil {:pam-ext true} {:pam-ext true}]",
+    );
+    // 4. Late extend-type IMeta on js/Object overrides both preserveMeta and metaSlot.
+    every_level(
+        r#"(let [m {:a 1}
+                 before [(meta m) (meta (assoc m :b 2))]]
+             (extend-type js/Object
+               IMeta (-meta [_] {:obj-ext true}))
+             (pr-str [before (meta m) (meta (assoc m :b 2)) (meta (dissoc {:a 1 :b 2} :a))]))"#,
+        "[[nil nil] {:obj-ext true} {:obj-ext true} {:obj-ext true}]",
+    );
+    // 5. Late specify! IMeta on an array-map and hash-map after warm fast-path calls.
+    every_level(
+        r#"(let [warm (assoc {:a 1} :b 2)
+                 sm (specify! {:a 1} IMeta (-meta [_] {:spec-am true}))
+                 hm (specify! (into (hash-map) (map (fn [i] [(keyword (str "k" i)) i]) (range 12)))
+                      IMeta (-meta [_] {:spec-hm true}))]
+             (pr-str [(meta warm) (meta (assoc sm :b 2)) (meta (dissoc sm :a)) (meta (assoc hm :z 9))]))"#,
+        "[nil {:spec-am true} {:spec-am true} {:spec-hm true}]",
+    );
+    // 6. Unrelated IMeta extensions (deftype, reify, string, object, default) keep
+    //    working without breaking collection metadata propagation.
+    every_level(
+        r#"(deftype MetaBox [v] IMeta (-meta [_] {:box v}))
+           (extend-type string IMeta (-meta [s] {:str s}))
+           (extend-type object IMeta (-meta [_] {:obj true}))
+           (extend-type default IMeta (-meta [_] {:def true}))
+           (let [r (reify IMeta (-meta [_] {:reify 1}))
+                 m (with-meta {:a 1} {:kept true})
+                 plain {:a 1}]
+             (pr-str [(meta (MetaBox. 7))
+                      (meta r)
+                      (meta "hi")
+                      (meta #js {})
+                      (meta (assoc m :b 2))
+                      (meta (assoc plain :b 2))]))"#,
+        r#"[{:box 7} {:reify 1} {:str "hi"} {:obj true} {:kept true} nil]"#,
+    );
+    // 7. IMeta extension installed during key IEquiv inside arrayMapAssoc is observed.
+    every_level(
+        r#"(let [k (reify IEquiv
+                     (-equiv [_ _]
+                       (extend-type PersistentArrayMap
+                         IMeta (-meta [_] {:mid-assoc true}))
+                       false))
+                 res (assoc {:a 1} k 2)]
+             (pr-str (meta res)))"#,
+        "{:mid-assoc true}",
+    );
+}
