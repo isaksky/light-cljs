@@ -15396,22 +15396,29 @@
     }
     return transduce(xform, rf, editable ? transient(to) : to, from);
   }
-  //@unit exceptionMessages
+  //@unit ExceptionInfo effect
   // Match the CLJS constructor: preserve the supplied message/data/cause values
   // and Error identity, including when callers construct ExceptionInfo directly.
-  const exceptionMessages = new WeakMap();
-  //@unit compilerExceptionMessage compile-time requires: exceptionMessages
-  const compilerExceptionMessage = value => exceptionMessages.get(value);
-  //@unit ExceptionInfo effect requires: exceptionMessages
+  // Use Error.captureStackTrace where available so `.stack` stays lazy instead
+  // of eagerly formatting stack frames on every construction.
   function ExceptionInfo(message, data, cause) {
-    const error = new Error(message);
     const target = this == null ? globalThis : Object(this);
     target.message = message;
     target.data = data;
     target.cause = cause;
-    if (typeof message === "string") exceptionMessages.set(target, message);
-    for (const key of ["name", "description", "number", "fileName", "lineNumber", "columnNumber", "stack"])
-      target[key] = error[key];
+    if (typeof Error.captureStackTrace === "function") {
+      target.name = "Error";
+      Error.captureStackTrace(target, ExceptionInfo);
+    } else {
+      const error = new Error(message);
+      target.name = error.name;
+      target.description = error.description;
+      target.number = error.number;
+      target.fileName = error.fileName;
+      target.lineNumber = error.lineNumber;
+      target.columnNumber = error.columnNumber;
+      target.stack = error.stack;
+    }
     return target;
   }
   // The printer installs `toString`.
@@ -15422,6 +15429,8 @@
   // another copy of this build (docs/value-layout.md, section 1), whose
   // fields are upstream's, unkeyed. `instance?` stays `instanceof`.
   const isExceptionInfo = value => value != null && value.cljs$lang$kind$$LKEY === 48;
+  //@unit compilerExceptionMessage compile-time requires: isExceptionInfo
+  const compilerExceptionMessage = value => isExceptionInfo(value) && typeof value.message === "string" ? value.message : undefined;
   //@unit exInfo requires: ExceptionInfo, invalidArity
   function exInfo(message, data, cause) {
     if (arguments.length !== 2 && arguments.length !== 3) return invalidArity(arguments.length);

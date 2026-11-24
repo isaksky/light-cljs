@@ -2620,6 +2620,80 @@ fn exceptions_preserve_identity_and_abrupt_completion_without_the_encoder() {
 }
 
 #[test]
+fn exception_info_semantics_stack_printing_and_catch_dispatch() {
+    let program = compile(
+        r##"
+        (let [cause (js/Error. "root")
+              make-at-site (fn [] (ex-info "boom" {:k 1} cause))
+              e (make-at-site)
+              stack-after (.-stack e)
+              no-stack-caught
+              (try
+                (throw (ex-info "silent" {:n 2} cause))
+                (catch ExceptionInfo caught
+                  [(instance? js/Error caught)
+                   (instance? ExceptionInfo caught)
+                   (.-name caught)
+                   (.-message caught)
+                   (ex-message caught)
+                   (ex-data caught)
+                   (identical? (ex-cause caught) cause)]))
+              ex-info-as-error
+              (try
+                (throw (ex-info "as-err" {:m 3}))
+                (catch js/Error caught
+                  [(instance? ExceptionInfo caught)
+                   (ex-message caught)
+                   (ex-data caught)
+                   (ex-cause caught)]))
+              plain-error-catch
+              (try
+                (try
+                  (throw (js/Error. "plain"))
+                  (catch ExceptionInfo _ :wrong))
+                (catch js/Error caught
+                  [(instance? ExceptionInfo caught)
+                   (instance? js/Error caught)
+                   (.-name caught)
+                   (ex-message caught)
+                   (ex-data caught)
+                   (ex-cause caught)]))
+              direct (ExceptionInfo. "direct" {:d 4} nil)
+              printed [(pr-str e) (str e) (pr-str direct) (pr-str (ex-info "bare" nil))]
+              tmap (Throwable->map e)]
+          (assert (instance? js/Error e))
+          (assert (instance? ExceptionInfo e))
+          (assert (= "Error" (.-name e)))
+          (assert (= "boom" (.-message e) (ex-message e)))
+          (assert (= {:k 1} (ex-data e)))
+          (assert (identical? cause (ex-cause e)))
+          (assert (string? stack-after))
+          (assert (pos? (.-length stack-after)))
+          (assert (not= -1 (.indexOf stack-after "boom")))
+          (assert (= stack-after (.-stack e)))
+          (assert (= [true true "Error" "silent" "silent" {:n 2} true] no-stack-caught))
+          (assert (= [true "as-err" {:m 3} nil] ex-info-as-error))
+          (assert (= [false true "Error" "plain" nil nil] plain-error-catch))
+          (assert (instance? js/Error direct))
+          (assert (instance? ExceptionInfo direct))
+          (assert (= "direct" (ex-message direct)))
+          (assert (= {:d 4} (ex-data direct)))
+          (assert (nil? (ex-cause direct)))
+          (assert (= "#error {:message \"boom\", :data {:k 1}, :cause #object[Error Error: root]}"
+                     (nth printed 0)
+                     (nth printed 1)))
+          (assert (= "#error {:message \"direct\", :data {:d 4}}" (nth printed 2)))
+          (assert (= "#error {:message \"bare\"}" (nth printed 3)))
+          (assert (= "root" (:cause tmap)))
+          (assert (= '[cljs.core/ExceptionInfo js/Error] (mapv :type (:via tmap))))
+          "ok")
+        "##,
+    )
+    .unwrap();
+    assert_eq!(node(&format!("console.log(({program}));")), "ok\n");
+}
+
+#[test]
 #[ignore = "requires Clojure CLI, Java, Node, and both explicitly pinned references"]
 fn compiled_control_matches_pinned_values_effects_and_stdout() {
     let cases = cases()

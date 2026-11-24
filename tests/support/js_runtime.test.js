@@ -1052,6 +1052,71 @@ assert.equal(c.exCause(c.exInfo('bad', null)), null);
 assert.equal(c.exCause(c.exInfo('bad', null, undefined)), undefined);
 assert.equal(c.exData(new c.ExceptionInfo('bad')), undefined);
 assert.throws(() => c.exInfo('bad'), /Invalid arity: 1/);
+// `.stack` is readable after construction, stable, writable, and captures frames.
+function buildNamedExInfo() { return c.exInfo('with-stack', exceptionData, exceptionCause); }
+const stackedException = buildNamedExInfo();
+assert.equal(stackedException.message, 'with-stack');
+assert.equal(stackedException.name, 'Error');
+const firstStackRead = stackedException.stack;
+assert.equal(typeof firstStackRead, 'string');
+assert.ok(firstStackRead.includes('with-stack'));
+assert.ok(firstStackRead.includes('buildNamedExInfo'));
+assert.equal(stackedException.stack, firstStackRead);
+stackedException.stack = 'overridden-stack';
+assert.equal(stackedException.stack, 'overridden-stack');
+// Non-string messages preserve exact values and still produce string stacks.
+for (const nonString of [null, undefined, 42]) {
+  const e = c.exInfo(nonString, exceptionData);
+  assert.equal(e.message, nonString);
+  assert.equal(c.exMessage(e), nonString);
+  assert.equal(typeof e.stack, 'string');
+}
+// Thrown and caught without ever reading `.stack` does not eagerly prepare stack frames.
+{
+  const prevPrepare = Error.prepareStackTrace;
+  let prepareCalls = 0;
+  Error.prepareStackTrace = (err, sites) => { prepareCalls++; return `prepared:${err.message}:${sites.length}`; };
+  try {
+    let caught = null;
+    try { throw c.exInfo('no-stack-read', exceptionData, exceptionCause); }
+    catch (e) { caught = e; }
+    assert.ok(caught instanceof Error);
+    assert.ok(caught instanceof c.ExceptionInfo);
+    assert.equal(caught.name, 'Error');
+    assert.equal(caught.message, 'no-stack-read');
+    assert.equal(c.exMessage(caught), 'no-stack-read');
+    assert.equal(c.exData(caught), exceptionData);
+    assert.equal(c.exCause(caught), exceptionCause);
+    assert.equal(prepareCalls, 0);
+    assert.ok(caught.stack.startsWith('prepared:no-stack-read:'));
+    assert.equal(prepareCalls, 1);
+  } finally {
+    Error.prepareStackTrace = prevPrepare;
+  }
+}
+// `compilerExceptionMessage` returns string messages for ExceptionInfo only.
+assert.equal(runtime.compilerExceptionMessage(exception), 'bad');
+assert.equal(runtime.compilerExceptionMessage(c.exInfo(42, exceptionData)), undefined);
+assert.equal(runtime.compilerExceptionMessage(exceptionCause), undefined);
+assert.equal(runtime.compilerExceptionMessage({message: 'fake'}), undefined);
+// Fallback when `Error.captureStackTrace` is unavailable still preserves semantics.
+{
+  const savedCapture = Error.captureStackTrace;
+  Error.captureStackTrace = undefined;
+  try {
+    const fallback = c.exInfo('fallback-msg', exceptionData, exceptionCause);
+    assert.ok(fallback instanceof Error);
+    assert.ok(fallback instanceof c.ExceptionInfo);
+    assert.equal(fallback.name, 'Error');
+    assert.equal(fallback.message, 'fallback-msg');
+    assert.equal(c.exData(fallback), exceptionData);
+    assert.equal(c.exCause(fallback), exceptionCause);
+    assert.equal(typeof fallback.stack, 'string');
+    assert.ok(fallback.stack.includes('fallback-msg'));
+  } finally {
+    Error.captureStackTrace = savedCapture;
+  }
+}
 console.log('exception value assertions passed');
 
 // Metadata lives outside equality/hash payloads, and is never observed from
