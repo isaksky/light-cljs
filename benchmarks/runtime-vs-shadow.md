@@ -6184,3 +6184,37 @@ Steady state, from the median wall times at 1 and 40 iterations: light-cljs 45.4
 | whole run, system CPU s | 0.33 (0.29-0.43) | 0.37 (0.34-0.38) | 1.14 | | |
 | whole run, peak memory of the largest process, MB | 295.90 (292.24-304.32) | 274.13 (270.70-277.48) | 0.93 | | |
 | 1-minute load average before the run | 3.69 (3.09-3.79) | 3.59 (3.09-3.79) | | | |
+
+### Release output sizes (`simple` and `todomvc`)
+
+Clean release builds (`bb benchmarks/re-frame.bb size simple todomvc --light light-cljs-4d8d02d5`, fresh ports with `shadow-port-tool-983`, esbuild 0.25.10, shadow-cljs 3.5.3).
+
+#### `simple`
+
+| Output | Raw bytes | gzip -9 | brotli -q 11 |
+| --- | ---: | ---: | ---: |
+| shadow-cljs: whole release file | 372,279 | 101,065 | 85,573 |
+| shadow-cljs: React alone | 143,360 | 47,091 | 40,609 |
+| shadow-cljs: app code (difference) | 228,919 | 53,974 | 44,964 |
+| light-cljs + esbuild: whole bundle | 396,796 | 120,439 | 104,756 |
+| esbuild: React alone | 142,385 | 45,617 | 39,919 |
+| light-cljs: app code (difference) | 254,411 | 74,822 | 64,837 |
+| light-cljs output as written, without React | 275,458 | 74,362 | 63,949 |
+| light-cljs + esbuild `--target=es2015`: whole bundle | 405,025 | 122,534 | 106,319 |
+
+Whole bundle, light-cljs against shadow-cljs: +6.6% raw, +19.2% gzip -9, +22.4% brotli -q 11 (app code difference: +11.1% raw, +38.6% gzip -9).
+
+#### `todomvc`
+
+| Output | Raw bytes | gzip -9 | brotli -q 11 |
+| --- | ---: | ---: | ---: |
+| shadow-cljs: whole release file | 500,588 | 137,094 | 114,623 |
+| shadow-cljs: React alone | 143,360 | 47,091 | 40,609 |
+| shadow-cljs: app code (difference) | 357,228 | 90,003 | 74,014 |
+| light-cljs + esbuild: whole bundle | 508,236 | 152,525 | 132,323 |
+| esbuild: React alone | 142,385 | 45,617 | 39,919 |
+| light-cljs: app code (difference) | 365,851 | 106,908 | 92,404 |
+| light-cljs output as written, without React | 392,669 | 104,594 | 89,545 |
+| light-cljs + esbuild `--target=es2015`: whole bundle | 518,937 | 155,270 | 134,385 |
+
+Whole bundle, light-cljs against shadow-cljs: +1.5% raw, +11.3% gzip -9, +15.4% brotli -q 11 (app code difference: +2.4% raw, +18.8% gzip -9).
