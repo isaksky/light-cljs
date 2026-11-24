@@ -220,4 +220,11 @@ equivalent(metaSlice, c.vector(1, 2));
     assert.equal(composed.apply(null, args), 'new:' + args.length);
   }
 }
+{
+  // Sol #4 (run 2, light-cljs-1115): constantly must keep its fixed and
+  // variadic public arity handlers independent.
+  const k = c.constantly(7);
+  k.cljs$core$IFn$_invoke$arity$1.call = () => 99;
+  assert.equal(k.cljs$lang$applyTo(c.list(1, 2, 3)), 7);
+}
 console.log("core helper semantics passed");

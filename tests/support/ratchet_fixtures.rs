@@ -1442,18 +1442,17 @@
 //! (binding the inner result before reading the outer `.call`), and `partial`
 //! specializes 1-arg partial application; for user types and records,
 //! `protocolExternal` replaces keyed `current[nativeType(receiver)]` with named
-//! dot loads, `protocolMethod` carries a per-method `protocolState$LKEY` cell
-//! (skipping `protocolVariables` lookups outside transactions while reading the
-//! live public host table on every miss) and uses a `slotMask` bitmask and
-//! `impl.call === fnCall` fast path for arities 1-4, and `extendType` installs
-//! single-arity user-protocol host functions directly (preserving the
-//! null-receiver wrapper for core dispatchers) and dispatches multi-arity
-//! arities 1-4 without `.apply`. Recomputed on `491ce268`, the readable runtime
-//! grows 3,894 bytes (`console-log-sum` at none `887,318`), raising all 36
+//! dot loads, `protocolMethod` uses a 31-bit `slotMask` bitmask and dispatches
+//! arities 1-4 via captured `fnCall` when `impl.apply === fnApply` (preserving
+//! custom `.apply`, throwing `.call` getters, and live `protocolVariables`
+//! declaration replay), and `extendType` keeps null-receiver wrappers for
+//! public host table entries while avoiding `.apply` on arities 1-4 via
+//! `fnApply`/`fnCall`. Recomputed on `491ce268`, the readable runtime grows
+//! 4,126 bytes (`console-log-sum` at none `887,550`), raising all 36
 //! none/prepare ceilings to the next 1,000 above. At `:advanced`, 31 of 36
 //! fixtures stay under their `491ce268` ceilings; `seq-pipeline` (`44,987`,
-//! ceiling `45,000`), `eight-records` (`48,942`, `49,000`), `extended-classes`
-//! (`79,647`, `79,700`), `features` (`144,574`, `144,600`), and
+//! ceiling `45,000`), `eight-records` (`48,802`, `48,900`), `extended-classes`
+//! (`79,757`, `79,800`), `features` (`144,574`, `144,600`), and
 //! `features-direct` (`144,184`, `144,200`) move to the next 100 above, and the
 //! features chunks `app.editor+app.reports.js` (`115,292` -> `115,300`) and
 //! `app.reports.js` (`5,809` -> `5,900`).
@@ -1530,7 +1529,7 @@ pub const FIXTURES: &[Fixture] = &[
         name: "keyword-case",
         source: "(defn kind [k] (case k :a 1 :b 2 3))
                  (+ (kind :a) (* 10 (kind :b)) (* 100 (kind :c)))",
-        ceilings: [888_000, 888_000, 4_900],
+        ceilings: [889_000, 889_000, 4_900],
         removed: [0, 0, 0],
         printed: "321\n",
     },
@@ -1646,7 +1645,7 @@ pub const FIXTURES: &[Fixture] = &[
                  [(->R1 1 2) (->R2 2 3) (->R3 3 4) (->R4 4 5) (->R5 5 6) (->R6 6 7) (->R7 7 8) \
                  (->R8 8 9) (T1. 9 10) (T2. 10 11) (T3. 11 12) (T4. 12 13) (T5. 13 14) \
                  (T6. 14 15) (T7. 15 16) (T8. 16 17)])",
-        ceilings: [899_000, 899_000, 49_000],
+        ceilings: [899_000, 899_000, 48_900],
         removed: [0, 0, 0],
         printed: "819\n",
     },
@@ -1677,7 +1676,7 @@ pub const FIXTURES: &[Fixture] = &[
         name: "event-maps",
         source: "(defn event [i] {:type :click :x i :y (- 100 i) :button 0 :target \"submit\"})
                  (reduce + (map (fn [i] (let [e (event i)] (+ (:x e) (:y e) (count e)))) (range 10)))",
-        ceilings: [888_000, 888_000, 58_900],
+        ceilings: [889_000, 889_000, 58_900],
         removed: [0, 0, 1],
         printed: "1050\n",
     },
@@ -1764,7 +1763,7 @@ pub const FIXTURES: &[Fixture] = &[
                  (defn area ([w] (area w w)) ([w h] (* w h)))
                  (defn fib ([n] (fib n 0 1)) ([n a b] (if (zero? n) a (recur (dec n) b (+ a b)))))
                  (+ (clamp 15) (area 3) (area 2 5) (fib 10))",
-        ceilings: [890_000, 890_000, 400],
+        ceilings: [891_000, 891_000, 400],
         removed: [0, 0, 2],
         printed: "84\n",
     },
@@ -1881,7 +1880,7 @@ pub const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "defmulti",
         source: "(defmulti m :k) (defmethod m :a [_] 1) (js/console.log (m {:k :a}))",
-        ceilings: [888_000, 888_000, 20_500],
+        ceilings: [889_000, 889_000, 20_500],
         removed: [0, 0, 0],
         printed: "1\nundefined\n",
     },
@@ -1897,7 +1896,7 @@ pub const FIXTURES: &[Fixture] = &[
                    cljs.core/PersistentTreeSet (specize* [s] [:sorted (count s)])
                    default (specize* [x] :other))
                  (js/console.log (pr-str (map specize* [#{1 2} [3] (seq #{4}) (= #{5} #{5})])))",
-        ceilings: [889_000, 889_000, 79_700],
+        ceilings: [889_000, 889_000, 79_800],
         removed: [0, 0, 0],
         printed: "([:set 2] :other :other :other)\nundefined\n",
     },
@@ -2035,7 +2034,7 @@ pub const NAMESPACE_FIXTURES: &[NamespaceFixture] = &[
             ),
             GREET,
         ],
-        ceilings: [888_000, 888_000, 300],
+        ceilings: [889_000, 889_000, 300],
         removed: [0, 0, 0],
         printed: "null\nhello lazy\n",
     },

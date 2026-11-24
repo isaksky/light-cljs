@@ -2237,7 +2237,6 @@ fn units_assigning_a_binding_share_its_unit() {
             "declarationJournal <- declarationTransaction",
             "declarationJournal <- installMethods",
             "declarationJournal <- multiState",
-            "declarationJournal <- protocolMethod",
             "demandProtocol <- MultiFn.tables",
             "demandProtocol <- builtin",
             "demandProtocol <- declarationReceiver",

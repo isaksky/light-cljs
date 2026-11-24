@@ -3031,3 +3031,55 @@ console.log('transient vector edit tokens stay hidden, preserve constructor tail
   assert.equal(rtCore.core.count(7), 1);
   console.log('single-arity core protocol extension keeps null receiver');
 }
+{
+  // Sol #1 & #2 (run 2, light-cljs-1115): user protocol host table entries keep
+  // a null receiver even on direct member calls `dispatcher.number(7)`, and
+  // multi-arity host wrappers preserve `.apply` overrides and throwing `.call`.
+  const rtUser = (0, eval)(fs.readFileSync(path.join(__dirname, '../../src/js_runtime.js'), 'utf8'));
+  const P = rtUser.protocol('demo/NullRecv');
+  const f = rtUser.protocolMethod('demo/NullRecv/f', 'demo/f', [1], false, null, null,
+    (miss, s1) => function (r0) { return r0 != null && r0[s1] != null ? r0[s1](r0) : miss(r0); });
+  rtUser.extendType('number', [
+    ['demo/NullRecv', 0, true],
+    ['demo/NullRecv/f', 1, function () { 'use strict'; return this === null; }],
+  ]);
+  assert.equal(f(7), true);
+  assert.equal(f.number(7), true);
+  const g = rtUser.protocolMethod('demo/NullRecv/g', 'demo/g', [1, 2], false, null, null,
+    (miss, s1, s2) => function (r0, a1) {
+      if (arguments.length === 1 && r0 != null && r0[s1] != null) return r0[s1](r0);
+      if (arguments.length === 2 && r0 != null && r0[s2] != null) return r0[s2](r0, a1);
+      return miss.apply(null, arguments);
+    });
+  const customApply1 = Object.assign(function () { return 1; }, { apply() { return 2; } });
+  const throwingCall2 = function (_x, y) { return y + 10; };
+  Object.defineProperty(throwingCall2, 'call', { get() { throw new Error('unexpected .call read'); } });
+  rtUser.extendType('number', [
+    ['demo/NullRecv/g', 1, customApply1],
+    ['demo/NullRecv/g', 2, throwingCall2],
+  ]);
+  assert.equal(g(7), 2);
+  assert.equal(g.number(7), 2);
+  assert.equal(g(7, 5), 15);
+  assert.equal(g.number(7, 5), 15);
+  console.log('user_protocol_host_table_entry_keeps_null_receiver');
+}
+{
+  // Sol #3 (run 2, light-cljs-1115): a saved protocol method stays current
+  // across declarationTransaction undo, non-transactional redeclaration, and
+  // patch replay.
+  const rtReplay = (0, eval)(fs.readFileSync(path.join(__dirname, '../../src/js_runtime.js'), 'utf8'));
+  const makeFast = (miss, s1) => function (r0) { return r0 != null && r0[s1] != null ? r0[s1](r0) : miss(r0); };
+  const install = rtReplay.declarationTransaction(() => {
+    rtReplay.protocol('demo/Replay');
+    rtReplay.protocolMethod('demo/Replay/r', 'demo/r', [1], false, null, null, makeFast);
+    rtReplay.extendType('_', [['demo/Replay/r', 1, () => 'tx-default']]);
+  }, true);
+  rtReplay.applyDeclarationPatches(install.patches, false);
+  const saved = rtReplay.protocolMethod('demo/Replay/r', 'demo/r', [1], false, null, null, makeFast);
+  rtReplay.extendType('_', [['demo/Replay/r', 1, () => 'plain-default']]);
+  assert.equal(saved({}), 'plain-default');
+  rtReplay.applyDeclarationPatches(install.patches, true);
+  assert.equal(saved({}), 'tx-default');
+  console.log('saved_protocol_method_follows_declaration_replay');
+}

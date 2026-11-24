@@ -2916,6 +2916,8 @@
   }
   //@unit fnCall
   const fnCall = Function.prototype.call;
+  //@unit fnApply
+  const fnApply = Function.prototype.apply;
   //@unit fixedFn1 requires: fnCall
   const fixedFn1 = fn => typeof fn === "function" && fn.call === fnCall ? fn.cljs$core$IFn$_invoke$arity$1 || null : null;
   //@unit fixedFn2 requires: fnCall
@@ -13615,7 +13617,7 @@
       : t === "undefined" ? current.null
       : current[t]) ?? current._;
   }
-  //@unit protocolMethod mutator requires: declarationJournal, demandMethod, fnCall, invalidArity,
+  //@unit protocolMethod mutator requires: demandMethod, fnApply, fnCall, invalidArity,
   //@ protocolExternal, protocolFunctions, protocolGetters, protocolKeys, protocolSlot,
   //@ protocolVariables, setDeclaration, typeHooks
   // `fast` (light-cljs-265) makes a dispatcher that calls a slot, else its first argument.
@@ -13629,16 +13631,13 @@
   function protocolMethod(key, metadataName, arities, viaMetadata = false, variadic = null, getter = null, fast = null, names = null, direct = false) {
     const rest = variadic == null ? -1 : variadic + 2, fixed = arities ? arities.filter(n => n !== rest) : [];
     const single = rest < 0 && fixed.length === 1 ? fixed[0] : 0, slots = new Map((arities ?? []).map((n, i) => [n, protocolSlot(key, n, names?.[i])]));
-    const prior = protocolVariables.get(metadataName);
-    const state = prior?.protocolState$LKEY ?? {v: null, live: false};
     let slotMask = 0;
     for (let i = 0; i < fixed.length; i++) if (fixed[i] < 31) slotMask |= 1 << fixed[i];
     // Saved method values retain their direct slot while dynamic dispatch
     // observes the current method Var and live public host table, as the CLJS
     // macro expansion does.
     const resolve = receiver => {
-      const current = !getter && !state.live ? state.v : (getter ? getter() : protocolVariables.get(metadataName) ?? method);
-      const impl = protocolExternal(current, receiver);
+      const impl = protocolExternal(getter ? getter() : protocolVariables.get(metadataName) ?? method, receiver);
       if (impl != null) return impl;
       throw new Error("No protocol method " + metadataName + " defined for this value");
     };
@@ -13664,19 +13663,16 @@
     const miss = fast && function (r0, a1, a2, a3) {
       const n = arguments.length;
       if (!single && (n < 31 ? (slotMask & (1 << n)) === 0 : !slots.has(n))) return dispatch.apply(null, arguments);
-      const impl = resolve(r0);
-      if (impl.call === fnCall) {
-        if (n === 1) return impl.call(null, r0);
-        if (n === 2) return impl.call(null, r0, a1);
-        if (n === 3) return impl.call(null, r0, a1, a2);
-        if (n === 4) return impl.call(null, r0, a1, a2, a3);
+      const impl = resolve(r0), ap = impl.apply;
+      if (ap === fnApply) {
+        if (n === 1) return fnCall.call(impl, null, r0);
+        if (n === 2) return fnCall.call(impl, null, r0, a1);
+        if (n === 3) return fnCall.call(impl, null, r0, a1, a2);
+        if (n === 4) return fnCall.call(impl, null, r0, a1, a2, a3);
       }
-      return impl.apply(null, arguments);
+      return ap.call(impl, null, arguments);
     };
     const method = !fast ? dispatch : direct ? fast : fast(miss, ...fixed.map(n => slots.get(n)));
-    if (declarationJournal !== null) state.live = true;
-    state.v = method;
-    Object.defineProperty(method, "protocolState$LKEY", {value: state, writable: true, configurable: true});
     if (direct) Object.defineProperty(method, "protocolMiss$LKEY", {value: miss, writable: true, configurable: true});
     protocolKeys.set(method, key); setDeclaration(protocolFunctions, key, metadataName); setDeclaration(protocolVariables, metadataName, method);
     setDeclaration(protocolGetters, key, getter ?? (() => protocolVariables.get(metadataName)));
@@ -13692,9 +13688,9 @@
     else if (proto === "IMeta" && ownedRuntime) hostExt.imeta.on = true;
   }
   //@unit extendType mutator requires: coreDispatchers, coreProtocolsByName, dispatchCell,
-  //@ fieldComparisons, hostExt, installMethods, invalidArity, markSeqSlot, nativeMethods,
-  //@ patchDeclaration, protocolFunctions, protocolGetters, protocolMasks, protocolSentinel,
-  //@ protocolValues, setDeclaration, tabledKind
+  //@ fieldComparisons, fnApply, fnCall, hostExt, installMethods, invalidArity, markSeqSlot,
+  //@ nativeMethods, patchDeclaration, protocolFunctions, protocolGetters, protocolMasks,
+  //@ protocolSentinel, protocolValues, setDeclaration, tabledKind
   function extendType(target, methods) {
     let result = null;
     const desc = value => ({value, writable: true, configurable: true, enumerable: true});
@@ -13720,24 +13716,37 @@
       for (const [key, implementations] of grouped) {
         if (implementations.has(0)) continue;
         const dispatch = protocolGetters.get(key)?.() ?? coreDispatchers.get(key)?.dispatcher;
-        // User-protocol single-arity host extensions are always invoked with a
-        // null receiver and can be installed directly; core dispatchers invoke
-        // table entries with the protocol value as `this` and keep the null-this
-        // wrapper (light-cljs-1017, light-cljs-1115).
+        // Preserve null `this` and `.apply` semantics for public host table
+        // entries while avoiding `arguments` materialization and `.apply` on
+        // arities 1..4 when the implementation uses standard
+        // `Function.prototype.apply` (light-cljs-1017, light-cljs-1115).
         const only = implementations.size === 1 ? implementations.values().next().value : undefined;
         let implementation;
         if (only) {
-          implementation = protocolFunctions.has(key) ? only : function () { return only.apply(null, arguments); };
+          implementation = function (a, b, c, d) {
+            const n = arguments.length, ap = only.apply;
+            if (ap === fnApply) {
+              if (n === 1) return fnCall.call(only, null, a);
+              if (n === 2) return fnCall.call(only, null, a, b);
+              if (n === 3) return fnCall.call(only, null, a, b, c);
+              if (n === 4) return fnCall.call(only, null, a, b, c, d);
+            }
+            return ap.call(only, null, arguments);
+          };
         } else {
           const m1 = implementations.get(1), m2 = implementations.get(2), m3 = implementations.get(3), m4 = implementations.get(4);
           implementation = function (a, b, c, d) {
             const n = arguments.length;
-            if (n === 1 && m1) return m1.call(null, a);
-            if (n === 2 && m2) return m2.call(null, a, b);
-            if (n === 3 && m3) return m3.call(null, a, b, c);
-            if (n === 4 && m4) return m4.call(null, a, b, c, d);
-            const method = implementations.get(n);
-            return method ? method.apply(null, arguments) : invalidArity(n);
+            const m = n === 1 ? m1 : n === 2 ? m2 : n === 3 ? m3 : n === 4 ? m4 : implementations.get(n);
+            if (!m) return invalidArity(n);
+            const ap = m.apply;
+            if (ap === fnApply) {
+              if (n === 1) return fnCall.call(m, null, a);
+              if (n === 2) return fnCall.call(m, null, a, b);
+              if (n === 3) return fnCall.call(m, null, a, b, c);
+              if (n === 4) return fnCall.call(m, null, a, b, c, d);
+            }
+            return ap.call(m, null, arguments);
           };
         }
         result = implementation;
@@ -15113,7 +15122,7 @@
     );
   }
   //@unit constantly requires: callable2
-  function constantly(x) { const f = () => x; return callable2(f, f, f, f); }
+  function constantly(x) { return callable2(() => x, () => x, () => x, () => x); }
   //@unit predicateCombination requires: callable, first, next, seq, truth
   function predicateCombination(predicates, small, existential) {
     // The first three arguments visit each predicate in turn. CLJS's 1-3

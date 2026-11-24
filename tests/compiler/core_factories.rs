@@ -1,7 +1,8 @@
 //! Public positional construction in both canonical execution phases.
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions, RUNTIME_SOURCE};
 use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 
 fn both(source: &str, expected: &str) {
     let program = analyze_with_macros(source, &parse(source).unwrap(), &mut MacroHost::new())
@@ -18,16 +19,24 @@ fn both(source: &str, expected: &str) {
             "QuickJS: {source}"
         );
     }
-    let output = Command::new("node")
-        .args([
-            "-e",
-            &format!(
-                "const rt = {RUNTIME_SOURCE}; console.log(rt.core.prStr(({})(rt)));",
-                emit_js_unit(&program)
-            ),
-        ])
-        .output()
+    let script = format!(
+        "const rt = {RUNTIME_SOURCE}; console.log(rt.core.prStr(({})(rt)));",
+        emit_js_unit(&program)
+    );
+    let mut child = Command::new("node")
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(script.as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
     assert!(
         output.status.success(),
         "{}",
