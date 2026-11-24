@@ -7221,3 +7221,84 @@ fn keyword_array_index_and_hash_node_find_edge_cases() {
         "[20 2 20 4 100 200 :nf 100 :nf]",
     );
 }
+
+/// light-cljs-1120 (Commit 2): `seq`, `PersistentVectorValue.seq`, `MapEntryType.seq`,
+/// `vectorChunk`, `lazyOf`, `lazyRealized`, and `LazySeq.seqSlot` preserve nil/empty-list
+/// semantics, `extend-type`/`specify!` overrides on `ISeqable`, undefined-fn `LazySeq.`,
+/// throwing thunks, nested lazy seqs, custom `ISeqable` realizations, and transient-to-persistent
+/// vector isolation.
+#[test]
+fn seq_vector_and_lazy_seq_fast_path_edge_cases() {
+    // 1. Vectors (empty, <=32, >32, transient->persistent isolation, MapEntry),
+    //    nested LazySeqs, undefined-fn LazySeq., forged LazySeq, throwing thunk,
+    //    and custom ISeqable realized inside LazySeq.
+    every_level(
+        r#"(deftype SideSeq [log]
+             ISeqable (-seq [_] (swap! log conj :side) '(99)))
+           (let [v0 []
+                 v3 [1 2 3]
+                 v70 (vec (range 70))
+                 tv (persistent! (conj! (transient [10 20]) 30))
+                 s-tv (seq tv)
+                 tv2 (conj tv 40)
+                 me (first {:a 1})
+                 log (atom [])
+                 nested-nil (lazy-seq (lazy-seq nil))
+                 nested-empty (lazy-seq (lazy-seq '()))
+                 nested-cons (lazy-seq (lazy-seq (cons 1 (list 2))))
+                 nested-side (lazy-seq (SideSeq. log))
+                 ls-undef (LazySeq. nil js/undefined nil nil)
+                 forged-ls (js/Object.create (.-prototype LazySeq))
+                 attempts (atom 0)
+                 flaky (lazy-seq (if (= 1 (swap! attempts inc))
+                                   (throw (js/Error. "boom"))
+                                   '(7 8)))
+                 first-try (try (seq flaky) :ok (catch js/Error _ :err))]
+             (pr-str [(seq nil)
+                      (seq '())
+                      (seq v0)
+                      (vec (seq v3))
+                      (count (seq v70))
+                      (= (vec (seq v70)) v70)
+                      (vec s-tv)
+                      (vec tv2)
+                      (vec (seq me))
+                      (seq nested-nil)
+                      (seq nested-empty)
+                      (vec (seq nested-cons))
+                      (vec (seq nested-cons))
+                      (vec (seq nested-side))
+                      @log
+                      (seq ls-undef)
+                      (realized? ls-undef)
+                      (try (realized? forged-ls) :ok (catch js/Error _ :err))
+                      first-try
+                      (vec (seq flaky))])) "#,
+        "[nil nil nil [1 2 3] 70 true [10 20 30] [10 20 30 40] [:a 1] nil nil [1 2] [1 2] [99] [:side] nil true :err :err [7 8]]",
+    );
+    // 2. Late extend-type on EmptyList, Cons, List, ChunkedCons, PersistentVector ISeqable.
+    every_level(
+        r#"(let [warm #js [(seq '()) (first (seq (lazy-seq (cons 1 nil)))) (first (seq [1 2]))]]
+             (extend-type EmptyList ISeqable (-seq [_] (array-seq #js [100])))
+             (extend-type Cons ISeqable (-seq [_] (array-seq #js [200])))
+             (extend-type List ISeqable (-seq [_] (array-seq #js [300])))
+             (extend-type ChunkedCons ISeqable (-seq [_] (array-seq #js [400])))
+             (extend-type PersistentVector ISeqable (-seq [_] (array-seq #js [500])))
+             (js/JSON.stringify
+               #js [warm
+                    (first (seq '()))
+                    (first (seq (lazy-seq '())))
+                    (first (seq (lazy-seq (cons 1 (list 2)))))
+                    (first (seq (lazy-seq (list 1 2))))
+                    (first (seq (lazy-seq (chunk-cons (array-chunk #js [1 2]) nil))))
+                    (first (seq [1 2]))])) "#,
+        "[[null,1,1],100,100,200,300,400,500]",
+    );
+    // 3. specify! on a single Cons realized by LazySeq.
+    every_level(
+        r#"(let [c (specify! (cons 1 (list 2)) ISeqable (-seq [_] (array-seq #js [42])))
+                 ls (lazy-seq c)]
+             (pr-str (first (seq ls)))) "#,
+        "42",
+    );
+}

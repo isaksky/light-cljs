@@ -273,7 +273,7 @@
   // of the same fields.
   function lazyOf(value) {
     if (value == null) return undefined;
-    return value.cljs$lang$kind$$LKEY === 16 && "fn$LKEY" in value ? value : undefined;
+    return value.cljs$lang$kind$$LKEY === 16 && (value.fn$LKEY !== undefined || "fn$LKEY" in value) ? value : undefined;
   }
   //@unit isLazy requires: lazyOf
   const isLazy = value => lazyOf(value) !== undefined;
@@ -1944,14 +1944,16 @@
   // takes its slot as any other, whatever it answers. Each operation is
   // small enough for V8 to inline (the 100 bytes of bytecode of
   // light-cljs-1033).
-  //@unit seq requires: seqOf, slotFirst
-  // The empty list, kind 13, takes `seqOf`, which reads its slot: every walk
-  // ends with its `seq`, and its slot made the read and call here
-  // megamorphic (light-cljs-1033).
+  //@unit seq requires: hostExt, seqOf, slotFirst
+  // Nil returns null directly; the empty list, kind 13, returns null without
+  // entering `seqOf` when no sequence protocol extension has been installed,
+  // keeping the slot read below monomorphic/polymorphic (light-cljs-1033).
   function seq(value) {
-    if (value != null && slotFirst.on) {
+    if (value == null) return null;
+    if (slotFirst.on) {
       const kind = value.cljs$lang$kind$$LKEY;
-      if (kind !== undefined && kind !== 13) {
+      if (kind !== undefined) {
+        if (kind === 13) return hostExt.seq ? seqOf(value) : null;
         const method = value.cljs$core$ISeqable$_seq$arity$1$LKEY;
         if (method) return method.call(value, value);
       }
@@ -2033,7 +2035,11 @@
   // The raw value a lazy seq's state (`lazyOf`) realizes, without the seq of
   // it, which can take an item of a host iterator.
   function lazyRealized(lazy) {
-    let current = lazyStep(lazy);
+    const fn = lazy.fn$LKEY;
+    let current;
+    if (fn != null) { lazy.s$LKEY = fn.call(null); lazy.fn$LKEY = null; current = lazy.s$LKEY; }
+    else current = lazy.s$LKEY;
+    if (current == null) return current;
     // Flatten nested LazySeq results iteratively, retaining the raw final
     // value. CLJS calls seq on that raw value again on each traversal.
     for (let inner = lazyOf(current); inner !== undefined; inner = lazyOf(current)) {
@@ -2042,7 +2048,7 @@
       // source heads can be collected even through a long empty prefix.
       lazy.s$LKEY = current;
     }
-    return lazy.s$LKEY = current;
+    return current;
   }
   //@unit queueFromArray.seq effect: queueFromArray when: seq, seqOf, seqPath, seqSite requires: concat,
   //@ IndexedSeqValue, kindHooks, seq, view
@@ -5810,13 +5816,12 @@
     return node;
   }
   //@unit vectorChunk requires: vectorLeaf, vectorStore
-  // The leaf or tail holding index `i` of a vector, for a seq to share,
-  // which freezes then (a leaf a transient built, the tail and a view's new
-  // array), unless it is a tail the public constructor received (and
-  // `assoc` kept): that one stays its caller's, as upstream.
+  // The leaf or tail holding index `i` of a vector, for a seq to share.
+  // Persistent vectors never mutate leaves or tails after creation (transients
+  // copy before mutating), so sharing directly matches upstream's `-seq`
+  // without calling `Object.freeze` on every vector seq.
   function vectorChunk(value, i) {
-    const store = vectorStore(value), leaf = vectorLeaf(store, i);
-    return !store.sub$LKEY && store.callerTail$LKEY && leaf === store.tail$LKEY ? leaf : Object.freeze(leaf);
+    return vectorLeaf(vectorStore(value), i);
   }
   //@unit vectorSlice requires: vectorLeaf
   // A new array of a store's items from index `from` to `to`.
@@ -7864,9 +7869,11 @@
     return vec ? count(vec) - self.base$LKEY - self.i$LKEY : Math.max(0, self.arr$LKEY.length - self.i$LKEY);
   });
   //@unit PersistentVectorValue.seq effect: PersistentVectorValue when: seq, seqOf, seqSite
-  //@ requires: builtinSlot, kindHooks, PersistentVectorValue
+  //@ requires: builtinSlot, ChunkedSeqCell, IndexedSeqCell, PersistentVectorValue, vectorLeaf
   PersistentVectorValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
-    return kindHooks.seqVector(self, self);
+    const cnt = self.cnt$LKEY;
+    return !cnt ? null : cnt <= 32 ? new IndexedSeqCell(self.tail$LKEY ?? vectorLeaf(self, 0), 0, true, "indexed")
+      : new ChunkedSeqCell(vectorLeaf(self, 0), 0, self, 0);
   });
   //@unit SubvecValue.seq effect: SubvecValue when: seq, seqOf, seqSite requires: builtinSlot,
   //@ kindHooks, SubvecValue
@@ -7874,9 +7881,9 @@
     return kindHooks.seqVector(self, self);
   });
   //@unit MapEntryType.seq effect: MapEntryType when: seq, seqOf, seqSite requires: builtinSlot,
-  //@ kindHooks, MapEntryType
+  //@ IndexedSeqCell, MapEntryType
   MapEntryType.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
-    return kindHooks.seqVector(self, self);
+    return !self.cnt$LKEY ? null : new IndexedSeqCell(self.tail$LKEY, 0, true, "indexed");
   });
   // A vector's and a subvector's `-reduce` slots, and their `-kv-reduce` (upstream's IReduce and IKVReduce,
   // light-cljs-1055), which `reduce` and `reduce-kv` call before any
@@ -7959,9 +7966,16 @@
   // `-drop-first` where protocol implementations exist, through their
   // wrappers.
   //@unit LazySeq.seqSlot effect: LazySeq when: seq, seqOf, seqSite requires: builtinSlot,
-  //@ lazyRealized, LazySeq, seq
+  //@ hostExt, lazyRealized, LazySeq, seq, slotFirst
   LazySeq.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
-    return seq(lazyRealized(self));
+    const s = lazyRealized(self);
+    if (s == null) return null;
+    if (slotFirst.on && !hostExt.seq) {
+      const k = s.cljs$lang$kind$$LKEY;
+      if (k === 14 || k === 12 || k === 17) return s;
+      if (k === 13) return null;
+    }
+    return seq(s);
   });
   //@unit LazySeq.firstSlot effect: LazySeq when: first, firstOf, firstSite requires: builtinSlot,
   //@ first, LazySeq, seq
