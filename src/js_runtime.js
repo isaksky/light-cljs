@@ -6968,16 +6968,10 @@
     } else if (!own) return reduceWalk(self, rf, init, arity);
     if (arity === 2) { if (!(i < n)) return call0(rf); init = mapEntry(pairs[0], pairs[1]); i = 2; }
     const step = fixedFn2(rf);
-    if (step) {
-      for (; i < n; i += 2) {
-        init = step(init, mapEntry(pairs[i], pairs[i + 1]));
-        if (isReduced(init)) return reducedValue(init);
-      }
-    } else {
-      for (; i < n; i += 2) {
-        init = rf.call(null, init, mapEntry(pairs[i], pairs[i + 1]));
-        if (isReduced(init)) return reducedValue(init);
-      }
+    for (; i < n; i += 2) {
+      const e = mapEntry(pairs[i], pairs[i + 1]);
+      init = step ? step(init, e) : rf.call(null, init, e);
+      if (isReduced(init)) return reducedValue(init);
     }
     return init;
   }
@@ -14240,7 +14234,8 @@
       if (sources.length === 1 && isChunkedSeq(sources[0])) {
         const chunk = chunkFirst(sources[0]), store = chunkStore(chunk), size = count(chunk), items = [];
         const f1 = fixedFn1(fn);
-        for (let i = 0; i < size; i++) { const v = chunkItem(chunk, store, i); items.push(f1 ? f1(v) : fn.call(null, v)); }
+        if (f1) { for (let i = 0; i < size; i++) items.push(f1(chunkItem(chunk, store, i))); }
+        else { for (let i = 0; i < size; i++) items.push(fn.call(null, chunkItem(chunk, store, i))); }
         return chunkCons(arrayChunk(items), mapSeq(fn, chunkRest(sources[0])));
       }
       return cons(fn.call(null, ...sources.map(first)), mapSeq(fn, ...sources.map(rest)));
@@ -14295,10 +14290,8 @@
         if (isChunkedSeq(s)) {
           const chunk = chunkFirst(s), store = chunkStore(chunk), size = count(chunk), values = [];
           const p1 = fixedFn1(pred);
-          for (let i = 0; i < size; i++) {
-            const value = chunkItem(chunk, store, i);
-            if (truth(p1 ? p1(value) : pred.call(null, value))) values.push(value);
-          }
+          if (p1) { for (let i = 0; i < size; i++) { const v = chunkItem(chunk, store, i); if (truth(p1(v))) values.push(v); } }
+          else { for (let i = 0; i < size; i++) { const v = chunkItem(chunk, store, i); if (truth(pred.call(null, v))) values.push(v); } }
           return chunkCons(arrayChunk(values), filter(pred, chunkRest(s)));
         }
         // Upstream obtains rest before invoking the predicate.
