@@ -877,23 +877,47 @@ fn transient_sets_and_maps_match_persistent_builds_across_sizes_and_edge_keys() 
         IHash (-hash [_] h)
         IEquiv (-equiv [_ other] (and (instance? CustomKey other) (= id (.-id other)))))
       (let [check-size
-            (fn [n]
+            (fn [[n exp-sh exp-mh exp-order]]
               (let [xs (vec (range n))
                     ps (reduce conj #{} xs)
                     ts (into #{} xs)
                     ts2 (persistent! (reduce conj! (transient #{}) xs))
                     pm (reduce (fn [m x] (assoc m x (* x 3))) {} xs)
-                    tm (persistent! (reduce (fn [m x] (assoc! m x (* x 3))) (transient {}) xs))]
+                    tm (persistent! (reduce (fn [m x] (assoc! m x (* x 3))) (transient {}) xs))
+                    s-seq (vec (seq ts))
+                    m-keys (mapv key (seq tm))]
                 (assert (= (count ps) (count ts) (count ts2) n))
-                (assert (= (hash ps) (hash ts) (hash ts2)))
+                (assert (= (hash ps) (hash ts) (hash ts2) exp-sh))
                 (assert (and (= ps ts) (= ts ps) (= ps ts2)))
-                (assert (= (vec (seq ps)) (vec (seq ts)) (vec (seq ts2))))
+                (assert (= (vec (seq ps)) s-seq (vec (seq ts2))))
                 (assert (= (count pm) (count tm) n))
-                (assert (= (hash pm) (hash tm)))
+                (assert (= (hash pm) (hash tm) exp-mh))
                 (assert (and (= pm tm) (= tm pm)))
                 (assert (= (vec (seq pm)) (vec (seq tm))))
+                (if (<= n 33)
+                  (do (assert (= s-seq exp-order))
+                      (assert (= m-keys exp-order)))
+                  (let [[exp-head exp-tail exp-oh] exp-order]
+                    (assert (= (vec (take 8 s-seq)) exp-head))
+                    (assert (= (vec (take-last 8 s-seq)) exp-tail))
+                    (assert (= (hash s-seq) exp-oh))
+                    (assert (= (vec (take 8 m-keys)) exp-head))
+                    (assert (= (vec (take-last 8 m-keys)) exp-tail))
+                    (assert (= (hash m-keys) exp-oh))))
                 true))
-            sizes-ok (every? check-size [1 8 9 16 17 32 33 1050])
+            ;; Expected hashes and seq orders captured from master (b965180c).
+            sizes-ok (every? check-size
+                             [[1 -1684229222 -1730596701 [0]]
+                              [8 -1311951085 1920606970 [0 1 2 3 4 5 6 7]]
+                              [9 1185812329 -1524359123 [0 1 2 3 4 5 6 7 8]]
+                              [16 1572630083 533651172 (vec (range 16))]
+                              [17 -1820114363 -2090259213 (vec (range 17))]
+                              [32 -1405296752 -396163729 (vec (range 32))]
+                              [33 -950456575 1800378393 (into [0 32] (range 1 32))]
+                              [1050 922458704 140217157
+                               [[0 1024 32 64 96 128 160 192]
+                                [799 831 863 895 927 959 991 1023]
+                                217608528]]])
             ;; Colliding hashes (same full hash) and deep splits (same low 5/10 bits, distinct at shift 10)
             c0 (CustomKey. 7 :c0)
             c1 (CustomKey. 7 :c1)
@@ -1114,20 +1138,27 @@ fn transient_set_sol_findings_and_borrowed_slots() {
             s6 (into #{} (conj (vec (range 8)) k6))
             _ (reset! armed true)
             h6 (hash s6)
-            ;; Sol #9: avoid repeated equality scans on an 8-member transient array set
+            ;; Sol #9 / Sol review #2: 8-member transient array set duplicate takes
+            ;; master's two scans (threshold probe + insertion scan), never a third.
             calls9 (atom 0)
             k9 (reify
                  IHash (-hash [_] 0)
                  IEquiv (-equiv [_ other]
                           (let [n (swap! calls9 inc)]
-                            (when (> n 1) (throw (js/Error. "rescanned")))
+                            (when (> n 2) (throw (js/Error. "third-scan")))
                             (= other 0))))
             t9 (transient #{0 1 2 3 4 5 6 7})
             _ (conj! t9 k9)
-            s9 (persistent! t9)
-            ;; Borrowed TransientHashSet -conj! and -persistent! slots on Delay (shares state$LKEY)
-            ;; and TransientVector must not misinterpret receiver state.
-            ts (transient #{1})
+            s9 (persistent! t9)]
+        [(count s5) (count p5)
+         (number? h6)
+         (= (count s9) 8) (= @calls9 2)])"#,
+        "[5 1 true true true]",
+    );
+    // Borrowed TransientHashSet -conj! and -persistent! slots on Delay (shares state$LKEY)
+    // and TransientVector must not misinterpret receiver state in Node or compiled output.
+    let borrowed = r#"
+      (let [ts (transient #{1})
             tv (transient [1])
             d (delay 42)
             proto (js/Object.getPrototypeOf ts)
@@ -1140,13 +1171,131 @@ fn transient_set_sol_findings_and_borrowed_slots() {
             _ (aset d conj-key (aget proto conj-key))
             _ (aset d pers-key (aget proto pers-key))
             tv-res (persistent! (conj! tv 2))
-            d-conj (try (conj! d 1) (catch js/Error _ :err))
-            d-pers (try (persistent! d) (catch js/Error _ :err))]
-        [(count s5) (count p5)
-         (number? h6)
-         (= (count s9) 8) (= @calls9 1)
-         tv-res (not (set? d-conj)) (not (set? d-pers)) @d])"#,
-        "[5 1 true true true [1 2] true true 42]",
+            d-conj (try [:ok (conj! d 1)] (catch js/Error e (ex-message e)))
+            d-pers (try [:ok (persistent! d)] (catch js/Error e (ex-message e)))]
+        [tv-res d-conj d-pers @d])"#;
+    let borrowed_expected = "[[1 2] \"No protocol method ITransientCollection/-conj! defined for this value\" \"No protocol method ITransientCollection/-persistent! defined for this value\" 42]";
+    let wrapped = format!("(js/console.log (pr-str (do {borrowed})))");
+    let mut host = MacroHost::new();
+    let p = analyze_with_macros(&wrapped, &parse(&wrapped).unwrap(), &mut host).unwrap();
+    for level in OptimizationLevel::ALL {
+        let js = prepare_application(&p, ApplicationOptions::new(level)).emit_js();
+        assert_eq!(
+            execute(&format!("{js};")).trim(),
+            borrowed_expected,
+            "borrowed slots at {level:?}"
+        );
+    }
+}
+
+#[test]
+fn transient_set_threshold_duplicate_survives_nested_disjoin() {
+    both_and_advanced(
+        r#"
+      (let [t (transient #{0 1 2 3 4 5 6 7})
+            removed (atom false)
+            k (reify
+                IHash (-hash [_] 0)
+                IEquiv (-equiv [this other]
+                         (cond
+                           (identical? this other) true
+                           (= other 0)
+                           (do (when-not @removed
+                                 (reset! removed true)
+                                 (disj! t 0))
+                               true)
+                           :else false)))
+            s (persistent! (conj! t k))]
+        [(count s) (contains? s 0) (contains? s k) (identical? k (get s k))])"#,
+        "[8 false true true]",
+    );
+}
+
+#[test]
+fn transient_bitmap_expansion_preserves_reentrant_hash_effects() {
+    both_and_advanced(
+        r#"
+      (let [armed (atom false)
+            t-ref (atom nil)
+            k15-ref (atom nil)
+            k0 (reify
+                 IHash (-hash [_]
+                         (when (and @t-ref (not @armed))
+                           (dissoc! @t-ref @k15-ref)
+                           (reset! armed true))
+                         0)
+                 IEquiv (-equiv [this other] (identical? this other)))
+            k15 (reify
+                  IHash (-hash [_]
+                          (if @armed (throw (js/Error. "k15-rehash")) 15))
+                  IEquiv (-equiv [this other] (identical? this other)))
+            _ (reset! k15-ref k15)
+            ;; Build an owned transient hash map with 16 branches 0..15 in its root bitmap
+            t (reduce (fn [m [k v]] (assoc! m k v))
+                      (transient (hash-map))
+                      (concat [[k0 :v0]]
+                              (map (fn [i] [i i]) (range 1 15))
+                              [[k15 :v15]]))
+            _ (reset! t-ref t)
+            ;; Branch 16 triggers 16->17 bitmap-to-array expansion
+            err (try (assoc! t 16 :v16) :ok (catch js/Error e (ex-message e)))
+            _ (reset! t-ref nil)
+            _ (reset! armed false)
+            m (persistent! t)]
+        [err (count m) (contains? m k0) (contains? m k15) (contains? m 16)])"#,
+        "[\"k15-rehash\" 15 true false false]",
+    );
+}
+
+#[test]
+fn transient_bitmap_edits_survive_reentrant_equiv() {
+    both_and_advanced(
+        r#"
+      (let [t1 (assoc! (transient (hash-map)) 7 :orig)
+            inserted1 (atom false)
+            q1 (reify
+                 IHash (-hash [_] 7)
+                 IEquiv (-equiv [_ other]
+                          (when-not @inserted1
+                            (reset! inserted1 true)
+                            (assoc! t1 1 :nested))
+                          (= other 7)))
+            m1 (persistent! (assoc! t1 q1 :updated))
+            t2 (assoc! (transient (hash-map)) 7 :orig)
+            inserted2 (atom false)
+            q2 (reify
+                 IHash (-hash [_] 7)
+                 IEquiv (-equiv [_ other]
+                          (when-not @inserted2
+                            (reset! inserted2 true)
+                            (assoc! t2 1 :nested))
+                          (= other 7)))
+            m2 (persistent! (dissoc! t2 q2))]
+        [(count m1) (get m1 1) (get m1 7)
+         (count m2) (get m2 1) (contains? m2 7)])"#,
+        "[2 :nested :updated 1 :nested false]",
+    );
+}
+
+#[test]
+fn hash_trie_assoc_preserves_signed_zero_values() {
+    both_and_advanced(
+        r#"
+      (deftype SameHashKey [id]
+        IHash (-hash [_] 7)
+        IEquiv (-equiv [_ other] (and (instance? SameHashKey other) (= id (.-id other)))))
+      (let [;; Persistent bitmap leaf: replacing +0 with -0 preserves -0
+            pm0 (reduce (fn [m i] (assoc m i i)) (hash-map) (range 12))
+            pm1 (assoc pm0 0 -0)
+            ;; Transient collision node with two distinct equal-hash keys
+            c0 (SameHashKey. :a)
+            c1 (SameHashKey. :b)
+            tm0 (assoc! (assoc! (transient (hash-map)) c0 0) c1 0)
+            tm1 (persistent! (assoc! tm0 c1 -0))]
+        [(js/Object.is (get pm1 0) -0)
+         (js/Object.is (get tm1 c0) 0)
+         (js/Object.is (get tm1 c1) -0)])"#,
+        "[true true true]",
     );
 }
 

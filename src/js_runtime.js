@@ -4037,18 +4037,19 @@
               return root;
             }
             const nodes = new Array(32).fill(null);
+            for (let i = 0; i < slots.length; i++) {
+              const old = slots[i];
+              if (old != null) nodes[i] = old;
+            }
             const cidx = (keyHash >>> (shift + 5)) & 31, cslots = new Array(cidx + 1);
             cslots[cidx] = entry;
             nodes[index] = bitmapNode(cslots, edit, 4, 1);
-            for (let i = 0; i < slots.length; i++) {
-              const old = slots[i];
-              if (old != null) {
-                if (old.kind !== undefined) nodes[i] = old;
-                else {
-                  const oh = hash(old.key), oidx = (oh >>> (shift + 5)) & 31, oslots = new Array(oidx + 1);
-                  oslots[oidx] = old;
-                  nodes[i] = bitmapNode(oslots, edit, 4, 1);
-                }
+            for (let i = 0; i < 32; i++) {
+              const old = nodes[i];
+              if (old !== null && old.kind === undefined) {
+                const oh = hash(old.key), oidx = (oh >>> (shift + 5)) & 31, oslots = new Array(oidx + 1);
+                oslots[oidx] = old;
+                nodes[i] = bitmapNode(oslots, edit, 4, 1);
               }
             }
             if (edit.dead) throw new Error("Transient used after persistent!");
@@ -5353,10 +5354,19 @@
   kindHooks.conjTransientSet = (() => {
     function conjTransientSetArray(value, state, entries, member) {
       if (state.mapKind === "array-map" && !hashRoots.has(entries)) {
+        const atThreshold = entries.length >= 8;
         const index = entryIndex(entries, member);
         if (!state.editable) editableTransient(value, "conj!");
         if (state.entries !== entries) return kindHooks.conjTransientSet(value, state, member);
-        if (index >= 0) return value;
+        if (index >= 0) {
+          if (!atThreshold || member == null || typeof member === "string" || typeof member === "number") return value;
+          const index2 = entryIndex(entries, member);
+          if (!state.editable) editableTransient(value, "conj!");
+          if (state.entries !== entries) return kindHooks.conjTransientSet(value, state, member);
+          if (index2 < 0) entries.push(new ArrayMapEntry(member, null));
+          else entries[index2] = new ArrayMapEntry(entries[index2].key, null);
+          return value;
+        }
         if (entries.length < 8) {
           entries.push(new ArrayMapEntry(member, null));
           return value;

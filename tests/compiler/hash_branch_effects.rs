@@ -365,3 +365,59 @@ fn persistent_array_promotion_with_coalescing_keys() {
     let out = super::optimization::execute(&format!("{js};"));
     assert_eq!(out.trim(), expected);
 }
+
+#[test]
+fn collision_queries_preserve_equiv_calls() {
+    let source = r#"
+      (deftype CollKey [h id]
+        IHash (-hash [_] h)
+        IEquiv (-equiv [_ other] (and (instance? CollKey other) (= id (.-id other)))))
+      (let [c0 (CollKey. 7 :c0)
+            c1 (CollKey. 7 :c1)
+            m (hash-map c0 :v0 c1 :v1)
+            log (atom [])
+            q (reify
+                IHash (-hash [_] 39)
+                IEquiv (-equiv [_ other]
+                         (swap! log conj (.-id other))
+                         false))
+            r-get (get m q :missing)
+            log-get @log
+            _ (reset! log [])
+            r-find (find m q)
+            log-find @log
+            _ (reset! log [])
+            r-dissoc (dissoc m q)
+            log-dissoc @log
+            _ (reset! log [])
+            t (transient m)
+            r-tget (get t q :missing)
+            log-tget @log
+            _ (reset! log [])
+            r-tdissoc (persistent! (dissoc! t q))
+            log-tdissoc @log]
+        [r-get log-get
+         r-find log-find
+         (= m r-dissoc) log-dissoc
+         r-tget log-tget
+         (= m r-tdissoc) log-tdissoc])"#;
+    let expected =
+        "[:missing [:c0 :c1] nil [:c0 :c1] true [:c0 :c1] :missing [:c0 :c1] true [:c0 :c1]]";
+    let root = artifact_root("collision-queries-equiv");
+    let mut host = MacroHost::new();
+    let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
+    let unit = emit_js_unit(&program);
+    execute(&unit, expected, &root);
+
+    let wrapped = format!("(js/console.log (pr-str (do {source})))");
+    let mut adv_host = MacroHost::new();
+    let adv_program =
+        analyze_with_macros(&wrapped, &parse(&wrapped).unwrap(), &mut adv_host).unwrap();
+    let js = light_cljs::prepare_application(
+        &adv_program,
+        light_cljs::ApplicationOptions::new(light_cljs::OptimizationLevel::Advanced),
+    )
+    .emit_js();
+    let out = super::optimization::execute(&format!("{js};"));
+    assert_eq!(out.trim(), expected);
+}
