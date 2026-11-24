@@ -6121,3 +6121,24 @@ light-cljs output: 5,722,546 bytes raw (1,067,247 gzip -9; 185/2,515 waste marke
 | 10 | 1.17 | 1.17 | 1.18 | 1.09 |
 
 Steady state, from the median wall times at 1 and 10 iterations: light-cljs 302.8 ms per iteration, shadow-cljs 252.3 ms per iteration (light/shadow 1.20).
+
+### re-frame TodoMVC in headless Chromium
+
+Ported with `shadow-port-tool-983`; light-cljs's `:advanced` output is bundled with React by esbuild 0.25.10 (minified IIFE), shadow-cljs's `client.js` is served as written. 10 runs per compiler in fresh headless Chromium 156.0.8078.4 instances, alternated, unreserved (1-minute load 4.91-5.65), 0 console errors or uncaught exceptions. `bb benchmarks/re-frame.bb runtime` covers TodoMVC only (`simple` and `flow` have browser behaviour checks, reported below, not runtime benchmarks).
+
+| Step | shadow-cljs ms | light-cljs ms | light/shadow | shadow-cljs script ms | light-cljs script ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| page load to interactive | 31.85 (31.60-80.70) | 40.25 (39.70-41.20) | 1.26 | 13.54 (13.25-28.37) | 20.49 (20.00-21.17) |
+| add 1,000 todos | 907.25 (902.40-941.50) | 761.15 (745.10-788.00) | 0.84 | 864.71 (860.74-881.25) | 718.82 (706.28-742.75) |
+| toggle all | 47.20 (41.20-51.70) | 45.55 (43.60-55.90) | 0.97 | 20.22 (19.48-21.28) | 24.07 (22.54-25.37) |
+| edit one in a list of 1,000 | 64.85 (61.00-66.90) | 62.30 (59.10-70.90) | 0.96 | 7.06 (6.74-8.40) | 8.09 (7.41-8.51) |
+| clear completed | 26.80 (21.20-29.00) | 25.60 (24.20-28.60) | 0.96 | 6.54 (6.43-8.53) | 6.82 (6.46-7.55) |
+| JavaScript heap after load, MB | 2.74 (2.73-2.74) | 3.18 (3.18-3.18) | 1.16 | | |
+| JavaScript heap with 1,000 todos, MB | 7.52 (7.52-7.53) | 8.29 (8.29-8.29) | 1.10 | | |
+| whole run (fresh browser, load, every step, close), wall s | 1.43 (1.43-1.88) | 1.30 (1.28-1.33) | 0.91 | | |
+| whole run, user CPU s (Node and the browser processes) | 1.65 (1.64-1.70) | 1.52 (1.50-1.56) | 0.92 | | |
+| whole run, system CPU s | 0.28 (0.26-0.41) | 0.28 (0.26-0.33) | 1.00 | | |
+| whole run, peak memory of the largest process, MB | 257.38 (255.03-258.10) | 253.66 (253.00-255.31) | 0.99 | | |
+| 1-minute load average before the run | 5.26 (4.91-5.65) | 5.35 (4.91-5.65) | | | |
+
+light-cljs beats shadow-cljs on all four interactive steps (`add 1,000 todos` 0.84x, `toggle all` 0.97x, `edit` 0.96x, `clear completed` 0.96x), whole-run wall time (0.91x), CPU (0.92x user, 1.00x system), and peak memory (0.99x). Only `page load to interactive` (1.26x, 40.25 vs 31.85 ms; script 20.49 vs 13.54 ms) and JavaScript heap (1.16x after load, 1.10x with 1,000 todos) remain above shadow-cljs; shadow-cljs's 80.70 ms max on page load is a single run-0 cold start (runs 1-9 are 31.6-33.0 ms), so page load is profiled below.
