@@ -5995,3 +5995,48 @@ Under `--pseudo-names into-set-100`, light-cljs drops from 5,287 to 3,132 ns/op 
 - `flow`: raw 1,249,638 to 1,253,521 (+3,883), gzip -9 290,770 to 291,692 (+922, +0.32%), brotli 233,314 to 234,130 (+816).
 
 `simple` (+1.35%, +989 B gzip) and `todomvc` (+0.97%, +1,002 B gzip) exceed 0.5% gzip growth because all three apps reach transient maps/sets; the +3.9 KB raw / +1.0 KB gzip comes from `hashNodeAssocTransient` (iterative owned-node descent, snapshotted 32-slot array expansion, inline owned leaf update/split, and `edit.dead` guards), direct `TransientHashSetType` `-conj!`/`-persistent!` slots, the `asTransient` `HashSetCell` fast path, and `conjTransientSetArray` (array-set update, threshold second-scan guard for non-plain keys, and direct promotion). The size ratchet note is in `tests/support/ratchet_fixtures.rs` (readable runtime +8,730 B; 32 of 36 `:advanced` fixtures unchanged; terse chunk ceiling raised +4,000 B in `tests/compiler/chunks.rs`).
+
+## 2026-11-24: own-field List pop, ChunkedSeq next, compact mapReduceSlot, single-pass hashMapDissoc, and non-allocating assocIn/updateIn (light-cljs-1087)
+
+After `light-cljs-1108`, `light-cljs-1109`, `light-cljs-1084`, and `light-cljs-1110` landed, the remaining small gaps in the full 80-op gate on master `80bc5eba` were `list-pop` (1.26x), `seq-walk-vec-1000` (1.24x), `reduce-entries-small` (1.15x, regressed from 1.02x in `light-cljs-1084` `84c58e06`), `closure-alloc-call` (1.11x), `update-in-3` (1.09x), `dissoc-hash100` (1.07x), `vec-invoke-1024` (1.07x), `filter-count-1000` (1.06x), and `vec-peek` (1.05x), while `get-in-3` (0.98x), `destructure-map-3` (0.70x), and `transient-map-100` (0.69x) were already below shadow-cljs. Changes in `src/js_runtime.js`:
+
+- **Own-field `List` pop.** `ListValue.prototype._pop` reads `self.count$LKEY` and `self.rest$LKEY` directly when `slotFirst.on` is true and `-count`/`-rest` are the class's own slots (falling back to `listPopSlot` for `extend-type`, `specify!`, public `List` constructor edge cases, and borrowed slots).
+- **Own-field `ChunkedSeq` next.** `ChunkedSeqValue.prototype._next` advances directly within the current leaf (`new ChunkedSeqCell(arr, i, vec, self.base$LKEY)`) and delegates chunk boundaries through `seq(chunkedVectorRest(self))` when `slotFirst.on && fieldComparisons.on && !ownSeqs.on && !hostExt.seq && self.cljs$lang$kind$$LKEY === 6` and `-rest`/`-seq` are the class's own slots. `firstSite`/`nextSite`/`seqSite` keep their direct `value.slot(value)` call (no `.call` indirection, which breaks V8's inlining of `*Site` and regressed `keys-small`/`vals-small`/`keys-hash100`/`vals-hash100` by 25-71% in an intermediate measurement).
+- **Compact `mapReduceSlot` and shared `entryRoot`.** `EntryCell` shares a frozen `entryRoot` (like `TreeNodeCell`), `PersistentArrayMapValue`/`PersistentHashMapValue` install separate arity-2 and arity-3 `-reduce` slots (avoiding `arguments.length`), the `-iterator` probe is deferred to `slots?.arr`, and `mapReduceSlot` splits into `mapReducePairs` (evaluating `mapEntry(pairs[i], pairs[i + 1])` before `rf.call`) and `mapReduceSlow`.
+- **Single-pass `hashMapDissoc`.** `hashNodeRemove` adds a `byKey` single-pass mode matching keys with `hashKeyTest` and builds array/collision nodes directly without object spread, so `hashMapDissoc` walks the hash trie once.
+- **Non-allocating `assocIn`/`updateIn`/`updatePath`.** `assocInSeq`/`updateInSeq`/`updatePathSeq` walk `seq(more)` recursively without allocating rest arrays or closures for `updateIn` arities 3-6, invoking `fn.call(null, ...)` directly so `IFn` values and receivers match master.
+
+**Core-ops gate** (`bb benchmarks/core-ops/run.bb --runs 5`, V8 build, immutable binaries `light-cljs-80bc5eba` SHA-256 `876761396fc11329...` before and `target/light-cljs-f0831ccd` SHA-256 `63b1c2a772c7c725...` after; shadow-cljs 3.5.3, Node v26.12.1, Apple M3 Ultra VM, 24 CPUs, 32 GiB; unreserved, 1-minute load 3.48-4.92 in `gate-recheck-80bc5eba` before, 3.42-4.38 after; every checksum equal across all runs; a fresh `80bc5eba` gate run in the same session at load 11.00-20.95 also confirmed zero regressions across all 80 operations):
+
+| op (full 80-op pass) | light-cljs before (range) | light-cljs after (range) | change | shadow-cljs before, after (after range) | light/shadow before, after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| seq-walk-vec-1000 | 23,878 (23,745-24,075) | 12,270 (12,192-12,515) | -49% | 19,223, 19,292 (18,925-19,646) | 1.24, 0.64 |
+| list-pop | 18.55 (18.38-18.82) | 14.59 (14.17-14.77) | -21% | 14.70, 14.70 (14.44-14.91) | 1.26, 0.99 |
+| dissoc-hash100 | 80.73 (79.77-81.85) | 63.40 (62.76-64.85) | -21% | 75.30, 74.97 (74.80-75.89) | 1.07, 0.85 |
+| update-in-3 | 148.1 (145.5-148.4) | 138.6 (136.5-139.4) | -6% | 136.3, 135.3 (133.3-139.2) | 1.09, 1.02 |
+| assoc-in-3 | 128.0 (127.9-131.1) | 127.0 (126.1-127.9) | -1% | 131.4, 131.7 (126.0-132.6) | 0.97, 0.96 |
+| get-in-3 | 55.55 (55.32-56.27) | 57.02 (56.37-64.50) | +3% | 56.60, 56.26 (55.03-56.54) | 0.98, 1.01 |
+| reduce-entries-small | 89.38 (88.18-92.55) | 81.04 (80.46-82.28) | -9% | 77.50, 77.26 (73.12-79.23) | 1.15, 1.05 |
+| destructure-map-3 | 34.24 (34.06-35.08) | 34.54 (33.97-34.72) | +1% | 48.80, 49.46 (48.30-49.50) | 0.70, 0.70 |
+| transient-map-100 | 3,035 (2,983-3,207) | 3,016 (2,934-3,234) | -1% | 4,397, 4,496 (4,244-4,544) | 0.69, 0.67 |
+| vec-invoke-1024 | 5.09 (5.06-5.13) | 5.12 (5.03-5.23) | +1% | 4.75, 4.78 (4.67-5.23) | 1.07, 1.07 |
+| vec-peek | 3.54 (3.54-3.59) | 3.56 (3.53-3.61) | +1% | 3.37, 3.43 (3.36-3.44) | 1.05, 1.04 |
+| filter-count-1000 | 29,793 (29,337-30,002) | 29,775 (29,192-30,890) | -0% | 28,062, 27,788 (27,579-28,102) | 1.06, 1.07 |
+| closure-alloc-call | 9.09 (8.99-9.12) | 8.95 (8.89-9.07) | -2% | 8.19, 8.21 (8.14-8.39) | 1.11, 1.09 |
+| keys-small | 59.17 (57.92-59.21) | 60.17 (59.20-61.87) | +2% | 73.10, 72.90 (72.65-74.69) | 0.81, 0.83 |
+| vals-small | 45.80 (45.63-46.45) | 46.51 (45.43-46.56) | +2% | 75.90, 75.51 (75.37-76.75) | 0.60, 0.62 |
+
+`seq-walk-vec-1000` (-49%, 0.64x), `list-pop` (-21%, 0.99x), `dissoc-hash100` (-21%, 0.85x), and `assoc-in-3` (0.96x) beat shadow-cljs's medians; `update-in-3` (-6%, 1.02x, range 136.5-139.4 vs 133.3-139.2), `get-in-3` (1.01x, overlapping ranges), and `vec-invoke-1024` (1.07x, range 5.03-5.23 vs 4.67-5.23) overlap shadow-cljs's ranges. Four of the 80 operations remain above shadow-cljs's range in the full gate:
+- `closure-alloc-call` (8.95 vs 8.21 ns, 1.09x): reproduces in isolation (`--ops closure-alloc-call`, load 7.97-8.23): 11.8 (11.8-11.8) vs 9.01 (8.96-9.22) ns, 1.31x shadow-cljs. Caused by `Emitter::iteration` (`src/emitter.rs:7266`) emitting per-iteration `const`/`let` bindings inside `while (true)`, forcing a V8 `BlockContext` allocation per loop iteration when captured by a closure; tracked in follow-up pellet `light-cljs-1112`.
+- `filter-count-1000` (29,775 vs 27,788 ns, 1.07x): gate-order IC effect; run alone (`--ops filter-count-1000`, load 5.90-6.15), light-cljs beats shadow-cljs at 28,069 (27,159-28,528) vs 30,971 (30,567-31,268) ns (0.91x). (Run alone at load 5.90-6.06, `vec-invoke-1024` measured 5.17 (5.15-5.19) vs 4.94 (4.80-5.02) ns, 1.05x, overlapping in the full gate.)
+- `reduce-entries-small` (81.04 vs 77.26 ns, 1.05x): recovers 8.3 ns (-9%) of the `light-cljs-1084` (`84c58e06`) regression (89.38 -> 81.04 ns), remaining +1.23 ns above shadow-cljs's max (79.23 ns) and +3.78 ns above its median (77.26 ns).
+- `vec-peek` (3.56 vs 3.43 ns, 1.04x): +0.13 ns above shadow-cljs's median.
+
+**Workload 200k** (`compare.bb --runs 5 --runtime-only --runtime 1,40 --load-wait 0 --max-repeats 0`, private copy rebuilt with each binary before its run, every checksum equal to oracle `484264`, 455/4526 waste markers unchanged; load 3.71-4.07 before, 4.36-4.61 after): 1 iteration wall 0.346 s (0.335-0.393) to 0.342 s (0.332-0.343), 40 iterations wall 1.404 s (1.381-1.553) to 1.369 s (1.352-1.382), steady state 27.1 to 26.3 ms per iteration (shadow-cljs 24.2 and 23.6 ms; light/shadow 1.12 before and 1.11 after), peak memory at 40 iterations 0.268 (0.263-0.270) to 0.266 (0.260-0.268) GB (light/shadow 0.99 before, 0.98 after).
+
+**Sizes** (light-cljs `:advanced` output as written, without React, compiled with `--elide-asserts --no-cache` from private copies of `research/shadow-credibility/{simple-port-973,todomvc-port-980,flow-port-980}`, `80bc5eba` -> `f0831ccd`):
+- `simple`: raw 274,022 to 275,458 (+1,436), gzip -9 74,010 to 74,376 (+366, +0.49%), brotli 63,752 to 63,924 (+172).
+- `todomvc`: raw 391,068 to 392,507 (+1,439), gzip -9 104,250 to 104,595 (+345, +0.33%), brotli 89,376 to 89,502 (+126).
+- `flow`: raw 1,254,457 to 1,255,902 (+1,445), gzip -9 291,802 to 292,187 (+385, +0.13%), brotli 234,101 to 234,326 (+225).
+
+All three apps stay below the +0.5% gzip threshold. Size ratchet ceilings are synced in `tests/support/ratchet_fixtures.rs` (readable runtime +3,704 B; 26 of 36 `:advanced` fixtures unchanged; `app.editor+app.reports.js` ceiling `114,500`; terse chunk ceiling raised +1,000 B in `tests/compiler/chunks.rs`).
