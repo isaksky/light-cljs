@@ -7604,13 +7604,16 @@
     return self.i$LKEY < arr.length ? self : null;
   });
   //@unit ChunkedSeqValue.next effect: ChunkedSeqValue when: next, nextSite requires: builtinSlot,
-  //@ ChunkedSeqCell, ChunkedSeqValue, chunkedVectorRest, rest, seq, slotFirst
+  //@ ChunkedSeqCell, ChunkedSeqValue, chunkedVectorRest, fieldComparisons, hostExt, ownSeqs, rest,
+  //@ seq, slotFirst
   // The seq of its rest: advance directly within the current leaf, or delegate
-  // chunk boundaries through `seq(chunkedVectorRest(self))`, when `-rest` and
-  // `-seq` are the class's own and `slotFirst` is on, so `extend-type`/`specify!`
-  // overrides stay.
+  // chunk boundaries through `seq(chunkedVectorRest(self))`, when `self` is a
+  // `ChunkedSeq` (`kind === 6`), `-rest` and `-seq` are the class's own, and
+  // no invalidation flag has fired, so `extend-type`/`specify!` overrides stay.
   ChunkedSeqValue.prototype.cljs$core$INext$_next$arity$1$LKEY = builtinSlot(((ownRest, ownSeq) => function (self) {
-    if (slotFirst.on && self.cljs$core$ISeq$_rest$arity$1$LKEY === ownRest
+    if (slotFirst.on && fieldComparisons.on && !ownSeqs.on && !hostExt.seq
+      && self.cljs$lang$kind$$LKEY === 6
+      && self.cljs$core$ISeq$_rest$arity$1$LKEY === ownRest
       && ChunkedSeqValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY === ownSeq) {
       const vec = self.vec$LKEY;
       if (vec) {
@@ -8410,17 +8413,23 @@
   const getSite3 = (value, key, notFound) => value != null && value.cljs$core$ILookup$_lookup$arity$3$LKEY
     ? value.cljs$core$ILookup$_lookup$arity$3$LKEY(value, key, notFound) : get(value, key, notFound);
   //@unit firstSite requires: first
-  const firstSite = value => value != null && value.cljs$core$ISeq$_first$arity$1$LKEY
-    ? value.cljs$core$ISeq$_first$arity$1$LKEY(value) : first(value);
+  const firstSite = value => {
+    const method = value != null ? value.cljs$core$ISeq$_first$arity$1$LKEY : null;
+    return method ? method.call(value, value) : first(value);
+  };
   //@unit restSite requires: rest
   const restSite = value => value != null && value.cljs$core$ISeq$_rest$arity$1$LKEY
     ? value.cljs$core$ISeq$_rest$arity$1$LKEY(value) : rest(value);
   //@unit nextSite requires: next
-  const nextSite = value => value != null && value.cljs$core$INext$_next$arity$1$LKEY
-    ? value.cljs$core$INext$_next$arity$1$LKEY(value) : next(value);
+  const nextSite = value => {
+    const method = value != null ? value.cljs$core$INext$_next$arity$1$LKEY : null;
+    return method ? method.call(value, value) : next(value);
+  };
   //@unit seqSite requires: emptyList, seq
-  const seqSite = (empty => value => value != null && value !== empty && value.cljs$core$ISeqable$_seq$arity$1$LKEY
-    ? value.cljs$core$ISeqable$_seq$arity$1$LKEY(value) : seq(value))(emptyList);
+  const seqSite = (empty => value => {
+    const method = value != null && value !== empty ? value.cljs$core$ISeqable$_seq$arity$1$LKEY : null;
+    return method ? method.call(value, value) : seq(value);
+  })(emptyList);
   //@unit peekSite requires: peek
   const peekSite = value => value != null && value.cljs$core$IStack$_peek$arity$1$LKEY
     ? value.cljs$core$IStack$_peek$arity$1$LKEY(value) : peek(value);

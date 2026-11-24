@@ -6703,3 +6703,58 @@ fn chunked_seq_next_calls_seq_on_chunked_vector_rest_at_boundary() {
         ":installed-during-count",
     );
 }
+
+#[test]
+fn site_helpers_read_slot_once_and_chunked_seq_next_checks_kind_and_flags() {
+    // firstSite/nextSite/seqSite must read the protocol slot at most once per call.
+    every_level(
+        r#"(let [fn-reads (atom 0)
+                 l (list 1 2)
+                 p (js/Proxy. l #js {:get (fn [target prop _]
+                                            (let [v (js/Reflect.get target prop target)]
+                                              (when (instance? js/Function v)
+                                                (swap! fn-reads inc))
+                                              v))})]
+             (let [f (first p) n (next p) s (seq p)]
+               (pr-str [(identical? s p) f (first n) @fn-reads])))"#,
+        "[true 1 2 3]",
+    );
+    // ChunkedSeqValue.next must reject non-kind-6 receivers even when they
+    // inherit ChunkedSeq.prototype's -rest slot and carry ChunkedSeq fields.
+    every_level(
+        r#"(let [real (seq (vec (range 40)))
+                 proto (.-prototype ChunkedSeq)
+                 fake (js/Object.create proto)]
+             (doseq [k (js/Object.getOwnPropertyNames real)]
+               (aset fake k (aget real k)))
+             (doseq [k (js/Object.getOwnPropertyNames proto)]
+               (let [d (js/Object.getOwnPropertyDescriptor proto k)]
+                 (when (and d (= (.-value d) 6))
+                   (aset fake k js/undefined))))
+             (let [one (ChunkedSeq. nil (array 0) 0 0 nil nil)
+                   _ (next one)
+                   next-fn (some (fn [k]
+                                   (let [d (js/Object.getOwnPropertyDescriptor proto k)
+                                         v (when d (.-value d))]
+                                     (when (and (instance? js/Function v) (= (.-length v) 1))
+                                       (try
+                                         (when (and (nil? (.call v one one))
+                                                    (= (first (.call v real real)) 1))
+                                           v)
+                                         (catch :default _ nil)))))
+                                 (js/Object.getOwnPropertyNames proto))]
+               (try
+                 (pr-str [(boolean next-fn) (.call next-fn fake fake)])
+                 (catch :default _
+                   (if next-fn "rejected" "missing")))))"#,
+        "rejected",
+    );
+    // Protocol extensions installed after an initial ChunkedSeq next call are honoured.
+    every_level(
+        r#"(let [s (seq (vec (range 40)))
+                 before (first (next s))]
+             (extend-type ChunkedSeq ISeq (-rest [_] (list :late-rest)))
+             (pr-str [before (first (next s))]))"#,
+        "[1 :late-rest]",
+    );
+}
