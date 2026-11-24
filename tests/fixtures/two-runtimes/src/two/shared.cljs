@@ -127,5 +127,8 @@
     (.push registry #js {:label (load-option "label")
                          :values (values)
                          :observe observe
-                         :host host})
+                         :host host
+                         :undefVec (fn [] (with-meta [1 2] js/undefined))
+                         :emptyMetaUndef (fn [v] (undefined? (meta (empty v))))
+                         :mapMeta (fn [] (pr-str [(meta {:a 1}) (meta (assoc {:a 1} :b 2))]))})
     registry))

@@ -100,7 +100,7 @@ const scenarios = [
     name: "one build loaded twice",
     loads: [
       { label: "app", module: "app/two.app.js", extendBox: true },
-      { label: "app again", module: "app/two.app.js", copy: 2 },
+      { label: "app again", module: "app/two.app.js", copy: 2, checkUndefMeta: true },
     ],
     expected: [
       "load app: ok",
@@ -111,6 +111,25 @@ const scenarios = [
       `app sees app again: ${copy()}`,
       `app again sees app: ${copy(99)}`,
       `app again sees app again: ${recognised()}`,
+      "undef meta empty: true",
+    ],
+  },
+  {
+    name: "one build loaded twice, with Object.prototype IMeta via specify!",
+    loads: [
+      { label: "app", module: "app/two.app.js", specifyObjMeta: true },
+      { label: "app again", module: "app/two.app.js", copy: 2 },
+    ],
+    expected: [
+      "load app: ok",
+      "load app again: ok",
+      `host app: ${host("app")}`,
+      `host app again: ${host("app")}`,
+      `app sees app: ${recognised()}`,
+      `app sees app again: ${copy()}`,
+      `app again sees app: ${copy()}`,
+      `app again sees app again: ${recognised()}`,
+      "obj meta: [:inherited :inherited] / [:inherited :inherited]",
     ],
   },
   {
@@ -284,7 +303,11 @@ async function page(loads) {
   // One host object every runtime's values hold (`holder`).
   globalThis.twoRuntimesShared = {};
   for (const load of loads) {
-    globalThis.twoRuntimesLoad = { label: load.label, extendBox: load.extendBox === true };
+    globalThis.twoRuntimesLoad = {
+      label: load.label,
+      extendBox: load.extendBox === true,
+      specifyObjMeta: load.specifyObjMeta === true,
+    };
     if (load.together) {
       // Dev builds whose index.js all run, in order, before any of their
       // files, as script elements with `async = false` do: each build's
@@ -337,6 +360,12 @@ async function page(loads) {
   for (const runtime of runtimes) lines.push(`host ${runtime.label}: ${runtime.host()}`);
   for (const runtime of runtimes) {
     for (const other of runtimes) lines.push(`${runtime.label} sees ${other.label}: ${runtime.observe(other.values)}`);
+  }
+  if (loads.some((load) => load.checkUndefMeta)) {
+    lines.push(`undef meta empty: ${runtimes[1].emptyMetaUndef(runtimes[0].undefVec())}`);
+  }
+  if (loads.some((load) => load.specifyObjMeta)) {
+    lines.push(`obj meta: ${runtimes[0].mapMeta()} / ${runtimes[1].mapMeta()}`);
   }
   return lines;
 }

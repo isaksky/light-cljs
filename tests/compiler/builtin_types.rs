@@ -6863,22 +6863,38 @@ fn preserve_meta_direct_field_propagation_and_extensions() {
     );
     // 2. Explicit js/undefined metadata (via with-meta and public constructors)
     //    must still be distinguished from absent metadata and propagated.
+    //    Each writer is tested in a fresh runtime instance so none masks another.
     every_level(
         r#"(let [warm (assoc {:a 1} :b 2)
                  m-undef (with-meta {:a 1} js/undefined)
                  m-a (assoc m-undef :b 2)
-                 m-d (dissoc m-a :a)
-                 pam (PersistentArrayMap. js/undefined 1 (array :a 1) nil)
-                 pv (PersistentVector. js/undefined 1 5 nil (array 1) nil)
-                 sv (Subvec. js/undefined [1 2 3] 0 2 nil)]
+                 m-d (dissoc m-a :a)]
              (pr-str [(nil? (meta warm))
                       (identical? js/undefined (meta m-undef))
                       (identical? js/undefined (meta m-a))
-                      (identical? js/undefined (meta m-d))
-                      (identical? js/undefined (meta (assoc pam :b 2)))
-                      (identical? js/undefined (meta (conj pv 2)))
+                      (identical? js/undefined (meta m-d))]))"#,
+        "[true true true true]",
+    );
+    every_level(
+        r#"(let [warm (assoc {:a 1} :b 2)
+                 pam (PersistentArrayMap. js/undefined 1 (array :a 1) nil)]
+             (pr-str [(nil? (meta warm))
+                      (identical? js/undefined (meta (assoc pam :b 2)))]))"#,
+        "[true true]",
+    );
+    every_level(
+        r#"(let [warm (conj [1] 2)
+                 pv (PersistentVector. js/undefined 1 5 nil (array 1) nil)]
+             (pr-str [(nil? (meta warm))
+                      (identical? js/undefined (meta (conj pv 2)))]))"#,
+        "[true true]",
+    );
+    every_level(
+        r#"(let [warm (conj (subvec [1 2 3] 0 2) 9)
+                 sv (Subvec. js/undefined [1 2 3] 0 2 nil)]
+             (pr-str [(nil? (meta warm))
                       (identical? js/undefined (meta (conj sv 9)))]))"#,
-        "[true true true true true true true]",
+        "[true true]",
     );
     // 3. Late extend-type IMeta on PersistentArrayMap after warm fast-path calls.
     every_level(
@@ -6926,16 +6942,35 @@ fn preserve_meta_direct_field_propagation_and_extensions() {
                       (meta (assoc plain :b 2))]))"#,
         r#"[{:box 7} {:reify 1} {:str "hi"} {:obj true} {:kept true} nil]"#,
     );
-    // 7. IMeta extension installed during key IEquiv inside arrayMapAssoc is observed.
+    // 7. IMeta extension installed on the input map via specify! during key
+    //    IEquiv inside arrayMapAssoc must be read and copied to the fresh result.
     every_level(
-        r#"(let [k (reify IEquiv
+        r#"(let [m {:a 1}
+                 k (reify IEquiv
                      (-equiv [_ _]
-                       (extend-type PersistentArrayMap
-                         IMeta (-meta [_] {:mid-assoc true}))
+                       (specify! m IMeta (-meta [_] {:mid-assoc true}))
                        false))
-                 res (assoc {:a 1} k 2)]
-             (pr-str (meta res)))"#,
-        "{:mid-assoc true}",
+                 res (assoc m k 2)]
+             (pr-str [(meta res) (meta {:x 1})]))"#,
+        "[{:mid-assoc true} nil]",
+    );
+}
+
+/// light-cljs-1116 (Sol #2): `specify!` installing `IMeta` on `Object.prototype`
+/// invalidates the direct-field fast path so native collections observe it.
+#[test]
+fn object_prototype_imeta_is_observed_by_native_collections() {
+    every_level(
+        r#"(let [warm [(meta {:a 1}) (meta (assoc {:a 1} :b 2)) (meta (conj [1] 2))]]
+             (specify! (.-prototype js/Object)
+               IMeta (-meta [_] :inherited))
+             (pr-str [warm
+                      (meta {:a 1})
+                      (meta (assoc {:a 1} :b 2))
+                      (meta (dissoc {:a 1 :b 2} :a))
+                      (meta (conj [1] 2))
+                      (meta (empty [1]))]))"#,
+        "[[nil nil nil] :inherited :inherited :inherited :inherited :inherited]",
     );
 }
 
@@ -7057,5 +7092,41 @@ fn equal_pair_of_host_and_primitive_fast_path_and_extensions() {
              (aset d "string" (fn [x y] (and (string? y) (identical? (.-length x) (.-length y)))))
              (pr-str [before (= a b) (= a c)]))"#,
         "[false true false]",
+    );
+    // 7. specify! on String.prototype (primitive prototype) is observed (Sol #3).
+    every_level(
+        r#"(let [xs #js ["a" "b"]
+                 a (aget xs 0)
+                 b (aget xs 1)
+                 before (= a b)]
+             (specify! (.-prototype js/String)
+               IEquiv (-equiv [_ _] true))
+             (pr-str [before (= a b)]))"#,
+        "[false true]",
+    );
+}
+
+/// light-cljs-1116 (Sol #4): a Proxy/getter on a host receiver's `-equiv` slot
+/// that installs a host `IEquiv` extension during the slot read must be honored
+/// on the very first comparison without re-reading the slot.
+#[test]
+fn equal_pair_observes_host_extension_installed_during_slot_read() {
+    every_level(
+        r#"(let [dummy (specify! #js {} IEquiv (-equiv [_ _] true))
+                 equiv-slot (first (filter #(fn? (aget dummy %))
+                                           (js/Object.getOwnPropertyNames dummy)))
+                 reads (atom 0)
+                 p (js/Proxy. #js {}
+                     #js {:get (fn [_ prop _]
+                                 (when (identical? prop equiv-slot)
+                                   (swap! reads inc)
+                                   (extend-type object
+                                     IEquiv (-equiv [_ _] true)))
+                                 js/undefined)})
+                 first-eq (= p #js {})
+                 first-reads @reads
+                 second-eq (= p #js {})]
+             (pr-str [first-eq first-reads second-eq]))"#,
+        "[true 1 true]",
     );
 }

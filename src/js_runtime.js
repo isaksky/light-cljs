@@ -960,25 +960,26 @@
   // method. The shared-heap profile, which takes the old paths, has its
   // own (src/js_shared_profile.js).
   const ownSeqs = {on: false};
-  //@unit hostExt
+  //@unit hostExt requires: runtimeKey
   // Bitmasks of core protocols (`protocolMasks`) extended by `extend-type` to
   // host types (`string`, `number`, `boolean`, `array`, `object`, `function`,
   // `null`, `default`) or primitive wrapper constructors, plus `fn` for
   // mask-less `Fn`, `seq` for any extension of `ISeqable`, `ISeq` or `INext`,
-  // and `imeta` for any `IMeta` extension on `Object` or a runtime class/value
-  // or any explicit `undefined` metadata write.
+  // and `imeta` (`{on}`, shared per `runtimeKey` across copies of a build) for
+  // any `IMeta` extension on `Object`/`Object.prototype` or a runtime
+  // class/value or any explicit `undefined` metadata write.
   // Updated via `patchDeclaration` so declaration transactions undo/redo cleanly.
-  const hostExt = {p0: 0, p1: 0, fn: false, seq: false, imeta: false};
+  const hostExt = {p0: 0, p1: 0, fn: false, seq: false, imeta: runtimeKey.slice(1) === "LKEY" ? {on: false} : (globalThis[Symbol.for("light-cljs.runtime-keys")].imeta ??= {})[runtimeKey] ??= {on: false}};
   //@unit hostExt.core effect: core when: hostExt requires: hostExt
   // Non-sliced builds expose the `core` protocol objects directly, so code may
   // assign host properties onto them without `extend-type` (light-cljs-251).
-  hostExt.p0 = hostExt.p1 = -1; hostExt.fn = hostExt.seq = hostExt.imeta = true;
+  hostExt.p0 = hostExt.p1 = -1; hostExt.fn = hostExt.seq = true; hostExt.imeta.on = true;
   //@unit hostExtEscaped
   // Marker unit kept at `:advanced` when a `hostExt`-tracked core protocol
   // escapes as a value (`escaped_dispatcher` in src/emitter.rs).
   const hostExtEscaped = null;
   //@unit hostExtEscaped.on effect: hostExtEscaped when: hostExt requires: hostExt
-  hostExt.p0 = hostExt.p1 = -1; hostExt.fn = hostExt.seq = hostExt.imeta = true;
+  hostExt.p0 = hostExt.p1 = -1; hostExt.fn = hostExt.seq = true; hostExt.imeta.on = true;
   //@unit hostExtSeqEscaped
   // Marker unit kept at `:advanced` when a sequence or reduce core dispatcher
   // escapes as a value (`escaped_dispatcher` in src/emitter.rs).
@@ -1617,7 +1618,7 @@
   // null (an undefined one is kept, as the field gives it back).
   function SymbolValue(namespace, name, spelling, cachedHash, metadata) {
     if (arguments.length !== 5) return invalidArity(arguments.length);
-    if (metadata === undefined) hostExt.imeta = true;
+    if (metadata === undefined) hostExt.imeta.on = true;
     return new SymbolCell(namespace, name, spelling, cachedHash, metadata);
   }
 
@@ -1687,7 +1688,7 @@
   function PersistentVectorValue(metadata, cnt, shift, root, tail, cachedHash) {
     // `callerTail` marks the tail, which vectors that keep it inherit, as
     // the caller's: no seq freezes it (`vectorChunk`).
-    if (metadata === undefined) hostExt.imeta = true;
+    if (metadata === undefined) hostExt.imeta.on = true;
     const store = new VectorCell(metadata, cnt, shift, root?.vroot$LKEY ?? [], tail, cachedHash);
     store.callerTail$LKEY = true;
     const value = makeVector(null, store);
@@ -1702,7 +1703,7 @@
   //@unit SubvecValue requires: hostExt, methodKeys, nth, protocolHooks, subvecOfTrie, vectorStore,
   //@ vectorTrie, vectorView
   function SubvecValue(metadata, source, start, end, cachedHash) {
-    if (metadata === undefined) hostExt.imeta = true;
+    if (metadata === undefined) hostExt.imeta.on = true;
     const store = vectorStore(source), cnt = Math.max(0, end - start);
     let value;
     // A view of a vector's store holding every index it names, as `subvec`;
@@ -3625,7 +3626,7 @@
   // `IMeta` extension or explicit `undefined` metadata applies, else through
   // `preserveMeta` (light-cljs-1060, light-cljs-1116).
   function conjMeta(coll, built) {
-    if (slotFirst.on && !hostExt.imeta) {
+    if (slotFirst.on && !hostExt.imeta.on) {
       const metadata = coll.meta$LKEY;
       if (metadata != null) setMeta(built, metadata);
       return built;
@@ -7035,7 +7036,7 @@
     const copy = arr.slice();
     if (index >= 0) copy[index + 1] = item; else copy.push(key, item);
     const built = new ArrayMapCell(copy.length >> 1, copy);
-    return slotFirst.on && !hostExt.imeta && self.meta$LKEY == null ? built : preserveMeta(self, built);
+    return slotFirst.on && !hostExt.imeta.on && self.meta$LKEY == null ? built : preserveMeta(self, built);
   }
   //@unit arrayMapPromote requires: hash, HashMapCell, hashNodeAssoc, hostExt, keywordOf,
   //@ keywordProgramEquiv, mapAssocEntries, preserveMeta, slotFirst
@@ -7074,7 +7075,7 @@
       if (!result.old) cnt++;
     }
     const built = new HashMapCell(cnt, root, nil, null);
-    return slotFirst.on && !hostExt.imeta && self.meta$LKEY == null ? built : preserveMeta(self, built);
+    return slotFirst.on && !hostExt.imeta.on && self.meta$LKEY == null ? built : preserveMeta(self, built);
   }
   //@unit hashMapAssoc requires: hash, HashMapCell, hashNodeAssoc, hostExt, preserveMeta, slotFirst
   // `assoc` of a hash map: a hash map of its fields with the new entry along
@@ -7091,7 +7092,7 @@
       n += !result.old;
     }
     const built = new HashMapCell(n, root, nil, null);
-    return slotFirst.on && !hostExt.imeta && self.meta$LKEY == null ? built : preserveMeta(self, built);
+    return slotFirst.on && !hostExt.imeta.on && self.meta$LKEY == null ? built : preserveMeta(self, built);
   }
   //@unit arrayMapDissoc requires: arrayIndex, ArrayMapCell, arrayMapEntries, dissocEntries,
   //@ equalPair, hostExt, keywordOf, keywordProgramEquiv, preserveMeta, slotFirst
@@ -7121,7 +7122,7 @@
       while (retained.length < n - 2) retained.push(undefined, undefined);
     }
     const built = new ArrayMapCell(retained.length >> 1, retained);
-    return slotFirst.on && !hostExt.imeta && self.meta$LKEY == null ? built : preserveMeta(self, built);
+    return slotFirst.on && !hostExt.imeta.on && self.meta$LKEY == null ? built : preserveMeta(self, built);
   }
   //@unit hashMapDissoc requires: hash, HashMapCell, hashNodeRemove, hostExt, preserveMeta, slotFirst
   // `dissoc` of one key from a hash map: a hash map of its fields without
@@ -7135,7 +7136,7 @@
       const next = root ? hashNodeRemove(root, 0, hash(key), key, null, true) : null;
       built = next === root ? new HashMapCell(cnt, root, nil, self.lit$LKEY) : new HashMapCell(cnt - 1, next, nil, null);
     }
-    return slotFirst.on && !hostExt.imeta && self.meta$LKEY == null ? built : preserveMeta(self, built);
+    return slotFirst.on && !hostExt.imeta.on && self.meta$LKEY == null ? built : preserveMeta(self, built);
   }
   //@unit mapContains requires: get, missing
   // `contains?` of a map of the class layout: `get` of the key, through the
@@ -8932,8 +8933,7 @@
     if (path !== undefined) return path(left, right);
     if (left == null) return right == null;
     const fast = slotFirst.on && !(hostExt.p0 & 2097152), type = typeof left;
-    if (fast && type !== "object" && type !== "function") return false;
-    const kind = left.cljs$lang$kind$$LKEY;
+    const kind = type === "object" || type === "function" ? left.cljs$lang$kind$$LKEY : undefined;
     if (kind < 64) {
       const method = Object.getPrototypeOf(left)?.cljs$core$IEquiv$_equiv$arity$2$LKEY;
       if (method) return method.call(left, left, right);
@@ -8943,9 +8943,13 @@
       if (kind === undefined) {
         const own = left.cljs$core$IEquiv$_equiv$arity$2$LKEY;
         if (own) return own.call(left, left, right);
+        if (hostExt.p0 & 2097152) {
+          const equiv = protocolHooks.externalMethod?.(left, methodKeys[18], 2);
+          if (equiv) return equiv.call(left, left, right);
+        }
         return type === "object" && left instanceof Date && right instanceof Date && left.valueOf() === right.valueOf();
       }
-      return kind < 64 ? (kindHooks.equivNamed?.(left, right) ?? false) : false;
+      if (!(hostExt.p0 & 2097152)) return kind < 64 ? (kindHooks.equivNamed?.(left, right) ?? false) : false;
     }
     const equiv = protocolHooks.builtin?.(left, methodKeys[18], 2);
     if (equiv) return equiv.call(left, left, right);
@@ -10120,7 +10124,7 @@
   // A method on `Object.prototype` (`extend-type` of `js/Object`), which the
   // slot shadows, answers first, as the lookup found it through the chain.
   const metaSlot = builtinSlot(function (self) {
-    if (hostExt.imeta) {
+    if (hostExt.imeta.on) {
       const inherited = Object.prototype.cljs$core$IMeta$_meta$arity$1$LKEY;
       if (inherited) return inherited.call(self, self);
       const metadata = self.meta$LKEY;
@@ -11639,7 +11643,7 @@
   //@unit slotWrites.hostExt effect: slotWrites when: hostExt requires: hostExt
   // A program that writes a core protocol member by name may also overwrite
   // seq/print/predicate/meta slots directly without going through `extend-type`.
-  hostExt.p0 = hostExt.p1 = -1; hostExt.fn = hostExt.seq = hostExt.imeta = true;
+  hostExt.p0 = hostExt.p1 = -1; hostExt.fn = hostExt.seq = true; hostExt.imeta.on = true;
   //@unit declarationReceiver compile-time requires: demandProtocol
   function declarationReceiver(value) { demandProtocol("Object", value); return value; }
   //@unit patchDeclaration mutator
@@ -11949,7 +11953,7 @@
   // `undefined` metadata applies (`!hostExt.imeta`), else fall back to `meta`
   // (light-cljs-1116).
   function preserveMeta(original, result) {
-    if (slotFirst.on && !hostExt.imeta) {
+    if (slotFirst.on && !hostExt.imeta.on) {
       const metadata = original.meta$LKEY;
       if (metadata != null) setMeta(result, metadata);
       return result;
@@ -11964,7 +11968,7 @@
   // or JSON lists metadata, as none listed it in the store that held it
   // before light-cljs-1053.
   function setMeta(value, metadata) {
-    if (metadata === undefined) hostExt.imeta = true;
+    if (metadata === undefined) hostExt.imeta.on = true;
     if ("meta$LKEY" in value) value.meta$LKEY = metadata;
     else Object.defineProperty(value, "meta$LKEY", {value: metadata, writable: true, configurable: true});
   }
@@ -12879,7 +12883,7 @@
   kindHooks.varCopy = value => makeVar(value.val$LKEY, value.sym$LKEY);
   //@unit Var requires: hostExt, makeVar
   // Its metadata is kept as given, an undefined one too.
-  function Var(get, symbol, metadata) { if (metadata === undefined) hostExt.imeta = true; const value = makeVar(get, symbol); value.meta$LKEY = metadata; return value; }
+  function Var(get, symbol, metadata) { if (metadata === undefined) hostExt.imeta.on = true; const value = makeVar(get, symbol); value.meta$LKEY = metadata; return value; }
   //@unit test requires: get, keyword, meta, truth, vars
   function test(value) {
     const fn = vars.has(value) ? get(meta(value), keyword(null, "test"))
@@ -13651,7 +13655,7 @@
     const slash = key.indexOf("/"), proto = slash >= 0 ? key.slice(0, slash) : key;
     if (proto === "ISeq") { hostExt.seq = true; if (ownedRuntime) ownSeqs.on = true; }
     else if (proto === "ISeqable" || proto === "INext") hostExt.seq = true;
-    else if (proto === "IMeta" && ownedRuntime) hostExt.imeta = true;
+    else if (proto === "IMeta" && ownedRuntime) hostExt.imeta.on = true;
   }
   //@unit extendType mutator requires: coreDispatchers, coreProtocolsByName, dispatchCell,
   //@ fieldComparisons, hostExt, installMethods, invalidArity, markSeqSlot, nativeMethods,
@@ -13715,7 +13719,7 @@
         patchDeclaration(hostExt, "p1", desc(-1));
         patchDeclaration(hostExt, "fn", desc(true));
         patchDeclaration(hostExt, "seq", desc(true));
-        if (target === Object && !hostExt.imeta) patchDeclaration(hostExt, "imeta", desc(true));
+        if (target === Object && !hostExt.imeta.on) patchDeclaration(hostExt.imeta, "on", desc(true));
       }
       const owned = target === Object || target.prototype.cljs$lang$kind$$LKEY < 64;
       installMethods(target.prototype, methods, slot => markSeqSlot(slot, owned));
@@ -13727,8 +13731,13 @@
   //@ protocolSentinel, tabledKind
   function extendInstance(target, methods, returnTarget) {
     const targetKind = target?.cljs$lang$kind$$LKEY;
-    if (targetKind !== undefined && (tabledKind(targetKind) || (!hostExt.seq && (targetKind === 31 || targetKind === 32)))) fieldComparisons.on = false;
-    const owned = target != null && target.cljs$lang$kind$$LKEY < 64;
+    if (target === Object.prototype || (targetKind !== undefined && (tabledKind(targetKind) || (!hostExt.seq && (targetKind === 31 || targetKind === 32))))) fieldComparisons.on = false;
+    if (target === Object.prototype) {
+      hostExt.p0 = hostExt.p1 = -1; hostExt.fn = hostExt.seq = true; hostExt.imeta.on = true;
+    } else if (target === String.prototype || target === Number.prototype || target === Boolean.prototype || target === Symbol.prototype || target === BigInt.prototype) {
+      hostExt.p0 = hostExt.p1 = -1; hostExt.fn = hostExt.seq = true;
+    }
+    const owned = target === Object.prototype || (target != null && target.cljs$lang$kind$$LKEY < 64);
     installMethods(target, methods, slot => markSeqSlot(slot, owned));
     return returnTarget ? target : methods.length ? (methods.at(-1)[1] === 0 ? protocolSentinel : methods.at(-1)[2]) : null;
   }
@@ -16354,7 +16363,7 @@
     get() { const value = symbolOf(this); return value === undefined ? field === "_meta" ? null : undefined : value[key]; },
     set(value) {
       if (symbolOf(this) !== this) throw new Error("Expected public core value");
-      if (field === "_meta" && value === undefined) hostExt.imeta = true;
+      if (field === "_meta" && value === undefined) hostExt.imeta.on = true;
       this[key] = value;
     }
   });
@@ -16379,7 +16388,7 @@
   Object.defineProperty(Cons.prototype, "meta", {
     get() { return "meta$LKEY" in this ? this.meta$LKEY : null; }, set(value) {
       if (!(cellOf(this)?.cell$LKEY === "cons")) throw new Error("Expected public core value");
-      if (value === undefined) hostExt.imeta = true;
+      if (value === undefined) hostExt.imeta.on = true;
       this.meta$LKEY = value;
     }
   });
@@ -16679,7 +16688,7 @@
   //@ LazySeq
   Object.defineProperty(LazySeq.prototype, "meta", {
     configurable: true, get() { return isLazy(this) ? "meta$LKEY" in this ? this.meta$LKEY : null : undefined; },
-    set(value) { if (value === undefined) hostExt.imeta = true; this.meta$LKEY = value; }
+    set(value) { if (value === undefined) hostExt.imeta.on = true; this.meta$LKEY = value; }
   });
   //@unit LazySeq.members values effect: LazySeq requires: LazySeq, objectEquiv, seqMethods
   Object.defineProperties(LazySeq.prototype, Object.getOwnPropertyDescriptors({
@@ -16930,7 +16939,8 @@
   // slot with (light-cljs-989, `keywordProgramEquiv`).
   protocolHooks.keyMethod = keyMethod;
   //@unit protocolHooks.external effect: extendType when: builtin, compareKeys, conjOwn, disj,
-  //@ extendedDeclared, keywordLookupEquiv, mapConj, pop requires: externalMethod, protocolHooks
+  //@ equalPairOf, extendedDeclared, keywordLookupEquiv, mapConj, pop requires: externalMethod,
+  //@ protocolHooks
   // Only `extend-type` gives implementations that are not the value's own.
   protocolHooks.externalMethod = externalMethod;
   //@unit protocolHooks.extend effect: extendType, extendInstance when: containsOf,

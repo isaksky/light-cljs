@@ -287,7 +287,7 @@
   // forms hold no protocol-mask properties; report all bits set, ignore writes,
   // and leave `protocolHooks.pred` unset so predicates route through the
   // protocol hooks and native store views.
-  const hostExt = {get p0() { return -1; }, set p0(_) {}, get p1() { return -1; }, set p1(_) {}, get fn() { return true; }, set fn(_) {}, get seq() { return true; }, set seq(_) {}, get imeta() { return true; }, set imeta(_) {}};
+  const hostExt = {get p0() { return -1; }, set p0(_) {}, get p1() { return -1; }, set p1(_) {}, get fn() { return true; }, set fn(_) {}, get seq() { return true; }, set seq(_) {}, imeta: {get on() { return true; }, set on(_) {}}};
   //@unit hostExt.hook effect: extendType, extendInstance when: implementsSeq, isChunkedSeq, isColl,
   //@ isCounted, isFn, isList, isMap, isMapEntry, isRecord, isSeq, isSequential, isSet, isVector
   //@ requires: protocolHooks

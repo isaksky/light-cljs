@@ -6291,7 +6291,7 @@ Steady state (from 1- and 10-iter medians): 297.7 vs 257.2 ms/iter (1.16x; down 
 
 ### Core-ops gate (80 operations, Part A+B `49a391f58` vs `4d8d02d5`)
 
-5 runs per compiler alternated, seed 7, load 4.49-6.91 (unreserved), every checksum equal across all runs. No operation regressed beyond its baseline range (`sort-by-100`, `transient-map-100`, `str-sorted-map-20` +4% under higher load, all 0.35x-0.68x shadow-cljs; ratios unchanged within ±0.02). Selected watched and improved operations:
+5 runs per compiler alternated, seed 7, load 4.49-6.91 (unreserved), every checksum equal across all runs. Under the higher machine load during the after run, `dissoc-small` had disjoint timing ranges (`43.9-44.4` -> `44.7-45.4` ns, +3%) with an unchanged `0.79x` light/shadow ratio (and improved `45.4 -> 44.1` ns, -3%, in the same-session subset run below); `sort-by-100`, `transient-map-100`, and `str-sorted-map-20` were +4% under higher load (all `0.35x-0.68x` shadow-cljs, ratios within ±0.02). Selected watched and improved operations:
 
 | op (full 80-op pass) | light-cljs before (range) | light-cljs after (range) | change | shadow-cljs after (range) | light/shadow before, after |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -6319,10 +6319,10 @@ Steady state (from 1- and 10-iter medians): 297.7 vs 257.2 ms/iter (1.16x; down 
 
 ### Sizes
 
-Compiled with `--elide-asserts --no-cache` from private copies of `research/shadow-credibility/{simple-port-973,todomvc-port-980,flow-port-980}` (`4d8d02d5` -> `49a391f58`, light-cljs `:advanced` output without React):
+Compiled with `--elide-asserts --no-cache` from private copies of `research/shadow-credibility/{simple-port-973,todomvc-port-980,flow-port-980}` (`4d8d02d5` -> final commit including Sol-review hardening, light-cljs `:advanced` output without React):
 
-- `simple`: raw 275,458 -> 276,360 (+902 B), gzip -9 74,376 -> 74,598 (+222 B, +0.30%).
-- `todomvc`: raw 392,507 -> 393,455 (+948 B), gzip -9 104,595 -> 104,819 (+224 B, +0.21%).
-- `flow`: raw 1,255,707 -> 1,256,693 (+986 B), gzip -9 292,155 -> 292,372 (+217 B, +0.07%).
+- `simple`: raw 275,458 -> 276,600 (+1,142 B), gzip -9 74,376 -> 74,657 (+281 B, +0.38%).
+- `todomvc`: raw 392,507 -> 393,701 (+1,194 B), gzip -9 104,595 -> 104,873 (+278 B, +0.27%).
+- `flow`: raw 1,255,707 -> 1,256,950 (+1,243 B), gzip -9 292,155 -> 292,435 (+280 B, +0.10%).
 
-All three apps stay well below the +0.5% gzip threshold. Size ratchet ceilings are synced in `tests/support/ratchet_fixtures.rs` and `tests/compiler/chunks.rs` (readable runtime +2,578 B; terse chunk total 144,888 -> 145,479 B).
+All three apps stay below the +0.5% gzip threshold. Size ratchet ceilings are synced in `tests/support/ratchet_fixtures.rs` and `tests/compiler/chunks.rs`.

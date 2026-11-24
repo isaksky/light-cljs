@@ -19,4 +19,9 @@
     ICounted
     (-count [_] 99)))
 
+(when (shared/load-option "specifyObjMeta")
+  (specify! (.-prototype js/Object)
+    IMeta
+    (-meta [_] :inherited)))
+
 (def registry (shared/register!))
