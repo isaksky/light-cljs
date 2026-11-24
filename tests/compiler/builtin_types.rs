@@ -6689,3 +6689,17 @@ fn map_reduce_pairs_reads_entry_before_resolving_rf_call() {
         "[[:a 1]]",
     );
 }
+
+#[test]
+fn chunked_seq_next_calls_seq_on_chunked_vector_rest_at_boundary() {
+    every_level(
+        r#"(let [v (specify! (vec (range 40))
+                     ICounted (-count [_]
+                                (extend-type ChunkedSeq
+                                  ISeqable (-seq [_] :installed-during-count))
+                                40))
+                 cs (ChunkedSeq. v (array 0) 0 0 nil nil)]
+             (pr-str (next cs)))"#,
+        ":installed-during-count",
+    );
+}

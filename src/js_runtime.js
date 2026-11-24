@@ -7604,10 +7604,11 @@
     return self.i$LKEY < arr.length ? self : null;
   });
   //@unit ChunkedSeqValue.next effect: ChunkedSeqValue when: next, nextSite requires: builtinSlot,
-  //@ ChunkedSeqCell, ChunkedSeqValue, count, emptyList, rest, seq, slotFirst, vectorChunk
-  // The seq of its rest: advance directly within the current leaf, or to the
-  // next leaf, when `-rest` and `-seq` are the class's own and `slotFirst` is
-  // on, so `extend-type`/`specify!` overrides stay.
+  //@ ChunkedSeqCell, ChunkedSeqValue, chunkedVectorRest, rest, seq, slotFirst
+  // The seq of its rest: advance directly within the current leaf, or delegate
+  // chunk boundaries through `seq(chunkedVectorRest(self))`, when `-rest` and
+  // `-seq` are the class's own and `slotFirst` is on, so `extend-type`/`specify!`
+  // overrides stay.
   ChunkedSeqValue.prototype.cljs$core$INext$_next$arity$1$LKEY = builtinSlot(((ownRest, ownSeq) => function (self) {
     if (slotFirst.on && self.cljs$core$ISeq$_rest$arity$1$LKEY === ownRest
       && ChunkedSeqValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY === ownSeq) {
@@ -7615,14 +7616,7 @@
       if (vec) {
         const arr = self.arr$LKEY, i = self.i$LKEY + 1;
         if (i < arr.length) return new ChunkedSeqCell(arr, i, vec, self.base$LKEY);
-        if (i === arr.length) {
-          const end = self.base$LKEY + arr.length;
-          if (end < count(vec)) {
-            const leaf = vectorChunk(vec, end);
-            return leaf.length ? new ChunkedSeqCell(leaf, 0, vec, end) : null;
-          }
-          return seq(emptyList);
-        }
+        if (i === arr.length) return seq(chunkedVectorRest(self));
       }
     }
     return seq(rest(self));
