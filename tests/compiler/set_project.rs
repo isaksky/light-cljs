@@ -33,10 +33,22 @@ fn both(host: &mut MacroHost, source: &str, expected: &str) {
             expected
         );
     }
-    let output = Command::new("node")
-        .args(["-e", &format!("console.log({js});")])
-        .output()
+    use std::io::Write as _;
+    use std::process::Stdio;
+    let script = format!("console.log({js});");
+    let mut child = Command::new("node")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(script.as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
     assert!(
         output.status.success(),
         "{}",

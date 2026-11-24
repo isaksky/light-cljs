@@ -969,7 +969,7 @@
   // any `IMeta` extension on `Object`/`Object.prototype` or a runtime
   // class/value or any explicit `undefined` metadata write.
   // Updated via `patchDeclaration` so declaration transactions undo/redo cleanly.
-  const hostExt = {p0: 0, p1: 0, fn: false, seq: false, imeta: runtimeKey.slice(1) === "LKEY" ? {on: false} : (globalThis[Symbol.for("light-cljs.runtime-keys")].imeta ??= {})[runtimeKey] ??= {on: false}};
+  const hostExt = {p0: 0, p1: 0, fn: false, seq: false, imeta: runtimeKey.slice(1) === "LKEY" ? {on: false} : (() => { const k = globalThis[Symbol.for("light-cljs.runtime-keys")], m = k.imeta || (k.imeta = {}); return m[runtimeKey] || (m[runtimeKey] = {on: false}); })()};
   //@unit hostExt.core effect: core when: hostExt requires: hostExt
   // Non-sliced builds expose the `core` protocol objects directly, so code may
   // assign host properties onto them without `extend-type` (light-cljs-251).
@@ -8941,11 +8941,13 @@
     }
     if (fast) {
       if (kind === undefined) {
-        const own = left.cljs$core$IEquiv$_equiv$arity$2$LKEY;
-        if (own) return own.call(left, left, right);
-        if (hostExt.p0 & 2097152) {
-          const equiv = protocolHooks.externalMethod?.(left, methodKeys[18], 2);
-          if (equiv) return equiv.call(left, left, right);
+        if (protocolHooks.builtin) {
+          const own = left.cljs$core$IEquiv$_equiv$arity$2$LKEY;
+          if (own) return own.call(left, left, right);
+          if (hostExt.p0 & 2097152) {
+            const equiv = protocolHooks.externalMethod?.(left, methodKeys[18], 2);
+            if (equiv) return equiv.call(left, left, right);
+          }
         }
         return type === "object" && left instanceof Date && right instanceof Date && left.valueOf() === right.valueOf();
       }

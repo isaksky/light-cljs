@@ -1367,11 +1367,22 @@ mod tests {
     }
 
     fn eval_node_js(js: &str) -> String {
-        let output = std::process::Command::new("node")
-            .arg("-e")
-            .arg(format!("process.stdout.write(JSON.stringify({js}));"))
-            .output()
+        use std::io::Write as _;
+        use std::process::Stdio;
+        let script = format!("process.stdout.write(JSON.stringify({js}));");
+        let mut child = std::process::Command::new("node")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
             .expect("node executable");
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(script.as_bytes())
+            .expect("write script to node stdin");
+        let output = child.wait_with_output().expect("node output");
         assert!(
             output.status.success(),
             "node failed:\nstderr: {}\njs:\n{}",
