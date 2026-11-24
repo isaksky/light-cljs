@@ -1916,6 +1916,8 @@
   }
   //@unit rangeChunks requires: sharedStore
   const rangeChunks = sharedStore();
+  //@unit exceptionMessages compile-time requires: sharedStore
+  const exceptionMessages = sharedStore();
   //@unit coreMethod mutator requires: dispatchCell, invalidArity, protocolHooks, sharedMethodKeys
   // Shareable once booted: the arities array is sealed and the method key
   // resolved at boot, not memoized in a `let` the dispatcher assigns.

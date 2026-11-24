@@ -2694,6 +2694,64 @@ fn exception_info_semantics_stack_printing_and_catch_dispatch() {
 }
 
 #[test]
+fn advanced_exception_info_defers_stack_formatting() {
+    use light_cljs::{ApplicationOptions, OptimizationLevel, analyze, parse, prepare_application};
+    let source = r#"
+        (fn []
+          (let [caught (try
+                         (throw (ex-info "original" nil))
+                         (catch ExceptionInfo e e))]
+            (set! (.-message caught) "edited")
+            caught))
+    "#;
+    let parsed = parse(source).unwrap();
+    let analyzed = analyze(source, &parsed).unwrap();
+    let advanced = prepare_application(
+        &analyzed,
+        ApplicationOptions::new(OptimizationLevel::Advanced),
+    )
+    .emit_js();
+    assert!(
+        !advanced.contains("new WeakMap"),
+        "advanced ExceptionInfo-only output should not embed exceptionMessages WeakMap"
+    );
+    assert_eq!(
+        node(&format!(
+            r#"
+      const assert = require('node:assert/strict');
+      const prev = Error.prepareStackTrace;
+      let calls = 0;
+      let seenNative = false;
+      Error.prepareStackTrace = (err, sites) => {{
+        calls++;
+        seenNative = err.constructor === Error;
+        return `formatted:${{err.message}}:${{sites.length}}`;
+      }};
+      try {{
+        const run = ({advanced});
+        const caught = run();
+        assert.equal(calls, 0);
+        assert.equal(caught.message, 'edited');
+        assert.equal(Object.getOwnPropertyDescriptor(caught, 'stack').enumerable, true);
+        const first = caught.stack;
+        assert.equal(calls, 1);
+        assert.equal(seenNative, true);
+        assert.ok(first.startsWith('formatted:original:'));
+        const second = caught.stack;
+        assert.equal(calls, 1);
+        assert.equal(second, first);
+        assert.equal(({{ ...caught }}).stack, first);
+        console.log('ok');
+      }} finally {{
+        Error.prepareStackTrace = prev;
+      }}
+    "#
+        )),
+        "ok\n"
+    );
+}
+
+#[test]
 #[ignore = "requires Clojure CLI, Java, Node, and both explicitly pinned references"]
 fn compiled_control_matches_pinned_values_effects_and_stdout() {
     let cases = cases()

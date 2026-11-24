@@ -552,6 +552,84 @@ fn exception_data_survives_the_session() {
     assert!(error.to_string().contains("details"));
 }
 #[test]
+fn exception_diagnostics_preserve_original_messages() {
+    let mut s = EvalSession::new(EvalOptions::default()).unwrap();
+    // Mutating `.message` after construction does not alter the evaluator's
+    // original diagnostic snapshot.
+    let edited = s
+        .eval_string(
+            r#"(let [e (ex-info "original" {:k 1})]
+                 (set! (.-message e) "edited")
+                 (throw e))"#,
+        )
+        .unwrap_err();
+    assert!(
+        edited.to_string().contains("original"),
+        "expected original diagnostic, got: {edited}"
+    );
+    assert!(
+        !edited.to_string().contains("edited"),
+        "mutated message leaked into diagnostic: {edited}"
+    );
+    // A throwing `.message` getter on an ExceptionInfo cannot hijack the diagnostic.
+    let getter = s
+        .eval_string(
+            r#"(let [e (ex-info "snapshot" {:k 2})]
+                 (js/Object.defineProperty e "message"
+                   #js {:get (fn [] (throw (js/Error. "getter-boom"))) :configurable true})
+                 (throw e))"#,
+        )
+        .unwrap_err();
+    assert!(
+        getter.to_string().contains("snapshot"),
+        "expected snapshot diagnostic, got: {getter}"
+    );
+    assert!(
+        !getter.to_string().contains("getter-boom"),
+        "getter error replaced diagnostic: {getter}"
+    );
+    // A thrown Proxy must not have `.message` probed by `compilerExceptionMessage`.
+    s.eval_string("(def proxy-props (atom []))").unwrap();
+    let proxy_err = s
+        .eval_string(
+            r#"(throw (js/Proxy. #js {}
+                        #js {:get (fn [_ prop _]
+                                    (swap! proxy-props conj (str prop))
+                                    (when (= prop "message")
+                                      (throw (js/Error. "proxy-message-trap")))
+                                    nil)}))"#,
+        )
+        .unwrap_err();
+    assert!(
+        !proxy_err.to_string().contains("proxy-message-trap"),
+        "proxy message trap leaked into diagnostic: {proxy_err}"
+    );
+    assert_eq!(
+        printed(&mut s, "(boolean (some #{\"message\"} @proxy-props))"),
+        "false"
+    );
+    // A custom Error.prepareStackTrace formatter receives a native Error, not ExceptionInfo.
+    assert_eq!(
+        printed(
+            &mut s,
+            r#"(let [prev (.-prepareStackTrace js/Error)
+                     seen (atom nil)]
+                 (set! (.-prepareStackTrace js/Error)
+                   (fn [err _]
+                     (reset! seen (identical? (.-constructor err) js/Error))
+                     (str "fmt:" (.-message err))))
+                 (try
+                   (let [e (ex-info "fmt-msg" {:a 1})
+                         _ (set! (.-message e) "mutated")
+                         s (.-stack e)]
+                     [@seen s])
+                   (finally
+                     (set! (.-prepareStackTrace js/Error) prev))))"#
+        ),
+        "[true \"fmt:fmt-msg\"]"
+    );
+}
+#[test]
 fn name_policy_preserves_local_and_global_shadowing() {
     use light_cljs::compiler_data::Name;
     let mut s = EvalSession::new(EvalOptions {

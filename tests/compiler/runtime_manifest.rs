@@ -22,6 +22,9 @@ fn manifest() -> &'static RuntimeManifest<'static> {
 /// the compile-time runtime's text in its place (build.rs `STAMPED_MARKER`).
 const STAMPED_MARKER: &str = "/*@stamped*/";
 const STAMPED_TEST: &str = "stamped(value) && ";
+const EXCEPTION_MESSAGE_MARKER: &str = "/*@exmsg*/";
+const EXCEPTION_MESSAGE_RECORD: &str =
+    "if (typeof message === \"string\") exceptionMessages.set(target, message);";
 
 #[test]
 fn every_unit_declares_exactly_the_runtime_bindings_it_references() {
@@ -340,12 +343,14 @@ fn shared_profile_swaps_units_by_name_and_keeps_every_other_unit_verbatim() {
             !runtime_lines.contains(line)
                 && !line.contains("stamp(this);")
                 && !line.contains(STAMPED_TEST)
+                && !line.contains(EXCEPTION_MESSAGE_RECORD)
         })
         .collect::<std::collections::HashSet<_>>();
     let restore = |line: &str| {
         let mut line = line
             .replace("stamp(this);", "/*@brand*/")
-            .replace(STAMPED_TEST, STAMPED_MARKER);
+            .replace(STAMPED_TEST, STAMPED_MARKER)
+            .replace(EXCEPTION_MESSAGE_RECORD, EXCEPTION_MESSAGE_MARKER);
         for name in per_task {
             line = line.replace(&format!("{cells}{name}"), name);
         }
@@ -619,13 +624,18 @@ fn units_concatenate_back_to_the_annotated_file_and_the_embedded_runtime() {
     assert!(!RUNTIME_SOURCE.contains("/*@brand*/"));
     assert!(RUNTIME.contains(STAMPED_MARKER) && !RUNTIME.contains(STAMPED_TEST));
     assert!(!RUNTIME_SOURCE.contains(STAMPED_MARKER));
+    assert!(
+        RUNTIME.contains(EXCEPTION_MESSAGE_MARKER) && !RUNTIME.contains(EXCEPTION_MESSAGE_RECORD)
+    );
+    assert!(!RUNTIME_SOURCE.contains(EXCEPTION_MESSAGE_MARKER));
     assert_eq!(
         RUNTIME_SOURCE
             .split_inclusive('\n')
             .filter(|line| !hook(line))
             .collect::<String>()
             .replace("stamp(this);", "/*@brand*/")
-            .replace(STAMPED_TEST, STAMPED_MARKER),
+            .replace(STAMPED_TEST, STAMPED_MARKER)
+            .replace(EXCEPTION_MESSAGE_RECORD, EXCEPTION_MESSAGE_MARKER),
         RUNTIME
     );
     assert!(!RUNTIME.contains("//@"));

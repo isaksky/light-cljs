@@ -15396,27 +15396,45 @@
     }
     return transduce(xform, rf, editable ? transient(to) : to, from);
   }
-  //@unit ExceptionInfo effect
-  // Match the CLJS constructor: preserve the supplied message/data/cause values
-  // and Error identity, including when callers construct ExceptionInfo directly.
-  // Use Error.captureStackTrace where available so `.stack` stays lazy instead
-  // of eagerly formatting stack frames on every construction.
+  //@unit exceptionMessages compile-time
+  const exceptionMessages = new WeakMap();
+  //@unit compilerExceptionMessage compile-time requires: exceptionMessages
+  const compilerExceptionMessage = value => exceptionMessages.get(value);
+  //@unit lazyErrorStack
+  // Whether native `Error#stack` is an own getter (V8), so `ExceptionInfo`
+  // can defer formatting stack frames until `.stack` is actually read.
+  const lazyErrorStack = typeof Object.getOwnPropertyDescriptor(new Error(), "stack")?.get === "function";
+  //@unit ExceptionInfo effect requires: lazyErrorStack
+  // Match the CLJS constructor: preserve the supplied message/data/cause values,
+  // native Error coercion, construction-time stack text, and enumerable own
+  // `stack` property while deferring stack formatting on lazy engines.
   function ExceptionInfo(message, data, cause) {
+    const error = new Error(message);
     const target = this == null ? globalThis : Object(this);
     target.message = message;
     target.data = data;
     target.cause = cause;
-    if (typeof Error.captureStackTrace === "function") {
-      target.name = "Error";
-      Error.captureStackTrace(target, ExceptionInfo);
+    /*@exmsg*/
+    target.name = error.name;
+    target.description = error.description;
+    target.number = error.number;
+    target.fileName = error.fileName;
+    target.lineNumber = error.lineNumber;
+    target.columnNumber = error.columnNumber;
+    if (lazyErrorStack) {
+      Object.defineProperty(target, "stack", {
+        enumerable: true,
+        configurable: true,
+        get() {
+          const stack = error.stack;
+          try { Object.defineProperty(this, "stack", { value: stack, writable: true, enumerable: true, configurable: true }); } catch {}
+          return stack;
+        },
+        set(value) {
+          Object.defineProperty(this, "stack", { value, writable: true, enumerable: true, configurable: true });
+        }
+      });
     } else {
-      const error = new Error(message);
-      target.name = error.name;
-      target.description = error.description;
-      target.number = error.number;
-      target.fileName = error.fileName;
-      target.lineNumber = error.lineNumber;
-      target.columnNumber = error.columnNumber;
       target.stack = error.stack;
     }
     return target;
@@ -15429,8 +15447,6 @@
   // another copy of this build (docs/value-layout.md, section 1), whose
   // fields are upstream's, unkeyed. `instance?` stays `instanceof`.
   const isExceptionInfo = value => value != null && value.cljs$lang$kind$$LKEY === 48;
-  //@unit compilerExceptionMessage compile-time requires: isExceptionInfo
-  const compilerExceptionMessage = value => isExceptionInfo(value) && typeof value.message === "string" ? value.message : undefined;
   //@unit exInfo requires: ExceptionInfo, invalidArity
   function exInfo(message, data, cause) {
     if (arguments.length !== 2 && arguments.length !== 3) return invalidArity(arguments.length);

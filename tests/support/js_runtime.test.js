@@ -1052,11 +1052,15 @@ assert.equal(c.exCause(c.exInfo('bad', null)), null);
 assert.equal(c.exCause(c.exInfo('bad', null, undefined)), undefined);
 assert.equal(c.exData(new c.ExceptionInfo('bad')), undefined);
 assert.throws(() => c.exInfo('bad'), /Invalid arity: 1/);
-// `.stack` is readable after construction, stable, writable, and captures frames.
+// `.stack` is readable after construction, stable, enumerable, writable, and preserves
+// construction-time stack text and native Error coercion.
 function buildNamedExInfo() { return c.exInfo('with-stack', exceptionData, exceptionCause); }
 const stackedException = buildNamedExInfo();
 assert.equal(stackedException.message, 'with-stack');
 assert.equal(stackedException.name, 'Error');
+for (const key of ['name', 'description', 'number', 'fileName', 'lineNumber', 'columnNumber', 'stack']) {
+  assert.equal(Object.hasOwn(stackedException, key), true, `missing own property ${key}`);
+}
 const firstStackRead = stackedException.stack;
 assert.equal(typeof firstStackRead, 'string');
 assert.ok(firstStackRead.includes('with-stack'));
@@ -1064,6 +1068,28 @@ assert.ok(firstStackRead.includes('buildNamedExInfo'));
 assert.equal(stackedException.stack, firstStackRead);
 stackedException.stack = 'overridden-stack';
 assert.equal(stackedException.stack, 'overridden-stack');
+// Mutating `.message` before the first `.stack` read keeps the construction-time stack text.
+{
+  const mutated = c.exInfo('original', exceptionData);
+  mutated.message = 'edited';
+  assert.equal(mutated.message, 'edited');
+  assert.ok(mutated.stack.startsWith('Error: original\n') || mutated.stack === 'Error: original');
+}
+// Symbol messages preserve native Error coercion and throw TypeError at construction time.
+assert.throws(() => c.exInfo(Symbol('s'), exceptionData), TypeError);
+// Copying or serializing an unread exception keeps enumerable `stack` and compatibility fields.
+{
+  const unread = c.exInfo('spread-msg', exceptionData);
+  assert.equal(Object.getOwnPropertyDescriptor(unread, 'stack').enumerable, true);
+  const spread = { ...unread };
+  assert.equal(typeof spread.stack, 'string');
+  assert.ok(spread.stack.includes('spread-msg'));
+  const roundtrip = JSON.parse(JSON.stringify(c.exInfo('json-msg', null)));
+  assert.equal(typeof roundtrip.stack, 'string');
+  assert.ok(roundtrip.stack.includes('json-msg'));
+  const frozen = Object.freeze(c.exInfo('frozen-msg', null));
+  assert.ok(frozen.stack.includes('frozen-msg'));
+}
 // Non-string messages preserve exact values and still produce string stacks.
 for (const nonString of [null, undefined, 42]) {
   const e = c.exInfo(nonString, exceptionData);
@@ -1071,11 +1097,17 @@ for (const nonString of [null, undefined, 42]) {
   assert.equal(c.exMessage(e), nonString);
   assert.equal(typeof e.stack, 'string');
 }
-// Thrown and caught without ever reading `.stack` does not eagerly prepare stack frames.
+// Thrown and caught without ever reading `.stack` does not eagerly prepare stack frames;
+// first read passes the underlying native Error once, and pre-read writes skip formatting.
 {
   const prevPrepare = Error.prepareStackTrace;
   let prepareCalls = 0;
-  Error.prepareStackTrace = (err, sites) => { prepareCalls++; return `prepared:${err.message}:${sites.length}`; };
+  let seenError = null;
+  Error.prepareStackTrace = (err, sites) => {
+    prepareCalls++;
+    seenError = err;
+    return `prepared:${err.message}:${sites.length}`;
+  };
   try {
     let caught = null;
     try { throw c.exInfo('no-stack-read', exceptionData, exceptionCause); }
@@ -1090,31 +1122,16 @@ for (const nonString of [null, undefined, 42]) {
     assert.equal(prepareCalls, 0);
     assert.ok(caught.stack.startsWith('prepared:no-stack-read:'));
     assert.equal(prepareCalls, 1);
+    assert.equal(seenError.constructor, Error);
+    assert.equal(caught.stack, caught.stack);
+    assert.equal(prepareCalls, 1);
+    const preWritten = c.exInfo('pre-written', exceptionData);
+    preWritten.stack = 'manual-stack';
+    assert.equal(prepareCalls, 1);
+    assert.equal(preWritten.stack, 'manual-stack');
+    assert.equal(({ ...preWritten }).stack, 'manual-stack');
   } finally {
     Error.prepareStackTrace = prevPrepare;
-  }
-}
-// `compilerExceptionMessage` returns string messages for ExceptionInfo only.
-assert.equal(runtime.compilerExceptionMessage(exception), 'bad');
-assert.equal(runtime.compilerExceptionMessage(c.exInfo(42, exceptionData)), undefined);
-assert.equal(runtime.compilerExceptionMessage(exceptionCause), undefined);
-assert.equal(runtime.compilerExceptionMessage({message: 'fake'}), undefined);
-// Fallback when `Error.captureStackTrace` is unavailable still preserves semantics.
-{
-  const savedCapture = Error.captureStackTrace;
-  Error.captureStackTrace = undefined;
-  try {
-    const fallback = c.exInfo('fallback-msg', exceptionData, exceptionCause);
-    assert.ok(fallback instanceof Error);
-    assert.ok(fallback instanceof c.ExceptionInfo);
-    assert.equal(fallback.name, 'Error');
-    assert.equal(fallback.message, 'fallback-msg');
-    assert.equal(c.exData(fallback), exceptionData);
-    assert.equal(c.exCause(fallback), exceptionCause);
-    assert.equal(typeof fallback.stack, 'string');
-    assert.ok(fallback.stack.includes('fallback-msg'));
-  } finally {
-    Error.captureStackTrace = savedCapture;
   }
 }
 console.log('exception value assertions passed');

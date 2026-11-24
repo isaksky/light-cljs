@@ -543,9 +543,16 @@ fn compiler_hooks(runtime: &str, shared: bool) -> String {
         runtime.contains(STAMPED_MARKER),
         "no kind test carries {STAMPED_MARKER}"
     );
+    // `ExceptionInfo` records string messages in `exceptionMessages` only in
+    // the compile-time runtime so application output pays no WeakMap write.
+    assert!(
+        runtime.contains(EXCEPTION_MESSAGE_MARKER),
+        "no ExceptionInfo constructor carries {EXCEPTION_MESSAGE_MARKER}"
+    );
     runtime
         .replace(BRAND_MARKER, BRAND_STAMP)
         .replace(STAMPED_MARKER, STAMPED_TEST)
+        .replace(EXCEPTION_MESSAGE_MARKER, EXCEPTION_MESSAGE_RECORD)
 }
 
 /// The marker that ends each runtime class constructor, and what the
@@ -558,6 +565,11 @@ const BRAND_STAMP: &str = "stamp(this);";
 /// runtime's own values.
 const STAMPED_MARKER: &str = "/*@stamped*/";
 const STAMPED_TEST: &str = "stamped(value) && ";
+/// The marker in `ExceptionInfo` that records string messages for evaluator
+/// diagnostics in the compile-time runtime only ([`compiler_hooks`]).
+const EXCEPTION_MESSAGE_MARKER: &str = "/*@exmsg*/";
+const EXCEPTION_MESSAGE_RECORD: &str =
+    "if (typeof message === \"string\") exceptionMessages.set(target, message);";
 
 /// The bindings of the runtime that functions assign after boot, which the
 /// shared-heap profile keeps per task on the task's cells
