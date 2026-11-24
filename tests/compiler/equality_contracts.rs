@@ -5,7 +5,10 @@ use light_cljs::{
     evaluator::{Evaluator, EvaluatorOptions, RUNTIME_SOURCE},
     parse,
 };
-use std::process::Command;
+use std::{
+    io::Write,
+    process::{Command, Stdio},
+};
 
 fn both(source: &str) {
     let mut host = MacroHost::new();
@@ -23,7 +26,20 @@ fn both(source: &str) {
         "const rt = {RUNTIME_SOURCE}; console.log(rt.core.prStr(({})(rt)));",
         emit_js_unit(&p)
     );
-    let out = Command::new("node").args(["-e", &script]).output().unwrap();
+    let mut child = Command::new("node")
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(script.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
     assert!(
         out.status.success(),
         "{}",
