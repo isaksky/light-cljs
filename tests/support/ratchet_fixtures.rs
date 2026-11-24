@@ -1301,24 +1301,28 @@
 //!
 //! Transient vector edit tokens (light-cljs-1108): `TransientVectorCell` replaces
 //! its per-transient `WeakSet` (`owned$LKEY`) with a lazy `edit$LKEY` token
-//! stamped non-enumerably onto owned trie nodes (`vectorEditor`, `vectorPath`,
-//! `vectorPushTail`, `conjVectorBang`, `vectorAssocNode`, `vectorPopTail`,
-//! `popTransient`); `asTransient` short-circuits `VectorCell` directly to
-//! `kindHooks.transientVector`, `kindHooks.transientVector` skips `viewTrie` on
-//! plain vectors and skips slicing empty tails, `kindHooks.persistVector` trims
-//! ordinary array tails in place without extending shorter constructor tails,
+//! stamped onto owned trie nodes (`vectorEditor`, `vectorPath`, `vectorPushTail`,
+//! `conjVectorBang`, `vectorAssocNode`, `vectorPopTail`, `popTransient`) and
+//! stripped by `vectorChunk` before exposing a leaf to a seq; `asTransient`
+//! short-circuits `VectorCell` directly to `kindHooks.transientVector`,
+//! `kindHooks.transientVector` skips `viewTrie` on plain vectors and skips
+//! slicing empty tails, `kindHooks.persistVector` trims ordinary array tails in
+//! place without extending shorter constructor tails,
 //! `kindHooks.assocTransientVector` rechecks editability after index coercion,
 //! and `TransientVectorType.persistentBang` validates vector receivers before
 //! persisting directly (delegating other receivers to `transientPersistentSlot`).
-//! The readable runtime grows 1,889 bytes (`console-log-sum` at none `844,590`
-//! -> `846,479`), raising all 36 none/prepare ceilings to the next 1,000 above.
-//! At `:advanced`, 32 of 36 fixtures are unchanged; `constant-keys` grows 248
-//! bytes (`75,956` -> `76,204`, ceiling `76,300`, `vectorEditor`), `mapv-count`
-//! grows 708 bytes (`55,041` -> `55,749`, ceiling `55,800`), `features` and
-//! `features-direct` grow 848 bytes (`129,758` -> `130,606`, ceiling `130,700`;
-//! `129,368` -> `130,216`, ceiling `130,300`), and the features chunk
-//! `app.editor+app.reports.js` grows 848 bytes (`101,826` -> `102,674`, ceiling
-//! `102,700`).
+//! The readable runtime grows 1,704 bytes (`console-log-sum` at none `844,590`
+//! -> `846,294`), raising all 36 none/prepare ceilings to the next 1,000 above.
+//! At `:advanced`, 27 of 36 fixtures stay under their ceilings; five fixtures
+//! retaining `vectorChunk` grow 82 bytes (`keyword-lookups` `55,319` -> `55,401`,
+//! `event-maps` `53,400` -> `53,482`, `callbacks` `58,876` -> `58,958`,
+//! `protocol-params` `67,861` -> `67,943`, `extended-classes` `74,144` ->
+//! `74,226`), `constant-keys` grows 236 bytes (`75,956` -> `76,192`, ceiling
+//! `76,200`), `mapv-count` grows 580 bytes (`55,041` -> `55,621`, ceiling
+//! `55,700`), `features` and `features-direct` grow 720 bytes (`129,758` ->
+//! `130,478`, ceiling `130,500`; `129,368` -> `130,088`, ceiling `130,100`),
+//! and the features chunk `app.editor+app.reports.js` grows 720 bytes (`101,826`
+//! -> `102,546`, ceiling `102,600`).
 
 pub struct Fixture {
     pub name: &'static str,
@@ -1428,7 +1432,7 @@ pub const FIXTURES: &[Fixture] = &[
         source: "(defn score [m] (+ (get m :a 0) (get m :b 0) (:c m 0) (get m :ns/d 0)))
                  (defn kind [k] (case k :x 1 :y 2 0))
                  (reduce + (map score [{:a 1 :b 2} {:c 3 :ns/d 4} {:a 5 :c (kind :y)}]))",
-        ceilings: [848_000, 848_000, 55_400],
+        ceilings: [848_000, 848_000, 55_500],
         removed: [0, 0, 0],
         printed: "17\n",
     },
@@ -1525,7 +1529,7 @@ pub const FIXTURES: &[Fixture] = &[
                                 (range 36)))
                  (+ (get table {:id 3 :kind :row}) (get table [:pos 5 6]) (get table #{7 :tag})
                     (get table {:id 11 :kind :row} 0))",
-        ceilings: [848_000, 848_000, 76_300],
+        ceilings: [848_000, 848_000, 76_200],
         removed: [0, 0, 0],
         printed: "62\n",
     },
@@ -1539,7 +1543,7 @@ pub const FIXTURES: &[Fixture] = &[
         name: "event-maps",
         source: "(defn event [i] {:type :click :x i :y (- 100 i) :button 0 :target \"submit\"})
                  (reduce + (map (fn [i] (let [e (event i)] (+ (:x e) (:y e) (count e)))) (range 10)))",
-        ceilings: [847_000, 847_000, 53_400],
+        ceilings: [847_000, 847_000, 53_500],
         removed: [0, 0, 1],
         printed: "1050\n",
     },
@@ -1597,7 +1601,7 @@ pub const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "mapv-count",
         source: "(js/console.log (count (mapv inc [1 2 3])))",
-        ceilings: [847_000, 847_000, 55_800],
+        ceilings: [847_000, 847_000, 55_700],
         removed: [0, 0, 0],
         printed: "3\nundefined\n",
     },
@@ -1704,7 +1708,7 @@ pub const FIXTURES: &[Fixture] = &[
                    (+ (reduce add-cost 0 (filter heavy? items))
                       (reduce + (map (fn [item] (count (:label item))) items))
                       @counter))",
-        ceilings: [849_000, 849_000, 58_900],
+        ceilings: [849_000, 849_000, 59_000],
         removed: [0, 0, 1],
         printed: "26\n",
     },
@@ -1730,7 +1734,7 @@ pub const FIXTURES: &[Fixture] = &[
                                           (str (tag plain item true)
                                                (tag sale item (> (:qty item) 2))))
                                         items))))",
-        ceilings: [850_000, 850_000, 67_900],
+        ceilings: [850_000, 850_000, 68_000],
         removed: [0, 0, 0],
         printed: "28.5a-bbbb%cccccc%\n",
     },
@@ -1759,7 +1763,7 @@ pub const FIXTURES: &[Fixture] = &[
                    cljs.core/PersistentTreeSet (specize* [s] [:sorted (count s)])
                    default (specize* [x] :other))
                  (js/console.log (pr-str (map specize* [#{1 2} [3] (seq #{4}) (= #{5} #{5})])))",
-        ceilings: [848_000, 848_000, 74_200],
+        ceilings: [848_000, 848_000, 74_300],
         removed: [0, 0, 0],
         printed: "([:set 2] :other :other :other)\nundefined\n",
     },
@@ -1814,7 +1818,7 @@ const FEATURES_REPORTS: (&str, &str) = (
 /// features holds (`size_ratchet::FEATURES_STARTUP_SLACK`).
 pub const FEATURES_CHUNK_CEILINGS: &[(&str, usize)] = &[
     ("app.main.js", 7_900),
-    ("app.editor+app.reports.js", 102_700),
+    ("app.editor+app.reports.js", 102_600),
     ("app.editor.js", 17_100),
     ("app.reports.js", 5_100),
 ];
@@ -1837,7 +1841,7 @@ pub const NAMESPACE_FIXTURES: &[NamespaceFixture] = &[
             FEATURES_EDITOR,
             FEATURES_REPORTS,
         ],
-        ceilings: [866_000, 866_000, 130_700],
+        ceilings: [866_000, 866_000, 130_500],
         removed: [0, 0, 21],
         printed: "menu: Editor | Reports\n#function\n",
     },
@@ -1861,7 +1865,7 @@ pub const NAMESPACE_FIXTURES: &[NamespaceFixture] = &[
             FEATURES_EDITOR,
             FEATURES_REPORTS,
         ],
-        ceilings: [865_000, 865_000, 130_300],
+        ceilings: [865_000, 865_000, 130_100],
         removed: [0, 0, 20],
         printed: "menu: Editor | Reports\n#function\n",
     },

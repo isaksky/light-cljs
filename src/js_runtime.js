@@ -5469,7 +5469,9 @@
   // `assoc` kept): that one stays its caller's, as upstream.
   function vectorChunk(value, i) {
     const store = vectorStore(value), leaf = vectorLeaf(store, i);
-    return !store.sub$LKEY && store.callerTail$LKEY && leaf === store.tail$LKEY ? leaf : Object.freeze(leaf);
+    if (!store.sub$LKEY && store.callerTail$LKEY && leaf === store.tail$LKEY) return leaf;
+    if (leaf.edit$LKEY !== undefined && !Object.isFrozen(leaf)) delete leaf.edit$LKEY;
+    return Object.freeze(leaf);
   }
   //@unit vectorSlice requires: vectorLeaf
   // A new array of a store's items from index `from` to `to`.
@@ -5520,12 +5522,11 @@
   //@unit vectorEditor
   // What a transient vector, which marks owned trie nodes with `edit`, edits
   // for `node`: the node itself where it owns it, else a copy it then owns.
-  // The token is non-enumerable so leaves exposed through `ChunkedSeq.node`
-  // or reused as tails enumerate only their index keys.
+  // `vectorChunk` strips any dead token before exposing a leaf to a seq.
   function vectorEditor(node, edit) {
     if (node.edit$LKEY === edit) return node;
     const copy = node.slice();
-    Object.defineProperty(copy, "edit$LKEY", {value: edit, writable: true});
+    copy.edit$LKEY = edit;
     return copy;
   }
   //@unit vectorPath
@@ -5533,7 +5534,7 @@
   function vectorPath(level, node, edit) {
     if (!level) return node;
     const parent = [vectorPath(level - 5, node, edit)];
-    if (edit) Object.defineProperty(parent, "edit$LKEY", {value: edit, writable: true});
+    if (edit) parent.edit$LKEY = edit;
     return parent;
   }
   //@unit vectorPushTail requires: vectorEditor, vectorPath
@@ -5572,10 +5573,10 @@
     if (cnt - vectorTailOffset(cnt) < 32) store.tail$LKEY[cnt & 31] = item;
     else {
       const shift = store.shift$LKEY, edit = store.edit$LKEY ?? (store.edit$LKEY = {}), tail = store.tail$LKEY, grow = (cnt >>> 5) > (1 << shift);
-      if (tail.edit$LKEY !== edit) Object.defineProperty(tail, "edit$LKEY", {value: edit, writable: true});
+      tail.edit$LKEY = edit;
       if (grow) {
         const nextRoot = [store.root$LKEY, vectorPath(shift, tail, edit)];
-        Object.defineProperty(nextRoot, "edit$LKEY", {value: edit, writable: true});
+        nextRoot.edit$LKEY = edit;
         store.root$LKEY = nextRoot;
         store.shift$LKEY = shift + 5;
       } else store.root$LKEY = vectorPushTail(cnt, shift, store.root$LKEY, tail, edit);
