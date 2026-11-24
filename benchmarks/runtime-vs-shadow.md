@@ -6040,3 +6040,63 @@ After `light-cljs-1108`, `light-cljs-1109`, `light-cljs-1084`, and `light-cljs-1
 - `flow`: raw 1,254,457 to 1,255,902 (+1,445), gzip -9 291,802 to 292,187 (+385, +0.13%), brotli 234,101 to 234,326 (+225).
 
 All three apps stay below the +0.5% gzip threshold. Size ratchet ceilings are synced in `tests/support/ratchet_fixtures.rs` (readable runtime +3,704 B; 26 of 36 `:advanced` fixtures unchanged; `app.editor+app.reports.js` ceiling `114,500`; terse chunk ceiling raised +1,000 B in `tests/compiler/chunks.rs`).
+
+
+## 2026-11-24: the real workloads after the output-speed pellets (light-cljs-1019)
+
+### Setup
+
+- **light-cljs:** `4d8d02d5`, immutable release V8 build at `research/output-speed/gate-recheck-4d8d02d5/light-cljs-4d8d02d5` (SHA-256 `c83ad3079129f3a4...`). Master `265007fd` differs from `4d8d02d5` only by a test-file fix (`tests/dev_build.rs`), so compiler and runtime output are identical.
+- **shadow-cljs:** 3.5.3 with Closure Compiler v20260907.
+- **Runtimes and tools:** Node v26.12.1, Headless Chromium 156.0.8078.4 (Playwright revision 1248) via playwright-core 1.64.1, esbuild 0.25.10, OpenJDK 25.0.2, Clojure CLI 1.12.4.1618, Babashka 1.13.229.
+- **Machine:** macOS 15.7.3, Apple M3 Ultra (VirtualMac2,1), 24 CPUs, 32 GiB. **Unreserved:** no run waited for a quiet machine; the 1-minute load average before every run is recorded in each table.
+- **Generated projects:** private copies of the seed-42 projects under `target/bench/`, rebuilt from scratch with both compilers. Every run's printed checksum matched `bb oracle.bb`.
+  - **workload 200k:** light-cljs 3,724,794 bytes raw (886,065 gzip -9; 455/4526 waste markers retained, 0 removable), shadow-cljs 4,067,637 bytes raw (1,002,919 gzip -9).
+  - **workload 800k:** light-cljs 14,234,321 bytes raw (3,354,650 gzip -9; 1,829/18,131 waste markers retained, 0 removable), shadow-cljs 15,710,764 bytes raw (3,894,325 gzip -9).
+- **Raw results and profiles:** `research/output-speed/confirm-1019/`.
+
+### Core-ops gate (81 operations)
+
+Already run on `light-cljs-4d8d02d5` (`research/output-speed/gate-recheck-4d8d02d5/gate.md`, 5 runs per compiler alternated, seed 7, load 3.34-5.47, unreserved, every checksum identical): nothing is above 1.10x shadow-cljs. 72 of 81 operations are at or below 1.00x (down to 0.07x on `apply-vec` and 0.16x-0.20x on `hash-fresh-map-7`, `reduce-kv-small`, `keys-hash100`, `vals-hash100`). Nine are above 1.00x: `reduce-entries-small` (82.0 vs 74.6 ns, 1.10x), `vec-invoke-1024` (5.09 vs 4.72 ns, 1.08x), `filter-count-1000` (30,297 vs 28,013 ns, 1.08x), `closure-alloc-call` (8.90 vs 8.28 ns, 1.07x), `vec-peek` (3.56 vs 3.38 ns, 1.05x), `update-in-3` (137.8 vs 134.2 ns, 1.03x), `assoc-small-new` (38.8 vs 38.4 ns, 1.01x; ranges overlap 38.6-39.8 vs 38.4-38.7), `vec-conj-64` (1,294 vs 1,275 ns, 1.01x; ranges overlap 1,266-1,305 vs 1,268-1,280), and `variadic-call` (14.3 vs 14.1 ns, 1.01x; ranges overlap 14.1-14.4 vs 13.7-14.3). Existing deferred pellets cover the non-overlapping gate gaps: `light-cljs-1112` (per-iteration `BlockContext` allocation in `closure-alloc-call`) and `light-cljs-1113` (marginal in-order gate gaps).
+
+### Generated workload, 200k lines
+
+10 runs per iteration count, compilers alternated, unreserved (1-minute load 5.59-7.66). Every run matched oracle checksum.
+
+| Iterations | Compiler | First output | Wall time | User CPU | System CPU | Peak memory | 1-minute load before |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | light-cljs | 0.330 s (0.320-0.393) | 0.335 s (0.324-0.397) | 0.37 s (0.37-0.39) | 0.04 s (0.03-0.05) | 0.144 GB (0.138-0.144) | 7.17-7.66 |
+| 1 | shadow-cljs | 0.311 s (0.306-0.325) | 0.315 s (0.310-0.331) | 0.35 s (0.34-0.37) | 0.03 s (0.03-0.04) | 0.122 GB (0.120-0.125) | 7.17-7.66 |
+| 10 | light-cljs | 0.620 s (0.611-0.699) | 0.636 s (0.626-0.722) | 0.88 s (0.86-0.94) | 0.06 s (0.06-0.12) | 0.229 GB (0.225-0.235) | 6.76-7.17 |
+| 10 | shadow-cljs | 0.566 s (0.553-0.592) | 0.572 s (0.559-0.600) | 0.76 s (0.74-0.78) | 0.05 s (0.05-0.08) | 0.206 GB (0.196-0.211) | 6.76-7.17 |
+| 40 | light-cljs | 1.358 s (1.343-1.403) | 1.368 s (1.351-1.414) | 1.86 s (1.83-1.88) | 0.09 s (0.09-0.13) | 0.264 GB (0.261-0.272) | 5.59-6.46 |
+| 40 | shadow-cljs | 1.238 s (1.220-1.254) | 1.248 s (1.228-1.264) | 1.70 s (1.69-1.73) | 0.10 s (0.09-0.12) | 0.271 GB (0.264-0.277) | 5.59-6.46 |
+
+| Iterations | light/shadow first output | light/shadow wall time | light/shadow CPU (user + system) | light/shadow peak memory |
+| --- | --- | --- | --- | --- |
+| 1 | 1.06 | 1.06 | 1.07 | 1.17 |
+| 10 | 1.10 | 1.11 | 1.15 | 1.11 |
+| 40 | 1.10 | 1.10 | 1.08 | 0.97 |
+
+Steady state, from the median wall times at 1 and 40 iterations: light-cljs 26.5 ms per iteration, shadow-cljs 23.9 ms per iteration (light/shadow 1.11).
+
+### Generated workload, 800k lines
+
+10 runs per iteration count, compilers alternated, unreserved (1-minute load 3.57-6.07). Every run matched oracle checksum.
+
+| Iterations | Compiler | First output | Wall time | User CPU | System CPU | Peak memory | 1-minute load before |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | light-cljs | 1.013 s (1.002-1.072) | 1.021 s (1.011-1.081) | 1.17 s (1.16-1.20) | 0.06 s (0.06-0.07) | 0.387 GB (0.369-0.391) | 5.21-6.07 |
+| 1 | shadow-cljs | 0.966 s (0.960-1.011) | 0.973 s (0.967-1.019) | 1.10 s (1.10-1.16) | 0.05 s (0.05-0.06) | 0.339 GB (0.338-0.341) | 5.21-6.07 |
+| 4 | light-cljs | 1.412 s (1.400-1.449) | 1.433 s (1.413-1.460) | 1.81 s (1.74-1.87) | 0.09 s (0.09-0.10) | 0.437 GB (0.398-0.440) | 4.41-5.03 |
+| 4 | shadow-cljs | 1.321 s (1.316-1.383) | 1.330 s (1.325-1.392) | 1.63 s (1.62-1.71) | 0.08 s (0.08-0.09) | 0.403 GB (0.393-0.406) | 4.41-5.03 |
+| 16 | light-cljs | 2.764 s (2.723-2.816) | 2.777 s (2.736-2.833) | 3.66 s (3.62-3.73) | 0.15 s (0.14-0.16) | 0.525 GB (0.516-0.545) | 3.57-4.04 |
+| 16 | shadow-cljs | 2.523 s (2.516-2.608) | 2.537 s (2.530-2.626) | 3.39 s (3.37-3.50) | 0.15 s (0.15-0.17) | 0.569 GB (0.537-0.579) | 3.61-4.04 |
+
+| Iterations | light/shadow first output | light/shadow wall time | light/shadow CPU (user + system) | light/shadow peak memory |
+| --- | --- | --- | --- | --- |
+| 1 | 1.05 | 1.05 | 1.07 | 1.14 |
+| 4 | 1.07 | 1.08 | 1.11 | 1.09 |
+| 16 | 1.10 | 1.09 | 1.08 | 0.92 |
+
+Steady state, from the median wall times at 1 and 16 iterations: light-cljs 117.1 ms per iteration, shadow-cljs 104.3 ms per iteration (light/shadow 1.12).
