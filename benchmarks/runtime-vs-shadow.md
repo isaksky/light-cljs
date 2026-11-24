@@ -6437,3 +6437,65 @@ Compiled with `--elide-asserts --no-cache` from private copies of `research/shad
 - `flow`: raw 1,259,174 -> 1,259,575 (+401 B), gzip -9 292,988 -> 293,045 (+57 B, +0.02%).
 
 All three apps stay well below the +0.5% gzip threshold. Size ratchet none/prepare ceilings are recomputed on `9ea6566d` in `tests/support/ratchet_fixtures.rs` (no `:advanced` fixture or chunk ceiling moves).
+
+
+## 2026-11-24: avoid applySlow on emitted variadics, MultiFn, and seq tails (light-cljs-1117)
+
+Measured on `master` `956e908e` (before), `8a2bb802` (kept: direct `cljs$lang$applyTo` via 2-arg `fnApplyTo`; `apply`/`applyDirect`/`applyFixed` fast paths for `nil`, `IndexedSeq`/`fnRest`, `Cons`/`List` prefixes, `MultiFn`, and fixed-arity functions without `applySlow` or `Proxy`; `extendType`/`extendInstance` keeping `fieldComparisons` active for user-only protocols), and `a7f24be4` (reverted: deferred `methodKey` markers, `coreMethod` keys, and `demungePattern` in the runtime factory) against shadow-cljs 3.5.3 (Headless Chromium 156.0.8078.4, esbuild 0.25.10, Node v26.12.1, Apple M3 Ultra VM, 24 CPUs, 32 GiB; unreserved, compilers alternated).
+
+### TodoMVC release three-way comparison (headless Chromium, 10 runs alternated each, unreserved)
+
+| Step | `956e908e` before ms (script ms) | `8a2bb802` kept ms (script ms) | `a7f24be4` reverted ms (script ms) | shadow-cljs ms (script ms, paired w/ `8a2bb802`) | `8a2bb802` / shadow |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| page load to interactive | 63.45 [62.00-65.60] (43.09 [42.14-44.63]) | 62.30 [61.80-70.20] (42.30 [41.69-48.75]) | 62.55 [61.80-65.00] (42.76 [42.23-44.87]) | 32.35 [31.10-35.20] (13.85 [13.51-14.44]) | 1.93 |
+| add 1,000 todos | 765.80 [744.00-802.00] (723.31) | 752.15 [741.00-782.10] (707.72) | 752.40 [741.90-760.40] (707.64) | 908.75 [903.30-945.30] (865.74) | 0.83 |
+| toggle all | 51.80 [42.80-57.10] (24.24) | 48.85 [42.10-57.10] (21.95) | 45.75 [39.30-52.70] (21.57) | 46.50 [40.00-55.10] (20.51) | 1.05 |
+| edit one in 1,000 | 61.15 [58.10-64.90] (8.27) | 61.95 [56.00-64.70] (7.84) | 62.40 [59.70-66.00] (7.40) | 63.05 [57.80-67.40] (7.27) | 0.98 |
+| clear completed | 27.05 [24.40-29.60] (7.03) | 26.20 [22.20-27.50] (6.89) | 26.85 [23.50-29.90] (6.95) | 25.80 [22.70-27.40] (6.71) | 1.02 |
+| whole run wall s | 1.34 [1.30-1.39] | 1.32 [1.31-1.39] | 1.33 [1.30-1.34] | 1.44 [1.44-1.51] | 0.91 |
+| 1-min load before | 4.88-5.04 | 4.57-4.98 | 4.19-4.71 | 4.57-4.98 | |
+
+- **Kept `8a2bb802`, reverted `a7f24be4`:** `a7f24be4` did not improve load beyond the run-to-run range (`62.55` vs `62.30 ms`, script `42.76` vs `42.30 ms`; pseudo-names profile `51.90` vs `51.70 ms`), so it was reverted (`git revert`) rather than keeping deferred-table complexity. `8a2bb802` cut `applySlow` in the TodoMVC pseudo-names load profile from **5.13 ms -> 0.45 ms inclusive (-91%)** (`0.24 -> 0.23 ms` self), improved load median `63.45 -> 62.30 ms` (script `43.09 -> 42.30 ms`), and improved or matched all four interactive steps (`add` `765.8 -> 752.2 ms`, `toggleAll` `51.8 -> 48.9 ms`, `edit` script `8.27 -> 7.84 ms`, `clearCompleted` `27.05 -> 26.20 ms`).
+
+### Attribution of the remaining TodoMVC load gap (CDP trace + one load CPU profile per compiler)
+
+1. **`V8.CollectSourcePositions` from eager `new Error()` in `lazyErrorStack` (~23 ms, light-cljs-owned, introduced by `light-cljs-1114`):**
+   - A 3-run check of pre-1114 `4d8d02d5` on the same machine gave `41.70 ms` load (`21.34 ms` script), matching `confirm-1019` (`40.25 ms` / `20.49 ms`). `master` `956e908e` (`63.45 ms` / `43.09 ms`) and `8a2bb802` (`62.30 ms` / `42.30 ms`) pay an extra ~22 ms of script time.
+   - CDP V8 tracing (`v8,v8.execute,disabled-by-default-v8.compile`) pins this to `V8.CollectSourcePositions`: **0.00 ms** on `shadow-cljs` (`v8.run 13.37 ms`) and `4d8d02d5` (`v8.run 17.01 ms`), vs **23.08 ms** on `956e908e` (`V8.ParseFunction 22.22 ms`, `v8.run 41.08 ms`) and **23.27 ms** on `8a2bb802` (`V8.ParseFunction 22.29 ms`, `v8.run 41.58 ms`).
+   - Cause: `const lazyErrorStack = typeof Object.getOwnPropertyDescriptor(new Error(), "stack")?.get === "function";` (`src/js_runtime.js:15471`) calls `new Error()` eagerly inside the top-level 248 KB runtime factory IIFE, forcing V8 to re-parse the runtime function for source positions on every page load. (Note: enabling CDP `Profiler.start` hides this because V8 pre-collects source positions under the profiler.) Filed as a dedicated follow-up pellet.
+2. **Remaining ~6-8 ms pre-1114 load gap (`8a2bb802` pseudo-names load profile `total=69.56 ms`, `script=22.89 ms` vs `shadow-cljs` load profile):**
+   - **React CJS wrapping (external bundler, not light-cljs):** esbuild's `__require` wrapper for `react`/`react-dom`/`scheduler` takes `5.95 ms` inclusive (`0.68 ms` self; `react-dom/index.js` + `client.js` `1.82 ms`, `react-dom.production.min.js` `1.38 ms`, `scheduler` `0.24 ms`) vs shadow-cljs's `shadow$provide` (`5.56 ms` inclusive, `1.10 ms` self at 100 us sampling; `0.5 ms` self in `confirm-1019`). light-cljs emits bare ES module imports (`import ... from "react"`) and leaves npm/CJS bundling to the external bundler (`docs/compiler.md:1769, 1840`), here `benchmarks/re-frame.bb`'s `esbuild 0.25.10 --bundle --minify --format=iife`.
+   - **React first render:** `J`/`R`/`Hk` (`scheduler`/`react-dom` initial mount) `8.80 ms` inclusive (`Vk`/`Uk`/`Jk` `4.39 ms`, `Xk`/`Qk` `3.89 ms`) vs shadow-cljs's `Z`/`Za`/`dj` (`15.63 ms` at 100 us sampling; `8.7 ms` in `confirm-1019`).
+   - **light-cljs top-level module & runtime initialization (`(anonymous) [client.js:7248]` `12.72 ms` inclusive, `0.70 ms` self):** runtime factory `(anonymous) [client.js:7253]` `1.17 ms` inclusive (`0.23 ms` self); top-level namespace init (`cljs.spec.alpha`/`re-frame` registrations via `apply` `5.66 ms` incl / `0.22 ms` self, `applyDirect` `3.16 ms` incl, `applySlow` `0.45 ms` incl / `0.23 ms` self); `extendedMethod` `0.90 ms`, `reify` `0.46 ms`, `putEntry` `0.41 ms`, `keywordOf` `0.40 ms`.
+
+### Core-ops gate (`956e908e` -> `8a2bb802`, 5 runs alternated, unreserved)
+
+All 80 operations matched shadow-cljs checksums. In the full 80-op run, machine load rose from `3.31-4.69` (`956e908e`) to `3.43-7.78` (`8a2bb802`), producing +2-6% drift across unrelated operations; a matched-load recheck (`load 6.41-6.94`) confirmed zero regression on `vals-small` (-2%), `reduce-entries-small` (+1%), `multimethod` (`19.7 -> 19.4 ns`, -1%, `0.52x` shadow; full gate `40.20 -> 41.25 ns`, `0.86x` shadow), and `variadic-call` (`10.5 -> 10.6 ns`, +0%, `0.99x` shadow; full gate `14.08 -> 14.65 ns`, `1.04x` shadow). `apply-vec` moved from `6.21 [6.11-8.17]` to `6.94 [6.84-6.96] ns/op` in the full gate (within the baseline range, `0.08x` of shadow-cljs's `90.61 ns/op`; `6.66 -> 7.54 ns/op` isolated, `0.21x` shadow) due to the extra dispatch check in `apply`.
+
+### Generated workload, 200k lines (`8a2bb802` vs shadow-cljs, 10 runs alternated, load 6.43-7.69, unreserved)
+
+| Iterations | Compiler | First output | Wall time | User CPU | System CPU | Peak memory |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | light-cljs | 0.320 s (0.312-0.338) | 0.325 s (0.317-0.343) | 0.37 s (0.36-0.39) | 0.03 s | 0.139 GB (0.137-0.141) |
+| 1 | shadow-cljs | 0.307 s (0.300-0.327) | 0.311 s (0.304-0.331) | 0.35 s (0.34-0.37) | 0.02 s | 0.121 GB (0.118-0.125) |
+| 10 | light-cljs | 0.593 s (0.581-0.622) | 0.599 s (0.586-0.627) | 0.80 s (0.79-0.84) | 0.05 s | 0.187 GB (0.181-0.193) |
+| 10 | shadow-cljs | 0.579 s (0.563-0.627) | 0.585 s (0.569-0.634) | 0.78 s (0.76-0.83) | 0.06 s | 0.206 GB (0.201-0.213) |
+| 40 | light-cljs | 1.224 s (1.190-1.282) | 1.240 s (1.206-1.299) | 1.67 s (1.63-1.75) | 0.08 s | 0.248 GB (0.240-0.250) |
+| 40 | shadow-cljs | 1.232 s (1.201-1.253) | 1.240 s (1.210-1.261) | 1.71 s (1.67-1.74) | 0.09 s | 0.270 GB (0.267-0.277) |
+
+1-iteration first output: **0.320 vs 0.307 s (1.04x**, overlapping ranges); 40-iteration wall time **1.240 vs 1.240 s (1.00x)**; steady state **23.5 vs 23.8 ms/iter (0.99x)**; peak memory **0.92x**.
+
+### Browser checks and re-frame test suite (`8a2bb802`)
+
+- `bb benchmarks/re-frame.bb browser` (3 runs each): `todomvc` 10/10 checks pass 3/3; `simple` 4/4 checks pass 3/3; `flow` 3/3 checks pass 3/3 (page text after each step matches shadow-cljs).
+- `bb benchmarks/re-frame-tests.bb`: 118/118 tests pass across shadow, light-compile, and light-release (446 assertions x 3 runs each).
+
+### Sizes (`956e908e` -> `8a2bb802`, `bb benchmarks/re-frame.bb size --light-only`)
+
+| App | Before raw (without React) | After raw (without React) | Before gzip -9 | After gzip -9 | gzip delta (without React) | Whole bundle gzip -9 (+esbuild) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `simple` | 279,032 | 281,156 (+2,124) | 75,216 | 75,734 | +518 B (+0.69%) | 121,341 -> 121,891 (+550 B, +0.45%) |
+| `todomvc` | 396,130 | 398,199 (+2,069) | 105,455 | 105,995 | +540 B (+0.51%) | 153,499 -> 154,026 (+527 B, +0.34%) |
+| `flow` | 1,259,263 | 1,260,122 (+859) | 292,990 | 293,425 | +435 B (+0.15%) | 345,988 -> 346,557 (+569 B, +0.16%) |
+
+Standalone gzip growth slightly above 0.5% on `simple` (+0.69%) and `todomvc` (+0.51%) comes from the fixed ~2 KB raw (~520 B gzip) `fnApplyTo`/`apply`/`applyDirect`/`applyFixed` runtime helpers (below +0.5% on the shipped whole bundle and +0.15% on `flow`). Size ratchet ceilings are recomputed on `956e908e` in `tests/support/ratchet_fixtures.rs` and `tests/compiler/chunks.rs`.

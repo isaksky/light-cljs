@@ -3168,7 +3168,10 @@ fn terse_chunks_write_their_runtime_units_at_module_level() {
     // (145,479), and light-cljs-1115 fixed-shape `callable2`/`callable`
     // wrappers, 2-fn `comp`, 1-arg `partial`, and fast protocol-miss dispatch
     // (`protocolExternal`, `protocolState$LKEY`, `slotMask`, direct
-    // user-protocol single/multi-arity host `extendType`; 146,663).
+    // user-protocol single/multi-arity host `extendType`; 146,663), and
+    // light-cljs-1117 direct `cljs$lang$applyTo` via 2-arg `fnApplyTo` and
+    // `apply`/`applyDirect`/`applyFixed` fast paths for variadics, MultiFn,
+    // and seq tails (148,611).
     assert!(
         total + 1_000
             <= 73_207
@@ -3199,7 +3202,8 @@ fn terse_chunks_write_their_runtime_units_at_module_level() {
                 + 2_000
                 + 4_000
                 + 1_000
-                + 1_000,
+                + 1_000
+                + 2_000,
         "{total} bytes\n{listing}"
     );
     // Startup's `lazy$` is 242 bytes since light-cljs-353 (687 before).
