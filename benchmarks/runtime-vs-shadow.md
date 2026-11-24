@@ -6379,3 +6379,61 @@ Every checksum matched shadow-cljs. **0 of 80 operations regressed beyond their 
 | `flow` (`flow-port-980`) | 1,256,971 | 1,258,819 (+1,848) | 292,445 | 292,963 | +518 B (+0.18%) | 235,304 (+714) |
 
 Growth slightly above 0.5% gzip on `simple` (+0.66%) and `todomvc` (+0.51%) is the fixed ~1.85 KB raw (~494-538 B gzip) runtime prefix from `callable2`, static-shape `callable`, 2-fn `comp`, 1-arg `partial`, `protocolExternal`, `slotMask`/direct `.call` `miss`, and multi-arity host dispatch in `extendType` (constant across app sizes, dropping to +0.18% on `flow`).
+
+
+## 2026-11-24: lazy enumerable stack accessor and direct property copy in ExceptionInfo (light-cljs-1114)
+
+Rebased onto `light-cljs-1115` (`master` `9ea6566d`). Measured at `2d15cea7` (`light-cljs-2d15cea7`, SHA-256 `b070ef4df659e9b3...`) against baseline `9ea6566d` (`light-cljs-9ea6566d`, SHA-256 `88e63bde7b13af15...`) and shadow-cljs 3.5.3 (Node v26.12.1, Apple M3 Ultra VM, 24 CPUs, 32 GiB; unreserved, compilers alternated, every checksum equal to oracle).
+
+- **Change:** `ExceptionInfo` copies the six non-stack `Error` properties directly instead of allocating a 7-string array and looping `for...of`, installs an enumerable, configurable lazy own `stack` getter/setter on engines whose native `Error#stack` is an own getter (`lazyErrorStack`, V8) so stack frames are formatted only when `.stack` is read (caching as a writable own data property on first read or write while keeping construction-time `new Error(message)` coercion, stack text, and native `Error` formatter receiver), and moves `exceptionMessages` recording behind the compile-time `/*@exmsg*/` hook in `build.rs` so application output pays no `WeakMap` allocation or write.
+
+### Generated workload, 200k lines (10 runs alternated, unreserved)
+
+- **Before (`9ea6566d`, load 4.08-4.41):** 1-iter wall 0.339 s (0.320-0.359) vs shadow 0.308 s (0.301-0.328, 1.10x); 10-iter wall 0.616 s (0.602-0.644) vs 0.561 s (0.557-0.599, 1.10x); 40-iter wall 1.275 s (1.247-1.317) vs 1.199 s (1.190-1.287, 1.06x); steady state 24.0 vs 22.8 ms/iter (1.05x).
+- **After (`2d15cea7`, load 3.16-3.47):**
+
+| Iterations | Compiler | First output | Wall time | User CPU | System CPU | Peak memory | 1-minute load before |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | light-cljs | 0.305 s (0.302-0.321) | 0.308 s (0.306-0.325) | 0.35 s (0.35-0.37) | 0.02 s (0.02-0.03) | 0.139 GB (0.138-0.142) | 3.38-3.41 |
+| 1 | shadow-cljs | 0.294 s (0.290-0.300) | 0.297 s (0.293-0.304) | 0.33 s (0.33-0.34) | 0.02 s (0.02-0.03) | 0.120 GB (0.119-0.124) | 3.38-3.41 |
+| 10 | light-cljs | 0.568 s (0.561-0.601) | 0.582 s (0.575-0.617) | 0.81 s (0.80-0.87) | 0.05 s (0.05-0.06) | 0.230 GB (0.225-0.236) | 3.16-3.27 |
+| 10 | shadow-cljs | 0.552 s (0.541-0.577) | 0.557 s (0.546-0.583) | 0.74 s (0.73-0.77) | 0.05 s (0.04-0.06) | 0.206 GB (0.201-0.209) | 3.16-3.27 |
+| 40 | light-cljs | 1.189 s (1.173-1.244) | 1.195 s (1.180-1.251) | 1.66 s (1.64-1.74) | 0.07 s (0.07-0.09) | 0.257 GB (0.247-0.262) | 3.18-3.47 |
+| 40 | shadow-cljs | 1.170 s (1.153-1.188) | 1.178 s (1.161-1.196) | 1.63 s (1.61-1.66) | 0.08 s (0.07-0.08) | 0.266 GB (0.263-0.271) | 3.18-3.47 |
+
+Steady state (from 1- and 40-iter medians): **22.8 vs 22.6 ms/iter (1.01x**, down from 1.05x on `9ea6566d` and 1.11x on `4d8d02d5`; 40-iter wall 1.195 vs 1.178 s, 1.01x, overlapping ranges; CPU 1.01x; peak memory 0.97x).
+
+### Generated workload, 800k lines (10 runs alternated, unreserved)
+
+- **Before (`9ea6566d`, load 3.50-3.94):** 1-iter wall 1.022 s (1.015-1.098) vs shadow 0.996 s (0.978-1.043, 1.03x); 4-iter wall 1.436 s (1.400-1.499) vs 1.351 s (1.334-1.383, 1.06x); 16-iter wall 2.694 s (2.651-2.936) vs 2.591 s (2.551-2.646, 1.04x); steady state 111.4 vs 106.4 ms/iter (1.05x).
+- **After (`2d15cea7`, load 3.41-4.25):**
+
+| Iterations | Compiler | First output | Wall time | User CPU | System CPU | Peak memory | 1-minute load before |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | light-cljs | 0.995 s (0.980-1.014) | 1.003 s (0.990-1.024) | 1.15 s (1.13-1.18) | 0.06 s (0.06-0.07) | 0.386 GB (0.344-0.390) | 3.68-4.25 |
+| 1 | shadow-cljs | 0.980 s (0.969-1.017) | 0.988 s (0.976-1.026) | 1.12 s (1.10-1.17) | 0.06 s (0.05-0.06) | 0.338 GB (0.312-0.343) | 3.68-4.25 |
+| 4 | light-cljs | 1.356 s (1.336-1.375) | 1.374 s (1.353-1.408) | 1.71 s (1.69-1.82) | 0.09 s (0.09-0.10) | 0.437 GB (0.390-0.439) | 3.53-3.71 |
+| 4 | shadow-cljs | 1.336 s (1.329-1.374) | 1.345 s (1.338-1.384) | 1.64 s (1.63-1.70) | 0.09 s (0.09-0.10) | 0.403 GB (0.373-0.405) | 3.53-3.71 |
+| 16 | light-cljs | 2.552 s (2.533-2.601) | 2.565 s (2.545-2.614) | 3.42 s (3.39-3.47) | 0.14 s (0.14-0.15) | 0.529 GB (0.485-0.539) | 3.41-4.03 |
+| 16 | shadow-cljs | 2.558 s (2.530-2.666) | 2.572 s (2.543-2.682) | 3.43 s (3.39-3.58) | 0.16 s (0.15-0.18) | 0.560 GB (0.513-0.581) | 3.41-4.03 |
+
+Steady state (from 1- and 16-iter medians): **104.1 vs 105.6 ms/iter (0.99x**, down from 1.05x on `9ea6566d` and 1.12x on `4d8d02d5`; 16-iter wall 2.565 vs 2.572 s, 1.00x; CPU 0.99x; peak memory 0.94x).
+
+### CPU profiles (`node --cpu-prof`, `:advanced`)
+
+- **Workload 200k (40 iters):** `ExceptionInfo` **27.0 ms (2.04%)** + `defaultPrepareStackTrace` **0.0 ms** = **27.0 ms** (total 1,322.6 ms, 780 samples), down from `9ea6566d`'s 53.6 + 55.8 = 109.4 ms (-75%) and `4d8d02d5`'s 65.4 + 45.2 = 110.6 ms (-76%), and **2.38x faster** than shadow-cljs 3.5.3's `Iba` 32.6 + `defaultPrepareStackTrace` 31.6 = 64.2 ms.
+- **Workload 800k (16 iters):** `ExceptionInfo` **57.5 ms (1.96%)** + `defaultPrepareStackTrace` **0.0 ms** = **57.5 ms** (total 2,937.3 ms, 1,655 samples), down from `9ea6566d`'s 136.6 + 60.6 = 197.2 ms (-71%) and `4d8d02d5`'s 87.1 + 59.6 = 146.7 ms (-61%), and **2.32x faster** than shadow-cljs 3.5.3's `fca` 73.1 + `defaultPrepareStackTrace` 60.5 = 133.6 ms.
+
+### Core-ops gate
+
+`benchmarks/core-ops/src/core_ops/main.cljs` contains no exception operation, so `:advanced` slicing omits `ExceptionInfo` and `benchmarks/core-ops/out/light/core-ops.main.js` is byte-for-byte identical between `9ea6566d` and `2d15cea7` (SHA-256 `82ce4fcb52141645f73d26cbae478ac9d5c6241f8dbc1179dac081f2b9fb410f`).
+
+### Sizes
+
+Compiled with `--elide-asserts --no-cache` from private copies of `research/shadow-credibility/{simple-port-973,todomvc-port-980,flow-port-980}` (`9ea6566d` -> `2d15cea7`, light-cljs `:advanced` output without React):
+
+- `simple`: raw 278,631 -> 279,032 (+401 B), gzip -9 75,144 -> 75,231 (+87 B, +0.12%).
+- `todomvc`: raw 395,729 -> 396,130 (+401 B), gzip -9 105,403 -> 105,471 (+68 B, +0.06%).
+- `flow`: raw 1,259,174 -> 1,259,575 (+401 B), gzip -9 292,988 -> 293,045 (+57 B, +0.02%).
+
+All three apps stay well below the +0.5% gzip threshold. Size ratchet none/prepare ceilings are recomputed on `9ea6566d` in `tests/support/ratchet_fixtures.rs` (no `:advanced` fixture or chunk ceiling moves).
