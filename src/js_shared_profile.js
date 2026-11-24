@@ -790,6 +790,7 @@
       for (let i = 0; i < arr.length; i += 2) entries.push(new ArrayMapEntry(arr[i], arr[i + 1]));
       return makeMap(PersistentArrayMapValue, entries, "array-map");
     }
+    if (value.edit$LKEY) value.edit$LKEY.dead = true;
     value.edit$LKEY = null;
     return makeMap(PersistentHashMapValue, {root: value.root$LKEY, nil: value.nil$LKEY, length: value.cnt$LKEY}, "hash-map");
   };

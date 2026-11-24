@@ -869,6 +869,333 @@ fn indexed_assoc_cannot_mutate_a_reentrantly_persisted_vector() {
     );
 }
 
+#[test]
+fn transient_sets_and_maps_match_persistent_builds_across_sizes_and_edge_keys() {
+    both_and_advanced(
+        r#"
+      (deftype CustomKey [h id]
+        IHash (-hash [_] h)
+        IEquiv (-equiv [_ other] (and (instance? CustomKey other) (= id (.-id other)))))
+      (let [check-size
+            (fn [n]
+              (let [xs (vec (range n))
+                    ps (reduce conj #{} xs)
+                    ts (into #{} xs)
+                    ts2 (persistent! (reduce conj! (transient #{}) xs))
+                    pm (reduce (fn [m x] (assoc m x (* x 3))) {} xs)
+                    tm (persistent! (reduce (fn [m x] (assoc! m x (* x 3))) (transient {}) xs))]
+                (assert (= (count ps) (count ts) (count ts2) n))
+                (assert (= (hash ps) (hash ts) (hash ts2)))
+                (assert (and (= ps ts) (= ts ps) (= ps ts2)))
+                (assert (= (vec (seq ps)) (vec (seq ts)) (vec (seq ts2))))
+                (assert (= (count pm) (count tm) n))
+                (assert (= (hash pm) (hash tm)))
+                (assert (and (= pm tm) (= tm pm)))
+                (assert (= (vec (seq pm)) (vec (seq tm))))
+                true))
+            sizes-ok (every? check-size [1 8 9 16 17 32 33 1050])
+            ;; Colliding hashes (same full hash) and deep splits (same low 5/10 bits, distinct at shift 10)
+            c0 (CustomKey. 7 :c0)
+            c1 (CustomKey. 7 :c1)
+            c2 (CustomKey. 7 :c2)
+            c1-dup (CustomKey. 7 :c1)
+            d0 (CustomKey. 1 :d0)
+            d1 (CustomKey. 33 :d1)
+            d2 (CustomKey. 1025 :d2)
+            d3 (CustomKey. 2049 :d3)
+            mixed (concat (range 20) [nil c0 c1 c2 d0 d1 d2 d3 c1-dup nil])
+            ps-coll (reduce conj #{} mixed)
+            ts-coll (into #{} mixed)
+            pm-coll (reduce (fn [m [i k]] (assoc m k i)) {} (map-indexed vector mixed))
+            tm-coll (persistent! (reduce (fn [m [i k]] (assoc! m k i)) (transient {}) (map-indexed vector mixed)))
+            ;; Disj/dissoc down through array, bitmap, and collision nodes
+            ts-disj (persistent! (reduce disj! (transient ts-coll) (concat [nil c1 d2] (range 0 18))))
+            ps-disj (apply disj ps-coll nil c1 d2 (range 0 18))
+            tm-dissoc (persistent! (reduce dissoc! (transient tm-coll) (concat [nil c1 d2] (range 0 18))))
+            pm-dissoc (apply dissoc pm-coll nil c1 d2 (range 0 18))
+            ;; -0/0 coalescing and signed-zero value replacement (Sol #13)
+            z-set-arr (persistent! (conj! (conj! (transient #{}) 0) -0))
+            z-set-hash (into #{} (concat (range 1 12) [0 -0]))
+            z-map-hash (persistent!
+                         (assoc! (reduce (fn [m i] (assoc! m i i)) (transient {}) (range 12)) 0 -0))
+            z-map-nil (persistent!
+                        (assoc! (assoc! (reduce (fn [m i] (assoc! m i i)) (transient {}) (range 12)) nil 0) nil -0))
+            ;; NaN members remain distinct in <=8, promoted 8->9, and transient 9+
+            nan-arr-p (conj (conj #{} js/NaN) js/NaN)
+            nan-arr-t (persistent! (conj! (conj! (transient #{}) js/NaN) js/NaN))
+            nan-big-p (reduce conj #{} (concat (range 9) [js/NaN js/NaN]))
+            nan-big-t (into #{} (concat (range 9) [js/NaN js/NaN]))
+            ;; nil in sizes 1, 8, 9, 17, 33
+            nil-ok (every? (fn [n]
+                             (let [xs (conj (vec (range (dec n))) nil)
+                                   p (reduce conj #{} xs)
+                                   t (into #{} xs)]
+                               (and (= (count p) (count t) n)
+                                    (= (hash p) (hash t))
+                                    (= p t)
+                                    (= (vec (seq p)) (vec (seq t)))
+                                    (contains? t nil)
+                                    (= (dec n) (count (persistent! (disj! (transient t) nil)))))))
+                           [1 8 9 17 33])]
+        [sizes-ok
+         (= (count ps-coll) (count ts-coll))
+         (= (hash ps-coll) (hash ts-coll))
+         (= ps-coll ts-coll)
+         (= (vec (seq ps-coll)) (vec (seq ts-coll)))
+         (identical? c1 (get ts-coll c1-dup))
+         (= (count pm-coll) (count tm-coll))
+         (= (hash pm-coll) (hash tm-coll))
+         (= pm-coll tm-coll)
+         (= (vec (seq pm-coll)) (vec (seq tm-coll)))
+         (identical? c1 (key (find tm-coll c1-dup)))
+         (= ts-disj ps-disj)
+         (= (hash ts-disj) (hash ps-disj))
+         (= tm-dissoc pm-dissoc)
+         (= (hash tm-dissoc) (hash pm-dissoc))
+         (= (count z-set-arr) 1)
+         (js/Object.is (first z-set-arr) 0)
+         (= (count z-set-hash) 12)
+         (js/Object.is (get z-set-hash -0) 0)
+         (js/Object.is (get z-map-hash 0) -0)
+         (js/Object.is (get z-map-nil nil) -0)
+         (= (count nan-arr-p) (count nan-arr-t) 2)
+         (= (count nan-big-p) (count nan-big-t) 11)
+         nil-ok])"#,
+        "[true true true true true true true true true true true true true true true true true true true true true true true true]",
+    );
+}
+
+#[test]
+fn transient_set_and_map_isolation_staleness_and_reentrancy() {
+    both_and_advanced(
+        r#"
+      (let [;; Sibling transients over persistent sets of sizes 4, 8, 9, 20, 40
+            base-sets (mapv #(into #{} (range %)) [4 8 9 20 40])
+            siblings-ok
+            (every?
+              (fn [s]
+                (let [n (count s)
+                      t1 (transient s)
+                      t2 (transient s)
+                      _ (conj! t1 :a :b :c 100 101 102 103 104 105)
+                      _ (conj! t2 :x :y :z 200 201 202 203 204 205)
+                      _ (disj! t1 0 1)
+                      _ (disj! t2 2 3)
+                      s1 (persistent! t1)
+                      s2 (persistent! t2)
+                      ;; Stale transient throws on mutating/count/persistent!, lookup still reads
+                      stale-errs
+                      [(try (conj! t1 :bad) :ok (catch js/Error _ :err))
+                       (try (disj! t1 0) :ok (catch js/Error _ :err))
+                       (try (persistent! t1) :ok (catch js/Error _ :err))
+                       (try (count t1) :ok (catch js/Error _ :err))]
+                      ;; New transient over persisted s1 (sharing nodes with t1's old edit token)
+                      t3 (transient s1)
+                      _ (conj! t3 :from-t3 999)
+                      _ (disj! t3 :a)
+                      s3 (persistent! t3)]
+                  (and (= (count s) n)
+                       (not (contains? s :a))
+                       (not (contains? s :x))
+                       (contains? s 0)
+                       (contains? s 2)
+                       (contains? s1 :a)
+                       (not (contains? s1 :x))
+                       (not (contains? s1 :from-t3))
+                       (contains? s2 :x)
+                       (not (contains? s2 :a))
+                       (contains? s3 :from-t3)
+                       (not (contains? s3 :a))
+                       (= [:err :err :err :err] stale-errs)
+                       (if (>= n 9) (= :b (get t1 :b)) true))))
+              base-sets)
+            ;; Sibling transients over persistent maps of sizes 4, 8, 9, 20, 40
+            base-maps (mapv #(into {} (map (fn [i] [i i]) (range %))) [4 8 9 20 40])
+            map-siblings-ok
+            (every?
+              (fn [m]
+                (let [n (count m)
+                      t1 (transient m)
+                      t2 (transient m)
+                      t1 (assoc! t1 :a 1 0 :m1 100 100)
+                      t2 (assoc! t2 :b 2 0 :m2 200 200)
+                      t1 (dissoc! t1 1)
+                      m1 (persistent! t1)
+                      m2 (persistent! t2)
+                      t3 (transient m1)
+                      t3 (assoc! t3 :c 3 0 :m3)
+                      m3 (persistent! t3)]
+                  (and (= (count m) n)
+                       (= (get m 0) 0)
+                       (= (get m 1) 1)
+                       (nil? (get m :a))
+                       (= (get m1 0) :m1)
+                       (nil? (get m1 :c))
+                       (= (get m2 0) :m2)
+                       (= (get m3 0) :m3)
+                       (= :err (try (assoc! t1 :bad 1) :ok (catch js/Error _ :err)))
+                       (= :err (try (dissoc! t1 0) :ok (catch js/Error _ :err)))
+                       (= :err (try (persistent! t1) :ok (catch js/Error _ :err)))
+                       (= :err (try (count t1) :ok (catch js/Error _ :err))))))
+              base-maps)
+            ;; Reentrant persistent! inside -hash during trie conj! cannot mutate persisted set
+            t-re1 (transient (into #{} (range 20)))
+            saved1 (atom nil)
+            k-re1 (reify
+                    IHash (-hash [_]
+                            (when (nil? @saved1) (reset! saved1 (persistent! t-re1)))
+                            999)
+                    IEquiv (-equiv [this other] (identical? this other)))
+            r1 (try (conj! t-re1 k-re1) :ok (catch js/Error _ :err))
+            ;; Reentrant persistent! inside -equiv on owned trie node (leaf split) cannot mutate persisted set
+            t-re2 (conj! (transient (into #{} (range 20))) 39)
+            saved2 (atom nil)
+            k-re2 (reify
+                    IHash (-hash [_] 7)
+                    IEquiv (-equiv [_ _]
+                             (when (nil? @saved2) (reset! saved2 (persistent! t-re2)))
+                             false))
+            r2 (try (conj! t-re2 k-re2) :ok (catch js/Error _ :err))
+            ;; Reentrant persistent! inside -equiv during array-set conj! cannot mutate persisted set
+            t-re3 (transient #{1 2 3})
+            saved3 (atom nil)
+            k-re3 (reify
+                    IHash (-hash [_] 1)
+                    IEquiv (-equiv [_ _]
+                             (when (nil? @saved3) (reset! saved3 (persistent! t-re3)))
+                             false))
+            r3 (try (conj! t-re3 k-re3) :ok (catch js/Error _ :err))
+            ;; Reentrant persistent! inside -hash during transient hash-map assoc! cannot mutate persisted map
+            tm-re (transient (into {} (map (fn [i] [i i]) (range 20))))
+            saved-m (atom nil)
+            km-re (reify
+                    IHash (-hash [_]
+                            (when (nil? @saved-m) (reset! saved-m (persistent! tm-re)))
+                            999)
+                    IEquiv (-equiv [this other] (identical? this other)))
+            rm (try (assoc! tm-re km-re :bad) :ok (catch js/Error _ :err))
+            ;; Reentrant conj! inside -equiv on a 7-member array-set transient promoting it mid-call
+            t-re4 (transient #{1 2 3 4 5 6 7})
+            promoted (atom false)
+            k-re4 (reify
+                    IHash (-hash [_] 100)
+                    IEquiv (-equiv [this other]
+                             (when-not @promoted
+                               (reset! promoted true)
+                               (conj! t-re4 8 9))
+                             (identical? this other)))
+            s-re4 (persistent! (conj! t-re4 k-re4))]
+        [siblings-ok map-siblings-ok
+         r1 (= (count @saved1) 20) (not (contains? @saved1 k-re1))
+         r2 (= (count @saved2) 21) (contains? @saved2 7) (not (contains? @saved2 k-re2))
+         r3 (= (count @saved3) 3) (not (contains? @saved3 k-re3))
+         rm (= (count @saved-m) 20) (not (contains? @saved-m km-re))
+         (= (count s-re4) 10) (contains? s-re4 8) (contains? s-re4 9) (contains? s-re4 k-re4)])"#,
+        "[true true :err true true :err true true true :err true true :err true true true true true true]",
+    );
+}
+
+#[test]
+fn transient_set_sol_findings_and_borrowed_slots() {
+    both_and_advanced(
+        r#"
+      (let [;; Sol #5: count retained keys in sets built from positional hash maps with mismatched cnt
+            src (hash-map :a 1)
+            fake-map (PersistentHashMap. nil 5 (.-root src) false nil nil)
+            s5 (PersistentHashSet. nil fake-map nil)
+            t5 (transient s5)
+            p5 (persistent! t5)
+            ;; Sol #6: preserve stored member hashes when hashing sets
+            armed (atom false)
+            k6 (reify
+                 IHash (-hash [_]
+                         (if @armed (throw (js/Error. "rehashed")) 31))
+                 IEquiv (-equiv [this other] (identical? this other)))
+            s6 (into #{} (conj (vec (range 8)) k6))
+            _ (reset! armed true)
+            h6 (hash s6)
+            ;; Sol #9: avoid repeated equality scans on an 8-member transient array set
+            calls9 (atom 0)
+            k9 (reify
+                 IHash (-hash [_] 0)
+                 IEquiv (-equiv [_ other]
+                          (let [n (swap! calls9 inc)]
+                            (when (> n 1) (throw (js/Error. "rescanned")))
+                            (= other 0))))
+            t9 (transient #{0 1 2 3 4 5 6 7})
+            _ (conj! t9 k9)
+            s9 (persistent! t9)
+            ;; Borrowed TransientHashSet -conj! and -persistent! slots on Delay (shares state$LKEY)
+            ;; and TransientVector must not misinterpret receiver state.
+            ts (transient #{1})
+            tv (transient [1])
+            d (delay 42)
+            proto (js/Object.getPrototypeOf ts)
+            conj-key (first (filter #(.includes % "$_conj_BANG_$arity$2$")
+                                    (js/Object.getOwnPropertyNames proto)))
+            pers-key (first (filter #(.includes % "$_persistent_BANG_$arity$1$")
+                                    (js/Object.getOwnPropertyNames proto)))
+            _ (aset tv conj-key (aget proto conj-key))
+            _ (aset tv pers-key (aget proto pers-key))
+            _ (aset d conj-key (aget proto conj-key))
+            _ (aset d pers-key (aget proto pers-key))
+            tv-res (persistent! (conj! tv 2))
+            d-conj (try (conj! d 1) (catch js/Error _ :err))
+            d-pers (try (persistent! d) (catch js/Error _ :err))]
+        [(count s5) (count p5)
+         (number? h6)
+         (= (count s9) 8) (= @calls9 1)
+         tv-res (not (set? d-conj)) (not (set? d-pers)) @d])"#,
+        "[5 1 true true true [1 2] true true 42]",
+    );
+}
+
+#[test]
+fn advanced_into_set_uses_direct_transient_set_path() {
+    let source = r#"
+      (let [v (vec (range 100))
+            s (into #{} v)]
+        [(count s) (contains? s 0) (contains? s 99) (contains? s 100)])"#;
+    let mut opts = ApplicationOptions::new(OptimizationLevel::Advanced);
+    opts.pseudo_names = true;
+    let js = advanced_with_options(source, "[100 true true false]", opts);
+    assert!(
+        js.contains("function hashNodeAssocTransient("),
+        "expected advanced output to retain hashNodeAssocTransient"
+    );
+    assert!(
+        js.contains("function putMember("),
+        "expected advanced output to retain putMember for instrumentation"
+    );
+    let instrumented = js
+        .replacen(
+            "function hashNodeAssocTransient(root, keyHash, entry, edit) {",
+            "function hashNodeAssocTransient(root, keyHash, entry, edit) { globalThis.__transientAssocCalls = (globalThis.__transientAssocCalls || 0) + 1;",
+            1,
+        )
+        .replacen(
+            "function putMember(members, key, edit = null) {",
+            "function putMember(members, key, edit = null) { globalThis.__putMemberCalls = (globalThis.__putMemberCalls || 0) + 1;",
+            1,
+        );
+    assert_ne!(instrumented, js);
+    let out = execute(&format!(
+        "{instrumented};\nconsole.log(JSON.stringify([globalThis.__transientAssocCalls || 0, globalThis.__putMemberCalls || 0]));"
+    ));
+    let lines: Vec<_> = out.trim().lines().collect();
+    assert_eq!(lines[0], "[100 true true false]");
+    let counts: Vec<usize> = lines[1]
+        .trim_matches(|c| c == '[' || c == ']')
+        .split(',')
+        .map(|s| s.parse().unwrap())
+        .collect();
+    assert_eq!(
+        counts,
+        vec![100, 0],
+        "expected 100 hashNodeAssocTransient calls (8 promotion + 92 inserts) and 0 putMember calls"
+    );
+}
+
 /// Complete sources in both compiler phases and both host lifecycles, each run in
 /// QuickJS and Node (see `tests/support/phase_oracle.rs`).
 mod phase_oracles {

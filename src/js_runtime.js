@@ -3932,6 +3932,7 @@
     if (node.kind === "collision") {
       if (keyHash === node.hash) {
         const index = node.entries.findIndex(old => effects ? hashKeyTest(entry.key, old.key) : entry.key === old.key);
+        if (edit?.dead) throw new Error("Transient used after persistent!");
         const entries = node.entries.slice();
         if (index < 0) entries.push(entry);
         else {
@@ -3971,6 +3972,7 @@
           const old = nodes[i];
           if (old && !old.kind) nodes[i] = hashNodeAssoc(null, shift + 5, effects ? hash(old.key) : old.hash, old, edit, null, effects);
         }
+        if (edit?.dead) throw new Error("Transient used after persistent!");
         return {kind: "array", slots: nodes, edit, capacity: 0, count: n + 1};
       }
       slots[index] = entry;
@@ -3980,11 +3982,13 @@
     }
     if (slot.kind) slots[index] = hashNodeAssoc(slot, shift + 5, keyHash, entry, edit, result, effects);
     else if (effects ? hashKeyTest(entry.key, slot.key) : entry.key === slot.key) {
+      if (edit?.dead) throw new Error("Transient used after persistent!");
       result.old = slot;
       result.entry = {key: slot.key, value: entry.value, hash: slot.hash};
       slots[index] = result.entry;
     } else {
       const oldHash = effects ? hash(slot.key) : slot.hash;
+      if (edit?.dead) throw new Error("Transient used after persistent!");
       let child;
       if (oldHash === keyHash) child = {kind: "collision", hash: keyHash, entries: [slot, entry]};
       else {
@@ -3994,6 +3998,101 @@
       slots[index] = child;
     }
     return owned ? node : bitmapNode(slots, edit, edit ? n + 1 : node.capacity, n);
+  }
+  //@unit hashNodeAssocTransient requires: bitmapNode, hash, hashKeyTest, hashNodeAssoc
+  // Iterative hot path for owned transient hash-trie inserts: descends owned
+  // array and bitmap nodes in place, expands into packed 32-slot array nodes,
+  // and handles owned leaf updates/splits without recursion or per-insert
+  // result boxes, delegating unowned copies and collision nodes to `hashNodeAssoc`.
+  function hashNodeAssocTransient(root, keyHash, entry, edit) {
+    if (!root) {
+      const index = keyHash & 31, slots = new Array(index + 1);
+      slots[index] = entry;
+      return bitmapNode(slots, edit, 4, 1);
+    }
+    let node = root, shift = 0, parent = null, parentIndex = 0;
+    for (;;) {
+      if (node.edit === edit) {
+        const kind = node.kind, index = (keyHash >>> shift) & 31, slots = node.slots;
+        if (kind === "array") {
+          const slot = index < slots.length ? slots[index] : undefined;
+          if (slot == null) {
+            const cidx = (keyHash >>> (shift + 5)) & 31, cslots = new Array(cidx + 1);
+            cslots[cidx] = entry;
+            slots[index] = bitmapNode(cslots, edit, 4, 1);
+            node.count++;
+            return root;
+          }
+          parent = node; parentIndex = index; node = slot; shift += 5;
+          continue;
+        }
+        if (kind === "bitmap") {
+          const slot = index < slots.length ? slots[index] : undefined;
+          if (slot == null) {
+            const n = node.count, cap = node.capacity;
+            if (n < 16 || n < cap) {
+              slots[index] = entry;
+              if (n >= cap) node.capacity = n + 4;
+              node.count = n + 1;
+              return root;
+            }
+            const nodes = new Array(32).fill(null);
+            const cidx = (keyHash >>> (shift + 5)) & 31, cslots = new Array(cidx + 1);
+            cslots[cidx] = entry;
+            nodes[index] = bitmapNode(cslots, edit, 4, 1);
+            for (let i = 0; i < slots.length; i++) {
+              const old = slots[i];
+              if (old != null) {
+                if (old.kind !== undefined) nodes[i] = old;
+                else {
+                  const oh = hash(old.key), oidx = (oh >>> (shift + 5)) & 31, oslots = new Array(oidx + 1);
+                  oslots[oidx] = old;
+                  nodes[i] = bitmapNode(oslots, edit, 4, 1);
+                }
+              }
+            }
+            if (edit.dead) throw new Error("Transient used after persistent!");
+            const arrNode = {kind: "array", slots: nodes, edit, capacity: 0, count: n + 1};
+            if (parent === null) return arrNode;
+            parent.slots[parentIndex] = arrNode;
+            return root;
+          }
+          if (slot.kind !== undefined) {
+            parent = node; parentIndex = index; node = slot; shift += 5;
+            continue;
+          }
+          if (hashKeyTest(entry.key, slot.key)) {
+            if (edit.dead) throw new Error("Transient used after persistent!");
+            edit.old = true;
+            slots[index] = {key: slot.key, value: entry.value, hash: slot.hash};
+            return root;
+          }
+          const oldHash = hash(slot.key);
+          if (edit.dead) throw new Error("Transient used after persistent!");
+          let child;
+          if (oldHash === keyHash) child = {kind: "collision", hash: keyHash, entries: [slot, entry]};
+          else {
+            const s = shift + 5, i1 = (oldHash >>> s) & 31, i2 = (keyHash >>> s) & 31;
+            if (i1 !== i2) {
+              const cslots = new Array((i1 > i2 ? i1 : i2) + 1);
+              cslots[i1] = slot; cslots[i2] = entry;
+              child = bitmapNode(cslots, edit, 4, 2);
+            } else {
+              child = hashNodeAssoc(null, s, oldHash, slot, edit, null, true);
+              child = hashNodeAssoc(child, s, keyHash, entry, edit, {}, true);
+            }
+          }
+          slots[index] = child;
+          return root;
+        }
+      }
+      const res = {};
+      const next = hashNodeAssoc(node, shift, keyHash, entry, edit, res, true);
+      if (res.old) edit.old = true;
+      if (parent === null) return next;
+      parent.slots[parentIndex] = next;
+      return root;
+    }
   }
   //@unit hashKeyTest requires: equalPair, keywordOf, keywordProgramEquiv
   // Whether `other`, a key of a hash map's trie, equals `key`, as upstream's
@@ -4975,7 +5074,7 @@
   // `state` field (`TransientHashSetCell`).
   function makeTransient(kind, entries, mapKind) {
     if (kind === "vector") return entries;
-    return new TransientHashSetCell({kind, entries, mapKind, editable: true, edit: {}});
+    return new TransientHashSetCell({kind, entries, mapKind, editable: true, edit: {old: false, dead: false}});
   }
   //@unit editableTransient requires: transientState
   function editableTransient(value, operation) {
@@ -5004,6 +5103,10 @@
     const kind = value?.cljs$lang$kind$$LKEY;
     if (kind === 1 && value.cnt$LKEY !== undefined) return kindHooks.transientVector(value);
     if ((kind === 28 && value.arr$LKEY !== undefined) || (kind === 29 && (value.cnt$LKEY !== undefined || "cnt$LKEY" in value))) return kindHooks.transientMap(value);
+    if (kind === 33 && value.entries$LKEY !== undefined) {
+      const entries = value.entries$LKEY;
+      return makeTransient("set", Array.isArray(entries) ? (entries.length ? copyEntries(entries) : []) : {root: entries.root, nil: entries.nil, length: entries.length}, value.skind$LKEY);
+    }
     if (holdsVector(value)) return kindHooks.transientVector(vectorStore(value));
     if (maps.has(value)) return kindHooks.transientMap(value);
     return makeTransient("set", copyEntries(sets.get(value)), setKinds.get(value));
@@ -5025,6 +5128,7 @@
     if (isMapTransient(value)) return kindHooks.persistMap(value);
     if (state === value) { state.editable$LKEY = false; state.edit$LKEY = null; return kindHooks.persistVector(state); }
     state.editable = false;
+    state.edit.dead = true;
     return kindHooks.persistSet(state.entries, state.mapKind);
   }
   //@unit makeVector.persist effect: makeVector, mapEntry when: persistTransient,
@@ -5064,6 +5168,7 @@
       const arr = value.arr$LKEY;
       return new ArrayMapCell(arr.length >> 1, arr);
     }
+    value.edit$LKEY.dead = true;
     value.edit$LKEY = null;
     return new HashMapCell(value.cnt$LKEY, value.root$LKEY, value.nil$LKEY, null);
   };
@@ -5085,14 +5190,14 @@
       if (arr.length & 1) arr.push(undefined);
       return new TransientArrayMapCell(arr);
     }
-    if (kind === 29 && (value.cnt$LKEY !== undefined || "cnt$LKEY" in value)) return new TransientHashMapCell({}, value.cnt$LKEY, value.root$LKEY, value.nil$LKEY);
+    if (kind === 29 && (value.cnt$LKEY !== undefined || "cnt$LKEY" in value)) return new TransientHashMapCell({old: false, dead: false}, value.cnt$LKEY, value.root$LKEY, value.nil$LKEY);
     const entries = maps.get(value);
     if (Array.isArray(entries) && mapKinds.get(value) === "array-map") return new TransientArrayMapCell(flatPairs(entries));
     const trie = hashTrie(entries);
-    return new TransientHashMapCell({}, trie.length, trie.root, trie.nil);
+    return new TransientHashMapCell({old: false, dead: false}, trie.length, trie.root, trie.nil);
   };
-  //@unit makeSet.persist effect: makeSet, treeSetConstructor when: persistTransient requires: kindHooks,
-  //@ makeSet, PersistentHashSetValue
+  //@unit makeSet.persist effect: makeSet, treeSetConstructor when: persistTransient,
+  //@ TransientHashSetType.persistentBang requires: kindHooks, makeSet, PersistentHashSetValue
   kindHooks.persistSet = (entries, kind) => makeSet(PersistentHashSetValue, entries, kind);
   //@unit transientNth requires: editableTransient, missing, transientState, vectorNth
   function transientNth(value, index, fallback) {
@@ -5146,7 +5251,7 @@
   }
   //@unit makeMap.assocTransient effect: ArrayMapCell, makeMap, treeMapConstructor, recordMethods
   //@ when: assocTransient, TransientArrayMapType.assocBang, TransientHashMapType.assocBang,
-  //@ makeMap.intoMap requires: arrayIndex, editableTransient, hash, hashNodeAssoc, kindHooks,
+  //@ makeMap.intoMap requires: arrayIndex, editableTransient, hash, hashNodeAssocTransient, kindHooks,
   //@ TransientHashMapCell
   // `assoc!` of a map transient, which edits its own fields, as upstream's:
   // an array map's pairs in place, keeping the key it has; at a ninth key a
@@ -5163,9 +5268,13 @@
         if (!nil) value.cnt$LKEY++;
         return value;
       }
-      const keyHash = hash(key), result = {};
-      value.root$LKEY = hashNodeAssoc(value.root$LKEY, 0, keyHash, {key, value: item, hash: keyHash}, edit, result);
-      if (!result.old) value.cnt$LKEY++;
+      const keyHash = hash(key);
+      if (value.edit$LKEY === null) editableTransient(value, "assoc!");
+      const prev = edit.old;
+      edit.old = false;
+      value.root$LKEY = hashNodeAssocTransient(value.root$LKEY, keyHash, {key, value: item, hash: keyHash}, edit);
+      if (!edit.old) value.cnt$LKEY++;
+      edit.old = prev;
       return value;
     }
     return (value, key, item) => {
@@ -5174,7 +5283,7 @@
         const arr = value.arr$LKEY, index = arrayIndex(arr, key);
         if (index >= 0) { arr[index + 1] = item; return value; }
         if (arr.length < 16) { arr.push(key, item); return value; }
-        const promoted = new TransientHashMapCell({}, 0, null, null);
+        const promoted = new TransientHashMapCell({old: false, dead: false}, 0, null, null);
         for (let i = 0; i < arr.length; i += 2) assocTransientHashMap(promoted, arr[i], arr[i + 1]);
         return assocTransientHashMap(promoted, key, item);
       }
@@ -5236,15 +5345,75 @@
       conjVectorBang(store, item);
     } else outOfBounds();
   };
-  //@unit makeSet.conjTransient effect: makeSet, treeSetConstructor when: conjTransient requires: kindHooks,
-  //@ putMember
+  //@unit makeSet.conjTransient effect: makeSet, treeSetConstructor when: conjTransient,
+  //@ TransientHashSetType.conjBang requires: ArrayMapEntry, editableTransient, entryIndex, hash,
+  //@ hashNodeAssocTransient, hashRoots, kindHooks, putMember
   // As upstream's TransientHashSet over a transient map, it edits the trie it
   // shares with the set or promotes to, as `assoc!` does (light-cljs-236).
-  kindHooks.conjTransientSet = (value, state, member) => {
-    state.entries = putMember(state.entries, member, state.edit);
-    if (!Array.isArray(state.entries)) state.mapKind = "hash-map";
-    return value;
-  };
+  kindHooks.conjTransientSet = (() => {
+    function conjTransientSetArray(value, state, entries, member) {
+      if (state.mapKind === "array-map" && !hashRoots.has(entries)) {
+        const index = entryIndex(entries, member);
+        if (!state.editable) editableTransient(value, "conj!");
+        if (state.entries !== entries) return kindHooks.conjTransientSet(value, state, member);
+        if (index >= 0) return value;
+        if (entries.length < 8) {
+          entries.push(new ArrayMapEntry(member, null));
+          return value;
+        }
+        const edit = state.edit;
+        let root = null, nil = null, length = 0;
+        for (let i = 0; i < entries.length; i++) {
+          const k = entries[i].key;
+          if (k == null) {
+            if (!nil) { nil = {key: k, value: null, hash: 0}; length++; }
+          } else {
+            const h = hash(k), prev = edit.old;
+            if (!state.editable) editableTransient(value, "conj!");
+            edit.old = false;
+            root = hashNodeAssocTransient(root, h, {key: k, value: null, hash: h}, edit);
+            if (!edit.old) length++;
+            edit.old = prev;
+          }
+        }
+        if (member == null) {
+          if (!nil) { nil = {key: member, value: null, hash: 0}; length++; }
+        } else {
+          const keyHash = hash(member);
+          if (!state.editable) editableTransient(value, "conj!");
+          const prev = edit.old;
+          edit.old = false;
+          root = hashNodeAssocTransient(root, keyHash, {key: member, value: null, hash: keyHash}, edit);
+          if (!edit.old) length++;
+          edit.old = prev;
+        }
+        if (!state.editable) editableTransient(value, "conj!");
+        if (state.entries !== entries) return kindHooks.conjTransientSet(value, state, member);
+        state.entries = {root, nil, length};
+        state.mapKind = "hash-map";
+        return value;
+      }
+      state.entries = putMember(entries, member, state.edit);
+      if (!Array.isArray(state.entries)) state.mapKind = "hash-map";
+      return value;
+    }
+    return (value, state, member) => {
+      const entries = state.entries;
+      if (entries.root === undefined) return conjTransientSetArray(value, state, entries, member);
+      if (member == null) {
+        if (!entries.nil) { entries.nil = {key: member, value: null, hash: 0}; entries.length++; }
+        return value;
+      }
+      const keyHash = hash(member);
+      if (!state.editable) editableTransient(value, "conj!");
+      const edit = state.edit, prev = edit.old;
+      edit.old = false;
+      entries.root = hashNodeAssocTransient(entries.root, keyHash, {key: member, value: null, hash: keyHash}, edit);
+      if (!edit.old) entries.length++;
+      edit.old = prev;
+      return value;
+    };
+  })();
   //@unit assocEntry requires: entryKey, entryVal, isEntryCell, keyProtocol, slotFirst, valProtocol
   // `assoc` of an entry's key and value onto a map transient, `conj!` of the
   // entry. A map entry of the runtime's class gives them from the `-key` and
@@ -6585,8 +6754,6 @@
     conjVectorBang(self, item);
     return self;
   });
-  //@unit transientConjSlot requires: builtinSlot, conjTransient, noBranch, transientState
-  const transientConjSlot = builtinSlot((self, member) => transientState(self) === undefined ? noBranch : conjTransient(self, member));
   //@unit transientAssocSlot requires: assocTransient, builtinSlot, noBranch, transientState
   const transientAssocSlot = builtinSlot((self, key, item) => transientState(self) === undefined ? noBranch : assocTransient(self, key, item));
   //@unit transientPersistentSlot requires: builtinSlot, noBranch, persistTransient, transientState
@@ -6665,12 +6832,25 @@
     if (edit === null || edit === undefined) { if (edit === undefined) return noBranch; editableTransient(self, "persistent!"); }
     return kindHooks.persistMap(self);
   });
-  //@unit TransientHashSetType.conjBang effect: TransientHashSetType when: conjBangOwn requires: transientConjSlot,
-  //@ TransientHashSetType
-  TransientHashSetType.prototype.cljs$core$ITransientCollection$_conj_BANG_$arity$2$LKEY = transientConjSlot;
+  //@unit TransientHashSetType.conjBang effect: TransientHashSetType when: conjBangOwn requires: builtinSlot,
+  //@ conjTransient, editableTransient, kindHooks, noBranch, TransientHashSetType, transientState
+  TransientHashSetType.prototype.cljs$core$ITransientCollection$_conj_BANG_$arity$2$LKEY = builtinSlot(function (self, member) {
+    const state = self.state$LKEY;
+    if (self.cljs$lang$kind$$LKEY !== 34 || state === undefined) return transientState(self) === undefined ? noBranch : conjTransient(self, member);
+    if (!state.editable) editableTransient(self, "conj!");
+    return kindHooks.conjTransientSet(self, state, member);
+  });
   //@unit TransientHashSetType.persistentBang effect: TransientHashSetType when: persistentBang
-  //@ requires: TransientHashSetType, transientPersistentSlot
-  TransientHashSetType.prototype.cljs$core$ITransientCollection$_persistent_BANG_$arity$1$LKEY = transientPersistentSlot;
+  //@ requires: builtinSlot, editableTransient, kindHooks, TransientHashSetType,
+  //@ transientPersistentSlot
+  TransientHashSetType.prototype.cljs$core$ITransientCollection$_persistent_BANG_$arity$1$LKEY = builtinSlot(function (self) {
+    const state = self.state$LKEY;
+    if (self.cljs$lang$kind$$LKEY !== 34 || state === undefined) return transientPersistentSlot(self);
+    if (!state.editable) editableTransient(self, "persistent!");
+    state.editable = false;
+    state.edit.dead = true;
+    return kindHooks.persistSet(state.entries, state.mapKind);
+  });
   // A map's or a set's transient's `-count`, `-nth` and `-lookup`
   // (light-cljs-1066), which `count`, `nth` and `get` answered by
   // recognising a transient before: each answers as the operation's old path

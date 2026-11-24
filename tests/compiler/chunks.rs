@@ -3159,7 +3159,8 @@ fn terse_chunks_write_their_runtime_units_at_module_level() {
     // variadics, apply and sort-by (137,421), and light-cljs-1109 flat
     // array-map builders (`makeMap.intoMap`, `mapConj` flat walk, rest-free
     // `merge`, out-of-line `arrayMapPromote`, direct transient-map slots;
-    // 140,333).
+    // 140,333), and light-cljs-1110 direct transient-set slots and iterative
+    // `hashNodeAssocTransient` (143,916).
     assert!(
         total + 1_000
             <= 73_207
@@ -3186,7 +3187,8 @@ fn terse_chunks_write_their_runtime_units_at_module_level() {
                 + 1_000
                 + 2_000
                 + 5_000
-                + 2_000,
+                + 2_000
+                + 4_000,
         "{total} bytes\n{listing}"
     );
     // Startup's `lazy$` is 242 bytes since light-cljs-353 (687 before).
