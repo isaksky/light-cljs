@@ -3162,7 +3162,10 @@ fn terse_chunks_write_their_runtime_units_at_module_level() {
     // 140,333), and light-cljs-1110 direct transient-set slots and iterative
     // `hashNodeAssocTransient` (143,916), and light-cljs-1087 direct `List`
     // pop, `ChunkedSeq` next, split `mapReduceSlot`, single-pass
-    // `hashNodeRemove`, and non-allocating `updateIn`/`assocIn` (144,888).
+    // `hashNodeRemove`, and non-allocating `updateIn`/`assocIn` (144,888),
+    // and light-cljs-1116 direct metadata field propagation in
+    // `preserveMeta`/map updates and `equalPairOf` host/primitive fast path
+    // (145,479).
     assert!(
         total + 1_000
             <= 73_207
@@ -3191,7 +3194,8 @@ fn terse_chunks_write_their_runtime_units_at_module_level() {
                 + 2_000
                 + 5_000
                 + 2_000
-                + 4_000,
+                + 4_000
+                + 1_000,
         "{total} bytes\n{listing}"
     );
     // Startup's `lazy$` is 242 bytes since light-cljs-353 (687 before).

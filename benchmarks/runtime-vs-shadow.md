@@ -6262,3 +6262,67 @@ All checks run on `light-cljs-4d8d02d5` against shadow-cljs 3.5.3:
 - **`bb benchmarks/re-frame-tests.bb`:** 118/118 tests pass across all 15 test namespaces (446 assertions per run across 3 runs) in `shadow`, `light-compile`, and `light-release`.
 - **`bb benchmarks/re-frame-kit-test.bb`:** 8 tests, 21 assertions, 0 failures, 0 errors.
 - **`bb benchmarks/re-frame.bb browser todomvc simple flow`:** `todomvc` 10/10 checks pass 3/3 (including 0 console errors/uncaught exceptions), `simple` 4/4 checks pass 3/3, `flow` 3/3 checks pass 3/3 (including page text after each step equal to shadow-cljs's first run).
+
+## 2026-11-24: direct metadata field propagation in preserveMeta and host/primitive equality fast path in equalPairOf (light-cljs-1116)
+
+Measured in two parts (`9df73baf8` for Part A, `49a391f58` for Part A+B) against baseline `4d8d02d5` (`light-cljs-4d8d02d5`, SHA-256 `c83ad3079129f3a4...`, same compiler and runtime as master `5b0026a2`) and shadow-cljs 3.5.3 (Node v26.12.1, Apple M3 Ultra VM, 24 CPUs, 32 GiB; unreserved, compilers alternated, every checksum equal to oracle).
+
+- **Part A (`9df73baf8`, direct metadata field propagation):** Added `hostExt.imeta` tracking owned-runtime/`Object` `IMeta` extensions and explicit `undefined` metadata writes (always `true` in `src/js_shared_profile.js`). When `slotFirst.on && !hostExt.imeta`, `preserveMeta`, `conjMeta`, and `metaSlot` read `.meta$LKEY` directly without checking `Object.prototype` or running `"meta$LKEY" in self`, and `arrayMapAssoc`, `arrayMapPromote`, `hashMapAssoc`, `arrayMapDissoc`, and `hashMapDissoc` return the newly constructed map directly when `self.meta$LKEY == null`.
+- **Part B (`49a391f58`, `equalPairOf` fast path):** When `slotFirst.on && !(hostExt.p0 & 2097152)` (no host/default `IEquiv` extension), `equalPairOf` returns `false` directly for unequal primitives, checks own/prototype `IEquiv/-equiv` and `Date` directly on host objects/functions (`kind === undefined`), and checks `kindHooks.equivNamed` for `kind < 64` without entering `protocolHooks.builtin`. Added `IEquiv` and `equivProtocol` to `hostExtEscaped` in `src/emitter.rs`.
+
+### Generated re-frame-shaped app, 200k lines (jsdom in Node)
+
+- **Part A (`9df73baf8`, 5 runs alternated, load 3.58-4.03, unreserved):** 1-iter first output 1.425 s (1.408-1.533) vs shadow 1.281 s (1.259-1.289, 1.11x); 10-iter wall 4.024 s (3.971-4.152) vs shadow 3.636 s (3.443-4.080, 1.11x); steady state 287.5 vs 260.3 ms/iter (1.10x, down from 302.8 vs 252.3 ms/iter, 1.20x baseline); 10-iter peak memory 0.700 vs 0.724 GB (0.97x).
+- **Part A+B (`49a391f58`, 10 runs alternated, load 5.41-6.48, unreserved):**
+
+| Iterations | Compiler | First output | Wall time | User CPU | System CPU | Peak memory | 1-minute load before |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | light-cljs | 1.583 s (1.469-1.665) | 1.596 s (1.482-1.680) | 2.34 s (2.12-2.54) | 0.15 s (0.13-0.18) | 0.496 GB (0.468-0.508) | 5.41-6.05 |
+| 1 | shadow-cljs | 1.429 s (1.332-1.532) | 1.442 s (1.345-1.571) | 2.22 s (2.04-2.36) | 0.14 s (0.11-0.19) | 0.470 GB (0.437-0.483) | 5.41-6.05 |
+| 10 | light-cljs | 4.255 s (3.981-4.321) | 4.276 s (4.000-4.343) | 5.89 s (5.53-6.04) | 0.27 s (0.22-0.34) | 0.774 GB (0.677-0.814) | 5.81-6.48 |
+| 10 | shadow-cljs | 3.735 s (3.633-3.786) | 3.757 s (3.655-3.810) | 5.06 s (4.93-5.11) | 0.25 s (0.24-0.25) | 0.722 GB (0.714-0.733) | 5.74-6.43 |
+
+Steady state (from 1- and 10-iter medians): 297.7 vs 257.2 ms/iter (1.16x; down from 1.20x baseline). In the 10-iter `--pseudo-names` CPU profile (2,603 samples, 4,350.8 ms total vs 4,737.7 ms baseline), `meta` dropped 149.1 -> 8.0 ms (-95%; `preserveMeta` 5.1 ms) and `builtin` dropped 70.6 -> 3.3 ms (-95%; `equalPairOf` 4.0 ms, `externalMethod` 0.0 ms). Remaining top self-time rows: `compileSourceTextModule` 394.3 ms (9.06%, ESM parse vs shadow CJS `wrapSafe` 204.2 ms; `light-cljs-1117`), `(garbage collector)` 296.4 ms (6.81%), `seq` 112.4 ms (2.58%), `arrayIndex` 74.0 ms + `arrayMapLookup` 8.2 ms (1.89%), `callable` 50.9 ms (1.17%; `light-cljs-1115`), `first` 48.6 ms (1.12%), `lazyStep` 43.3 ms (0.99%), `next` 35.5 ms (0.82%), `hashNodeFind` 32.1 ms (0.74%), and `getSite` 29.6 ms (0.68%); the remaining `seq`/`arrayIndex`/`first`/`lazyStep`/`next` runtime gap is filed as `light-cljs-1120`.
+
+### Generated workload, 200k lines
+
+- **Part A (`9df73baf8`, 5 runs alternated, load 3.66-4.13, unreserved):** 1-iter wall 0.308 s (0.306-0.319) vs 0.291 s (0.288-0.297, 1.06x); 40-iter wall 1.290 s (1.275-1.421) vs 1.196 s (1.161-1.370, 1.08x); steady state 25.2 vs 23.2 ms/iter (1.08x).
+- **Part A+B (`49a391f58`, 10 runs alternated, load 5.62-6.18, unreserved):** 1-iter wall 0.365 s (0.346-0.375) vs 0.339 s (0.336-0.359, 1.08x); 40-iter wall 1.304 s (1.273-1.415) vs 1.184 s (1.164-1.235, 1.10x; down from 1.368 s baseline); steady state 24.1 vs 21.7 ms/iter (1.11x; down from 26.5 ms/iter baseline); 40-iter peak memory 0.262 vs 0.267 GB (0.98x).
+
+### Core-ops gate (80 operations, Part A+B `49a391f58` vs `4d8d02d5`)
+
+5 runs per compiler alternated, seed 7, load 4.49-6.91 (unreserved), every checksum equal across all runs. No operation regressed beyond its baseline range (`sort-by-100`, `transient-map-100`, `str-sorted-map-20` +4% under higher load, all 0.35x-0.68x shadow-cljs; ratios unchanged within ±0.02). Selected watched and improved operations:
+
+| op (full 80-op pass) | light-cljs before (range) | light-cljs after (range) | change | shadow-cljs after (range) | light/shadow before, after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| assoc-small-existing | 16.4 (16.3-16.6) | 16.7 (16.5-16.9) | +2% | 29.2 (28.4-29.8) | 0.57, 0.57 |
+| assoc-small-new | 38.8 (38.6-39.8) | 39.7 (39.3-43.0) | +2% | 38.8 (38.5-39.9) | 1.01, 1.02 |
+| dissoc-small | 44.1 (43.9-44.4) | 45.4 (44.7-45.4) | +3% | 57.4 (55.6-57.9) | 0.79, 0.79 |
+| update-small | 27.4 (27.3-28.0) | 27.8 (27.7-28.2) | +1% | 43.5 (43.4-44.8) | 0.63, 0.64 |
+| merge-small | 460.4 (456.7-467.4) | 453.6 (445.0-466.2) | -1% | 901.4 (891.9-908.3) | 0.51, 0.50 |
+| eq-map-7 | 127.9 (127.0-130.2) | 130.4 (129.8-131.2) | +2% | 150.7 (148.9-152.9) | 0.86, 0.87 |
+| eq-vec-10 | 36.0 (35.9-37.9) | 36.8 (36.1-39.5) | +2% | 81.9 (81.1-84.1) | 0.44, 0.45 |
+| assoc-in-3 | 127.9 (126.1-131.8) | 121.6 (121.2-122.9) | -5% | 130.0 (127.7-134.2) | 0.98, 0.94 |
+| update-in-3 | 137.8 (136.8-138.4) | 130.9 (129.5-132.7) | -5% | 136.2 (134.1-138.9) | 1.03, 0.96 |
+| vec-conj-64 | 1,294 (1,266-1,305) | 1,268 (1,251-1,305) | -2% | 1,288 (1,262-1,344) | 1.01, 0.98 |
+| vec-assoc-1024 | 51.9 (51.5-52.8) | 49.2 (48.3-54.0) | -5% | 72.5 (71.3-75.1) | 0.71, 0.68 |
+| vec-assoc-variadic-1024 | 163.9 (161.1-165.8) | 154.3 (153.1-157.2) | -6% | 218.3 (218.0-222.7) | 0.77, 0.71 |
+| disj-set-7 | 101.1 (100.3-102.7) | 61.4 (59.5-63.8) | -39% | 155.4 (154.5-157.3) | 0.66, 0.40 |
+| disj-sorted-set-100 | 164.5 (162.8-167.2) | 124.1 (119.2-125.3) | -25% | 219.7 (209.6-228.3) | 0.76, 0.56 |
+| into-sorted-map-small | 747.1 (736.3-756.5) | 475.2 (456.8-491.0) | -36% | 817.7 (805.0-833.5) | 0.93, 0.58 |
+| into-map-small | 226.6 (223.9-231.0) | 164.2 (158.3-168.5) | -28% | 326.4 (324.0-330.7) | 0.70, 0.50 |
+| sorted-map-assoc-100 | 135.0 (134.1-136.0) | 100.5 (97.2-104.7) | -26% | 207.7 (202.3-216.4) | 0.65, 0.48 |
+| group-by-100 | 4,606 (4,554-4,660) | 3,858 (3,797-3,928) | -16% | 5,018 (4,972-5,254) | 0.92, 0.77 |
+| into-vec-small | 130.3 (129.6-131.6) | 109.1 (106.3-110.4) | -16% | 156.9 (156.1-157.5) | 0.84, 0.70 |
+
+(On a same-session subset run `--ops assoc-small,dissoc-small,update-small,merge-small` at load 3.21-5.43, Part A improved `assoc-small-existing` 19.4 -> 18.7 ns -4%, `assoc-small-new` 39.3 -> 39.1 ns -1%, `dissoc-small` 45.4 -> 44.1 ns -3%, `update-small` 28.3 -> 28.2 ns, `merge-small` 373.6 -> 365.8 ns -2%.)
+
+### Sizes
+
+Compiled with `--elide-asserts --no-cache` from private copies of `research/shadow-credibility/{simple-port-973,todomvc-port-980,flow-port-980}` (`4d8d02d5` -> `49a391f58`, light-cljs `:advanced` output without React):
+
+- `simple`: raw 275,458 -> 276,360 (+902 B), gzip -9 74,376 -> 74,598 (+222 B, +0.30%).
+- `todomvc`: raw 392,507 -> 393,455 (+948 B), gzip -9 104,595 -> 104,819 (+224 B, +0.21%).
+- `flow`: raw 1,255,707 -> 1,256,693 (+986 B), gzip -9 292,155 -> 292,372 (+217 B, +0.07%).
+
+All three apps stay well below the +0.5% gzip threshold. Size ratchet ceilings are synced in `tests/support/ratchet_fixtures.rs` and `tests/compiler/chunks.rs` (readable runtime +2,578 B; terse chunk total 144,888 -> 145,479 B).
