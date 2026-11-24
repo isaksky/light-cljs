@@ -43,7 +43,7 @@
   // keyword forms, whose fields it gives in a fresh object: a caller reads
   // the fields of what it returns and never hands that on as a value.
   function keywordOf(value) {
-    return value != null && value.cljs$lang$kind$$LKEY === 20 && "fqn$LKEY" in value ? value : undefined;
+    return value != null && value.cljs$lang$kind$$LKEY === 20 && (value.fqn$LKEY !== undefined || "fqn$LKEY" in value) ? value : undefined;
   }
   //@unit keywordCells requires: keywordOf
   // `keywordOf` as an entry of the Pants build's profile's store
@@ -4128,7 +4128,7 @@
     if (equiv) return equiv.call(key, key, other);
     if (other == null) return false;
     const fqn = keyword.fqn$LKEY, spelling = other.fqn$LKEY;
-    return spelling === fqn ? keywordOf(other) !== undefined : spelling === undefined && keywordOf(other)?.fqn$LKEY === fqn;
+    return spelling === fqn ? keywordOf(other) !== undefined : keyword !== key && spelling === undefined && keywordOf(other)?.fqn$LKEY === fqn;
   }
   //@unit hashNodeFind requires: hashKeyTest
   // The entry of `key` in the trie under `node`, which every caller has
@@ -4389,7 +4389,7 @@
     // reading its own `IEquiv` slot once.
     const keyword = keywordOf(key);
     if (keyword === undefined) return arrayIndexOf(arr, key, from, n);
-    const fqn = keyword.fqn$LKEY;
+    const fqn = keyword.fqn$LKEY, own = keyword === key;
     let read = false;
     for (let i = from; i < n; i += 2) {
       const other = arr[i];
@@ -4403,10 +4403,10 @@
       // key's class, so the kind test runs only where the spelling matches
       // (upstream's `array-index-of-keyword?`); a value without the field
       // (another kind, or the Pants profile's engine keyword) is read
-      // through `keywordOf`.
+      // through `keywordOf` only when `!own` (the Pants profile's wrapper).
       if (other != null) {
         const spelling = other.fqn$LKEY;
-        if (spelling === fqn ? keywordOf(other) !== undefined : spelling === undefined && keywordOf(other)?.fqn$LKEY === fqn) return i;
+        if (spelling === fqn ? keywordOf(other) !== undefined : !own && spelling === undefined && keywordOf(other)?.fqn$LKEY === fqn) return i;
       }
     }
     return -1;

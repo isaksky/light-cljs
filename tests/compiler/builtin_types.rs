@@ -7130,3 +7130,94 @@ fn equal_pair_observes_host_extension_installed_during_slot_read() {
         "[true 1 true]",
     );
 }
+
+/// light-cljs-1120 (Commit 1): `keywordOf`, `arrayIndex`, `hashKeyTest`, and
+/// `hashNodeFind` preserve undefined-fqn `Keyword.` instances, reject forged
+/// prototypes, honor `extend-type`/`specify!` `IEquiv` overrides, handle mixed
+/// non-keyword keys, `NaN`, and hash collisions.
+#[test]
+fn keyword_array_index_and_hash_node_find_edge_cases() {
+    // 1. Undefined-fqn Keyword., forged Keyword prototype, NaN, mixed keys.
+    every_level(
+        r#"(let [ku1 (Keyword. nil "u1" js/undefined 77)
+                 ku2 (Keyword. nil "u2" js/undefined 77)
+                 knan (Keyword. nil "nan" js/NaN 88)
+                 forged (js/Object.create (.-prototype Keyword))
+                 am (array-map "s" 1 42 2 [1] 3 forged 4 ku1 5 :k 6 nil 7)
+                 hm (hash-map "s" 1 42 2 [1] 3 ku1 5 :k 6 nil 7
+                              :a 10 :b 11 :c 12 :d 13 :e 14 :f 15 :g 16 :h 17 :i 18)
+                 am-nan (array-map ##NaN :nan1 knan :knan1)
+                 hm-nan (hash-map ##NaN :nan1 knan :knan1 :a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9)]
+             (pr-str [(keyword? ku1)
+                      (keyword? forged)
+                      (get am ku1)
+                      (get am ku2)
+                      (get am forged)
+                      (get am (js/Object.create (.-prototype Keyword)))
+                      (get am :k)
+                      (get am (Keyword. nil "k" "k" nil))
+                      (get am "s")
+                      (get am 42)
+                      (get am [1])
+                      (get am nil)
+                      (get am :miss :nf)
+                      (get (array-map) :k :empty)
+                      (get hm ku1)
+                      (get hm ku2)
+                      (get hm :k)
+                      (get hm (Keyword. nil "k" "k" nil))
+                      (get hm "s")
+                      (get hm 42)
+                      (get hm [1])
+                      (get hm nil)
+                      (get hm :miss :nf)
+                      (get am-nan ##NaN :no)
+                      (get am-nan knan :no)
+                      (get am-nan (Keyword. nil "nan" js/NaN 88) :no)
+                      (get hm-nan ##NaN :no)
+                      (get hm-nan knan :no)
+                      (get hm-nan (Keyword. nil "nan" js/NaN 88) :no)])) "#,
+        "[true false 5 5 4 nil 6 6 1 2 3 7 :nf :empty 5 5 6 6 1 2 3 7 :nf :no :knan1 :no :no :knan1 :no]",
+    );
+    // 2. Hash collision nodes in PersistentHashMap.
+    every_level(
+        r#"(deftype Collide [id]
+             IHash (-hash [_] 12345)
+             IEquiv (-equiv [_ other] (and (instance? Collide other) (= id (.-id other)))))
+           (let [c1 (Collide. 1)
+                 c2 (Collide. 2)
+                 c3 (Collide. 3)
+                 hm (hash-map c1 :one c2 :two :a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9)]
+             (pr-str [(get hm c1)
+                      (get hm (Collide. 1))
+                      (get hm c2)
+                      (get hm (Collide. 2))
+                      (get hm c3 :miss)])) "#,
+        "[:one :one :two :two :miss]",
+    );
+    // 3. Public PersistentArrayMap array getter read at most once per key slot,
+    //    plus specify! and extend-type Keyword IEquiv overrides.
+    every_level(
+        r#"(let [reads (atom 0)
+                 arr #js []
+                 _ (js/Object.defineProperty arr "0" #js {:enumerable true :get (fn [] (swap! reads inc) :a)})
+                 _ (aset arr 1 10)
+                 _ (js/Object.defineProperty arr "2" #js {:enumerable true :get (fn [] (swap! reads inc) :b)})
+                 _ (aset arr 3 20)
+                 m (PersistentArrayMap. nil 2 arr nil)
+                 v-hit (get m :b)
+                 r-hit @reads
+                 k-spec (specify! (Keyword. nil "x" "x" nil)
+                          IEquiv (-equiv [_ other] (= other :b)))
+                 v-spec (get m k-spec)
+                 r-spec @reads]
+             (extend-type Keyword
+               IEquiv (-equiv [this other] (and (keyword? other) (= (name this) (name other)))))
+             (let [am (array-map :a/k 100 :b/m 200)
+                   hm (hash-map :a/k 100 :b/m 200 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8 :i 9 :j 10 :l 11)]
+               (pr-str [v-hit r-hit v-spec r-spec
+                        (get am :z/k) (get am :z/m) (get am :z/miss :nf)
+                        (get hm :a/k) (get hm :z/m :nf)]))) "#,
+        "[20 2 20 4 100 200 :nf 100 :nf]",
+    );
+}
