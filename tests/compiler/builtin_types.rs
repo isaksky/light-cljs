@@ -6631,3 +6631,23 @@ fn list_pop_chunked_seq_next_and_map_reduce_keep_extension_and_constructor_seman
         "[22 nil :v2 true true true 22 22 false 25 5 9 2 6 12 19 27 2 5 [true 2] [true 5] 10 105 {nil :empty}]",
     );
 }
+
+#[test]
+fn assoc_in_update_in_and_update_path_reseq_nested_more() {
+    every_level(
+        r#"(let [seq-calls (atom 0)
+                 tail (reify
+                        ISeqable (-seq [_] (swap! seq-calls inc) (list :from-seq))
+                        ISeq (-first [_] :from-first) (-rest [_] ())
+                        INext (-next [_] nil))
+                 path (reify
+                        ISeqable (-seq [this] this)
+                        ISeq (-first [_] :a) (-rest [_] tail)
+                        INext (-next [_] tail))]
+             (pr-str [(assoc-in {} path 9)
+                      (update-in {:a {:from-seq 1}} path inc)
+                      (update-in {:a {:from-seq 1}} path + 2 3 4 5)
+                      @seq-calls]))"#,
+        "[{:a {:from-seq 9}} {:a {:from-seq 2}} {:a {:from-seq 15}} 3]",
+    );
+}

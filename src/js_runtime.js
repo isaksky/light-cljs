@@ -8558,7 +8558,7 @@
   }
   function assocInSeq(value, current, item) {
     const key = first(current), more = next(current);
-    return assoc(value, key, more == null ? item : assocInSeq(get(value, key), more, item));
+    return assoc(value, key, more == null ? item : assocInSeq(get(value, key), seq(more), item));
   }
   //@unit updateIn requires: apply, assoc, call1, first, fixedFn2, fnRest, get, next, seq,
   //@ updatePath
@@ -8571,7 +8571,7 @@
   }
   function updateInSeq(value, current, fn, a, b, c, argc) {
     const key = first(current), more = next(current), old = get(value, key);
-    if (more != null) return assoc(value, key, updateInSeq(old, more, fn, a, b, c, argc));
+    if (more != null) return assoc(value, key, updateInSeq(old, seq(more), fn, a, b, c, argc));
     let nextVal;
     if (argc === 3) nextVal = call1(fn, old);
     else if (argc === 4) { const f = fixedFn2(fn); nextVal = f ? f.call(fn, old, a) : fn.call(null, old, a); }
@@ -8585,7 +8585,7 @@
   }
   function updatePathSeq(value, current, updateLeaf) {
     const key = first(current), more = next(current), old = get(value, key);
-    return assoc(value, key, more == null ? updateLeaf(old) : updatePathSeq(old, more, updateLeaf));
+    return assoc(value, key, more == null ? updateLeaf(old) : updatePathSeq(old, seq(more), updateLeaf));
   }
   //@unit selectKeys requires: assoc, collectionWithMeta, first, get, makeMap, meta, missing, next,
   //@ PersistentArrayMapValue, seq
