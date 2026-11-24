@@ -5814,3 +5814,48 @@ The remaining gap was `into-sorted-map-small`: 2,526 against 795.1 ns (3.18x) in
 - `flow`: raw 1,218,298 to 1,220,249 (+1,951), gzip -9 284,463 to 284,966 (+503, +0.18%), brotli 228,630 to 229,396 (+766).
 
 `todomvc` sits right at +0.50% gzip (+502 B, 0.501%) from the `compareKeys`/`compareNamed` single-read fast path, `treeMapConjSlot`'s dispatch-order fast path, and `editableTarget`'s fast false path (all three are retained in TodoMVC because it builds and prints sorted maps). The size ratchet's note is in tests/support/ratchet_fixtures.rs (readable runtime +4,500 bytes; 33 of 36 `:advanced` fixtures unchanged, `mapv-count` +141, `features`/`features-direct` +1,841).
+
+## 2026-11-23: transient vector edit tokens without per-transient WeakSets (light-cljs-1108)
+
+In the full gate on master `b0bc4e4b`, `into-vec-small` (`(into [] v)`, 2 to 8 items) was 191.4 against 159.1 ns (1.20x shadow-cljs; 183.7 against 152.3 ns on `96f4c97a`). Every transient vector allocated a `WeakSet` (`owned$LKEY`) in `kindHooks.transientVector`, routed `transient` through `viewTrie` and `tail.slice()` even on plain or empty vectors, copied the tail again in `kindHooks.persistVector`, and dispatched `persistent!` through the generic `transientPersistentSlot` wrapper. Now:
+
+- **Lazy `edit$LKEY` token on `TransientVectorCell` (vectors only).** `TransientVectorCell` replaces `owned$LKEY` (`new WeakSet([tail])`) with `edit$LKEY = null`, allocated lazily by `vectorEditor` only on trie mutations (`vectorPath`, `vectorPushTail`, `vectorAssocNode`, `vectorPopTail`). Tail-only updates (`into-vec-small`) never allocate a token. Internal trie nodes carry `node.edit$LKEY = edit`; `assoc!`-edited leaves (`level === 0`) receive a non-enumerable `edit$LKEY` via `Object.defineProperty` so `ChunkedSeq.node` enumerates only index keys while `pop!` reuses owned edited leaves. `conj!`-promoted tails stay untagged plain JS arrays on V8's fast packed-array map (tagging raw array leaves with `defineProperty` regressed `transient-vec-100` +43% and `delete` in `vectorChunk` put leaves into dictionary mode, regressing `seq-walk-vec-1000` +533%; reusing `conj!`-promoted leaves cleanly via a wrapper node is filed as `light-cljs-1111`).
+- **Direct vector `transient` and `persistent!` paths.** `asTransient` short-circuits `VectorCell` (`kind === 1 && cnt$LKEY !== undefined`) directly to `kindHooks.transientVector`, which skips `viewTrie` on plain vectors and skips slicing empty tails (`tail.length === 0 ? [] : tail.slice()`). `kindHooks.persistVector` trims ordinary array tails in place when `tail.length > tailLen` without extending shorter constructor tails, falling back to `tail.slice(0, tailLen)` otherwise. `kindHooks.assocTransientVector` coerces the index and rechecks `store.editable$LKEY` before writing so reentrant `valueOf` cannot mutate a persisted vector's tail. `TransientVectorType.persistentBang` validates vector receivers (`kind === 4 && cnt$LKEY !== undefined`) before calling `kindHooks.persistVector`, delegating other receivers to `transientPersistentSlot`.
+- **Shared-heap profile (`src/js_shared_profile.js`).** `kindHooks.transientVector` reuses the freshly materialized `trie.tail$LKEY` of engine vectors (`store.form$LKEY !== undefined`) without slicing it a second time, while still slicing `VectorViewCell` tails.
+
+**Binaries:** before `light-cljs-b0bc4e4b` (master `b0bc4e4b`, SHA-256 `83a9ff63c70548b0...`), after `light-cljs-d292d1a5` (commit `d292d1a5`, SHA-256 `f041259d730bf4f8...`), V8 builds; shadow-cljs 3.5.3, Node v26.12.1. No run waited for the machine; all runs are unreserved.
+
+**Gate — touched operations** (`bb benchmarks/core-ops/run.bb --runs 5 --ops into-vec-small,transient-vec-100,vec-pop,vec-conj-64,into-vec-keys-small`, load 10.24-11.74 before, 7.33-8.48 after) and **full 80-op pass** (`--runs 5`, load 3.73-6.19 before, 3.74-6.83 after), ns per operation, medians of 5 alternated runs with ranges:
+
+| op (touched selection) | light-cljs before (range) | light-cljs after (range) | change | shadow-cljs before, after (after range) | light/shadow before, after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| into-vec-small | 117.3 (111.1-153.4) | 67.0 (65.5-69.5) | -43% | 112.3, 113.1 (112.9-113.6) | 1.04, 0.59 |
+| transient-vec-100 | 1,069 (1,056-1,386) | 851.6 (849.3-853.1) | -20% | 631.6, 632.4 (630.1-644.5) | 1.69, 1.35 |
+| into-vec-keys-small | 144.1 (142.2-217.9) | 93.2 (90.6-97.8) | -35% | 183.5, 183.9 (181.6-192.4) | 0.79, 0.51 |
+| vec-pop | 16.0 (15.5-20.2) | 15.1 (15.0-15.2) | -5% | 15.8, 15.8 (15.8-16.0) | 1.01, 0.96 |
+| vec-conj-64 | 1,415 (1,400-3,113) | 1,408 (1,404-1,442) | -1% | 1,564, 1,579 (1,409-1,581) | 0.90, 0.89 |
+
+| op (full 80-op pass) | light-cljs before (range) | light-cljs after (range) | change | shadow-cljs before, after (after range) | light/shadow before, after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| into-vec-small | 191.4 (187.4-204.1) | 128.2 (125.9-130.4) | -33% | 159.1, 156.4 (153.8-158.6) | 1.20, 0.82 |
+| transient-vec-100 | 1,115 (1,071-1,128) | 872.2 (865.5-879.3) | -22% | 1,145, 1,138 (1,136-1,152) | 0.97, 0.77 |
+| into-vec-keys-small | 177.5 (175.5-191.7) | 127.0 (126.9-127.7) | -28% | 329.2, 330.7 (324.8-340.7) | 0.54, 0.38 |
+| mapv-1000 | 13,881 (13,643-14,052) | 11,838 (11,739-12,038) | -15% | 14,127, 14,290 (14,154-14,564) | 0.98, 0.83 |
+| into-xform-1000 | 22,060 (21,275-22,312) | 19,930 (19,608-20,557) | -10% | 18,004, 18,334 (18,305-18,693) | 1.23, 1.09 |
+| vec-pop | 23.5 (23.0-24.9) | 23.1 (22.8-23.4) | -2% | 24.5, 24.2 (23.8-25.3) | 0.96, 0.95 |
+| vec-conj-64 | 1,281 (1,269-1,354) | 1,281 (1,276-1,303) | +0% | 1,277, 1,334 (1,281-1,364) | 1.00, 0.96 |
+| seq-walk-vec-1000 | 24,039 (23,929-24,287) | 24,145 (23,856-24,340) | +0% | 19,493, 19,408 (19,182-19,674) | 1.23, 1.24 |
+| sort-by-100 | 6,602 (5,330-6,834) | 6,506 (6,427-6,571) | -1% | 4,657, 4,662 (4,588-4,710) | 1.42, 1.40 |
+| vec-nth-1024 | 4.56 (4.48-4.63) | 4.73 (4.59-4.93) | +4% | 5.16, 5.13 (4.98-5.23) | 0.88, 0.92 |
+| vec-invoke-1024 | 5.07 (5.01-5.11) | 5.16 (5.09-5.20) | +2% | 4.79, 4.79 (4.71-4.90) | 1.06, 1.08 |
+
+`into-vec-small` drops 33% in the full 80-op pass (entire after range 125.9-130.4 vs shadow-cljs 153.8-158.6, 0.82x) and 43% in the touched selection (65.5-69.5 vs 112.9-113.6, 0.59x), while `transient-vec-100` drops 22% (to 0.77x in the full pass), `into-vec-keys-small` drops 28% (to 0.38x), `mapv-1000` drops 15% (to 0.83x), and `into-xform-1000` drops 10% (to 1.09x). Across all 80 operations in the full pass, zero operations regress beyond their ranges: the largest positive median shift is `vec-nth-1024` (+3.7%, overlapping ranges 4.48-4.63 vs 4.59-4.93, 0.92x shadow-cljs), followed by `vec-invoke-1024` (+1.8%, overlapping ranges 5.01-5.11 vs 5.09-5.20) and `str-concat` (+1.2%, overlapping).
+
+**Workload 200k** (`compare.bb --runs 5 --runtime-only --runtime 1,40`, private copy rebuilt with each binary just before its run, every checksum equal to the oracle's; load 9.34-11.24 before, 9.38-11.04 after): 1 iteration wall 0.350 s (0.344-0.406) to 0.347 s (0.339-0.360), 40 iterations wall 1.455 s (1.435-1.691) to 1.544 s (1.513-1.724), steady state 28.3 to 30.7 ms per iteration (shadow-cljs 24.2 and 27.0 ms; light/shadow 1.17 before and 1.14 after), peak memory at 40 iterations 0.262 to 0.267 GB (light/shadow 0.95 to 0.98).
+
+**Sizes** (light-cljs `:advanced` output as written, without React, compiled with `--no-cache` from `research/shadow-credibility/{simple-port-973,todomvc-port-980,flow-port-980}`, `b0bc4e4b` -> `d292d1a5`):
+- `simple`: raw 260,585 to 261,295 (+710), gzip -9 70,379 to 70,528 (+149, +0.21%), brotli 60,768 to 60,866 (+98).
+- `todomvc`: raw 377,653 to 378,366 (+713), gzip -9 100,627 to 100,757 (+130, +0.13%), brotli 86,381 to 86,501 (+120).
+- `flow`: raw 1,240,030 to 1,240,791 (+761), gzip -9 288,173 to 288,320 (+147, +0.05%), brotli 230,967 to 231,257 (+290).
+
+All three apps grow by <= +0.21% gzip (+130 to +149 bytes). The size ratchet's note is in tests/support/ratchet_fixtures.rs (readable runtime +1,769 bytes; 32 of 36 `:advanced` fixtures unchanged, `constant-keys` +232, `mapv-count` +559, `features`/`features-direct`/`app.editor+app.reports.js` +702; `tests/compiler/chunks.rs` unchanged).
