@@ -1,7 +1,6 @@
 //! Public iterator helpers retain canonical iterator state in both phases.
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions, RUNTIME_SOURCE};
 use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
-use std::process::Command;
 
 fn both(source: &str, expected: &str) {
     let program = analyze_with_macros(source, &parse(source).unwrap(), &mut MacroHost::new())
@@ -18,23 +17,12 @@ fn both(source: &str, expected: &str) {
             "QuickJS: {source}"
         );
     }
-    let output = Command::new("node")
-        .args([
-            "-e",
-            &format!(
-                "const rt = {RUNTIME_SOURCE}; console.log(rt.core.prStr(({})(rt)));",
-                emit_js_unit(&program)
-            ),
-        ])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
     assert_eq!(
-        String::from_utf8(output.stdout).unwrap().trim(),
+        crate::canonical_json::node_stdout(&format!(
+            "const rt = {RUNTIME_SOURCE}; console.log(rt.core.prStr(({})(rt)));",
+            emit_js_unit(&program)
+        ))
+        .trim(),
         expected,
         "Node: {source}"
     );

@@ -6692,15 +6692,24 @@ fn map_reduce_pairs_reads_entry_before_resolving_rf_call() {
 
 #[test]
 fn chunked_seq_next_calls_seq_on_chunked_vector_rest_at_boundary() {
+    // Keep fieldComparisons.on / !ownSeqs.on / !hostExt.seq intact when entering
+    // ChunkedSeqValue.next, then install the ChunkedSeq ISeqable extension on the
+    // first arr.length read inside the fast path so i === arr.length must go
+    // through seq(chunkedVectorRest(self)).
     every_level(
-        r#"(let [v (specify! (vec (range 40))
-                     ICounted (-count [_]
-                                (extend-type ChunkedSeq
-                                  ISeqable (-seq [_] :installed-during-count))
-                                40))
-                 cs (ChunkedSeq. v (array 0) 0 0 nil nil)]
-             (pr-str (next cs)))"#,
-        ":installed-during-count",
+        r#"(let [v (vec (range 40))
+                 installed (atom false)
+                 marker (js-obj)
+                 leaf (js/Proxy. (array 0)
+                        #js {:get (fn [target prop receiver]
+                                    (when (and (= prop "length") (not @installed))
+                                      (reset! installed true)
+                                      (extend-type ChunkedSeq
+                                        ISeqable (-seq [_] marker)))
+                                    (js/Reflect.get target prop receiver))})
+                 cs (ChunkedSeq. v leaf 0 0 nil nil)]
+             (pr-str (identical? (next cs) marker)))"#,
+        "true",
     );
 }
 

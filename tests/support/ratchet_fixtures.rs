@@ -1413,8 +1413,8 @@
 //! the next 100 above, and the features chunk `app.editor+app.reports.js` moves
 //! to `114,500` (`114,430`). Sol review fixes (invalidation/kind gates on
 //! `ChunkedSeqValue.next`, `seq(more)` in `assocInSeq`/`updateInSeq`/`updatePathSeq`,
-//! direct `fn.call(null, ...)` in `updateInSeq`) keep `pure-defs` at none under
-//! `882,000` and all `:advanced` chunk ceilings unchanged.
+//! direct `fn.call(null, ...)` in `updateInSeq`) stay within all existing
+//! none/prepare and `:advanced` ceilings (`pure-defs` at none `880,943`).
 
 pub struct Fixture {
     pub name: &'static str,
@@ -1513,7 +1513,7 @@ pub const FIXTURES: &[Fixture] = &[
                  (def lookup (let [k :a] (get {:a 1} k)))
                  (def literal [1 2 3])
                  (:x (->Point 1 2))"#,
-        ceilings: [882_000, 881_000, 7_000],
+        ceilings: [881_000, 881_000, 7_000],
         removed: [0, 1, 6],
         printed: "1\n",
     },

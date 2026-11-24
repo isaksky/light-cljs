@@ -1,7 +1,6 @@
 //! Public parsing, scalar, random and array contracts in canonical JS phases.
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions, RUNTIME_SOURCE};
 use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
-use std::process::Command;
 
 fn both(source: &str, expected: &str) {
     let p = analyze_with_macros(source, &parse(source).unwrap(), &mut MacroHost::new())
@@ -16,23 +15,12 @@ fn both(source: &str, expected: &str) {
             "QuickJS: {source}"
         );
     }
-    let out = Command::new("node")
-        .args([
-            "-e",
-            &format!(
-                "const rt = {RUNTIME_SOURCE}; console.log(rt.core.prStr(({})(rt)));",
-                emit_js_unit(&p)
-            ),
-        ])
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
     assert_eq!(
-        String::from_utf8(out.stdout).unwrap().trim(),
+        crate::canonical_json::node_stdout(&format!(
+            "const rt = {RUNTIME_SOURCE}; console.log(rt.core.prStr(({})(rt)));",
+            emit_js_unit(&p)
+        ))
+        .trim(),
         expected,
         "Node: {source}"
     );
