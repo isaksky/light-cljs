@@ -8560,8 +8560,7 @@
     const key = first(current), more = next(current);
     return assoc(value, key, more == null ? item : assocInSeq(get(value, key), seq(more), item));
   }
-  //@unit updateIn requires: apply, assoc, call1, first, fixedFn2, fnRest, get, next, seq,
-  //@ updatePath
+  //@unit updateIn requires: apply, assoc, first, fnRest, get, next, seq, updatePath
   function updateIn(value, path, fn, a, b, c) {
     const argc = arguments.length;
     if (argc >= 3 && argc <= 6) return updateInSeq(value, seq(path), fn, a, b, c, argc);
@@ -8573,8 +8572,8 @@
     const key = first(current), more = next(current), old = get(value, key);
     if (more != null) return assoc(value, key, updateInSeq(old, seq(more), fn, a, b, c, argc));
     let nextVal;
-    if (argc === 3) nextVal = call1(fn, old);
-    else if (argc === 4) { const f = fixedFn2(fn); nextVal = f ? f.call(fn, old, a) : fn.call(null, old, a); }
+    if (argc === 3) nextVal = fn.call(null, old);
+    else if (argc === 4) nextVal = fn.call(null, old, a);
     else if (argc === 5) nextVal = fn.call(null, old, a, b);
     else nextVal = fn.call(null, old, a, b, c);
     return assoc(value, key, nextVal);

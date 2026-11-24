@@ -6628,7 +6628,7 @@ fn list_pop_chunked_seq_next_and_map_reduce_keep_extension_and_constructor_seman
                       (get-in (update-in nested [:a :b :c] ifn-obj) [:a :b :c])
                       (get-in (update-in nested [:a :b :c] ifn-obj 4) [:a :b :c])
                       (update-in {} [] (fn [x] (if (nil? x) :empty x)))]))"#,
-        "[22 nil :v2 true true true 22 22 false 25 5 9 2 6 12 19 27 2 5 [true 2] [true 5] 10 105 {nil :empty}]",
+        "[22 nil :v2 true true true 22 22 false 25 5 9 2 6 12 19 27 2 5 [false 2] [false 5] 10 105 {nil :empty}]",
     );
 }
 
@@ -6649,5 +6649,27 @@ fn assoc_in_update_in_and_update_path_reseq_nested_more() {
                       (update-in {:a {:from-seq 1}} path + 2 3 4 5)
                       @seq-calls]))"#,
         "[{:a {:from-seq 9}} {:a {:from-seq 2}} {:a {:from-seq 15}} 3]",
+    );
+}
+
+#[test]
+fn update_in_invokes_fn_via_call_null_without_arity_shortcut() {
+    every_level(
+        r#"(let [multi (fn ([x] (this-as t [(fn? t) (+ x 1)]))
+                           ([x a] (this-as t [(fn? t) (+ x a)])))
+                 f (js* "(function(x, a) { return arguments.length === 1 ? 'fn1:' + x : 'fn2:' + x + ',' + a; })")
+                 _ (aset f "cljs$core$IFn$_invoke$arity$1" (fn [_] "wrong1"))
+                 _ (aset f "cljs$core$IFn$_invoke$arity$2" (fn [_ _] "wrong2"))
+                 ifn-obj (reify IFn (-invoke [_ x] (* x 10)) (-invoke [_ x a] (+ x a 100)))
+                 nested {:a {:b {:c 1}}}]
+             (pr-str [(get-in (update-in nested [:a :b :c] multi) [:a :b :c])
+                      (get-in (update-in nested [:a :b :c] multi 4) [:a :b :c])
+                      (get-in (update-in nested [:a :b :c] f) [:a :b :c])
+                      (get-in (update-in nested [:a :b :c] f 4) [:a :b :c])
+                      (get-in (update-in nested [:a :b :c] ifn-obj) [:a :b :c])
+                      (get-in (update-in nested [:a :b :c] ifn-obj 4) [:a :b :c])
+                      (get-in (update-in {:a {:b {:k 7}}} [:a :b] :k) [:a :b])
+                      (get-in (update-in {:a {:b {:k 7}}} [:a :b] :missing :fb) [:a :b])]))"#,
+        r#"[[false 2] [false 5] "fn1:1" "fn2:1,4" 10 105 7 :fb]"#,
     );
 }
