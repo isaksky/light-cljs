@@ -2131,7 +2131,7 @@ console.log('kind tables stay private to the runtime');
   // Vectors, subvectors, map entries and transient vectors hold their store's
   // fields, their metadata and their hash themselves (light-cljs-1026).
   const fields = {vector: trie, entry: trie, subvec: ['meta$LKEY', 'cnt$LKEY', 'sub$LKEY', 'begin$LKEY', 'built$LKEY', 'hash$LKEY', 'v$LKEY'],
-    transientVector: ['cnt$LKEY', 'shift$LKEY', 'root$LKEY', 'tail$LKEY', 'owned$LKEY', 'editable$LKEY'], indexedSeq: view, stringSeq: view, restArguments: view,
+    transientVector: ['cnt$LKEY', 'shift$LKEY', 'root$LKEY', 'tail$LKEY', 'edit$LKEY', 'editable$LKEY'], indexedSeq: view, stringSeq: view, restArguments: view,
     chunkedSeq: [...view, 'vec$LKEY', 'base$LKEY'], keyword: ['ns$LKEY', 'name$LKEY', 'fqn$LKEY', 'hash$LKEY'],
     symbol: ['ns$LKEY', 'name$LKEY', 'str$LKEY', 'hash$LKEY', 'meta$LKEY'], lazySeq: ['fn$LKEY', 's$LKEY', 'hash$LKEY'],
     chunkedCons: ['chunk$LKEY', 'more$LKEY', 'hash$LKEY'], chunk: ['arr$LKEY', 'off$LKEY', 'end$LKEY', 'first$LKEY', 'step$LKEY'],

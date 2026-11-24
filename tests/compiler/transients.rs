@@ -288,6 +288,95 @@ fn into_uses_custom_editable_protocol_and_real_transient_completion() {
     );
 }
 
+#[test]
+fn transient_vector_edit_token_ownership_boundaries_and_isolation() {
+    both(
+        r#"
+      (let [;; Grow across the 32 and 1024+32 (1056) boundaries
+            n 1100
+            v1 (loop [i 0 tv (transient [])]
+                 (if (< i n) (recur (inc i) (conj! tv i)) (persistent! tv)))
+            _ (assert (= n (count v1)))
+            _ (assert (= [0 31 32 500 1023 1024 1055 1056 1099]
+                         [(nth v1 0) (nth v1 31) (nth v1 32) (nth v1 500)
+                          (nth v1 1023) (nth v1 1024) (nth v1 1055) (nth v1 1056) (nth v1 1099)]))
+            ;; Two concurrent sibling transients over the same persistent vector v1
+            s1 (transient v1)
+            s2 (transient v1)
+            ;; Interleaved assoc! on shared nodes (first write copies) and owned nodes (second write in place)
+            _ (assoc! s1 0 :s1-0)
+            _ (assoc! s2 0 :s2-0)
+            _ (assoc! s1 1 :s1-1)
+            _ (assoc! s2 31 :s2-31)
+            _ (assoc! s1 32 :s1-32)
+            _ (assoc! s2 32 :s2-32)
+            _ (assoc! s1 500 :s1-500)
+            _ (assoc! s2 500 :s2-500)
+            _ (assoc! s1 1023 :s1-1023)
+            _ (assoc! s1 1024 :s1-1024)
+            _ (assoc! s2 1055 :s2-1055)
+            _ (assoc! s1 1056 :s1-1056)
+            _ (assoc! s2 1099 :s2-1099)
+            _ (assoc! s1 1100 :s1-1100)
+            _ (conj! s1 :s1-1101)
+            ;; Pop s2 across the 1057->1056 root-shrink boundary (shift 10 -> 5) while s1 is still active
+            _ (dotimes [_ 45] (pop! s2))
+            _ (assoc! s2 500 :s2-500b)
+            _ (conj! s2 :s2-tail)
+            vs1 (persistent! s1)
+            vs2 (persistent! s2)
+            ;; v1 must remain completely untouched
+            _ (assert (= n (count v1)))
+            _ (assert (= [0 1 31 32 500 1023 1024 1055 1056 1099]
+                         [(nth v1 0) (nth v1 1) (nth v1 31) (nth v1 32) (nth v1 500)
+                          (nth v1 1023) (nth v1 1024) (nth v1 1055) (nth v1 1056) (nth v1 1099)]))
+            ;; Stale transient s1 must throw on every operation and leave vs1 intact
+            stale-errors
+            [(try (conj! s1 :bad) :ok (catch js/Error _ :err))
+             (try (assoc! s1 0 :bad) :ok (catch js/Error _ :err))
+             (try (assoc! s1 1102 :bad) :ok (catch js/Error _ :err))
+             (try (pop! s1) :ok (catch js/Error _ :err))
+             (try (persistent! s1) :ok (catch js/Error _ :err))
+             (try (count s1) :ok (catch js/Error _ :err))
+             (try (nth s1 0) :ok (catch js/Error _ :err))
+             (try (get s1 0) :ok (catch js/Error _ :err))
+             (try (s1 0) :ok (catch js/Error _ :err))]
+            _ (assert (= (vec (repeat 9 :err)) stale-errors))
+            ;; New transient over vs1 (whose nodes carry s1's old edit token) must copy on write
+            ;; and also exercise pop! across 1057->1056 and 33->32 boundaries on owned and shared nodes
+            t3 (transient vs1)
+            _ (assoc! t3 0 :t3-0)
+            _ (assoc! t3 500 :t3-500)
+            _ (assoc! t3 1056 :t3-1056)
+            _ (dotimes [_ 80] (pop! t3))
+            _ (assoc! t3 32 :t3-32)
+            _ (conj! t3 :t3-tail)
+            v3 (persistent! t3)
+            ;; Pop from 1102 all the way down past 1056 and 32 to 30, then rebuild past 32
+            v4 (loop [tv (transient vs1)]
+                 (if (> (count tv) 30)
+                   (recur (pop! tv))
+                   (persistent! (conj! (conj! (conj! tv :p30) :p31) :p32))))
+            ;; Empty transient and pop-to-empty trim tail cleanly
+            empty-roundtrip [(persistent! (transient []))
+                             (persistent! (pop! (conj! (transient []) :once)))]
+            ;; VectorViewCell (from assoc on subvec) transient isolates both source vector and view
+            sv (assoc (subvec v1 30 70) 0 30)
+            v-sv (persistent! (conj! (assoc! (transient sv) 0 :sv0) :sv-end))
+            ;; Persistent updates on vs1 also leave vs1 untouched
+            v5 (assoc (conj vs1 :p) 500 :p500)]
+        [(nth v1 500) (nth vs1 500) (nth vs2 500) (nth v3 500) (nth v5 500)
+         (count v1) (count vs1) (count vs2) (count v3) (count v4) (count v5)
+         (peek vs1) (peek vs2) (peek v3) (peek v4) (peek v5)
+         (nth vs1 0) (nth vs1 1) (nth vs1 32) (nth vs1 1056)
+         (nth vs2 0) (nth vs2 31) (nth vs2 32) (nth vs2 1055)
+         (nth v3 0) (nth v3 32)
+         empty-roundtrip
+         (nth sv 0) (count sv) (nth v-sv 0) (peek v-sv) (count v-sv)])"#,
+        "[500 :s1-500 :s2-500b :t3-500 :p500 1100 1102 1056 1023 33 1103 :s1-1101 :s2-tail :t3-tail :p32 :p :s1-0 :s1-1 :s1-32 :s1-1056 :s2-0 :s2-31 :s2-32 :s2-tail :t3-0 :t3-32 [[] []] 30 40 :sv0 :sv-end 41]",
+    );
+}
+
 /// Complete sources in both compiler phases and both host lifecycles, each run in
 /// QuickJS and Node (see `tests/support/phase_oracle.rs`).
 mod phase_oracles {

@@ -1645,13 +1645,15 @@
   //@unit makeVector.transient effect: makeVector, mapEntry when: asTransient requires: kindHooks,
   //@ TransientVectorCell, vectorSlice, vectorTrie, viewTrie
   // A transient vector edits a trie of the vector's items, a task-owned
-  // value (design point 8), as the V8 profile's edits a copy of the tail
-  // and the nodes along the paths it changes, which it owns
-  // (`vectorEditor`): a weak set, which keeps no node a `pop!` discarded.
+  // value (design point 8), as the V8 profile's edits a copy of a non-empty
+  // tail and marks owned trie nodes with a lazy `edit` token (`vectorEditor`).
+  // An engine vector's freshly materialized trie owns its tail already.
   kindHooks.transientVector = store => {
-    const trie = store.form$LKEY !== undefined ? vectorTrie(vectorSlice(store, 0, store.cnt$LKEY)) : viewTrie(store);
-    const tail = trie.tail$LKEY.slice();
-    return new TransientVectorCell(trie.cnt$LKEY, trie.shift$LKEY, trie.root$LKEY, tail, new WeakSet([tail]));
+    const engine = store.form$LKEY !== undefined;
+    const trie = engine ? vectorTrie(vectorSlice(store, 0, store.cnt$LKEY)) : viewTrie(store);
+    const cnt = trie.cnt$LKEY;
+    const tail = engine ? trie.tail$LKEY : cnt ? trie.tail$LKEY.slice() : [];
+    return new TransientVectorCell(cnt, trie.shift$LKEY, trie.root$LKEY, tail);
   };
   //@unit callable requires: fnApplyTo, fnRest
   // The V8 profile's `callable`, with the arity table it captures sealed:

@@ -271,6 +271,60 @@ fn shared_profile_vector_operations() {
     );
 }
 
+/// Sol finding #11 (light-cljs-1108): creating a transient from a non-empty
+/// engine vector reuses the fresh tail produced by `vectorTrie(vectorSlice(...))`
+/// without slicing it a second time, while still isolating the source vector
+/// and still copying the tail of a runtime `VectorViewCell` (`withMeta`).
+#[test]
+fn shared_transient_vector_reuses_materialized_tail() {
+    let rt = Runtime::new();
+    const ANCHOR: &str = "function vectorTrie(items, slice) {";
+    assert_eq!(SHARED_RUNTIME.matches(ANCHOR).count(), 1);
+    let instrumented = SHARED_RUNTIME.replace(
+        ANCHOR,
+        "function vectorTrie(items, slice) { const __r = __rawVectorTrie(items, slice); globalThis.__lastVectorTrie = __r; return __r; }\n  function __rawVectorTrie(items, slice) {",
+    );
+    let out = run(
+        &rt,
+        &format!(
+            "const rt = (\n{instrumented}\n); const core = rt.core; \
+             const tailOf = v => v[Object.keys(v).find(k => k.startsWith('tail$'))]; \
+             const small = core.vector(10, 20, 30); \
+             let large = core.vector(); for (let i = 0; i < 40; i++) large = core.conj(large, i); \
+             globalThis.__lastVectorTrie = null; \
+             const tSmall = core.transient(small); \
+             const smallReused = tailOf(tSmall) === tailOf(globalThis.__lastVectorTrie); \
+             globalThis.__lastVectorTrie = null; \
+             const tLarge = core.transient(large); \
+             const largeReused = tailOf(tLarge) === tailOf(globalThis.__lastVectorTrie); \
+             const tag = core.keyword(null, 'tag'); \
+             const viewSmall = core.withMeta(__rt.formWithMeta(small, __rt.formMap(tag, true)), null); \
+             globalThis.__lastVectorTrie = null; \
+             const tView1 = core.transient(viewSmall); \
+             const viewTrieTail = tailOf(globalThis.__lastVectorTrie); \
+             const view1Copied = tailOf(tView1) !== viewTrieTail; \
+             const tView2 = core.transient(viewSmall); \
+             const view2Copied = tailOf(tView2) !== viewTrieTail && tailOf(tView2) !== tailOf(tView1); \
+             const pSmall = core.persistentBang(core.conjBang(core.assocBang(tSmall, 0, 99), 40)); \
+             const pLarge = core.persistentBang(core.conjBang(core.assocBang(core.assocBang(tLarge, 0, -1), 35, -35), 40)); \
+             const pView1 = core.persistentBang(core.assocBang(tView1, 1, 200)); \
+             const pView2 = core.persistentBang(core.assocBang(tView2, 1, 300)); \
+             return [ \
+               smallReused, largeReused, view1Copied, view2Copied, \
+               core.prStr(small), core.prStr(pSmall), \
+               core.nth(large, 0), core.nth(large, 35), core.count(large), \
+               core.nth(pLarge, 0), core.nth(pLarge, 35), core.nth(pLarge, 40), core.count(pLarge), \
+               core.prStr(viewSmall), core.prStr(pView1), core.prStr(pView2) \
+             ].join(' ');"
+        ),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        out.string().unwrap().to_string_lossy(),
+        "true true true true [10 20 30] [99 20 30 40] 0 35 40 -1 -35 40 41 [10 20 30] [10 200 30] [10 300 30]"
+    );
+}
+
 /// A runtime-owned sequence (a list of `listFromArray`, an indexed seq over
 /// a vector, the runtime's own `iterate` cell: design point 8) crosses into
 /// the engine's `cons` and lazy-seq realization through the profile's
