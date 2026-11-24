@@ -6473,3 +6473,19 @@ fn forged_values_of_classes_without_masks_answer_by_kind() {
         assert!(units.contains(&unit), "{unit}: {units:?}");
     }
 }
+
+/// Sol finding #3 (light-cljs-1108): borrowing `TransientVector`'s `-persistent!`
+/// slot onto another transient class (`TransientArrayMap`, which also has
+/// `editable$LKEY`) delegates to `transientPersistentSlot` instead of marking the
+/// map stale and crashing on missing vector fields.
+#[test]
+fn persistent_bang_preserves_borrowed_builtin_slots() {
+    let source = r#"(let [tv (transient [1])
+                          tm (transient {:a 1})
+                          slot (first (filter #(.includes % "$_persistent_BANG_$arity$1$")
+                                              (js/Object.getOwnPropertyNames (js/Object.getPrototypeOf tv))))
+                          borrowed (aget (js/Object.getPrototypeOf tv) slot)]
+                      (aset tm slot borrowed)
+                      (pr-str [(persistent! tm) (persistent! tv)]))"#;
+    every_level(source, "[{:a 1} [1]]");
+}

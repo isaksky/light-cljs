@@ -2943,3 +2943,78 @@ console.log('sorted maps are red-black trees of map entries');
   assert.equal(core.valProtocol(entry), 'a');
 }
 console.log('public sorted map trees update as nodes and entry fields take shadow writes');
+
+// Sol findings #2, #4, #6, #7 (light-cljs-1108): transient vector edit tokens
+// stay non-enumerable on public chunk nodes and tails, constructor tails keep
+// slice semantics on persistent!, owned leaves move between tail and trie
+// without copying, and tail-only updates defer edit-token allocation.
+{
+  const c = runtime.core;
+  // #2: transient_edit_tokens_are_hidden_from_chunk_node_enumeration
+  {
+    const base = c.persistentBang(Array.from({length: 33}, (_, i) => i).reduce((t, i) => c.conjBang(t, i), c.transient(c.vector())));
+    const edited = c.persistentBang(c.assocBang(c.transient(base), 0, 999));
+    const chunkNode = c.seq(edited).node;
+    assert.deepEqual(Object.keys(chunkNode), Array.from({length: 32}, (_, i) => String(i)));
+    const popped = c.persistentBang(c.popBang(c.assocBang(Array.from({length: 33}, (_, i) => i).reduce((t, i) => c.conjBang(t, i), c.transient(c.vector())), 0, 888)));
+    assert.deepEqual(Object.keys(popped.tail), Array.from({length: 32}, (_, i) => String(i)));
+  }
+  // #4: transient_persistence_preserves_constructor_tail_length
+  {
+    const shortTail = new c.PersistentVector(null, 2, 5, null, [10], null);
+    const roundTripped = c.persistentBang(c.transient(shortTail));
+    assert.equal(roundTripped.tail.length, 1);
+    assert.equal(c.prStr(roundTripped), '[10]');
+    const negCnt = new c.PersistentVector(null, -1, 5, null, [10, 20], null);
+    const negRoundTripped = c.persistentBang(c.transient(negCnt));
+    assert.deepEqual(negRoundTripped.tail$LKEY, [10]);
+    assert.deepEqual(negRoundTripped.tail, []);
+  }
+  // #6: transient_vector_reuses_owned_leaf_across_tail_boundary
+  {
+    const tv = c.transient(c.vector());
+    for (let i = 0; i < 32; i++) c.conjBang(tv, i);
+    const firstTail = tv.tail$LKEY;
+    c.conjBang(tv, 32);
+    assert.equal(tv.root$LKEY[0], firstTail);
+    c.assocBang(tv, 0, 'edited');
+    assert.equal(tv.root$LKEY[0], firstTail);
+    assert.equal(firstTail[0], 'edited');
+    c.popBang(tv);
+    assert.equal(tv.tail$LKEY, firstTail);
+    const persisted = c.persistentBang(tv);
+    assert.equal(persisted.tail$LKEY, firstTail);
+    assert.equal(c.nth(persisted, 0), 'edited');
+    // A second transient over a persisted vector must NOT reuse the shared leaf on pop!
+    const v33 = c.conj(persisted, 32);
+    const sharedLeaf = v33.root$LKEY[0];
+    const tv2 = c.transient(v33);
+    c.popBang(tv2);
+    assert.notEqual(tv2.tail$LKEY, sharedLeaf);
+    c.assocBang(tv2, 0, 'other');
+    assert.equal(c.nth(v33, 0), 'edited');
+  }
+  // #7: transient_vector_defers_edit_token_until_trie_write
+  {
+    const tv = c.transient(c.vector(1, 2, 3));
+    assert.equal(tv.edit$LKEY, null);
+    c.conjBang(tv, 4);
+    assert.equal(tv.edit$LKEY, null);
+    c.assocBang(tv, 1, 20);
+    assert.equal(tv.edit$LKEY, null);
+    c.popBang(tv);
+    assert.equal(tv.edit$LKEY, null);
+    for (let i = 3; i < 32; i++) c.conjBang(tv, i);
+    assert.equal(tv.edit$LKEY, null);
+    c.conjBang(tv, 32);
+    const token = tv.edit$LKEY;
+    assert.notEqual(token, null);
+    c.assocBang(tv, 0, 99);
+    assert.equal(tv.edit$LKEY, token);
+    c.popBang(tv);
+    assert.equal(tv.edit$LKEY, token);
+    c.persistentBang(tv);
+    assert.equal(tv.edit$LKEY, null);
+  }
+}
+console.log('transient vector edit tokens stay hidden, preserve constructor tails, reuse owned leaves, and allocate lazily');

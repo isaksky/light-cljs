@@ -4905,8 +4905,12 @@
   // left trailing items avoids copying the tail on `persistent!`.
   kindHooks.persistVector = store => {
     const cnt = store.cnt$LKEY, tail = store.tail$LKEY, tailLen = cnt - vectorTailOffset(cnt);
-    if (tail.length !== tailLen) tail.length = tailLen;
-    return makeVector(null, new VectorCell(null, cnt, store.shift$LKEY, store.root$LKEY, tail, null));
+    let nextTail;
+    if (Array.isArray(tail) && tailLen === (tailLen >>> 0)) {
+      if (tail.length > tailLen) tail.length = tailLen;
+      nextTail = tail;
+    } else nextTail = tail.slice(0, tailLen);
+    return makeVector(null, new VectorCell(null, cnt, store.shift$LKEY, store.root$LKEY, nextTail, null));
   };
   //@unit makeVector.transient effect: makeVector, mapEntry when: asTransient requires: kindHooks,
   //@ TransientVectorCell, viewTrie
@@ -5074,14 +5078,23 @@
   //@ kindHooks
   kindHooks.conjTransientVector = conjVectorBang;
   //@unit makeVector.assocTransient effect: makeVector, mapEntry when: assocTransient requires: conjVectorBang,
-  //@ kindHooks, outOfBounds, vectorAssocNode, vectorTailOffset
+  //@ editableTransient, kindHooks, outOfBounds, vectorAssocNode, vectorTailOffset
   // `assoc!` of an index of a transient vector, or of its count.
   kindHooks.assocTransientVector = (store, key, item) => {
     if (key >= 0 && key < store.cnt$LKEY) {
-      if (key >= vectorTailOffset(store.cnt$LKEY)) store.tail$LKEY[key & 31] = item;
-      else store.root$LKEY = vectorAssocNode(store.shift$LKEY, store.root$LKEY, key, item, store.edit$LKEY ?? (store.edit$LKEY = {}));
-    } else if (key === store.cnt$LKEY) conjVectorBang(store, item);
-    else outOfBounds();
+      if (key >= vectorTailOffset(store.cnt$LKEY)) {
+        const index = key & 31;
+        if (!store.editable$LKEY) editableTransient(store, "assoc!");
+        store.tail$LKEY[index] = item;
+      } else {
+        const index = key >>> 0;
+        if (!store.editable$LKEY) editableTransient(store, "assoc!");
+        store.root$LKEY = vectorAssocNode(store.shift$LKEY, store.root$LKEY, index, item, store.edit$LKEY ?? (store.edit$LKEY = {}));
+      }
+    } else if (key === store.cnt$LKEY) {
+      if (!store.editable$LKEY) editableTransient(store, "assoc!");
+      conjVectorBang(store, item);
+    } else outOfBounds();
   };
   //@unit makeSet.conjTransient effect: makeSet, treeSetConstructor when: conjTransient requires: kindHooks,
   //@ putMember
@@ -5164,8 +5177,8 @@
     const store = editableTransient(value, "pop!"), cnt = store.cnt$LKEY, shift = store.shift$LKEY;
     if (!cnt) throw new Error("Can't pop empty vector");
     if (cnt > 1 && !((cnt - 1) & 31)) {
-      const edit = store.edit$LKEY ?? (store.edit$LKEY = {});
-      store.tail$LKEY = vectorLeaf(store, cnt - 2).slice();
+      const edit = store.edit$LKEY ?? (store.edit$LKEY = {}), leaf = vectorLeaf(store, cnt - 2);
+      store.tail$LKEY = leaf.edit$LKEY === edit ? leaf : leaf.slice();
       const root = vectorPopTail(cnt, shift, store.root$LKEY, edit) ?? [];
       if (shift > 5 && root.length < 2) { store.root$LKEY = vectorEditor(root[0], edit); store.shift$LKEY -= 5; }
       else store.root$LKEY = root;
@@ -5507,10 +5520,12 @@
   //@unit vectorEditor
   // What a transient vector, which marks owned trie nodes with `edit`, edits
   // for `node`: the node itself where it owns it, else a copy it then owns.
+  // The token is non-enumerable so leaves exposed through `ChunkedSeq.node`
+  // or reused as tails enumerate only their index keys.
   function vectorEditor(node, edit) {
     if (node.edit$LKEY === edit) return node;
     const copy = node.slice();
-    copy.edit$LKEY = edit;
+    Object.defineProperty(copy, "edit$LKEY", {value: edit, writable: true});
     return copy;
   }
   //@unit vectorPath
@@ -5518,7 +5533,7 @@
   function vectorPath(level, node, edit) {
     if (!level) return node;
     const parent = [vectorPath(level - 5, node, edit)];
-    if (edit) parent.edit$LKEY = edit;
+    if (edit) Object.defineProperty(parent, "edit$LKEY", {value: edit, writable: true});
     return parent;
   }
   //@unit vectorPushTail requires: vectorEditor, vectorPath
@@ -5556,13 +5571,14 @@
     const cnt = store.cnt$LKEY;
     if (cnt - vectorTailOffset(cnt) < 32) store.tail$LKEY[cnt & 31] = item;
     else {
-      const shift = store.shift$LKEY, edit = store.edit$LKEY ?? (store.edit$LKEY = {}), grow = (cnt >>> 5) > (1 << shift);
+      const shift = store.shift$LKEY, edit = store.edit$LKEY ?? (store.edit$LKEY = {}), tail = store.tail$LKEY, grow = (cnt >>> 5) > (1 << shift);
+      if (tail.edit$LKEY !== edit) Object.defineProperty(tail, "edit$LKEY", {value: edit, writable: true});
       if (grow) {
-        const nextRoot = [store.root$LKEY, vectorPath(shift, store.tail$LKEY, edit)];
-        nextRoot.edit$LKEY = edit;
+        const nextRoot = [store.root$LKEY, vectorPath(shift, tail, edit)];
+        Object.defineProperty(nextRoot, "edit$LKEY", {value: edit, writable: true});
         store.root$LKEY = nextRoot;
         store.shift$LKEY = shift + 5;
-      } else store.root$LKEY = vectorPushTail(cnt, shift, store.root$LKEY, store.tail$LKEY, edit);
+      } else store.root$LKEY = vectorPushTail(cnt, shift, store.root$LKEY, tail, edit);
       store.tail$LKEY = [item];
     }
     store.cnt$LKEY = cnt + 1;
@@ -6409,13 +6425,16 @@
   //@ TransientVectorType
   TransientVectorType.prototype.cljs$core$ITransientAssociative$_assoc_BANG_$arity$3$LKEY = transientAssocSlot;
   //@unit TransientVectorType.persistentBang effect: TransientVectorType when: persistentBang
-  //@ requires: builtinSlot, editableTransient, kindHooks, noBranch, TransientVectorType
+  //@ requires: builtinSlot, editableTransient, kindHooks, transientPersistentSlot,
+  //@ TransientVectorType
   TransientVectorType.prototype.cljs$core$ITransientCollection$_persistent_BANG_$arity$1$LKEY = builtinSlot(function (self) {
-    const editable = self.editable$LKEY;
-    if (editable !== true) { if (editable === undefined) return noBranch; editableTransient(self, "persistent!"); }
-    self.editable$LKEY = false;
-    self.edit$LKEY = null;
-    return kindHooks.persistVector(self);
+    if (self.cljs$lang$kind$$LKEY === 4 && self.cnt$LKEY !== undefined) {
+      if (self.editable$LKEY !== true) editableTransient(self, "persistent!");
+      self.editable$LKEY = false;
+      self.edit$LKEY = null;
+      return kindHooks.persistVector(self);
+    }
+    return transientPersistentSlot(self);
   });
   //@unit TransientArrayMapType.conjBang effect: TransientArrayMapType when: conjBangOwn requires: TransientArrayMapType,
   //@ transientConjSlot

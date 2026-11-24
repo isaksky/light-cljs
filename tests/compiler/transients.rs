@@ -377,6 +377,31 @@ fn transient_vector_edit_token_ownership_boundaries_and_isolation() {
     );
 }
 
+#[test]
+fn indexed_assoc_cannot_mutate_a_reentrantly_persisted_vector() {
+    both(
+        r#"
+      (let [t (transient [1])
+            saved (atom nil)
+            index (js* "({valueOf() { if (~{} == null) { ~{}(~{}(~{})); } return 0; }})"
+                       @saved (fn [v] (reset! saved v)) persistent! t)
+            outcome (try (-assoc-n! t index 99) :ok (catch js/Error _ :err))]
+        [outcome @saved (nth @saved 0)])"#,
+        "[:err [1] 1]",
+    );
+    // Same check when the reentrant persistence happens on a trie write (index < tailOffset)
+    both(
+        r#"
+      (let [t (transient (vec (range 40)))
+            saved (atom nil)
+            index (js* "({valueOf() { if (~{} == null) { ~{}(~{}(~{})); } return 0; }})"
+                       @saved (fn [v] (reset! saved v)) persistent! t)
+            outcome (try (-assoc-n! t index 99) :ok (catch js/Error _ :err))]
+        [outcome (nth @saved 0) (count @saved)])"#,
+        "[:err 0 40]",
+    );
+}
+
 /// Complete sources in both compiler phases and both host lifecycles, each run in
 /// QuickJS and Node (see `tests/support/phase_oracle.rs`).
 mod phase_oracles {
