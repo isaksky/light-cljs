@@ -202,8 +202,9 @@
   //@unit EntryCell
   // A map entry: a vector store of its key and value, which its tail holds,
   // with `MapEntryType`'s prototype. Its metadata is always nil (`withMeta`
-  // of one is a vector).
-  function EntryCell(key, val) { this.meta$LKEY = null; this.cnt$LKEY = 2; this.shift$LKEY = 5; this.root$LKEY = []; this.tail$LKEY = [key, val]; this.hash$LKEY = null; /*@brand*/ }
+  // of one is a vector). Every entry shares one empty `root` (`entryRoot`).
+  function EntryCell(key, val) { this.meta$LKEY = null; this.cnt$LKEY = 2; this.shift$LKEY = 5; this.root$LKEY = entryRoot; this.tail$LKEY = [key, val]; this.hash$LKEY = null; /*@brand*/ }
+  const entryRoot = Object.freeze([]);
   //@unit viewOf
   // A seq over an array or a string, the classes of kinds 5 to 11 (`kinds`):
   // the value itself, whose own keyed fields are its storage `arr` (an array
@@ -7256,37 +7257,59 @@
   // not its class's own), the walk of that seq (`reduceWalk`), as the old
   // path's; where a compiler session demands declarations (`slotFirst`),
   // `reduce`'s own path.
-  function mapReduceSlot(self, rf, init, arity, pairs, own, iterable) {
+  function mapReduceSlot(self, rf, init, arity, pairs, own) {
+    if (!slotFirst.on || self.slots$LKEY !== undefined || !own || arity === 2) {
+      return mapReduceSlow(self, rf, init, arity, pairs, own);
+    }
+    return mapReducePairs(pairs, 0, pairs.length, rf, init);
+  }
+  function mapReducePairs(pairs, i, n, rf, init) {
+    const step = fixedFn2(rf);
+    if (step) {
+      for (; i < n; i += 2) {
+        init = step(init, mapEntry(pairs[i], pairs[i + 1]));
+        if (isReduced(init)) return reducedValue(init);
+      }
+    } else {
+      for (; i < n; i += 2) {
+        init = rf.call(null, init, mapEntry(pairs[i], pairs[i + 1]));
+        if (isReduced(init)) return reducedValue(init);
+      }
+    }
+    return init;
+  }
+  function mapReduceSlow(self, rf, init, arity, pairs, own) {
     if (!slotFirst.on) return reduceOwnPath(self, rf, init, arity);
     const slots = self.slots$LKEY;
     let n = pairs.length, i = 0;
     if (slots?.arr) {
-      if (!iterable) return iterReduce(iterator(self), rf, init, arity);
+      if (self.cljs$core$IIterable$_iterator$arity$1$LKEY !== undefined) return iterReduce(iterator(self), rf, init, arity);
       pairs = slots.arr; n = slots.cnt * 2;
     } else if (!own) return reduceWalk(self, rf, init, arity);
     if (arity === 2) { if (!(i < n)) return call0(rf); init = mapEntry(pairs[0], pairs[1]); i = 2; }
-    const step = fixedFn2(rf);
-    for (; i < n; i += 2) {
-      const e = mapEntry(pairs[i], pairs[i + 1]);
-      init = step ? step(init, e) : rf.call(null, init, e);
-      if (isReduced(init)) return reducedValue(init);
-    }
-    return init;
+    return mapReducePairs(pairs, i, n, rf, init);
   }
   //@unit PersistentArrayMapValue.reduceSlot effect: PersistentArrayMapValue when: reduce, reduceOf
   //@ requires: builtinSlot, mapReduceSlot, PersistentArrayMapValue
-  // One method for both arities (the arguments' count), as a vector's.
-  PersistentArrayMapValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = builtinSlot((own => function (self, rf, init) {
-    return mapReduceSlot(self, rf, init, arguments.length, self.arr$LKEY,
-      self.cljs$core$ISeqable$_seq$arity$1$LKEY === own, self.cljs$core$IIterable$_iterator$arity$1$LKEY === undefined);
-  })(PersistentArrayMapValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY));
-  PersistentArrayMapValue.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = PersistentArrayMapValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY;
+  // One method per arity (no `arguments.length`), as a vector's.
+  (own => {
+    PersistentArrayMapValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = builtinSlot(function (self, rf) {
+      return mapReduceSlot(self, rf, undefined, 2, self.arr$LKEY, self.cljs$core$ISeqable$_seq$arity$1$LKEY === own);
+    });
+    PersistentArrayMapValue.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = builtinSlot(function (self, rf, init) {
+      return mapReduceSlot(self, rf, init, 3, self.arr$LKEY, self.cljs$core$ISeqable$_seq$arity$1$LKEY === own);
+    });
+  })(PersistentArrayMapValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY);
   //@unit PersistentHashMapValue.reduceSlot effect: PersistentHashMapValue when: reduce, reduceOf
   //@ requires: builtinSlot, mapPairs, mapReduceSlot, PersistentHashMapValue
-  PersistentHashMapValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = builtinSlot((own => function (self, rf, init) {
-    return mapReduceSlot(self, rf, init, arguments.length, mapPairs(self), self.cljs$core$ISeqable$_seq$arity$1$LKEY === own, true);
-  })(PersistentHashMapValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY));
-  PersistentHashMapValue.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = PersistentHashMapValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY;
+  (own => {
+    PersistentHashMapValue.prototype.cljs$core$IReduce$_reduce$arity$2$LKEY = builtinSlot(function (self, rf) {
+      return mapReduceSlot(self, rf, undefined, 2, mapPairs(self), self.cljs$core$ISeqable$_seq$arity$1$LKEY === own);
+    });
+    PersistentHashMapValue.prototype.cljs$core$IReduce$_reduce$arity$3$LKEY = builtinSlot(function (self, rf, init) {
+      return mapReduceSlot(self, rf, init, 3, mapPairs(self), self.cljs$core$ISeqable$_seq$arity$1$LKEY === own);
+    });
+  })(PersistentHashMapValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY);
   //@unit mapKvReduce requires: isReduced, reducedValue
   // `reduce-kv` of an array or a hash map: each of its keys and values
   // (`pairs`, as `mapPairs` gives them), as `reduceKv` gives them.
@@ -7565,18 +7588,36 @@
     if (i > arr.length) return emptyList;
     return i < arr.length ? new ChunkedSeqCell(arr, i, vec, self.base$LKEY) : chunkedVectorRest(self);
   });
-  //@unit ChunkedSeqValue.next effect: ChunkedSeqValue when: next, nextSite requires: builtinSlot,
-  //@ ChunkedSeqValue, rest, seq
-  // The seq of its rest, as `next` takes it.
-  ChunkedSeqValue.prototype.cljs$core$INext$_next$arity$1$LKEY = builtinSlot(function (self) {
-    return seq(rest(self));
-  });
   //@unit ChunkedSeqValue.seq effect: ChunkedSeqValue when: seq, seqOf, seqSite requires: builtinSlot,
   //@ ChunkedSeqValue
   ChunkedSeqValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
     const arr = self.arr$LKEY;
     return self.i$LKEY < arr.length ? self : null;
   });
+  //@unit ChunkedSeqValue.next effect: ChunkedSeqValue when: next, nextSite requires: builtinSlot,
+  //@ ChunkedSeqCell, ChunkedSeqValue, count, emptyList, rest, seq, slotFirst, vectorChunk
+  // The seq of its rest: advance directly within the current leaf, or to the
+  // next leaf, when `-rest` and `-seq` are the class's own and `slotFirst` is
+  // on, so `extend-type`/`specify!` overrides stay.
+  ChunkedSeqValue.prototype.cljs$core$INext$_next$arity$1$LKEY = builtinSlot(((ownRest, ownSeq) => function (self) {
+    if (slotFirst.on && self.cljs$core$ISeq$_rest$arity$1$LKEY === ownRest
+      && ChunkedSeqValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY === ownSeq) {
+      const vec = self.vec$LKEY;
+      if (vec) {
+        const arr = self.arr$LKEY, i = self.i$LKEY + 1;
+        if (i < arr.length) return new ChunkedSeqCell(arr, i, vec, self.base$LKEY);
+        if (i === arr.length) {
+          const end = self.base$LKEY + arr.length;
+          if (end < count(vec)) {
+            const leaf = vectorChunk(vec, end);
+            return leaf.length ? new ChunkedSeqCell(leaf, 0, vec, end) : null;
+          }
+          return seq(emptyList);
+        }
+      }
+    }
+    return seq(rest(self));
+  })(ChunkedSeqValue.prototype.cljs$core$ISeq$_rest$arity$1$LKEY, ChunkedSeqValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY));
   // The map seqs (`PersistentArrayMapSeq`, `NodeSeq`, `ArrayNodeSeq`) answer
   // `first`, `rest`, `next`, `seq`, `count`, and `reduce` from keyed slots,
   // lazily materializing `MapEntry` objects only when `-first` or `-reduce`
@@ -8116,8 +8157,17 @@
     if (!count(self)) throw new Error("Can't pop empty list");
     return rest(self);
   });
-  //@unit ListValue.popSlot effect: ListValue when: pop, popOf requires: listPopSlot, ListValue
-  ListValue.prototype.cljs$core$IStack$_pop$arity$1$LKEY = listPopSlot;
+  //@unit ListValue.popSlot effect: ListValue when: pop, popOf requires: builtinSlot, emptyList,
+  //@ listPopSlot, ListValue, slotFirst
+  ListValue.prototype.cljs$core$IStack$_pop$arity$1$LKEY = builtinSlot(((ownCount, ownRest) => function (self) {
+    if (slotFirst.on && self.cljs$core$ICounted$_count$arity$1$LKEY === ownCount
+      && self.cljs$core$ISeq$_rest$arity$1$LKEY === ownRest) {
+      const cnt = self.count$LKEY;
+      if (!cnt) throw new Error("Can't pop empty list");
+      return cnt === 1 ? emptyList : self.rest$LKEY;
+    }
+    return listPopSlot(self);
+  })(ListValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY, ListValue.prototype.cljs$core$ISeq$_rest$arity$1$LKEY));
   //@unit EmptyListValue.popSlot effect: EmptyListValue when: pop, popOf requires: EmptyListValue,
   //@ listPopSlot
   EmptyListValue.prototype.cljs$core$IStack$_pop$arity$1$LKEY = listPopSlot;

@@ -6489,3 +6489,97 @@ fn persistent_bang_preserves_borrowed_builtin_slots() {
                       (pr-str [(persistent! tm) (persistent! tv)]))"#;
     every_level(source, "[{:a 1} [1]]");
 }
+
+/// light-cljs-1087: `ListValue.popSlot`, `ChunkedSeqValue.next`, and
+/// `mapReduceSlot`/`EntryCell` read their own fields on unextended instances
+/// while preserving `extend-type`, `specify!`, public-constructor edge cases,
+/// borrowed slots, and `MapEntry` persistence across `None`, `Prepare`, and
+/// `Advanced`.
+#[test]
+fn list_pop_chunked_seq_next_and_map_reduce_keep_extension_and_constructor_semantics() {
+    // Normal list pop, public List constructor edge cases, specify!, and borrowed slot.
+    every_level(
+        r#"(let [err (fn [f] (try (pr-str (f)) (catch :default e (str "E:" (.-message e)))))
+                 l0 (List. nil :a :b 0 nil)
+                 l1 (List. nil :a :b 1 nil)
+                 l2 (List. nil :a :b 2 nil)
+                 ls-cnt (specify! (list 1 2) ICounted (-count [_] 0))
+                 ls-rest (specify! (list 1 2) ISeq (-rest [_] :spec-rest))
+                 el (list)
+                 pop-slot (first (filter #(.includes % "$_pop$arity$1$")
+                                         (js/Object.getOwnPropertyNames (.-prototype List))))
+                 el-borrowed (with-meta el {:m 1})]
+             (aset el-borrowed pop-slot (aget (.-prototype List) pop-slot))
+             (pr-str [(pop (list 1)) (pop (list 1 2 3)) (err #(pop el))
+                      (err #(pop l0)) (pop l1) (pop l2)
+                      (err #(pop ls-cnt)) (pop ls-rest)
+                      (err #(pop el-borrowed))]))"#,
+        r#"[() (2 3) "E:Can't pop empty list" "E:Can't pop empty list" () :b "E:Can't pop empty list" :spec-rest "E:Can't pop empty list"]"#,
+    );
+    // extend-type List ICounted / ISeq overrides are honored by ListValue.popSlot.
+    every_level(
+        r#"(extend-type List ICounted (-count [_] 0))
+           (try (pop (list 1 2)) (catch :default e (pr-str (.-message e))))"#,
+        r#""Can't pop empty list""#,
+    );
+    every_level(
+        r#"(extend-type List ISeq (-rest [_] :ext-rest))
+           (pr-str (pop (list 1 2)))"#,
+        ":ext-rest",
+    );
+    // ChunkedSeqValue.next: multi-chunk walk, specify!, public constructors, borrowed slot.
+    every_level(
+        r#"(let [v (vec (range 70))
+                 walk (loop [q (seq v) n 0 sum 0] (if q (recur (next q) (inc n) (+ sum (first q))) [n sum]))
+                 s-spec (specify! (seq v) ISeq (-rest [_] (list :spec)))
+                 cs-nil (ChunkedSeq. nil (array 10 20) 0 0 nil nil)
+                 cs-oob (ChunkedSeq. v (array 10 20) 0 5 nil nil)
+                 cs-nan (ChunkedSeq. v (array 10 20) 0 js/NaN nil nil)
+                 is (seq [1 2 3])
+                 next-slot (first (filter #(.includes % "$_next$arity$1$")
+                                          (js/Object.getOwnPropertyNames (.-prototype ChunkedSeq))))]
+             (aset is next-slot (aget (.-prototype ChunkedSeq) next-slot))
+             (pr-str [walk (next s-spec) (first (next cs-nil)) (next cs-oob) (first (next cs-nan)) (vec (next is))]))"#,
+        "[[70 2415] (:spec) 20 nil 0 [2 3]]",
+    );
+    // extend-type ChunkedSeq ISeqable and EmptyList ISeqable are honored by ChunkedSeqValue.next.
+    every_level(
+        r#"(extend-type ChunkedSeq ISeqable (-seq [_] :ext-cseq))
+           (pr-str (next (seq (vec (range 40)))))"#,
+        ":ext-cseq",
+    );
+    every_level(
+        r#"(let [s (loop [q (seq (vec (range 34)))] (if (= (first q) 33) q (recur (next q))))]
+             (extend-type EmptyList ISeqable (-seq [_] (list :ext-empty)))
+             (name (first (next s))))"#,
+        "ext-empty",
+    );
+    // mapReduceSlot (2/3-arity, array/hash maps, public PersistentArrayMap + IIterable,
+    // extend-type ISeqable, reduced) and EntryCell shared entryRoot persistence.
+    every_level(
+        r#"(let [am {:a 1 :b 2 :c 3}
+                 hm (into {} (map (fn [i] [(keyword (str "k" i)) i]) (range 20)))
+                 pam (PersistentArrayMap. nil 1 (array :x 10 :y 20) nil)
+                 pam-iter (specify! (PersistentArrayMap. nil 1 (array :x 10 :y 20) nil)
+                            IIterable (-iterator [_] (-iterator [[:z 99]])))
+                 e1 (first am)
+                 grown (reduce conj e1 (range 40))
+                 e2 (second am)]
+             (pr-str [(reduce (fn ([a] a) ([a [_ v]] (+ a v))) 0 am)
+                      (reduce (fn ([a [_ v]] (+ (if (number? a) a (val a)) v))) am)
+                      (reduce (fn ([] :empty) ([a _] a)) {})
+                      (reduce (fn [a [_ v]] (if (= v 2) (reduced (+ a v)) (+ a v))) 0 am)
+                      (reduce (fn [a [_ v]] (+ a v)) 0 hm)
+                      (reduce (fn [a [_ v]] (+ a v)) 0 pam)
+                      (reduce (fn [a [_ v]] (+ a v)) 0 pam-iter)
+                      (count (into (sorted-map) am))
+                      (count grown) (nth grown 0) (nth grown 41) (vec e1) (vec e2)]))"#,
+        "[6 6 :empty 3 190 10 99 3 42 :a 39 [:a 1] [:b 2]]",
+    );
+    every_level(
+        r#"(extend-type PersistentArrayMap ISeqable (-seq [_] (list [:k 7] [:m 8])))
+           (pr-str [(reduce (fn [a [_ v]] (+ a v)) 0 {:a 1})
+                    (reduce (fn [a [_ v]] (+ (if (number? a) a (second a)) v)) {:a 1})])"#,
+        "[15 15]",
+    );
+}
