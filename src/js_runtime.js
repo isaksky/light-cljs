@@ -2910,15 +2910,15 @@
   //@unit fnCall
   const fnCall = Function.prototype.call;
   //@unit fixedFn1 requires: fnCall
-  const fixedFn1 = fn => typeof fn === "function" && fn.call === fnCall && fn.cljs$core$IFn$_invoke$arity$1 || null;
+  const fixedFn1 = fn => { const f = fn?.cljs$core$IFn$_invoke$arity$1; return f && typeof fn === "function" && fn.call === fnCall ? f : null; };
   //@unit fixedFn2 requires: fnCall
-  const fixedFn2 = fn => typeof fn === "function" && fn.call === fnCall && fn.cljs$core$IFn$_invoke$arity$2 || null;
+  const fixedFn2 = fn => { const f = fn?.cljs$core$IFn$_invoke$arity$2; return f && typeof fn === "function" && fn.call === fnCall ? f : null; };
   //@unit call0 requires: fnCall
-  const call0 = fn => typeof fn === "function" && fn.call === fnCall && fn.cljs$core$IFn$_invoke$arity$0 ? fn.cljs$core$IFn$_invoke$arity$0() : fn.call(null);
-  //@unit call1 requires: fnCall
-  const call1 = (fn, a) => typeof fn === "function" && fn.call === fnCall && fn.cljs$core$IFn$_invoke$arity$1 ? fn.cljs$core$IFn$_invoke$arity$1(a) : fn.call(null, a);
-  //@unit call2 requires: fnCall
-  const call2 = (fn, a, b) => typeof fn === "function" && fn.call === fnCall && fn.cljs$core$IFn$_invoke$arity$2 ? fn.cljs$core$IFn$_invoke$arity$2(a, b) : fn.call(null, a, b);
+  const call0 = fn => { const f = fn?.cljs$core$IFn$_invoke$arity$0; return f && typeof fn === "function" && fn.call === fnCall ? f() : fn.call(null); };
+  //@unit call1 requires: fixedFn1
+  const call1 = (fn, a) => { const f = fixedFn1(fn); return f ? f(a) : fn.call(null, a); };
+  //@unit call2 requires: fixedFn2
+  const call2 = (fn, a, b) => { const f = fixedFn2(fn); return f ? f(a, b) : fn.call(null, a, b); };
   //@unit reduceOf requires: call0, fixedFn2, hostExt, isReduced, iterator, iterReduce, methodKeys,
   //@ ownSeqs, protocolHooks, protocolSentinel, reducedValue, reduceWalk, seqReduce, slotFirst
   // Upstream's `reduce` of a value without a `-reduce` slot holding a
@@ -2953,16 +2953,9 @@
       let i = 0;
       if (arity === 2) { if (source.length === 0) return call0(rf); init = source[0]; i = 1; }
       const step = fixedFn2(rf);
-      if (step) {
-        for (; i < source.length; i++) {
-          init = step(init, source[i]);
-          if (isReduced(init)) return reducedValue(init);
-        }
-      } else {
-        for (; i < source.length; i++) {
-          init = rf.call(null, init, source[i]);
-          if (isReduced(init)) return reducedValue(init);
-        }
+      for (; i < source.length; i++) {
+        init = step ? step(init, source[i]) : rf.call(null, init, source[i]);
+        if (isReduced(init)) return reducedValue(init);
       }
       return init;
     }
@@ -2989,16 +2982,9 @@
   function iterReduce(iter, rf, init, arity) {
     if (arity === 2) { if (!iter.hasNext()) return call0(rf); init = iter.next(); }
     const step = fixedFn2(rf);
-    if (step) {
-      while (iter.hasNext()) {
-        init = step(init, iter.next());
-        if (isReduced(init)) return reducedValue(init);
-      }
-    } else {
-      while (iter.hasNext()) {
-        init = rf.call(null, init, iter.next());
-        if (isReduced(init)) return reducedValue(init);
-      }
+    while (iter.hasNext()) {
+      init = step ? step(init, iter.next()) : rf.call(null, init, iter.next());
+      if (isReduced(init)) return reducedValue(init);
     }
     return init;
   }
@@ -3007,16 +2993,9 @@
   // without calling `seq` on it again (light-cljs-1081).
   function seqReduceFrom(current, rf, init) {
     const step = fixedFn2(rf);
-    if (step) {
-      for (; current != null; current = next(current)) {
-        init = step(init, first(current));
-        if (isReduced(init)) return reducedValue(init);
-      }
-    } else {
-      for (; current != null; current = next(current)) {
-        init = rf.call(null, init, first(current));
-        if (isReduced(init)) return reducedValue(init);
-      }
+    for (; current != null; current = next(current)) {
+      init = step ? step(init, first(current)) : rf.call(null, init, first(current));
+      if (isReduced(init)) return reducedValue(init);
     }
     return init;
   }
@@ -3073,16 +3052,10 @@
     if (arity === 2) {
       if (range.count$LKEY === 0) return call0(rf);
       init = range.first$LKEY;
-      if (step) {
-        for (let i = 1; i < range.count$LKEY; i++) {
-          init = step(init, range.first$LKEY + i * range.step$LKEY);
-          if (isReduced(init)) return reducedValue(init);
-        }
-      } else {
-        for (let i = 1; i < range.count$LKEY; i++) {
-          init = rf.call(null, init, range.first$LKEY + i * range.step$LKEY);
-          if (isReduced(init)) return reducedValue(init);
-        }
+      for (let i = 1; i < range.count$LKEY; i++) {
+        const v = range.first$LKEY + i * range.step$LKEY;
+        init = step ? step(init, v) : rf.call(null, init, v);
+        if (isReduced(init)) return reducedValue(init);
       }
       return init;
     }
@@ -3105,11 +3078,7 @@
     const n = repeat.remaining$LKEY, item = repeat.first$LKEY, step = fixedFn2(rf);
     let i = arity === 2 ? 1 : 0;
     if (arity === 2) init = item;
-    if (step) {
-      while (n === -1 || i++ < n) { init = step(init, item); if (isReduced(init)) return reducedValue(init); }
-    } else {
-      while (n === -1 || i++ < n) { init = rf.call(null, init, item); if (isReduced(init)) return reducedValue(init); }
-    }
+    while (n === -1 || i++ < n) { init = step ? step(init, item) : rf.call(null, init, item); if (isReduced(init)) return reducedValue(init); }
     return init;
   }
   //@unit chunkReduce requires: fixedFn2, isReduced, reducedValue, seqReduce
@@ -3121,16 +3090,9 @@
     let i = chunk.off$LKEY;
     if (arity === 2) init = chunk.arr$LKEY[i++];
     const step = fixedFn2(rf);
-    if (step) {
-      for (; i < chunk.arr$LKEY.length; i++) {
-        init = step(init, chunk.arr$LKEY[i]);
-        if (isReduced(init)) return reducedValue(init);
-      }
-    } else {
-      for (; i < chunk.arr$LKEY.length; i++) {
-        init = rf.call(null, init, chunk.arr$LKEY[i]);
-        if (isReduced(init)) return reducedValue(init);
-      }
+    for (; i < chunk.arr$LKEY.length; i++) {
+      init = step ? step(init, chunk.arr$LKEY[i]) : rf.call(null, init, chunk.arr$LKEY[i]);
+      if (isReduced(init)) return reducedValue(init);
     }
     return init;
   }
@@ -3225,16 +3187,10 @@
     if (!own) return keyed || self.view$LKEY === "queue" ? iterReduce(iterator(self), rf, init, arity) : reduceWalk(self, rf, init, arity);
     if (arity === 2) { if (!(i < items.length)) return call0(rf); init = keyed ? items[i++].key : items[i++]; }
     const step = fixedFn2(rf);
-    if (step) {
-      for (; i < items.length; i++) {
-        init = step(init, keyed ? items[i].key : items[i]);
-        if (isReduced(init)) return reducedValue(init);
-      }
-    } else {
-      for (; i < items.length; i++) {
-        init = rf.call(null, init, keyed ? items[i].key : items[i]);
-        if (isReduced(init)) return reducedValue(init);
-      }
+    for (; i < items.length; i++) {
+      const v = keyed ? items[i].key : items[i];
+      init = step ? step(init, v) : rf.call(null, init, v);
+      if (isReduced(init)) return reducedValue(init);
     }
     return init;
   }
@@ -13873,15 +13829,6 @@
     for (let i = 0; i < n; i++, args = rest(args)) values.push(first(args));
     return fn.call(null, ...values);
   }
-  //@unit applyArrayPrefix
-  function applyArrayPrefix(fn, p, a, b, c, arr, len) {
-    const out = new Array(p + len);
-    if (p > 0) out[0] = a;
-    if (p > 1) out[1] = b;
-    if (p > 2) out[2] = c;
-    for (let i = 0; i < len; i++) out[p + i] = arr[i];
-    return fn.apply(null, out);
-  }
   //@unit applyDirect requires: call0, call1, call2, cons
   function applyDirect(fn, p, a, b, c, len, at, tailSeq) {
     const fixed = fn.cljs$lang$maxFixedArity, total = p + len;
@@ -13922,9 +13869,9 @@
       i => len <= 32 ? new IndexedSeqCell(vectorChunk(tail, 0), i, true, "indexed")
         : new ChunkedSeqCell(vectorChunk(tail, i & -32), i & 31, tail, i & -32));
   };
-  //@unit apply requires: applyArrayPrefix, applyDirect, applyTo, boundedCount, call0, call1, call2,
-  //@ cons, fieldComparisons, fnCall, hostExt, IndexedSeqCell, kindHooks, ownSeqs, protocolSentinel,
-  //@ seq, slotFirst, toArray
+  //@unit apply requires: applyDirect, applyTo, boundedCount, call0, call1, call2, cons,
+  //@ fieldComparisons, fnCall, hostExt, IndexedSeqCell, kindHooks, ownSeqs, protocolSentinel, seq,
+  //@ slotFirst, toArray
   function apply(fn, a, b, c, d) {
     const argc = arguments.length;
     if (argc >= 2 && argc <= 5 && fn.cljs$lang$applyTo?.direct$LKEY === true && fn.call === fnCall
@@ -13944,9 +13891,9 @@
               if (cnt === 4) return fn(arr[0], arr[1], arr[2], arr[3]);
               return fn.apply(null, arr);
             }
-            if (argc === 3) return cnt === 0 ? call1(fn, a) : cnt === 1 ? call2(fn, a, arr[0]) : cnt === 2 ? fn(a, arr[0], arr[1]) : cnt === 3 ? fn(a, arr[0], arr[1], arr[2]) : applyArrayPrefix(fn, 1, a, b, c, arr, cnt);
-            if (argc === 4) return cnt === 0 ? call2(fn, a, b) : cnt === 1 ? fn(a, b, arr[0]) : cnt === 2 ? fn(a, b, arr[0], arr[1]) : applyArrayPrefix(fn, 2, a, b, c, arr, cnt);
-            return cnt === 0 ? fn(a, b, c) : cnt === 1 ? fn(a, b, c, arr[0]) : applyArrayPrefix(fn, 3, a, b, c, arr, cnt);
+            if (argc === 3 && cnt <= 3) return cnt === 0 ? call1(fn, a) : cnt === 1 ? call2(fn, a, arr[0]) : cnt === 2 ? fn(a, arr[0], arr[1]) : fn(a, arr[0], arr[1], arr[2]);
+            if (argc === 4 && cnt <= 2) return cnt === 0 ? call2(fn, a, b) : cnt === 1 ? fn(a, b, arr[0]) : fn(a, b, arr[0], arr[1]);
+            if (argc === 5 && cnt <= 1) return cnt === 0 ? fn(a, b, c) : fn(a, b, c, arr[0]);
           }
           if (kindHooks.applyVector) return kindHooks.applyVector(fn, argc - 2, a, b, c, tail);
         }
@@ -14293,11 +14240,7 @@
       if (sources.length === 1 && isChunkedSeq(sources[0])) {
         const chunk = chunkFirst(sources[0]), store = chunkStore(chunk), size = count(chunk), items = [];
         const f1 = fixedFn1(fn);
-        if (f1) {
-          for (let i = 0; i < size; i++) items.push(f1(chunkItem(chunk, store, i)));
-        } else {
-          for (let i = 0; i < size; i++) items.push(fn.call(null, chunkItem(chunk, store, i)));
-        }
+        for (let i = 0; i < size; i++) { const v = chunkItem(chunk, store, i); items.push(f1 ? f1(v) : fn.call(null, v)); }
         return chunkCons(arrayChunk(items), mapSeq(fn, chunkRest(sources[0])));
       }
       return cons(fn.call(null, ...sources.map(first)), mapSeq(fn, ...sources.map(rest)));
@@ -14352,16 +14295,9 @@
         if (isChunkedSeq(s)) {
           const chunk = chunkFirst(s), store = chunkStore(chunk), size = count(chunk), values = [];
           const p1 = fixedFn1(pred);
-          if (p1) {
-            for (let i = 0; i < size; i++) {
-              const value = chunkItem(chunk, store, i);
-              if (truth(p1(value))) values.push(value);
-            }
-          } else {
-            for (let i = 0; i < size; i++) {
-              const value = chunkItem(chunk, store, i);
-              if (truth(pred.call(null, value))) values.push(value);
-            }
+          for (let i = 0; i < size; i++) {
+            const value = chunkItem(chunk, store, i);
+            if (truth(p1 ? p1(value) : pred.call(null, value))) values.push(value);
           }
           return chunkCons(arrayChunk(values), filter(pred, chunkRest(s)));
         }
@@ -14556,8 +14492,7 @@
   // As upstream: of one collection, a reduction into a transient vector.
   function mapv(fn, coll) {
     if (arguments.length === 2) {
-      const f1 = fixedFn1(fn);
-      const step = f1 ? (v, x) => conjBangOwn(v, f1(x)) : (v, x) => conjBangOwn(v, fn.call(null, x));
+      const f1 = fixedFn1(fn), step = (v, x) => conjBangOwn(v, f1 ? f1(x) : fn.call(null, x));
       step.cljs$core$IFn$_invoke$arity$2 = step;
       return persistentBang(reduce(step, transient(vector()), coll));
     }
@@ -14565,10 +14500,7 @@
   }
   //@unit filterv requires: conjBangOwn, fixedFn1, persistentBang, reduce, transient, truth, vector
   function filterv(fn, coll) {
-    const f1 = fixedFn1(fn);
-    const step = f1
-      ? (v, x) => truth(f1(x)) ? conjBangOwn(v, x) : v
-      : (v, x) => truth(fn.call(null, x)) ? conjBangOwn(v, x) : v;
+    const f1 = fixedFn1(fn), step = (v, x) => truth(f1 ? f1(x) : fn.call(null, x)) ? conjBangOwn(v, x) : v;
     step.cljs$core$IFn$_invoke$arity$2 = step;
     return persistentBang(reduce(step, transient(vector()), coll));
   }
