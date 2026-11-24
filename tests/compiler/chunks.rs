@@ -3160,7 +3160,9 @@ fn terse_chunks_write_their_runtime_units_at_module_level() {
     // array-map builders (`makeMap.intoMap`, `mapConj` flat walk, rest-free
     // `merge`, out-of-line `arrayMapPromote`, direct transient-map slots;
     // 140,333), and light-cljs-1110 direct transient-set slots and iterative
-    // `hashNodeAssocTransient` (143,916).
+    // `hashNodeAssocTransient` (143,916), and light-cljs-1087 direct `List`
+    // pop, `ChunkedSeq` next, split `mapReduceSlot`, single-pass
+    // `hashNodeRemove`, and non-allocating `updateIn`/`assocIn` (144,888).
     assert!(
         total + 1_000
             <= 73_207
@@ -3183,6 +3185,7 @@ fn terse_chunks_write_their_runtime_units_at_module_level() {
                 + 4_000
                 + 1_000
                 + 4_000
+                + 1_000
                 + 1_000
                 + 1_000
                 + 2_000

@@ -4134,26 +4134,36 @@
       shift += 5;
     }
   }
-  //@unit hashNodeRemove requires: bitmapNode
-  function hashNodeRemove(node, shift, keyHash, removed, edit) {
+  //@unit hashNodeRemove requires: bitmapNode, hashKeyTest
+  // Remove an entry from a hash trie. When `byKey` is true, `removed` is the
+  // key to match with `hashKeyTest` (single-pass dissoc); otherwise `removed`
+  // is the exact entry object already found.
+  function hashNodeRemove(node, shift, keyHash, removed, edit, byKey) {
     if (!node) return null;
-    if (node.kind === "collision") {
-      const entries = node.entries.slice(), index = entries.indexOf(removed);
+    const nodeSlots = node.slots;
+    if (nodeSlots === undefined) {
+      const entries = node.entries;
+      let index = -1;
+      if (byKey) {
+        for (let i = 0; i < entries.length; i++) if (hashKeyTest(removed, entries[i].key)) { index = i; break; }
+      } else index = entries.indexOf(removed);
       if (index < 0) return node;
-      if (edit) entries[index] = entries[entries.length - 1];
-      entries.splice(edit ? entries.length - 1 : index, 1);
-      return entries.length ? {...node, entries} : null;
+      if (entries.length === 1) return null;
+      const next = entries.slice();
+      if (edit) next[index] = next[next.length - 1];
+      next.splice(edit ? next.length - 1 : index, 1);
+      return {kind: "collision", hash: node.hash, entries: next};
     }
-    const index = (keyHash >>> shift) & 31, slot = node.slots[index];
-    if (!slot) return node;
+    const index = (keyHash >>> shift) & 31, slot = nodeSlots[index];
+    if (slot == null) return node;
     // A child edited in place comes back as itself, under a parent the same
     // edit owns (see `hashNodeAssoc`).
     let child;
-    if (slot.kind) {
-      child = hashNodeRemove(slot, shift + 5, keyHash, removed, edit);
+    if (slot.kind !== undefined) {
+      child = hashNodeRemove(slot, shift + 5, keyHash, removed, edit, byKey);
       if (child === slot) return node;
-    } else if (slot !== removed) return node;
-    const owned = edit && node.edit === edit, slots = owned ? node.slots : node.slots.slice();
+    } else if (byKey ? !hashKeyTest(removed, slot.key) : slot !== removed) return node;
+    const owned = edit && node.edit === edit, slots = owned ? nodeSlots : nodeSlots.slice();
     const n = node.count, count = child ? n : n - 1;
     if (!count) return null;
     slots[index] = child ?? undefined;
@@ -4162,7 +4172,7 @@
     // copy one more than the node held (`ensure-editable`).
     if (node.kind === "array" && n <= 8 && !child) return bitmapNode(slots, edit, count, count);
     if (owned) { node.count = count; return node; }
-    return node.kind === "array" ? {...node, slots, edit, count} : bitmapNode(slots, edit, edit ? n + 1 : node.capacity - !child, count);
+    return node.kind === "array" ? {kind: "array", slots, edit, capacity: 0, count} : bitmapNode(slots, edit, edit ? n + 1 : node.capacity - !child, count);
   }
   //@unit ensureHashRoot requires: hashNodeAssoc, hashRoots
   function ensureHashRoot(entries) {
@@ -7100,17 +7110,15 @@
     }
     return preserveMeta(self, new ArrayMapCell(retained.length >> 1, retained));
   }
-  //@unit hashMapDissoc requires: hash, HashMapCell, hashNodeFind, hashNodeRemove, preserveMeta
+  //@unit hashMapDissoc requires: hash, HashMapCell, hashNodeRemove, preserveMeta
   // `dissoc` of one key from a hash map: a hash map of its fields without
   // the key, as `trieDissoc` removes it; a public constructor's map too,
   // whose count is its `cnt` (light-cljs-1036).
   function hashMapDissoc(self, key) {
-    const cnt = self.cnt$LKEY;
-    const root = self.root$LKEY, nil = self.nil$LKEY;
-    const entry = key == null ? nil : root ? hashNodeFind(root, 0, hash(key), key) : null;
-    if (!entry) return preserveMeta(self, new HashMapCell(cnt, root, nil, self.lit$LKEY));
-    return preserveMeta(self, key == null ? new HashMapCell(cnt - 1, root, null, null)
-      : new HashMapCell(cnt - 1, hashNodeRemove(root, 0, entry.hash, entry, null), nil, null));
+    const cnt = self.cnt$LKEY, root = self.root$LKEY, nil = self.nil$LKEY;
+    if (key == null) return preserveMeta(self, nil ? new HashMapCell(cnt - 1, root, null, null) : new HashMapCell(cnt, root, nil, self.lit$LKEY));
+    const next = root ? hashNodeRemove(root, 0, hash(key), key, null, true) : null;
+    return preserveMeta(self, next === root ? new HashMapCell(cnt, root, nil, self.lit$LKEY) : new HashMapCell(cnt - 1, next, nil, null));
   }
   //@unit mapContains requires: get, missing
   // `contains?` of a map of the class layout: `get` of the key, through the
@@ -8546,21 +8554,38 @@
   }
   //@unit assocIn requires: assoc, first, get, next, seq
   function assocIn(value, path, item) {
-    const current = seq(path), key = first(current), more = next(current);
-    return assoc(value, key, more == null ? item : assocIn(get(value, key), more, item));
+    return assocInSeq(value, seq(path), item);
   }
-  //@unit updateIn requires: apply, fnRest, updatePath
-  function updateIn(value, path, fn, ...args) {
-    const variadic = arguments.length < 3 || arguments.length > 6;
-    return updatePath(value, path, old => variadic
-      ? apply(fn, old, args[0], args[1], args[2], fnRest(args, 3))
-      : fn.call(null, old, ...args));
+  function assocInSeq(value, current, item) {
+    const key = first(current), more = next(current);
+    return assoc(value, key, more == null ? item : assocInSeq(get(value, key), more, item));
+  }
+  //@unit updateIn requires: apply, assoc, call1, first, fixedFn2, fnRest, get, next, seq,
+  //@ updatePath
+  function updateIn(value, path, fn, a, b, c) {
+    const argc = arguments.length;
+    if (argc >= 3 && argc <= 6) return updateInSeq(value, seq(path), fn, a, b, c, argc);
+    const args = [];
+    for (let i = 3; i < argc; i++) args.push(arguments[i]);
+    return updatePath(value, path, old => apply(fn, old, a, b, c, fnRest(args, 3)));
+  }
+  function updateInSeq(value, current, fn, a, b, c, argc) {
+    const key = first(current), more = next(current), old = get(value, key);
+    if (more != null) return assoc(value, key, updateInSeq(old, more, fn, a, b, c, argc));
+    let nextVal;
+    if (argc === 3) nextVal = call1(fn, old);
+    else if (argc === 4) { const f = fixedFn2(fn); nextVal = f ? f.call(fn, old, a) : fn.call(null, old, a); }
+    else if (argc === 5) nextVal = fn.call(null, old, a, b);
+    else nextVal = fn.call(null, old, a, b, c);
+    return assoc(value, key, nextVal);
   }
   //@unit updatePath requires: assoc, first, get, next, seq
   function updatePath(value, path, updateLeaf) {
-    const current = seq(path), key = first(current), more = next(current);
-    const old = get(value, key);
-    return assoc(value, key, more == null ? updateLeaf(old) : updatePath(old, more, updateLeaf));
+    return updatePathSeq(value, seq(path), updateLeaf);
+  }
+  function updatePathSeq(value, current, updateLeaf) {
+    const key = first(current), more = next(current), old = get(value, key);
+    return assoc(value, key, more == null ? updateLeaf(old) : updatePathSeq(old, more, updateLeaf));
   }
   //@unit selectKeys requires: assoc, collectionWithMeta, first, get, makeMap, meta, missing, next,
   //@ PersistentArrayMapValue, seq

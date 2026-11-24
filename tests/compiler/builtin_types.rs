@@ -6582,4 +6582,52 @@ fn list_pop_chunked_seq_next_and_map_reduce_keep_extension_and_constructor_seman
                     (reduce (fn [a [_ v]] (+ (if (number? a) a (second a)) v)) {:a 1})])"#,
         "[15 15]",
     );
+    // Single-pass hashMapDissoc (collisions, missing keys, nil key, shrinking array node,
+    // custom IHash/IEquiv effect counts, metadata) and non-allocating updateIn/assocIn
+    // across fixed arities 3-6, variadic 7+, empty path, strict this===null, and IFn objects.
+    every_level(
+        r#"(deftype CollKey [id calls]
+             IHash (-hash [_] 42)
+             IEquiv (-equiv [_ other]
+                      (swap! calls inc)
+                      (and (instance? CollKey other) (= id (.-id other)))))
+           (let [calls (atom 0)
+                 c1 (CollKey. 1 calls)
+                 c2 (CollKey. 2 calls)
+                 c3 (CollKey. 3 calls)
+                 hm (with-meta (into (hash-map nil :n c1 :v1 c2 :v2)
+                                     (map (fn [i] [(keyword (str "k" i)) i]) (range 20)))
+                               {:m :hm})
+                 d1 (dissoc hm c1)
+                 hits-c1 @calls
+                 d2 (dissoc d1 c3)
+                 hits-c3 @calls
+                 d-nil (dissoc hm nil)
+                 shrunk (reduce dissoc (into (hash-map) (map (fn [i] [(keyword (str "k" i)) i]) (range 25)))
+                                (map (fn [i] [(keyword (str "k" i))]) (range 20)))
+                 shrunk2 (reduce dissoc (into (hash-map) (map (fn [i] [(keyword (str "k" i)) i]) (range 25)))
+                                 (map (fn [i] (keyword (str "k" i))) (range 20)))
+                 strict1 (js* "(function(x) { 'use strict'; return this === null ? x + 1 : -1; })")
+                 strict2 (js* "(function(x, a) { 'use strict'; return this === null ? x + a : -1; })")
+                 multi (fn ([x] (this-as t [(fn? t) (+ x 1)]))
+                           ([x a] (this-as t [(fn? t) (+ x a)])))
+                 ifn-obj (reify IFn (-invoke [_ x] (* x 10)) (-invoke [_ x a] (+ x a 100)))
+                 nested {:a {:b {:c 1}}}]
+             (pr-str [(count d1) (get d1 c1) (get d1 c2) (= (meta d1) {:m :hm}) (> hits-c1 0) (> hits-c3 hits-c1)
+                      (count d2) (count d-nil) (contains? d-nil nil) (count shrunk) (count shrunk2)
+                      (get-in (assoc-in nested [:a :b :c] 9) [:a :b :c])
+                      (get-in (update-in nested [:a :b :c] inc) [:a :b :c])
+                      (get-in (update-in nested [:a :b :c] + 5) [:a :b :c])
+                      (get-in (update-in nested [:a :b :c] + 5 6) [:a :b :c])
+                      (get-in (update-in nested [:a :b :c] + 5 6 7) [:a :b :c])
+                      (get-in (update-in nested [:a :b :c] + 5 6 7 8) [:a :b :c])
+                      (get-in (update-in nested [:a :b :c] strict1) [:a :b :c])
+                      (get-in (update-in nested [:a :b :c] strict2 4) [:a :b :c])
+                      (get-in (update-in nested [:a :b :c] multi) [:a :b :c])
+                      (get-in (update-in nested [:a :b :c] multi 4) [:a :b :c])
+                      (get-in (update-in nested [:a :b :c] ifn-obj) [:a :b :c])
+                      (get-in (update-in nested [:a :b :c] ifn-obj 4) [:a :b :c])
+                      (update-in {} [] (fn [x] (if (nil? x) :empty x)))]))"#,
+        "[22 nil :v2 true true true 22 22 false 25 5 9 2 6 12 19 27 2 5 [true 2] [true 5] 10 105 {nil :empty}]",
+    );
 }
