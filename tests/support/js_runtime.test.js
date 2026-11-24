@@ -2970,21 +2970,21 @@ console.log('public sorted map trees update as nodes and entry fields take shado
     assert.deepEqual(negRoundTripped.tail$LKEY, [10]);
     assert.deepEqual(negRoundTripped.tail, []);
   }
-  // #6: transient_vector_reuses_owned_leaf_across_tail_boundary
+  // #6: transient_vector_reuses_owned_leaf_across_assoc_and_pop
   {
     const tv = c.transient(c.vector());
-    for (let i = 0; i < 32; i++) c.conjBang(tv, i);
-    const firstTail = tv.tail$LKEY;
-    c.conjBang(tv, 32);
-    assert.equal(tv.root$LKEY[0], firstTail);
+    for (let i = 0; i < 33; i++) c.conjBang(tv, i);
     c.assocBang(tv, 0, 'edited');
-    assert.equal(tv.root$LKEY[0], firstTail);
-    assert.equal(firstTail[0], 'edited');
+    const ownedLeaf = tv.root$LKEY[0];
+    c.assocBang(tv, 1, 'edited2');
+    assert.equal(tv.root$LKEY[0], ownedLeaf);
+    assert.equal(ownedLeaf[1], 'edited2');
     c.popBang(tv);
-    assert.equal(tv.tail$LKEY, firstTail);
+    assert.equal(tv.tail$LKEY, ownedLeaf);
     const persisted = c.persistentBang(tv);
-    assert.equal(persisted.tail$LKEY, firstTail);
+    assert.equal(persisted.tail$LKEY, ownedLeaf);
     assert.equal(c.nth(persisted, 0), 'edited');
+    assert.equal(c.nth(persisted, 1), 'edited2');
     // A second transient over a persisted vector must NOT reuse the shared leaf on pop!
     const v33 = c.conj(persisted, 32);
     const sharedLeaf = v33.root$LKEY[0];

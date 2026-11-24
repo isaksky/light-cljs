@@ -5469,9 +5469,7 @@
   // `assoc` kept): that one stays its caller's, as upstream.
   function vectorChunk(value, i) {
     const store = vectorStore(value), leaf = vectorLeaf(store, i);
-    if (!store.sub$LKEY && store.callerTail$LKEY && leaf === store.tail$LKEY) return leaf;
-    if (leaf.edit$LKEY !== undefined && !Object.isFrozen(leaf)) delete leaf.edit$LKEY;
-    return Object.freeze(leaf);
+    return !store.sub$LKEY && store.callerTail$LKEY && leaf === store.tail$LKEY ? leaf : Object.freeze(leaf);
   }
   //@unit vectorSlice requires: vectorLeaf
   // A new array of a store's items from index `from` to `to`.
@@ -5522,11 +5520,13 @@
   //@unit vectorEditor
   // What a transient vector, which marks owned trie nodes with `edit`, edits
   // for `node`: the node itself where it owns it, else a copy it then owns.
-  // `vectorChunk` strips any dead token before exposing a leaf to a seq.
-  function vectorEditor(node, edit) {
+  // Leaves (`nonEnumerable`) take a non-enumerable token so `ChunkedSeq.node`
+  // enumerates only index keys without perturbing `conj!`-built leaves.
+  function vectorEditor(node, edit, nonEnumerable) {
     if (node.edit$LKEY === edit) return node;
     const copy = node.slice();
-    copy.edit$LKEY = edit;
+    if (nonEnumerable) Object.defineProperty(copy, "edit$LKEY", {value: edit, writable: true});
+    else copy.edit$LKEY = edit;
     return copy;
   }
   //@unit vectorPath
@@ -5573,7 +5573,6 @@
     if (cnt - vectorTailOffset(cnt) < 32) store.tail$LKEY[cnt & 31] = item;
     else {
       const shift = store.shift$LKEY, edit = store.edit$LKEY ?? (store.edit$LKEY = {}), tail = store.tail$LKEY, grow = (cnt >>> 5) > (1 << shift);
-      tail.edit$LKEY = edit;
       if (grow) {
         const nextRoot = [store.root$LKEY, vectorPath(shift, tail, edit)];
         nextRoot.edit$LKEY = edit;
@@ -5589,7 +5588,7 @@
   // `node`, `level` above the leaves, with `item` at index `i`: copied, a
   // leaf frozen, or edited in place when owned by `edit` (see `vectorPushTail`).
   function vectorAssocNode(level, node, i, item, edit) {
-    const copy = edit ? vectorEditor(node, edit) : node.slice(), at = (i >>> level) & 31;
+    const copy = edit ? vectorEditor(node, edit, !level) : node.slice(), at = (i >>> level) & 31;
     copy[at] = level ? vectorAssocNode(level - 5, node[at], i, item, edit) : item;
     return edit || level ? copy : Object.freeze(copy);
   }
