@@ -6673,3 +6673,19 @@ fn update_in_invokes_fn_via_call_null_without_arity_shortcut() {
         r#"[[false 2] [false 5] "fn1:1" "fn2:1,4" 10 105 7 :fb]"#,
     );
 }
+
+#[test]
+fn map_reduce_pairs_reads_entry_before_resolving_rf_call() {
+    every_level(
+        r#"(let [arr (array :a 1)
+                 pam (PersistentArrayMap. nil 1 arr nil)
+                 step (fn [acc e] (conj acc [(key e) (val e)]))
+                 rf (js-obj)]
+             (js/Object.defineProperty rf "call"
+               #js {:get (fn []
+                           (aset arr 1 99)
+                           (fn [_ acc e] (step acc e)))})
+             (pr-str (reduce rf [] pam)))"#,
+        "[[:a 1]]",
+    );
+}

@@ -7280,7 +7280,8 @@
       }
     } else {
       for (; i < n; i += 2) {
-        init = rf.call(null, init, mapEntry(pairs[i], pairs[i + 1]));
+        const e = mapEntry(pairs[i], pairs[i + 1]);
+        init = rf.call(null, init, e);
         if (isReduced(init)) return reducedValue(init);
       }
     }
