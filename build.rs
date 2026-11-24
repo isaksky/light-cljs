@@ -1199,8 +1199,6 @@ fn shared_scalar_reads(base: &str) -> String {
                 "fnil" => vec![("x == null", format!("{} == null", scalar("x")))],
                 "indexedSequence" => vec![("value != null", format!("{} != null", scalar("value")))],
                 "indexedTransform" => vec![("value == null", format!("{} == null", scalar("value")))],
-                "complement" => vec![("value == null", format!("{} == null", scalar("value"))),
-                    ("value === false", format!("{} === false", scalar("value")))],
                 "bufferedTransform" => vec![("buffer.length === group.n", format!("buffer.length === {}", scalar("group.n")))],
                 "iteration" => vec![("value != null", format!("{} != null", scalar("value"))),
                     ("key == null", format!("{} == null", scalar("key")))],

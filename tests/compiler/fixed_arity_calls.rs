@@ -775,3 +775,78 @@ fn into_supplies_fixed_arity_reducers_to_custom_ireduce() {
         "\"[1 (3 2 1)]\"\n"
     );
 }
+
+#[test]
+fn callable_combinators_preserve_arities_abi_and_lazy_tails() {
+    let run = |source: &str| super::optimization::json_at_every_level(source);
+    assert_eq!(
+        run(r#"
+        (let [;; complement: 0, 1, 2, 3, variadic, apply, ABI, non-fn IFn, and remove
+              f-any (fn ([] false) ([x] (= x 1)) ([x y] (= (+ x y) 3)) ([x y z & more] (= (+ x y z (count more)) 10)))
+              c (complement f-any)
+              c-kw (complement :a)
+              ;; constantly: 0..4, apply, ABI
+              k (constantly :ok)
+              ;; partial: 1, 2, 3, 4+ prefix args, called with 0..4+ args, infinite tail, non-fn IFn
+              p1 (partial vector :a)
+              p2 (partial vector :a :b)
+              p3 (partial vector :a :b :c)
+              p4 (partial vector :a :b :c :d)
+              p-inf (apply partial (fn [a b c & more] [a b c (vec (take 3 more))]) 1 2 3 (range 10 1000))
+              p-kw (partial :k {:k 9})
+              ;; comp: 0, 1, 2, 3, 4 fns, 0..4+ args, apply, non-fn IFn
+              c0 (comp)
+              c1 (comp inc)
+              c2 (comp str +)
+              c3 (comp count str +)
+              c4 (comp inc count str +)
+              c-kw2 (comp :b :a)
+              ;; juxt: 1, 2, 3, 4 fns, 0..4+ args
+              j2 (juxt + *)
+              j4 (juxt first second last count)
+              ;; fnil: 1, 2, 3 defaults, nil vs false, missing arity, variadic
+              fn1 (fnil vector :d1)
+              fn2 (fnil vector :d1 :d2)
+              fn3 (fnil vector :d1 :d2 :d3)
+              ;; some-fn & every-pred: 1..4 preds, 0..4+ args
+              sf2 (some-fn even? #(> % 10))
+              sf4 (some-fn #(= % 1) #(= % 2) #(= % 3) #(= % 4))
+              ep2 (every-pred number? pos?)
+              ;; memoize
+              calls (atom 0)
+              mem (memoize (fn [& xs] (swap! calls inc) (vec xs)))
+              ;; map transducer: 0, 1, 2, 3+ arities and arity$2 override
+              mf ((map +) (fn ([] :init) ([a] [:done a]) ([a x] (+ a x))))
+              ;; remove on chunked vec, lazy seq, and transducer
+              rem-vec (vec (remove even? [1 2 3 4 5 6]))
+              rem-lazy (vec (remove odd? (list 1 2 3 4 5)))
+              rem-xf (into [] (remove even?) [1 2 3 4 5 6])]
+          (pr-str
+            [[(c) (c 1) (c 2) (c 1 2) (c 1 3) (c 1 2 3 4 5 6 7) (apply c [1 2 3 4 5 6 7])
+              (.-cljs$lang$maxFixedArity c) (.cljs$core$IFn$_invoke$arity$1 c 1)
+              (.cljs$lang$applyTo c (list 1 2 3 4 5 6 7))
+              (c-kw {:a 1}) (c-kw {:b 1})]
+             [(k) (k 1) (k 1 2) (k 1 2 3 4) (apply k [1 2 3]) (.-cljs$lang$maxFixedArity k)]
+             [(p1) (p1 1) (p1 1 2) (p1 1 2 3) (p1 1 2 3 4 5) (apply p1 [1 2 3 4])
+              (p2) (p2 1) (p2 1 2) (p2 1 2 3) (p2 1 2 3 4)
+              (p3) (p3 1) (p3 1 2) (p3 1 2 3) (p3 1 2 3 4)
+              (p4 1 2) (apply p4 [1 2 3]) (p-inf :x) (p-kw)
+              (.-cljs$lang$maxFixedArity p1) (.-cljs$lang$maxFixedArity p4)
+              (.cljs$core$IFn$_invoke$arity$2 p1 8 9)]
+             [(c0 :z) (c1 4) (c2) (c2 2) (c2 2 3) (c2 2 3 4) (c2 1 2 3 4 5) (apply c2 [1 2 3 4])
+              (c3) (c3 10) (c3 5 6) (c3 3 4 5) (c3 10 20 30 40)
+              (c4 10 20 30 40) (c-kw2 {:a {:b 7}})
+              (.-cljs$lang$maxFixedArity c2) (.-cljs$lang$maxFixedArity c4)]
+             [(j2 2 3) (j2 1 2 3 4) (j4 [10 20 30]) (.-cljs$lang$maxFixedArity j2)]
+             [(fn1 nil) (fn1 false) (fn1 nil 2 3 4)
+              (fn2 nil nil) (fn2 false nil 3 4) (nil? (.-cljs$core$IFn$_invoke$arity$1 fn2))
+              (fn3 nil nil nil 4)]
+             [(sf2) (sf2 3 4) (sf2 1 3 5 12) (sf4 9 9 9 3) (ep2) (ep2 1 2 3 4) (ep2 1 -2 3 4)]
+             [(mem 1 2) (mem 1 2) @calls (.-cljs$lang$maxFixedArity mem)]
+             [(mf) (mf 5) (mf 5 6) (mf 5 1 2 3) (.-cljs$lang$maxFixedArity mf)]
+             [rem-vec rem-lazy rem-xf]
+             [(vec (concat [1] [2] [3] [4])) (vec (sequence (map inc) [1 2 3])) (vec (eduction (map inc) [1 2]))
+              (trampoline (fn step [n] (if (pos? n) #(step (dec n)) :done)) 3)]]))"#),
+        "\"[[true false true false true false false 2 false false false true] [:ok :ok :ok :ok :ok 2] [[:a] [:a 1] [:a 1 2] [:a 1 2 3] [:a 1 2 3 4 5] [:a 1 2 3 4] [:a :b] [:a :b 1] [:a :b 1 2] [:a :b 1 2 3] [:a :b 1 2 3 4] [:a :b :c] [:a :b :c 1] [:a :b :c 1 2] [:a :b :c 1 2 3] [:a :b :c 1 2 3 4] [:a :b :c :d 1 2] [:a :b :c :d 1 2 3] [1 2 3 [10 11 12]] 9 3 0 [:a 8 9]] [:z 5 \\\"0\\\" \\\"2\\\" \\\"5\\\" \\\"9\\\" \\\"15\\\" \\\"10\\\" 1 2 2 2 3 4 7 3 0] [[5 6] [10 24] [10 20 30 3] 3] [[:d1] [false] [:d1 2 3 4] [:d1 :d2] [false :d2 3 4] true [:d1 :d2 :d3 4]] [nil true true true true true false] [[1 2] [1 2] 1 0] [:init [:done 5] 11 11 2] [[1 3 5] [2 4] [1 3 5]] [[1 2 3 4] [2 3 4] [2 3] :done]]\"\n"
+    );
+}

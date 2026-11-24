@@ -13152,8 +13152,8 @@
   }
   //@unit flatten requires: filter, isSequential, rest, seq, treeSeq
   function flatten(value) { return filter(x => !isSequential(x), rest(treeSeq(isSequential, seq, value))); }
-  //@unit concat requires: callable, concatMany, concatTwo, lazySequence
-  const concat = callable(2, {0: () => lazySequence(() => null), 1: x => lazySequence(() => x), 2: concatTwo}, (x, y, more) => concatMany(concatTwo(x, y), more));
+  //@unit concat requires: callable2, concatMany, concatTwo, lazySequence
+  const concat = callable2(() => lazySequence(() => null), x => lazySequence(() => x), concatTwo, (x, y, more) => concatMany(concatTwo(x, y), more));
   //@unit es6Iterator requires: first, next, seq
   function es6Iterator(value) {
     let current = seq(value);
@@ -13257,8 +13257,8 @@
   // An eduction is a class of its type's prototype (`EductionCell`,
   // light-cljs-1013).
   viewType(Eduction, EductionCell, 43);
-  //@unit eduction requires: callable, comp, Eduction, toArray
-  const eduction = callable(0, {}, args => {
+  //@unit eduction requires: callable0, comp, Eduction, toArray
+  const eduction = callable0(args => {
     const values = toArray(args);
     return new Eduction(comp(...values.slice(0, -1)), values.length ? values.at(-1) : null);
   });
@@ -14651,7 +14651,7 @@
     if (protocolHooks.implements?.(methodKeys[13], coll) ?? dropValue(coll)) return (n > 0 ? dropProtocol(coll, Math.ceil(n)) : seq(coll)) ?? emptyList;
     return lazySequence(() => { let s = seq(coll), remaining = n; while (remaining > 0 && s !== null) { s = seq(rest(s)); remaining--; } return s; });
   }
-  //@unit mapSeq requires: apply, arrayChunk, call0, call1, callable, chunkCons, chunkFirst, chunkItem,
+  //@unit mapSeq requires: apply, arrayChunk, call0, call1, callable2, chunkCons, chunkFirst, chunkItem,
   //@ chunkRest, chunkStore, cons, count, first, fixedFn1, fixedFn2, invalidArity, isChunkedSeq,
   //@ lazySequence, listFromArray, mapManySteps, rest, seq, transform
   function mapSeq(fn, ...colls) {
@@ -14660,17 +14660,18 @@
       const f1 = fixedFn1(fn);
       return transform(rf => {
         const r2 = fixedFn2(rf);
-        return callable(2, {
-          0: () => call0(rf),
-          1: result => call1(rf, result),
-          2: (result, input) => {
+        return callable2(
+          () => call0(rf),
+          result => call1(rf, result),
+          (result, input) => {
             const v = f1 ? f1(input) : fn.call(null, input);
             return r2 ? r2(result, v) : rf.call(null, result, v);
+          },
+          (result, input, inputs) => {
+            const v = apply(fn, input, inputs);
+            return r2 ? r2(result, v) : rf.call(null, result, v);
           }
-        }, (result, input, inputs) => {
-          const v = apply(fn, input, inputs);
-          return r2 ? r2(result, v) : rf.call(null, result, v);
-        });
+        );
       });
     }
     if (!colls.length) return invalidArity(arguments.length);
@@ -14739,7 +14740,9 @@
       if (s !== null) {
         if (isChunkedSeq(s)) {
           const chunk = chunkFirst(s), store = chunkStore(chunk), size = count(chunk), values = [];
-          for (let i = 0; i < size; i++) { const v = chunkItem(chunk, store, i); if (truth(pred.call(null, v))) values.push(v); }
+          const p1 = fixedFn1(pred);
+          if (p1) { for (let i = 0; i < size; i++) { const v = chunkItem(chunk, store, i); if (truth(p1.call(pred, v))) values.push(v); } }
+          else { for (let i = 0; i < size; i++) { const v = chunkItem(chunk, store, i); if (truth(pred.call(null, v))) values.push(v); } }
           return chunkCons(arrayChunk(values), filter(pred, chunkRest(s)));
         }
         // Upstream obtains rest before invoking the predicate.
@@ -15005,24 +15008,78 @@
     if (!(step > 0 || step < 0)) return repeat(start);
     return rangeNode(start, end, step, isInteger(start) && isInteger(end) && isInteger(step));
   }
+  //@unit callable0 requires: fnApplyTo, fnRest
+  // Fixed-shape variadic wrapper with 0 fixed arities (light-cljs-1115).
+  function callable0(variadic) {
+    const fn = function () { return variadic(fnRest(arguments, 0)); };
+    fn.cljs$lang$maxFixedArity = 0;
+    fn.cljs$lang$applyTo = args => fnApplyTo(variadic, 0, args);
+    fn.cljs$core$IFn$_invoke$arity$variadic = variadic;
+    return fn;
+  }
+  //@unit callable2 requires: fnApplyTo, fnRest
+  // Fixed-shape wrapper for arities 0..2 + variadic, avoiding per-call
+  // `Object.entries` and computed property stores (light-cljs-1115).
+  function callable2(m0, m1, m2, variadic) {
+    const fn = function (a, b) {
+      const n = arguments.length;
+      if (n === 1) return m1(a);
+      if (n === 2) return m2(a, b);
+      if (n === 0) return m0();
+      return variadic(a, b, fnRest(arguments, 2));
+    };
+    fn.cljs$core$IFn$_invoke$arity$0 = m0;
+    fn.cljs$core$IFn$_invoke$arity$1 = m1;
+    fn.cljs$core$IFn$_invoke$arity$2 = m2;
+    fn.cljs$lang$maxFixedArity = 2;
+    fn.cljs$lang$applyTo = args => fnApplyTo(variadic, 2, args);
+    fn.cljs$core$IFn$_invoke$arity$variadic = variadic;
+    return fn;
+  }
+  //@unit callable3 requires: fnApplyTo, fnRest
+  // Fixed-shape wrapper for arities 0..3 + variadic (light-cljs-1115).
+  function callable3(m0, m1, m2, m3, variadic) {
+    const fn = function (a, b, c) {
+      const n = arguments.length;
+      if (n === 1) return m1(a);
+      if (n === 2) return m2(a, b);
+      if (n === 0) return m0();
+      if (n === 3) return m3(a, b, c);
+      return variadic(a, b, c, fnRest(arguments, 3));
+    };
+    fn.cljs$core$IFn$_invoke$arity$0 = m0;
+    fn.cljs$core$IFn$_invoke$arity$1 = m1;
+    fn.cljs$core$IFn$_invoke$arity$2 = m2;
+    fn.cljs$core$IFn$_invoke$arity$3 = m3;
+    fn.cljs$lang$maxFixedArity = 3;
+    fn.cljs$lang$applyTo = args => fnApplyTo(variadic, 3, args);
+    fn.cljs$core$IFn$_invoke$arity$variadic = variadic;
+    return fn;
+  }
   //@unit callable requires: fnApplyTo, fnRest
-  // Construct the same fixed/variadic split as an emitted CLJS function. This
-  // lets combinators hand an unbounded tail to a variadic target unchanged.
+  // Construct the same fixed/variadic split as an emitted CLJS function for
+  // sparse or 4-arity combinators, using static property names to avoid
+  // dictionary-mode transitions (light-cljs-1115).
   function callable(fixed, methods, variadic) {
-    const m0 = methods[0], m1 = methods[1], m2 = methods[2], m3 = methods[3];
+    const m0 = methods[0], m1 = methods[1], m2 = methods[2], m3 = methods[3], m4 = methods[4];
     const fn = function (a, b, c, d) {
       const n = arguments.length;
       if (n === 1 && m1) return m1(a);
       if (n === 2 && m2) return m2(a, b);
       if (n === 0 && m0) return m0();
       if (n === 3 && m3) return m3(a, b, c);
-      const method = methods[n];
-      if (method) return method.apply(null, arguments);
-      const prefix = Array(fixed);
-      for (let i = 0; i < fixed; i++) prefix[i] = arguments[i];
-      return variadic(...prefix, fnRest(arguments, fixed));
+      if (n === 4 && m4) return m4(a, b, c, d);
+      if (fixed === 0) return variadic(fnRest(arguments, 0));
+      if (fixed === 1) return variadic(a, fnRest(arguments, 1));
+      if (fixed === 2) return variadic(a, b, fnRest(arguments, 2));
+      if (fixed === 3) return variadic(a, b, c, fnRest(arguments, 3));
+      return variadic(a, b, c, d, fnRest(arguments, 4));
     };
-    for (const [arity, method] of Object.entries(methods)) fn["cljs$core$IFn$_invoke$arity$" + arity] = method;
+    if (m0) fn.cljs$core$IFn$_invoke$arity$0 = m0;
+    if (m1) fn.cljs$core$IFn$_invoke$arity$1 = m1;
+    if (m2) fn.cljs$core$IFn$_invoke$arity$2 = m2;
+    if (m3) fn.cljs$core$IFn$_invoke$arity$3 = m3;
+    if (m4) fn.cljs$core$IFn$_invoke$arity$4 = m4;
     fn.cljs$lang$maxFixedArity = fixed;
     fn.cljs$lang$applyTo = args => fnApplyTo(variadic, fixed, args);
     fn.cljs$core$IFn$_invoke$arity$variadic = variadic;
@@ -15030,15 +15087,18 @@
   }
   //@unit directOrApply requires: apply, missing
   function directOrApply(fn, args, tail) { return tail === missing ? fn.call(null, ...args) : apply(fn, ...args, tail); }
-  //@unit complement requires: apply, callable
+  //@unit complement requires: apply, callable2, truth
   function complement(fn) {
-    const negate = value => value == null || value === false;
-    return callable(2, {0: () => negate(fn.call(null)), 1: x => negate(fn.call(null, x)), 2: (x, y) => negate(fn.call(null, x, y))},
-      (x, y, zs) => negate(apply(fn, x, y, zs)));
+    return callable2(
+      () => !truth(fn.call(null)),
+      x => !truth(fn.call(null, x)),
+      (x, y) => !truth(fn.call(null, x, y)),
+      (x, y, zs) => !truth(apply(fn, x, y, zs))
+    );
   }
-  //@unit constantly requires: callable
-  function constantly(x) { return callable(2, {0: () => x, 1: () => x, 2: () => x}, () => x); }
-  //@unit predicateCombination requires: callable, first, next, seq, truth
+  //@unit constantly requires: callable2
+  function constantly(x) { const f = () => x; return callable2(f, f, f, f); }
+  //@unit predicateCombination requires: callable3, first, next, seq, truth
   function predicateCombination(predicates, small, existential) {
     // The first three arguments visit each predicate in turn. CLJS's 1-3
     // predicate variants then visit each tail argument; the 4+ variant instead
@@ -15077,8 +15137,8 @@
       }
       return existential ? null : true;
     };
-    return callable(3, {0: () => existential ? null : true, 1: x => fixed([x]),
-      2: (x, y) => fixed([x, y]), 3: (x, y, z) => fixed([x, y, z])},
+    return callable3(() => existential ? null : true, x => fixed([x]),
+      (x, y) => fixed([x, y]), (x, y, z) => fixed([x, y, z]),
     (x, y, z, args) => {
       const result = fixed([x, y, z]);
       return truth(result) === existential ? result : tail(args);
@@ -15092,10 +15152,10 @@
   }
   //@unit someFn requires: predicateConstructor
   const someFn = predicateConstructor(true), everyPred = predicateConstructor(false);
-  //@unit memoize requires: apply, assoc, callable, get, mapFromArray, missing
+  //@unit memoize requires: apply, assoc, callable0, get, mapFromArray, missing
   function memoize(fn) {
     let cache = mapFromArray([]);
-    return callable(0, {}, args => {
+    return callable0(args => {
       const cached = get(cache, args, missing);
       if (cached !== missing) return cached;
       const result = apply(fn, args);
@@ -15113,55 +15173,88 @@
   }
   //@unit trampoline requires: apply, callable, trampolineLoop
   const trampoline = callable(1, {1: trampolineLoop}, (fn, args) => trampolineLoop(() => apply(fn, args)));
-  //@unit comp requires: callable, directOrApply, identity, missing
+  //@unit comp requires: apply, callable0, callable3, directOrApply, identity
   function comp(...fns) {
     if (!fns.length) return identity;
     if (fns.length === 1) return fns[0];
+    if (fns.length === 2) {
+      const f = fns[0], g = fns[1];
+      return callable3(
+        () => f.call(null, g.call(null)),
+        x => f.call(null, g.call(null, x)),
+        (x, y) => f.call(null, g.call(null, x, y)),
+        (x, y, z) => f.call(null, g.call(null, x, y, z)),
+        (x, y, z, tail) => f.call(null, apply(g, x, y, z, tail))
+      );
+    }
+    if (fns.length === 3) {
+      const f = fns[0], g = fns[1], h = fns[2];
+      return callable3(
+        () => f.call(null, g.call(null, h.call(null))),
+        x => f.call(null, g.call(null, h.call(null, x))),
+        (x, y) => f.call(null, g.call(null, h.call(null, x, y))),
+        (x, y, z) => f.call(null, g.call(null, h.call(null, x, y, z))),
+        (x, y, z, tail) => f.call(null, g.call(null, apply(h, x, y, z, tail)))
+      );
+    }
     const run = (args, tail) => {
       let result = directOrApply(fns[fns.length - 1], args, tail);
       for (let i = fns.length - 2; i >= 0; i--) result = fns[i].call(null, result);
       return result;
     };
-    if (fns.length > 3) return callable(0, {}, args => run([], args));
-    return callable(3, {0: () => run([], missing), 1: x => run([x], missing), 2: (x, y) => run([x, y], missing), 3: (x, y, z) => run([x, y, z], missing)},
-      (x, y, z, tail) => run([x, y, z], tail));
+    return callable0(args => run([], args));
   }
-  //@unit partialFixed requires: apply, callable
-  function partialFixed(fn, prefix) {
-    if (!prefix.length) return fn;
-    const run = (...args) => fn.call(null, ...prefix, ...args);
-    return callable(3, {0: () => run(), 1: x => run(x), 2: (x, y) => run(x, y), 3: (x, y, z) => run(x, y, z)},
-      (x, y, z, tail) => apply(fn, ...prefix, x, y, z, tail));
+  //@unit partial3 requires: apply, callable3
+  function partial3(fn, a, b, c) {
+    return callable3(
+      () => fn.call(null, a, b, c),
+      x => fn.call(null, a, b, c, x),
+      (x, y) => fn.call(null, a, b, c, x, y),
+      (x, y, z) => fn.call(null, a, b, c, x, y, z),
+      (x, y, z, tail) => apply(fn, a, b, c, x, y, z, tail)
+    );
   }
-  //@unit partial requires: apply, callable, concat, partialFixed
+  //@unit partial requires: apply, callable, callable0, callable3, concat, partial3
   // Constructors need the same sequence ABI as their returned functions: apply
   // may supply an infinite tail which construction must only capture.
   const partial = callable(4, {
-    0: () => partialFixed(undefined, [undefined, undefined, undefined]),
+    0: () => partial3(undefined, undefined, undefined, undefined),
     1: fn => fn,
-    2: (fn, a) => partialFixed(fn, [a]),
-    3: (fn, a, b) => partialFixed(fn, [a, b]),
-    4: (fn, a, b, c) => partialFixed(fn, [a, b, c])
-  }, (fn, a, b, c, more) => callable(0, {}, args => apply(fn, a, b, c, concat(more, args))));
-  //@unit juxtFixed requires: callable, directOrApply, missing, vectorFromArray
+    2: (fn, a) => callable3(
+      () => fn.call(null, a),
+      x => fn.call(null, a, x),
+      (x, y) => fn.call(null, a, x, y),
+      (x, y, z) => fn.call(null, a, x, y, z),
+      (x, y, z, tail) => apply(fn, a, x, y, z, tail)
+    ),
+    3: (fn, a, b) => callable3(
+      () => fn.call(null, a, b),
+      x => fn.call(null, a, b, x),
+      (x, y) => fn.call(null, a, b, x, y),
+      (x, y, z) => fn.call(null, a, b, x, y, z),
+      (x, y, z, tail) => apply(fn, a, b, x, y, z, tail)
+    ),
+    4: partial3
+  }, (fn, a, b, c, more) => callable0(args => apply(fn, a, b, c, concat(more, args))));
+  //@unit juxtFixed requires: callable3, directOrApply, missing, vectorFromArray
   function juxtFixed(fns) {
     const run = (args, tail) => vectorFromArray(fns.map(fn => directOrApply(fn, args, tail)));
-    return callable(3, {0: () => run([], missing), 1: x => run([x], missing), 2: (x, y) => run([x, y], missing), 3: (x, y, z) => run([x, y, z], missing)},
+    return callable3(() => run([], missing), x => run([x], missing), (x, y) => run([x, y], missing), (x, y, z) => run([x, y, z], missing),
       (x, y, z, tail) => run([x, y, z], tail));
   }
-  //@unit juxt requires: callable, directOrApply, juxtFixed, listStar, mapSeq, missing, toArray,
+  //@unit juxt requires: callable3, directOrApply, juxtFixed, listStar, mapSeq, missing, toArray,
   //@ vectorFromArray
-  const juxt = callable(3, {
-    0: () => juxtFixed([undefined, undefined, undefined]),
-    1: f => juxtFixed([f]),
-    2: (f, g) => juxtFixed([f, g]),
-    3: (f, g, h) => juxtFixed([f, g, h])
-  }, (f, g, h, more) => {
-    const fns = listStar(f, g, h, more);
-    const run = (args, tail) => vectorFromArray(toArray(mapSeq(fn => directOrApply(fn, args, tail), fns)));
-    return callable(3, {0: () => run([], missing), 1: x => run([x], missing), 2: (x, y) => run([x, y], missing), 3: (x, y, z) => run([x, y, z], missing)},
-      (x, y, z, tail) => run([x, y, z], tail));
-  });
+  const juxt = callable3(
+    () => juxtFixed([undefined, undefined, undefined]),
+    f => juxtFixed([f]),
+    (f, g) => juxtFixed([f, g]),
+    (f, g, h) => juxtFixed([f, g, h]),
+    (f, g, h, more) => {
+      const fns = listStar(f, g, h, more);
+      const run = (args, tail) => vectorFromArray(toArray(mapSeq(fn => directOrApply(fn, args, tail), fns)));
+      return callable3(() => run([], missing), x => run([x], missing), (x, y) => run([x, y], missing), (x, y, z) => run([x, y, z], missing),
+        (x, y, z, tail) => run([x, y, z], tail));
+    });
   //@unit fnil requires: apply, callable, invalidArity
   function fnil(fn, ...defaults) {
     if (defaults.length < 1 || defaults.length > 3) return invalidArity(arguments.length);
