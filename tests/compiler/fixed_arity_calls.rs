@@ -604,3 +604,62 @@ fn advanced_hot_calls_reach_fixed_arity_entries() {
         "[4950 100 99 100 100 true 0 0]\n"
     );
 }
+
+#[test]
+fn generality_edge_cases_for_reduce_apply_and_sort_by() {
+    let run = |source: &str| super::optimization::json_at_every_level(source);
+
+    // (reduce + ...) with reduced via transducers, variadic-only rf on empty/>32,
+    // Subvec and deftype IReduce, apply with custom ISeq/ICounted tail, Subvec
+    // specify! tail, ICounted-only vector specify!, fixed-arity target with lazy
+    // tail, multi-arity+variadic target with infinite tail, and boolean sort-by
+    // comparators.
+    assert_eq!(
+        run(r#"
+        (deftype CustomReduce [x]
+          IReduce
+          (-reduce [_ f] (f x))
+          (-reduce [_ f init] (f (f init x) (+ x 1))))
+        (deftype CustomSeqTail [a b]
+          ISeqable
+          (-seq [this] this)
+          ISeq
+          (-first [_] a)
+          (-rest [_] (if (some? b) (CustomSeqTail. b nil) ()))
+          INext
+          (-next [_] (when (some? b) (CustomSeqTail. b nil)))
+          ICounted
+          (-count [_] (if (some? b) 2 1)))
+        (let [v50 (vec (range 50))
+              rest-only (fn [& args] (count args))
+              sub-red (specify! (subvec v50 2 10)
+                        IReduce
+                        (-reduce ([_ _ init] [:sub-red init])))
+              sub-seq (specify! (subvec v50 2 10)
+                        ISeqable
+                        (-seq [_] (list 7 8)))
+              cnt-only (specify! [2 3 4]
+                         ICounted
+                         (-count [_] 2))
+              fixed2 (fn ([a] (* a 10)) ([a b] (+ a b)))
+              multi-inf (fn ([a] a) ([a b] (+ a b)) ([a b & more] [a b (first more)]))
+              items [{:k 2 :id 1} {:k 1 :id 2} {:k 2 :id 3} {:k 1 :id 4}]]
+          (pr-str
+            [(transduce (take 5) + 0 v50)
+             (transduce (halt-when #(= % 4)) + 0 v50)
+             (reduce rest-only [])
+             (reduce rest-only [1 2 3])
+             (reduce rest-only 0 v50)
+             (reduce + 10 (CustomReduce. 5))
+             (reduce + 3 sub-red)
+             (apply + 1 (CustomSeqTail. 10 20))
+             (apply + 1 sub-seq)
+             (apply + 1 cnt-only)
+             (apply fixed2 (take 2 (range 10 20)))
+             (apply fixed2 1 [2])
+             (apply multi-inf 1 (range))
+             (mapv :id (sort-by :k (fn [a b] (< a b)) items))
+             (mapv :id (sort-by :k (fn [a b] (> a b)) items))]))"#),
+        "\"[10 4 0 2 2 21 [:sub-red 3] 31 16 10 21 3 [1 0 1] [2 4 1 3] [1 3 2 4]]\"\n"
+    );
+}
