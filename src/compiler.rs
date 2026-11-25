@@ -2929,6 +2929,16 @@ fn analyze_entry(
     // adds them where it charges the unit, in unit order
     // (docs/compiler-concurrency.md, "As built (light-cljs-374)").
     let memory_limit = macros.evaluator_options.memory_limit;
+    let isolates =
+        crate::compilation_session::pool_isolate_count(memory_limit, analysis.unit_slots);
+    let can_pool_engines = cfg!(any(light_v8, light_quickjs))
+        && isolates > 1
+        && macros.engine.script_host.is_none()
+        && !macros.tables.interactive;
+    #[cfg(light_v8)]
+    if can_pool_engines && let Some(session) = macros.session_handle() {
+        session.plan_v8_pool(isolates);
+    }
     let mut initial_environment = (analysis.unit_slots.get() > 1).then(|| macros.environment());
     let mut pool_started = false;
     let mut parallel_top: Option<parallel_top_level::ParallelTopLevel> = None;
@@ -2960,10 +2970,7 @@ fn analyze_entry(
                     use crate::compilation_session::PoolEngines;
                     // V8 isolates, or in QuickJS-only builds QuickJS runtimes
                     // (light-cljs-436).
-                    let engines = if cfg!(any(light_v8, light_quickjs))
-                        && macros.engine.script_host.is_none()
-                        && !macros.tables.interactive
-                    {
+                    let engines = if can_pool_engines {
                         if fresh_isolates
                             || std::env::var_os("LIGHT_CLJS_FRESH_UNIT_ISOLATES").is_some()
                         {
@@ -2974,35 +2981,11 @@ fn analyze_entry(
                     } else {
                         PoolEngines::None
                     };
-                    // The main isolate's reservation and as many workers' as the rest
-                    // of the limit gives `WORKER_SHARE` each; with none, no worker has an
-                    // engine.
-                    let isolates = crate::compilation_session::pool_isolate_count(
-                        memory_limit,
-                        analysis.unit_slots,
-                    );
-                    let engines = if isolates < 2 {
-                        PoolEngines::None
-                    } else {
-                        engines
-                    };
-                    let mut resources = None;
                     if engines != PoolEngines::None {
                         // Every isolate installs the bootstrap units: they are compiled
                         // before the build's deadline starts (light-cljs-378).
                         crate::compiler_bootstrap::prepare(macros)
                             .map_err(NamespaceCompileError::new)?;
-                        // A slot that can run macros can also boot a separate
-                        // reader isolate. Reserve both shares from the same pool.
-                        let heaps = if cfg!(light_v8) && macros.data_reader_count() != 0 {
-                            isolates * 2
-                        } else {
-                            isolates
-                        };
-                        resources = Some(
-                            crate::evaluator::BuildResources::new(&macros.evaluator_options, heaps)
-                                .map_err(|e| NamespaceCompileError::new(e.0))?,
-                        );
                     }
                     if let Some(cache) = cache.as_deref_mut() {
                         cache.shutdown_lookup_pool();
@@ -3014,7 +2997,6 @@ fn analyze_entry(
                         initial_environment
                             .take()
                             .unwrap_or_else(|| macros.environment()),
-                        resources,
                         parallel_recording,
                     );
                     if let Err(error) = started {

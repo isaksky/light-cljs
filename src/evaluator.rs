@@ -331,8 +331,8 @@ impl ExecutionControl {
     }
 }
 
-/// The macro memory limit of one build, which all its compile-time
-/// isolates share (docs/compiler-concurrency.md, "As built
+/// The macro memory limit of one build, which its macro isolates
+/// share (docs/compiler-concurrency.md, "As built
 /// (light-cljs-341)"): each worker isolate is allowed [`Self::base`] bytes
 /// and the main one [`Self::main_base`], and each grows past that only by
 /// taking from the headroom the others have not taken, which it gives back
@@ -417,16 +417,15 @@ impl MemoryPool {
         self.headroom.load(Ordering::Relaxed)
     }
 }
-/// What a build's compile-time isolates share: its deadline and
-/// cancellation, a linked control for workers, and the memory pool.
+/// A build's deadline and cancellation, a linked control for workers,
+/// and the memory pool for its macro isolates.
 #[derive(Clone)]
 #[cfg_attr(not(any(light_v8, light_quickjs)), allow(dead_code))]
 pub(crate) struct BuildResources {
     pub(crate) control: ExecutionControl,
     pub(crate) workers: ExecutionControl,
     pub(crate) memory: Arc<MemoryPool>,
-    #[cfg(light_v8)]
-    pub(crate) serial: bool,
+    pub(crate) isolates: usize,
 }
 impl BuildResources {
     /// The resources of a build with `options`, whose deadline starts now,
@@ -437,17 +436,8 @@ impl BuildResources {
             workers: ExecutionControl::linked(options, &control)?,
             control,
             memory: MemoryPool::new(options.memory_limit, isolates),
-            #[cfg(light_v8)]
-            serial: false,
+            isolates,
         })
-    }
-
-    /// Share a serial build's limits between its macro and data-reader heaps.
-    #[cfg(light_v8)]
-    pub(crate) fn for_serial_readers(options: &EvaluatorOptions) -> Result<Self, EvalError> {
-        let mut resources = Self::new(options, 2)?;
-        resources.serial = true;
-        Ok(resources)
     }
 }
 

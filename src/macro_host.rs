@@ -1566,11 +1566,17 @@ impl MacroHost {
         if let Some(resources) = catalog.resources() {
             return Ok(Some(resources.clone()));
         }
-        if self.data_reader_count() == 0 || self.engine.script_host.is_some() {
+        let isolates = session.v8_isolate_count();
+        if isolates == 1 && self.data_reader_count() == 0 {
             return Ok(None);
         }
+        if isolates > 1 {
+            // The coordinator can start before a cache miss starts the pool.
+            // Prepare the bootstrap before the shared deadline starts.
+            crate::compiler_bootstrap::prepare(self).map_err(crate::evaluator::EvalError)?;
+        }
         catalog
-            .serial_reader_resources(&self.evaluator_options)
+            .initialize_resources(&self.evaluator_options, isolates)
             .cloned()
             .map(Some)
     }
@@ -3997,7 +4003,118 @@ mod compiler_default_reader_tests {
 
     #[cfg(light_v8)]
     #[test]
-    fn compiler_reader_heap_shares_the_build_budget_and_has_its_own_registry() {
+    fn starting_the_pool_after_the_coordinator_engine_preserves_worker_resources() {
+        use crate::{compilation_session::PoolEngines, scheduler::Slots};
+
+        let mut host = MacroHost::new();
+        host.evaluator_options.memory_limit = 192 << 20;
+        host.register_compiler_default_data_reader("(fn [tag value] value)")
+            .unwrap();
+        host.begin_compilation();
+        let session = host.session_handle().unwrap();
+        session.plan_v8_pool(3);
+        let coordinator = host.new_compiler_evaluator().unwrap();
+        session
+            .start_pool(
+                Slots::new(3).unwrap(),
+                PoolEngines::Persistent,
+                3,
+                host.environment(),
+                Default::default(),
+            )
+            .unwrap();
+        let resources = session.shared().resources().unwrap();
+        assert_eq!(resources.memory.main_base(), 64 << 20);
+        assert_eq!(resources.memory.base(), 64 << 20);
+        assert_eq!(resources.memory.headroom(), 0);
+
+        let worker_macro = crate::v8_evaluator::V8Evaluator::new_for_build(
+            host.evaluator_options.clone(),
+            resources,
+            false,
+        )
+        .unwrap();
+        let mut worker = MacroHost::bind(host.environment(), None).unwrap();
+        worker.engine.catalog = Some(session.shared().clone());
+        let worker_reader = worker.new_data_reader_evaluator().unwrap();
+        session.cancel_pool();
+        for control in [
+            crate::evaluator::MacroEvaluator::control(&worker_macro),
+            worker_reader.control(),
+        ] {
+            assert!(control.check().unwrap_err().0.contains("cancelled"));
+        }
+        assert!(coordinator.control().check().is_ok());
+        session.finish_pool();
+    }
+
+    #[cfg(light_v8)]
+    #[test]
+    fn a_reader_loop_obeys_the_compilation_deadline() {
+        use std::time::{Duration, Instant};
+
+        let mut host = MacroHost::new();
+        host.register_compiler_default_data_reader("(fn [tag x] (if x (loop [] (recur)) 42))")
+            .unwrap();
+        host.begin_compilation();
+        let macro_heap = host.new_compiler_evaluator().unwrap();
+        host.read_compiler_form(&Source::new("reader.cljs", "#reader false"))
+            .unwrap();
+        let session = host.session_handle().unwrap();
+        let control = &session.shared().resources().unwrap().control;
+        let started = Instant::now();
+        control
+            .begin(&crate::evaluator::EvaluatorOptions {
+                timeout: Duration::from_millis(100),
+                ..host.evaluator_options.clone()
+            })
+            .unwrap();
+        let error = host
+            .read_compiler_form(&Source::new("reader.cljs", "#reader true"))
+            .unwrap_err();
+        assert!(error.message.contains("deadline exceeded"), "{error}");
+        assert_eq!(error.span.text(), "#reader true");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(
+            macro_heap
+                .control()
+                .poll()
+                .unwrap_err()
+                .0
+                .contains("deadline exceeded")
+        );
+    }
+
+    #[cfg(light_v8)]
+    #[test]
+    fn a_reader_exception_leaves_the_compilation_control_usable() {
+        let mut host = MacroHost::new();
+        host.register_compiler_default_data_reader(
+            "(fn [tag x] (if x (throw (js/Error. \"reader failed\")) 42))",
+        )
+        .unwrap();
+        host.begin_compilation();
+        let macro_heap = host.new_compiler_evaluator().unwrap();
+        let error = host
+            .read_compiler_form(&Source::new("reader.cljs", "#reader true"))
+            .unwrap_err();
+        assert!(error.message.contains("reader failed"), "{error}");
+        assert!(macro_heap.control().poll().is_ok());
+        let value = macro_heap.evaluate_js("42").unwrap();
+        macro_heap.release(value).unwrap();
+        assert!(matches!(
+            host.read_compiler_form(&Source::new("reader.cljs", "#reader false"))
+                .unwrap()
+                .unwrap()
+                .data()
+                .kind(),
+            DatumKind::Integer(42) | DatumKind::Double(42.0)
+        ));
+    }
+
+    #[cfg(light_v8)]
+    #[test]
+    fn compiler_reader_has_its_own_memory_allowance_and_namespace_registry() {
         let mut host = MacroHost::new();
         host.register_compiler_default_data_reader("(fn [tag value] value)")
             .unwrap();
@@ -4009,13 +4126,15 @@ mod compiler_default_reader_tests {
         let reader_registry = reader_heap.reader_namespaces().unwrap();
         assert!(!std::rc::Rc::ptr_eq(&macro_registry, &reader_registry));
 
-        // 40 MiB would fit in a dedicated 64 MiB isolate. The reader shares
-        // the compilation's limit with the macro isolate.
-        let error = reader_heap
+        let buffer = reader_heap
             .evaluate_js("new ArrayBuffer(40 * 1024 * 1024)")
+            .unwrap();
+        reader_heap.release(buffer).unwrap();
+        let error = reader_heap
+            .evaluate_js("new ArrayBuffer(65 * 1024 * 1024)")
             .unwrap_err();
         assert!(error.0.contains("memory limit exhausted"), "{error}");
-        assert!(macro_heap.control().check().is_err());
+        assert!(macro_heap.control().poll().is_ok());
     }
 
     #[test]

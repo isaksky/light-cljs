@@ -4137,7 +4137,6 @@ mod tests {
                 PoolEngines::None,
                 1,
                 host.environment(),
-                None,
                 Default::default(),
             )
             .unwrap();
@@ -4393,7 +4392,6 @@ mod tests {
                 PoolEngines::None,
                 1,
                 host.environment(),
-                None,
                 Default::default(),
             )
             .unwrap();

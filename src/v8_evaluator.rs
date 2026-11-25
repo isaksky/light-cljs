@@ -390,55 +390,49 @@ impl V8Evaluator {
         resources: &BuildResources,
         main: bool,
     ) -> Result<Self, EvalError> {
-        Self::create_for_build(options, resources, main, !main)
+        if main && resources.isolates == 1 {
+            // The serial coordinator can exempt process-wide bootstrap work.
+            return Self::create(
+                options,
+                resources.control.clone(),
+                None,
+                INITIAL_HEAP_LIMIT,
+                Self::startup_source,
+            );
+        }
+        let build = if main {
+            &resources.control
+        } else {
+            &resources.workers
+        };
+        let control = ExecutionControl::linked(&options, build)?;
+        Self::create(
+            options,
+            control,
+            Some((resources.memory.clone(), main)),
+            INITIAL_HEAP_LIMIT,
+            Self::startup_source,
+        )
     }
 
-    /// The data-reader isolate has its own memory share and follows its
-    /// slot's cancellation. A reader error discards this isolate without
-    /// invalidating a serial build's shared control.
+    /// Readers have their own memory allowance, as they did in QuickJS.
+    /// A linked control follows the build's deadline and cancellation while
+    /// keeping a reader exception local to the reader's discarded isolate.
     pub(crate) fn new_for_build_reader(
         options: EvaluatorOptions,
         resources: &BuildResources,
         worker: bool,
     ) -> Result<Self, EvalError> {
-        let evaluator = Self::create_for_build(options, resources, false, worker)?;
-        evaluator.state.interactive.set(resources.serial);
-        Ok(evaluator)
-    }
-
-    fn create_for_build(
-        options: EvaluatorOptions,
-        resources: &BuildResources,
-        main_share: bool,
-        worker: bool,
-    ) -> Result<Self, EvalError> {
-        let control = if resources.serial {
-            // The coordinator can exempt process-wide bootstrap work even
-            // when a reader already shares the deadline.
-            resources.control.clone()
+        let build = if worker {
+            &resources.workers
         } else {
-            let build = if worker {
-                &resources.workers
-            } else {
-                &resources.control
-            };
-            ExecutionControl::linked(&options, build)?
+            &resources.control
         };
-        let share = if main_share {
-            resources.memory.main_base()
-        } else {
-            resources.memory.base()
-        };
-        if share < 16 << 20 {
-            control.memory_exhausted();
-            return Err(bridge::error(
-                "JavaScript session memory limit exhausted: V8 isolate share is below 16 MiB",
-            ));
-        }
+        let control = ExecutionControl::linked(&options, build)?;
         Self::create(
             options,
             control,
-            Some((resources.memory.clone(), main_share)),
+            None,
             INITIAL_HEAP_LIMIT,
             Self::startup_source,
         )

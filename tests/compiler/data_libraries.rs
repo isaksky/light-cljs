@@ -318,6 +318,31 @@ fn all_supported_native_set_and_walk_fixtures_migrate_with_values_and_effects() 
 
 #[cfg(light_v8)]
 #[test]
+fn registering_readers_preserves_the_serial_macro_memory_limit() {
+    use light_cljs::{MacroHost, compile_with_macros, compiler_data::Name};
+
+    let mut host = MacroHost::new();
+    host.register_compiler_data_reader(Name::new(None, "named"), "(fn [x] (inc x))")
+        .unwrap();
+    let js = compile_with_macros(
+        "(defmacro allocate [] (.-byteLength (js/ArrayBuffer. (* 40 1024 1024))))
+         (str (allocate))",
+        &mut host,
+    )
+    .unwrap();
+    assert_eq!(crate::canonical_json::node(&js), "41943040");
+
+    host.evaluator_options.memory_limit = 24 << 20;
+    let js = compile_with_macros(
+        "(defmacro answer [] 42) (pr-str [(answer) #named 7])",
+        &mut host,
+    )
+    .unwrap();
+    assert_eq!(crate::canonical_json::node(&js), "[42 8]");
+}
+
+#[cfg(light_v8)]
+#[test]
 fn compiler_data_readers_run_without_quickjs() {
     use light_cljs::{
         EvalOptions, EvalSession, MacroHost, compile_with_macros,

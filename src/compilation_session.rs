@@ -895,8 +895,8 @@ pub(crate) struct SharedCatalog {
     /// soft cap stops runaway work early, and the charge decides the
     /// diagnostic ([`UnitCharges`]).
     charged: [std::sync::atomic::AtomicUsize; 2],
-    /// What the build's isolates share when its pool runs engines: its
-    /// deadline, cancellation and memory ([`crate::evaluator::BuildResources`]).
+    /// The deadline and cancellation of the build's isolates, and their
+    /// macro memory pool ([`crate::evaluator::BuildResources`]).
     resources: std::sync::OnceLock<crate::evaluator::BuildResources>,
     /// One more than the ID of the earliest failed pool job in declaration
     /// order, or 0. The ID locates the cutoff; IDs themselves are not ordered.
@@ -1087,21 +1087,29 @@ impl SharedCatalog {
             self.lock().queued_ir.merged(id);
         }
     }
-    /// What the build's isolates share, once its pool runs engines or a
-    /// serial build with configured data readers starts an isolate.
+    /// What the build's isolates share once its resources are initialized.
     pub(crate) fn resources(&self) -> Option<&crate::evaluator::BuildResources> {
         self.resources.get()
     }
-    #[cfg(light_v8)]
-    pub(crate) fn serial_reader_resources(
+    pub(crate) fn initialize_resources(
         &self,
         options: &crate::evaluator::EvaluatorOptions,
+        isolates: usize,
     ) -> Result<&crate::evaluator::BuildResources, crate::evaluator::EvalError> {
-        if let Some(resources) = self.resources() {
-            return Ok(resources);
+        let resources = match self.resources() {
+            Some(resources) => resources,
+            None => {
+                let resources = crate::evaluator::BuildResources::new(options, isolates)?;
+                self.resources.get_or_init(|| resources)
+            }
+        };
+        if resources.isolates != isolates {
+            return Err(crate::evaluator::EvalError(
+                "compile-time engine resources already initialized for a different pool size"
+                    .into(),
+            ));
         }
-        let resources = crate::evaluator::BuildResources::for_serial_readers(options)?;
-        Ok(self.resources.get_or_init(|| resources))
+        Ok(resources)
     }
     /// What the compilation records of each analysis beyond its charges.
     fn recording(&self) -> crate::macro_host::UnitRecording {
@@ -1771,6 +1779,10 @@ pub(crate) struct CompilationSession {
     namespaces_seen: RefCell<std::collections::HashMap<String, u8>>,
     /// The build's unit pool, with `--jobs N` ([`UnitPool`]).
     pool: RefCell<Option<UnitPool>>,
+    /// Number of macro isolates planned for the pool, including the
+    /// coordinator, whose isolate may start before the pool does.
+    #[cfg(light_v8)]
+    v8_pool_isolates: Cell<usize>,
     /// The last unit, in unit order, a drain point took
     /// ([`Self::analyze_drained`] or [`Self::note_drained`]); a failed build's
     /// counts stop there ([`Self::failed_unit_counts`]).
@@ -1971,6 +1983,8 @@ impl Default for CompilationSession {
             namespaces_absorbed: Default::default(),
             namespaces_seen: Default::default(),
             pool: Default::default(),
+            #[cfg(light_v8)]
+            v8_pool_isolates: Default::default(),
             drained_through: Default::default(),
             local_overlay: RefCell::new(None),
             deferred_engine_namespaces: Default::default(),
@@ -2959,6 +2973,8 @@ impl CompilationSession {
             namespaces_absorbed: Default::default(),
             namespaces_seen: Default::default(),
             pool: Default::default(),
+            #[cfg(light_v8)]
+            v8_pool_isolates: Default::default(),
             drained_through: Default::default(),
             deferred_engine_namespaces: Default::default(),
             local_overlay: RefCell::new(Some(NamespaceOverlay {
@@ -4193,6 +4209,14 @@ impl CompilationSession {
     pub(crate) fn set_recording(&self, recording: crate::macro_host::UnitRecording) {
         let _ = self.shared.recording.set(recording);
     }
+    #[cfg(light_v8)]
+    pub(crate) fn plan_v8_pool(&self, isolates: usize) {
+        self.v8_pool_isolates.set(isolates);
+    }
+    #[cfg(light_v8)]
+    pub(crate) fn v8_isolate_count(&self) -> usize {
+        self.v8_pool_isolates.get().max(1)
+    }
     /// Start the build's unit pool of `slots`, whose workers are bound to
     /// `environment` and of which `isolates`, the coordinator's included,
     /// have `engines` ([`UnitPool::start`]).
@@ -4202,11 +4226,12 @@ impl CompilationSession {
         engines: PoolEngines,
         isolates: usize,
         environment: MacroEnvironment,
-        resources: Option<crate::evaluator::BuildResources>,
         recording: crate::macro_host::UnitRecording,
     ) -> Result<(), String> {
-        if let Some(resources) = resources {
-            let _ = self.shared.resources.set(resources);
+        if engines != PoolEngines::None {
+            self.shared
+                .initialize_resources(environment.evaluator_options(), isolates)
+                .map_err(|error| error.0)?;
         }
         let _ = self.shared.recording.set(recording);
         let pool = UnitPool::start(self.shared.clone(), slots, engines, isolates, environment)?;
