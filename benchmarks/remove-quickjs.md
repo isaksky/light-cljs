@@ -9,8 +9,8 @@ uses V8 for compile-time macros, data readers and interactive sessions.
 
 Runs were unreserved, with no other benchmark worker. Each pair used the
 same machine and inputs, switching which revision went first every round.
-Commands completing within 30 seconds used ten runs per revision. Slower
-commands used five, and full test suites used one run per build. Tables
+Timed commands typically under 30 seconds used ten runs per revision.
+Slower commands used five, and full test suites used one run per build. Tables
 give medians and observed minimum–maximum ranges. Load is the one-minute
 load average sampled immediately before a command. Wall time includes
 process start unless noted. Peak memory is in MiB from macOS
@@ -24,6 +24,9 @@ branch="$PWD"
 master=/tmp/light-cljs-1138-master
 logs="$branch/target/remove-quickjs-logs"
 git worktree add --detach "$master" fb7de495
+research=/Users/admin/src/light-cljs/research
+ln -s "$research" "$branch/research"
+ln -s "$research" "$master/research"
 bb benchmarks/remove-quickjs.bb build "$logs" "$master" "$branch" 5
 bb benchmarks/remove-quickjs.bb summary "$logs/build.edn"
 ```
@@ -64,11 +67,11 @@ benchmark log tree.
 bb benchmarks/remove-quickjs.bb output "$logs" "$master" "$branch"
 ```
 
-| Output | Byte-identical | Master bytes | Branch bytes | Load range |
+| Output | Byte-identical | Total master bytes | Total branch bytes | Load range |
 | --- | ---: | ---: | ---: | ---: |
-| Size ratchet, none | 0 / 36 | | | 4.10–4.11 |
-| Size ratchet, prepare | 0 / 36 | | | 4.10–4.11 |
-| Size ratchet, advanced | 21 / 36 | | | 4.10–4.11 |
+| Size ratchet, none | 0 / 36 | 32,728,731 | 32,569,611 | 4.10–4.11 |
+| Size ratchet, prepare | 0 / 36 | 32,728,523 | 32,569,403 | 4.10–4.11 |
+| Size ratchet, advanced | 21 / 36 | 1,170,045 | 1,169,385 | 4.10–4.11 |
 | TodoMVC startup module, advanced | 0 / 1 | 349,574 | 349,392 | 4.10 |
 
 Every changed advanced ratchet is 44 bytes smaller. The first differing
@@ -174,7 +177,9 @@ described in the re-frame comparison. Treat vector and list namespace
 clauses alike, remove the redundant reader-conditional `:include-macros`
 from rewrite-clj's libspec, expose the SCI `deftime` bodies, replace
 SCI's analyzer-initialization form with `nil`, and have the unused
-self-hosted `copy-ns` branch report its analyzer dependency.
+self-hosted `copy-ns` branch report its analyzer dependency. A second port
+compiled on both revisions and reproduced the sources up to JVM-generated
+local names in one SCI namespace. The timings use one fixed copy.
 [re-frame benchmark port notes](re-frame-vs-shadow.md#port-edits-by-cause)
 
 ```sh
@@ -281,3 +286,52 @@ engine. On the branch the key marks interactive mode independently of the
 engine, so the all-V8 change keeps the two artifact sets separate.
 The watch peak-memory increases on misses have the cold-watch cause
 described above and require the same user decision.
+
+## 7. Test-suite wall time
+
+One `cargo nextest run --no-fail-fast` per available build with the
+repository's 16 test threads and `LIGHT_CLJS_V8_CACHE=require`.
+The branch and master start with separate Cargo targets. The master
+feature variants reuse Cargo files from the preceding master invocation.
+The nextest column is the suite's own timer. The invocation column
+includes Cargo and building test binaries.
+
+```sh
+bb benchmarks/remove-quickjs.bb suite "$logs" "$branch" branch-v8
+bb benchmarks/remove-quickjs.bb suite "$logs" "$master" master-v8
+bb benchmarks/remove-quickjs.bb suite "$logs" "$master" master-quickjs --no-default-features --features quickjs
+bb benchmarks/remove-quickjs.bb suite "$logs" "$master" master-pants --no-default-features --features bbp-macros
+```
+
+| Build | Invocation (s) | Nextest (s) | Run | Passed | Failed | Skipped | Starting load |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Branch V8 | 325.38 | 254.30 | 2,556 | 2,555 | 1 | 111 | 3.84 |
+| Master V8 | 301.90 | 240.31 | 2,589 | 2,588 | 1 | 112 | 17.06 |
+| Master QuickJS-only | 291.84 | 256.13 | 2,508 | 2,506 | 2 | 111 | 17.40 |
+| Master Pants | 29.90 to build failure | — | 0 | — | — | — | 16.21 |
+
+Master's Pants test build stopped at Rust compilation. The library tests
+called `Evaluator::control` and used older `UnitPool` fields and call
+signatures. Master's V8 and QuickJS-only suites both failed the existing
+`protocol-local-name-predicates` fixture. QuickJS-only also failed the
+cold parallel cache artifact comparison at round zero.
+
+The branch watch regression test observed 1,073 bridge payloads at step
+178 against a warmed count of 1,063. Two isolated reruns passed, each
+taking about 10.5 s. The timed suite retains its original result.
+light-cljs-1153 tracks the intermittent watch failure. The branch's
+suite ran 33 fewer tests than master's V8 build, with compiler tests
+moved from QuickJS to V8. With this change in test mix, different loads
+and one run per build, the 14 s suite-time difference is descriptive.
+
+Branch formatting, strict V8 Clippy and Babashka lint passed. Strict
+Clippy on the historical master configurations reported existing
+diagnostics including type complexity for V8 and QuickJS-only and a
+deprecated atomic operation in the Pants dependency.
+
+## Merge recommendation
+
+Hold the merge into master. Review the JavaScript output drift in
+light-cljs-1152 and the intermittent watch test in light-cljs-1153, and
+decide whether the measured memory increases for macro-heavy sessions,
+data readers and cold watch starts are acceptable.
