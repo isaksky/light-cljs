@@ -70,11 +70,6 @@ harness = false
 name = "evaluator"
 harness = false
 
-# The evaluator example uses the V8-backed public evaluator.
-[[example]]
-name = "evaluator"
-required-features = ["v8-macros"]
-
 # Dependencies (chiefly the QuickJS C engine behind the macro host and evaluator)
 # build once, so optimizing them costs nothing in the edit loop and makes
 # QuickJS-heavy tests 2-3x faster. This crate itself stays unoptimized: at

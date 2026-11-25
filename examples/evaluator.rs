@@ -1,4 +1,4 @@
-//! Minimal synchronous V8 embedding. Run with `cargo run --example evaluator`.
+//! Run with `cargo run --example evaluator`. Uses V8 when available.
 use light_cljs::{
     analyze,
     evaluator::{Evaluator, EvaluatorOptions},

@@ -488,6 +488,12 @@ impl Evaluator {
     pub fn evaluate_unit(&self, _: &str) -> Result<ValueId, EvalError> {
         match *self {}
     }
+    pub fn evaluate(&self, _: &crate::Program) -> Result<ValueId, EvalError> {
+        match *self {}
+    }
+    pub fn print(&self, _: ValueId) -> Result<String, EvalError> {
+        match *self {}
+    }
     pub fn release(&self, _: ValueId) -> Result<(), EvalError> {
         match *self {}
     }
