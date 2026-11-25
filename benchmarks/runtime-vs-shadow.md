@@ -6578,49 +6578,52 @@ Steady state (1- and 16-iter medians): **110.3 vs 114.0 ms/iter (0.97x shadow)**
 
 No `:advanced` fixture or chunk ceiling moved (`tests/compiler/chunks.rs` unchanged); 3 none/prepare ceilings in `tests/support/ratchet_fixtures.rs` (`rest-fn`, `pure-defs` prepare, `extended-classes`) moved up 1,000 bytes for the +36 readable bytes of boot-captured `NativeError` and `ownDescriptor`.
 
-## 2026-11-24: fast keywordOf/arrayIndex, unfrozen vectorChunk with copy-on-read getters, and direct seq/LazySeq paths (light-cljs-1120)
 
-Rebased onto `light-cljs-1117` (`master` `54c3ce59`, `light-cljs-54c3ce59`, SHA-256 `6c6d17a1ae626a9d...`). Measured at `e145f367` (`light-cljs-e145f367`, SHA-256 `3b0f6ce9aadc09b2...`) against `54c3ce59` and shadow-cljs 3.5.3 (Node v26.12.1, Apple M3 Ultra VM, 24 CPUs, 32 GiB; unreserved, compilers alternated, every checksum equal to oracle).
+## 2026-11-24: unfrozen vectorChunk with copy-on-read getters and direct seq/LazySeq paths (light-cljs-1120)
 
-- **Changes (`src/js_runtime.js`, `tests/compiler/builtin_types.rs`):**
-  1. `cc81b492`: Avoid the `in` operator in `keywordOf` (`value.fqn$LKEY !== undefined || "fqn$LKEY" in value`) and skip redundant `keywordOf` probes in `arrayIndex` and `hashKeyTest` when `keyword === key` (own-class keyword).
-  2. `cc5e0283`: Remove `Object.freeze` from `vectorChunk`, remove dispatch layers in `seq` (nil and empty-list fast paths), `PersistentVectorValue.seq`, `MapEntryType.seq`, `lazyRealized`, and `LazySeq.seqSlot`, and avoid the `in` operator in `lazyOf`.
-  3. `e145f367`: Preserve persistent vector and map entry immutability with unfrozen leaves/tails by copying at the three public array getters (`ChunkedSeq.node`, `IndexedSeq.arr`, `ArrayChunk.arr`) when the backing array belongs to a persistent vector or map entry (`indexed$LKEY === 2` on `IndexedSeqCell`, `first$LKEY !== null && step$LKEY === null` on `ArrayChunkCell`, non-enumerable `callerArr$LKEY` on public `ChunkedSeqValue`), preserving `apply`'s fast paths and caller-supplied array identity.
+Rebased onto `light-cljs-1117` (`master` `54c3ce59`, `light-cljs-54c3ce59`, SHA-256 `6c6d17a1ae626a9d...`). Final measurements taken at `5b3cd568` (`light-cljs-5b3cd568`, SHA-256 `d095dd93ed46fbe6...`, after Sol review findings #1-#4, #6, #7) against `54c3ce59` and shadow-cljs 3.5.3 (Node v26.12.1, Apple M3 Ultra VM, 24 CPUs, 32 GiB; unreserved, compilers alternated, every checksum equal to oracle).
+
+- **Changes (`src/js_runtime.js`, `tests/compiler/builtin_types.rs`, `tests/compiler/runtime_key.rs`):**
+  1. Remove `Object.freeze` from `vectorChunk`, remove dispatch layers in `seq` (nil and built-in `emptySeqSlot` fast paths), `PersistentVectorValue.seq`, `MapEntryType.seq`, `lazyRealized`, and `LazySeq.seqSlot` (matching built-in `selfSeqSlot`/`emptySeqSlot` so `specify!` overrides work even across copies of the same build).
+  2. Preserve persistent vector and map entry immutability without freezing leaves by copying at the three public array getters (`ChunkedSeq.node`, `IndexedSeq.arr`, `ArrayChunk.arr`) when the backing array belongs to a persistent vector or map entry (`indexed$LKEY === 2` on `IndexedSeqCell`, `first$LKEY !== null && step$LKEY === null` on `ArrayChunkCell`, non-enumerable `callerArr$LKEY` on public `ChunkedSeqValue` and accessor-backed `SubvecValue` getter leaves, carried across same-leaf `ChunkedSeq` advances and `apply` fast paths while keeping caller-supplied array identity and deferred reads).
+  3. Sol review findings #4 and #6 reverted the `keywordOf`/`lazyOf` payload-read change and the `arrayIndex`/`hashKeyTest` `own`-flag additions that had pushed `arrayIndex` over V8 inlining limits (eliminating the `into-map-small` regression while keeping every `seq`/`vectorChunk`/`LazySeq` gain).
 
 ### Generated re-frame-shaped app, 200k lines (jsdom in Node, 10 runs alternated, unreserved)
 
 - **Before (`54c3ce59`, load 4.77-6.01):** 1-iter first output `1.472 s (1.430-1.615)` vs shadow `1.392 s (1.340-1.511, 1.06x)`; 1-iter wall `1.484 s (1.443-1.627)` vs `1.405 s (1.353-1.536, 1.06x)`; 10-iter wall `4.320 s (4.052-5.099)` vs `3.874 s (3.660-4.385, 1.12x)`; 10-iter peak memory `0.692 GB (0.640-0.750)` vs `0.725 GB (0.719-0.744, 0.95x)`; steady state **315.1 vs 274.3 ms/iter (1.15x)**.
-- **After (`e145f367`, load 5.28-7.58):**
+- **After (`5b3cd568`, load 6.59-12.81):**
 
 | Iterations | Compiler | First output | Wall time | User CPU | System CPU | Peak memory | 1-minute load before |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | light-cljs | 1.519 s (1.429-1.721) | 1.533 s (1.442-1.737) | 2.28 s (2.14-2.44) | 0.14 s (0.12-0.25) | 0.475 GB (0.439-0.493) | 5.28-5.70 |
-| 1 | shadow-cljs | 1.410 s (1.355-1.632) | 1.424 s (1.368-1.652) | 2.17 s (2.10-2.42) | 0.13 s (0.12-0.19) | 0.462 GB (0.448-0.474) | 5.39-5.70 |
-| 10 | light-cljs | 4.495 s (4.070-4.771) | 4.554 s (4.152-4.801) | 6.02 s (5.62-6.44) | 0.32 s (0.26-0.51) | 0.743 GB (0.629-0.760) | 5.28-7.58 |
-| 10 | shadow-cljs | 4.140 s (3.892-4.695) | 4.165 s (3.915-4.727) | 5.54 s (5.28-6.47) | 0.33 s (0.25-0.66) | 0.730 GB (0.664-0.751) | 5.49-7.37 |
+| 1 | light-cljs | 1.480 s (1.456-1.727) | 1.497 s (1.471-1.746) | 2.17 s (2.05-2.21) | 0.18 s (0.14-0.24) | 0.476 GB (0.448-0.487) | 9.88-12.81 |
+| 1 | shadow-cljs | 1.402 s (1.364-1.459) | 1.418 s (1.381-1.477) | 2.13 s (2.07-2.16) | 0.17 s (0.13-0.23) | 0.461 GB (0.457-0.472) | 9.88-12.81 |
+| 10 | light-cljs | 4.320 s (4.037-4.610) | 4.389 s (4.064-4.652) | 5.78 s (5.33-6.17) | 0.42 s (0.27-0.56) | 0.738 GB (0.632-0.754) | 6.62-9.33 |
+| 10 | shadow-cljs | 3.899 s (3.818-4.066) | 3.931 s (3.849-4.098) | 5.24 s (5.05-5.34) | 0.32 s (0.28-0.41) | 0.730 GB (0.706-0.741) | 6.59-8.90 |
 
-Steady state (from 1- and 10-iter medians): **335.6 vs 304.5 ms/iter (1.10x**, down from `1.15x` on `54c3ce59`; 10-iter wall `1.09x`, CPU `1.09x`, peak memory `1.02x` with overlapping ranges).
+Steady state (from 1- and 10-iter medians): **321.3 vs 279.1 ms/iter (1.15x** at elevated 1-iter load 9.88-12.81; pre-Sol-fix `e145f367` measured **335.6 vs 304.5 ms/iter, 1.10x** at load 5.28-7.58; 10-iter peak memory `1.01x`, overlapping ranges). The remaining `first`/`rest`/`next` own-field and `getSite`/`*Site` gap is filed as `light-cljs-1122`.
 
-### Fresh 10-iteration `--pseudo-names` CPU profiles of `re-frame-200k` (load 5.20, unreserved)
+### Fresh 10-iteration `--pseudo-names` CPU profiles of `re-frame-200k` (unreserved)
 
-Top 10 self-time rows for **light-cljs `e145f367`** (3,392 samples, 4,466.4 ms total):
+Paired light-cljs runs at load 3.18 (`54c3ce59` 2,861 samples / 4,327.2 ms total -> `5b3cd568` 2,851 samples / 4,270.3 ms total): `seq` `75.1 -> 60.7 ms` (-19%), `vectorChunk` `8.8 -> 0.0 ms`, `lazyStep + lazyOf` `45.6 ms -> lazyRealized + lazyOf 31.6 ms` (-31%), `next` `34.1 -> 27.6 ms` (-19%).
+
+Top 10 self-time rows for **light-cljs `5b3cd568`** (2,851 samples, 4,270.3 ms total, load 3.18):
 
 | Rank | Self % | Self ms | Function |
 | ---: | ---: | ---: | --- |
-| 1 | 8.89% | 397.2 ms | `compileSourceTextModule [utils:337]` |
-| 2 | 6.67% | 298.0 ms | `(garbage collector)` |
-| 3 | 2.09% | 93.6 ms | `readFileUtf8` |
-| 4 | 2.04% | 91.0 ms | `arrayIndex [workload.main.js:2884]` |
-| 5 | 1.97% | 88.0 ms | `__light0_g143` (`reagent.ratom/notify-w`) `[workload.main.js:48128]` |
-| 6 | 1.92% | 85.7 ms | `__light0_g169` (`reagent.ratom/handle-reaction-change`) `[workload.main.js:48487]` |
-| 7 | 1.65% | 73.5 ms | `updateClassInstance [react-dom.development.js:14637]` |
-| 8 | 1.61% | 72.0 ms | `ReactElement [react.development.js:724]` |
-| 9 | 1.53% | 68.5 ms | `first [workload.main.js:1435]` |
-| 10 | 1.46% | 65.2 ms | `wrapSafe [loader:1857]` |
+| 1 | 9.04% | 385.9 ms | `compileSourceTextModule [utils:337]` |
+| 2 | 5.95% | 254.1 ms | `(garbage collector)` |
+| 3 | 2.11% | 90.3 ms | `arrayIndex [workload.main.js:2894]` |
+| 4 | 2.00% | 85.5 ms | `readFileUtf8` |
+| 5 | 1.69% | 72.0 ms | `ReactElement [react.development.js:724]` |
+| 6 | 1.67% | 71.2 ms | `__light0_g143` (`reagent.ratom/notify-w`) `[workload.main.js:48144]` |
+| 7 | 1.56% | 66.7 ms | `updateClassInstance [react-dom.development.js:14637]` |
+| 8 | 1.42% | 60.7 ms | `seq [workload.main.js:1350]` |
+| 9 | 1.28% | 54.8 ms | `first [workload.main.js:1441]` |
+| 10 | 1.27% | 54.3 ms | `__light0_g169` (`reagent.ratom/handle-reaction-change`) `[workload.main.js:48503]` |
 
-(Notable runtime rows just below top 10: `seq` 64.6 ms / 1.45%, `keywordOf` 40.3 ms / 0.90%, `next` 38.8 ms / 0.87%, `lazyRealized` 38.2 ms / 0.85%, `getSite` 34.6 ms / 0.77%, `rest` 34.0 ms / 0.76%, `hashNodeFind` 31.4 ms / 0.70%, `nthSite3` 18.3 ms / 0.41%, `firstOf` 14.6 ms / 0.33%, `firstSite` 6.3 ms / 0.14%, `countSite` 5.9 ms / 0.13%, `assocSite` 4.3 ms / 0.10%.)
+(Notable remaining runtime rows below top 10, filed in `light-cljs-1122`: `getSite` 35.5 ms / 0.83%, `hashNodeFind` 29.1 ms / 0.68%, `rest` 27.8 ms / 0.65%, `next` 27.6 ms / 0.65%, `lazyRealized` 25.8 ms / 0.60%, `keywordOf` 24.9 ms / 0.58%, `nthSite3` 13.0 ms / 0.31%, `firstOf` 10.4 ms / 0.24%, `firstSite` 10.2 ms / 0.24%, `lazyOf` 5.8 ms / 0.14%, `countSite` 4.5 ms / 0.11%.)
 
-Top 10 self-time rows for **shadow-cljs 3.5.3** (3,202 samples, 4,271.8 ms total):
+Top 10 self-time rows for **shadow-cljs 3.5.3** (3,202 samples, 4,271.8 ms total, load 5.20):
 
 | Rank | Self % | Self ms | Function |
 | ---: | ---: | ---: | --- |
@@ -6638,50 +6641,49 @@ Top 10 self-time rows for **shadow-cljs 3.5.3** (3,202 samples, 4,271.8 ms total
 ### Generated workload, 200k lines (10 runs alternated, unreserved)
 
 - **Before (`54c3ce59`, load 6.75-7.65):** 1-iter wall `0.372 s (0.354-0.390)` vs shadow `0.348 s (0.332-0.361, 1.07x)`; 10-iter wall `0.631 s (0.601-0.708)` vs `0.617 s (0.586-0.648, 1.02x)`; 40-iter wall `1.287 s (1.253-1.443)` vs `1.302 s (1.262-1.345, 0.99x)`; steady state **23.4 vs 24.5 ms/iter (0.96x)**.
-- **After (`e145f367`, load 5.88-7.09):**
+- **After (`5b3cd568`, load 6.04-6.66):**
 
 | Iterations | Compiler | First output | Wall time | User CPU | System CPU | Peak memory | 1-minute load before |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | light-cljs | 0.335 s (0.314-0.345) | 0.340 s (0.319-0.350) | 0.38 s (0.36-0.40) | 0.03 s (0.03-0.04) | 0.140 GB (0.138-0.142) | 6.84-7.09 |
-| 1 | shadow-cljs | 0.314 s (0.306-0.322) | 0.318 s (0.309-0.326) | 0.36 s (0.35-0.37) | 0.03 s (0.02-0.03) | 0.122 GB (0.121-0.124) | 6.84-7.09 |
-| 10 | light-cljs | 0.568 s (0.559-0.606) | 0.573 s (0.565-0.612) | 0.78 s (0.76-0.83) | 0.05 s (0.05-0.06) | 0.187 GB (0.185-0.190) | 6.21-6.84 |
-| 10 | shadow-cljs | 0.571 s (0.563-0.592) | 0.577 s (0.569-0.598) | 0.77 s (0.76-0.80) | 0.05 s (0.05-0.06) | 0.205 GB (0.195-0.208) | 6.40-6.61 |
-| 40 | light-cljs | 1.194 s (1.147-1.274) | 1.211 s (1.163-1.293) | 1.65 s (1.59-1.74) | 0.09 s (0.07-0.11) | 0.250 GB (0.246-0.256) | 5.88-6.21 |
-| 40 | shadow-cljs | 1.281 s (1.223-1.356) | 1.289 s (1.231-1.365) | 1.78 s (1.69-1.88) | 0.10 s (0.09-0.11) | 0.271 GB (0.269-0.281) | 5.88-5.97 |
+| 1 | light-cljs | 0.332 s (0.326-0.352) | 0.337 s (0.330-0.357) | 0.38 s (0.37-0.41) | 0.04 s (0.03-0.04) | 0.139 GB (0.137-0.141) | 6.12-6.31 |
+| 1 | shadow-cljs | 0.321 s (0.315-0.340) | 0.326 s (0.319-0.345) | 0.36 s (0.35-0.38) | 0.03 s (0.03-0.05) | 0.122 GB (0.116-0.125) | 6.12-6.31 |
+| 10 | light-cljs | 0.647 s (0.593-0.801) | 0.656 s (0.600-0.808) | 0.88 s (0.81-1.03) | 0.08 s (0.06-0.24) | 0.193 GB (0.183-0.201) | 6.11-6.66 |
+| 10 | shadow-cljs | 0.661 s (0.606-1.402) | 0.669 s (0.612-1.413) | 0.88 s (0.79-1.07) | 0.10 s (0.07-0.55) | 0.210 GB (0.201-0.221) | 6.11-6.66 |
+| 40 | light-cljs | 1.213 s (1.181-1.337) | 1.233 s (1.196-1.355) | 1.66 s (1.62-1.82) | 0.10 s (0.09-0.13) | 0.250 GB (0.247-0.261) | 6.04-6.53 |
+| 40 | shadow-cljs | 1.278 s (1.236-1.326) | 1.287 s (1.243-1.334) | 1.77 s (1.70-1.84) | 0.10 s (0.09-0.11) | 0.270 GB (0.263-0.276) | 6.04-6.53 |
 
-Steady state (from 1- and 40-iter medians): **22.3 vs 24.9 ms/iter (0.90x**, down from `0.96x` on `54c3ce59`; 40-iter wall `0.94x`, CPU `0.92x`, peak memory `0.92x`).
+Steady state (from 1- and 40-iter medians): **23.0 vs 24.6 ms/iter (0.93x**, down from `0.96x` on `54c3ce59`; 40-iter wall `0.96x`, CPU `0.94x`, peak memory `0.93x`).
 
-### Core-ops gate (80 operations, `54c3ce59` -> `e145f367`, 5 runs alternated, unreserved)
+### Core-ops gate (80 operations, `54c3ce59` -> `5b3cd568`, 5 runs alternated, unreserved)
 
-Load `4.48-6.69` before, `4.76-5.92` after; every checksum matched across all 80 operations. Selected watched and improved operations:
+Load `3.76-7.65` before, `3.62-5.50` after; every checksum matched across all 80 operations. **Zero of the 80 operations got slower than before beyond its range.** Selected watched and improved operations:
 
 | op (full 80-op pass) | light-cljs before (range) | light-cljs after (range) | change | shadow-cljs after | light/shadow before -> after |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| sort-by-100 | 1,668.4 (1,586.4-1,717.2) | 1,154.2 (1,144.6-1,231.6) | -30.8% | 4,662.2 | 0.35 -> 0.25 |
-| get-in-3 | 57.3 (56.5-63.0) | 43.8 (43.0-44.6) | -23.5% | 57.2 | 1.00 -> 0.77 |
-| seq-walk-vec-1000 | 12,621.3 (12,284.0-13,017.5) | 10,339.4 (10,174.6-10,547.0) | -18.1% | 19,555.7 | 0.65 -> 0.53 |
-| apply-vec | 50.2 (49.0-51.6) | 43.5 (43.1-44.6) | -13.4% | 92.5 | 0.55 -> 0.47 |
-| assoc-in-3 | 122.3 (121.0-124.3) | 112.3 (111.0-115.4) | -8.2% | 133.6 | 0.93 -> 0.84 |
-| update-in-3 | 132.9 (132.0-133.7) | 123.2 (121.7-127.0) | -7.3% | 138.0 | 0.97 -> 0.89 |
-| select-keys-3 | 221.9 (215.4-227.9) | 206.2 (202.5-211.4) | -7.1% | 250.7 | 0.89 -> 0.82 |
-| get-small-miss | 15.4 (15.1-15.6) | 14.7 (14.7-14.8) | -4.2% | 19.2 | 0.80 -> 0.77 |
-| get-small | 11.0 (10.8-11.3) | 10.8 (10.7-10.8) | -2.4% | 14.8 | 0.74 -> 0.73 |
-| assoc-small-new | 40.2 (38.8-40.5) | 39.1 (38.8-39.3) | -2.6% | 39.1 | 1.03 -> 1.00 |
-| assoc-small-existing | 16.7 (16.3-17.0) | 16.5 (16.4-16.6) | -1.1% | 29.3 | 0.59 -> 0.56 |
-| assoc-hash100 | 74.3 (72.1-75.0) | 73.2 (72.1-76.7) | -1.4% | 77.1 | 0.96 -> 0.95 |
-| kw-small | 7.7 (7.5-7.8) | 7.7 (7.7-7.7) | -0.3% | 9.8 | 0.79 -> 0.78 |
-| get-hash100 | 11.4 (11.3-11.6) | 11.5 (11.4-11.7) | +0.8% | 12.2 | 0.94 -> 0.94 |
-| eq-map-7 | 130.8 (128.8-133.1) | 133.6 (132.8-134.7) | +2.2% | 149.5 | 0.87 -> 0.89 |
-| kw-hash100 | 12.5 (12.3-12.6) | 12.9 (12.8-13.0) | +3.4% | 13.7 | 0.93 -> 0.94 |
-| multimethod | 41.0 (40.0-41.9) | 43.4 (42.7-44.3) | +5.8% | 48.6 | 0.86 -> 0.89 |
-| into-map-small | 163.0 (160.7-184.8) | 178.7 (171.5-190.2) | +9.7% | 326.9 | 0.49 -> 0.55 |
+| sort-by-100 | 1,648.9 (1,593.6-1,668.5) | 1,144.2 (1,116.5-1,159.3) | -30.6% | 4,614.0 | 0.35 -> 0.25 |
+| get-in-3 | 57.3 (55.3-66.8) | 46.4 (45.7-49.4) | -19.1% | 56.0 | 1.01 -> 0.83 |
+| seq-walk-vec-1000 | 12,451.9 (12,351.3-12,553.9) | 10,095.9 (9,976.0-10,244.4) | -18.9% | 19,098.2 | 0.64 -> 0.53 |
+| apply-vec | 49.8 (49.0-50.0) | 43.2 (42.3-44.4) | -13.2% | 89.9 | 0.55 -> 0.48 |
+| select-keys-3 | 219.2 (211.0-229.3) | 196.3 (193.8-200.1) | -10.4% | 243.8 | 0.89 -> 0.81 |
+| assoc-in-3 | 120.5 (118.5-123.7) | 108.9 (107.4-112.2) | -9.6% | 129.3 | 0.91 -> 0.84 |
+| update-in-3 | 130.3 (128.8-132.8) | 118.4 (117.6-121.0) | -9.1% | 135.0 | 0.96 -> 0.88 |
+| into-map-small | 164.4 (158.6-169.0) | 160.8 (155.9-182.7) | -2.2% | 325.8 | 0.51 -> 0.49 |
+| kw-small | 7.7 (7.5-8.8) | 7.5 (7.5-7.7) | -1.7% | 9.7 | 0.79 -> 0.78 |
+| lazy-walk-1000 | 36,567.7 (36,221.9-37,045.8) | 36,039.6 (35,965.0-36,765.2) | -1.4% | 49,365.4 | 0.74 -> 0.73 |
+| get-small | 10.8 (10.8-17.0) | 10.8 (10.8-11.9) | -0.2% | 14.6 | 0.73 -> 0.74 |
+| assoc-hash100 | 72.0 (71.8-75.1) | 72.2 (72.0-73.1) | +0.2% | 76.3 | 0.93 -> 0.95 |
+| kw-hash100 | 12.4 (12.1-12.5) | 12.4 (12.4-12.5) | +0.2% | 13.4 | 0.91 -> 0.93 |
+| get-hash100 | 11.3 (11.1-11.4) | 11.4 (11.3-11.4) | +0.3% | 11.6 | 0.94 -> 0.98 |
+| get-small-miss | 15.4 (15.1-16.1) | 15.4 (15.1-15.7) | +0.3% | 18.9 | 0.80 -> 0.82 |
+| eq-map-7 | 128.7 (127.5-131.6) | 129.1 (127.9-130.4) | +0.4% | 148.9 | 0.86 -> 0.87 |
+| assoc-small-new | 38.7 (38.6-40.2) | 38.9 (38.6-39.6) | +0.4% | 38.1 | 1.00 -> 1.02 |
+| multimethod | 40.4 (39.6-41.3) | 40.8 (39.6-41.8) | +0.9% | 48.2 | 0.85 -> 0.85 |
+| assoc-small-existing | 16.3 (16.2-16.9) | 16.5 (16.3-16.9) | +1.4% | 28.5 | 0.57 -> 0.58 |
 
-In a back-to-back subset recheck (`--ops kw-hash100,get-hash100,multimethod,eq-map-7,into-map-small`, 5 runs, load `9.62-11.50`), `get-hash100` stayed `11.4 -> 11.4 ns (+0%)`, `kw-hash100` (`12.8 -> 13.0 ns`, range `12.4-13.0`, `0.98x` shadow) and `multimethod` (`36.4 -> 37.1 ns`, range `35.5-37.9`, `0.84x` shadow) overlapped their before ranges, `eq-map-7` was `133.5 -> 135.7 ns (+2%, 0.91x shadow)`, and `into-map-small` was `126.6 -> 137.1 ns (+8%, 0.50x shadow; overlapping 160.7-184.8 vs 171.5-190.2 in the full gate)`.
+### Sizes (`54c3ce59` -> `5b3cd568`, `--elide-asserts --no-cache`, without React)
 
-### Sizes (`54c3ce59` -> `e145f367`, `--elide-asserts --no-cache`, without React)
+- `simple`: raw `281,807 -> 283,357` (+1,550 B), gzip -9 `75,839 -> 76,233` (+394 B, +0.52%).
+- `todomvc`: raw `398,850 -> 400,402` (+1,552 B), gzip -9 `106,122 -> 106,561` (+439 B, +0.41%).
+- `flow`: raw `1,261,085 -> 1,262,710` (+1,625 B), gzip -9 `293,554 -> 293,981` (+427 B, +0.15%).
 
-- `simple`: raw `281,807 -> 282,987` (+1,180 B), gzip -9 `75,839 -> 76,186` (+347 B, +0.46%).
-- `todomvc`: raw `398,850 -> 400,030` (+1,180 B), gzip -9 `106,122 -> 106,503` (+381 B, +0.36%).
-- `flow`: raw `1,261,085 -> 1,262,335` (+1,250 B), gzip -9 `293,554 -> 293,905` (+351 B, +0.12%).
-
-All three apps stay below the +0.5% gzip threshold. Size ratchet ceilings are recomputed on `54c3ce59` in `tests/support/ratchet_fixtures.rs` and `tests/compiler/chunks.rs`.
+`todomvc` (+0.41%) and `flow` (+0.15%) stay below +0.5% gzip; `simple` (+0.52%, +15 B over 0.5%) reflects the fixed copy-on-read vector array getter guards (`ChunkedSeq.node`, `IndexedSeq.arr`, `ArrayChunk.arr`), `callerArr$LKEY` propagation across same-leaf `ChunkedSeq` advances, and `selfSeqSlot`/`emptySeqSlot` identity checks. Size ratchet ceilings are recomputed on master in `tests/support/ratchet_fixtures.rs` and `tests/compiler/chunks.rs`.
