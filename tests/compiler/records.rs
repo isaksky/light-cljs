@@ -234,6 +234,7 @@ fn invalid_record_fields_and_methods_have_located_diagnostics() {
 /// No semantic or macro execution credit and no replacement tag reader.
 mod original_record_tags {
     use light_cljs::compiler_data::Source;
+    #[cfg(any(light_v8, light_quickjs))]
     use light_cljs::source_provider::SourceInput;
     use light_cljs::{EvalOptions, EvalSession, MacroHost, compile, compile_namespace_with_macros};
     use std::io::Write;
@@ -267,7 +268,7 @@ mod original_record_tags {
         .unwrap();
         for reused in [false, true] {
             let lifecycle = if reused { "reused" } else { "fresh" };
-            #[cfg(feature = "quickjs")]
+            #[cfg(any(light_v8, light_quickjs))]
             {
                 let mut session = EvalSession::new(EvalOptions {
                     namespace: "data-readers-test.records".into(),
@@ -325,7 +326,7 @@ mod original_record_tags {
         std::fs::write(root.join("namespace-adapted-records.cljs"), &adapted).unwrap();
         for reused in [false, true] {
             let lifecycle = if reused { "reused" } else { "fresh" };
-            #[cfg(feature = "quickjs")]
+            #[cfg(any(light_v8, light_quickjs))]
             {
                 let mut session = EvalSession::new(EvalOptions {
                     namespace: "data-readers-test.records".into(),

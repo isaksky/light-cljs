@@ -2,6 +2,7 @@
 use crate::optimization::execute;
 use crate::temp_dir::TempDir;
 use light_cljs::MacroHost;
+#[cfg(any(light_v8, light_quickjs))]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 
 fn both(source: &str, expected: &str) {
@@ -25,7 +26,7 @@ fn both(source: &str, expected: &str) {
         &mut MacroHost::new(),
     )
     .unwrap_or_else(|e| panic!("{source}: {e}"));
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(
@@ -33,7 +34,7 @@ fn both(source: &str, expected: &str) {
                 .print(evaluator.evaluate_js(&javascript).unwrap())
                 .unwrap(),
             expected,
-            "QuickJS: {source}"
+            "embedded engine: {source}"
         );
     }
     let stdout = execute(&format!("console.log({javascript});"));
@@ -57,7 +58,7 @@ fn complete_promised_library_bodies_execute_in_both_phases() {
 }
 
 /// Complete sources in both compiler phases and both host lifecycles, each run in
-/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+/// the embedded engine and Node (see `tests/support/phase_oracle.rs`).
 mod phase_oracles {
     use crate::phase_oracle::{Case, run};
 

@@ -22,16 +22,15 @@ fn unhex(s: &str) -> String {
 }
 fn observe(script: &str, artifact: &std::path::Path) -> Vec<(String, String)> {
     let mut observed = Vec::new();
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
-        let runtime = rquickjs::Runtime::new().unwrap();
-        let context = rquickjs::Context::full(&runtime).unwrap();
-        let quickjs = context.with(|ctx| match ctx.eval::<String, _>(script.as_bytes()) {
+        let context = crate::embedded_js::EmbeddedJs::new();
+        let embedded = match context.string(script) {
             Ok(value) => value,
-            Err(error) => format!("HARNESS_ERROR:{error:?}: {:?}", ctx.catch()),
-        });
-        fs::write(artifact.join("quickjs.raw"), &quickjs).unwrap();
-        observed.push(("QuickJS".into(), quickjs));
+            Err(error) => format!("HARNESS_ERROR:{error:?}"),
+        };
+        fs::write(artifact.join("embedded.raw"), &embedded).unwrap();
+        observed.push(("embedded engine".into(), embedded));
     }
     let mut child = Command::new(std::env::var("NODE").unwrap())
         .arg("-")

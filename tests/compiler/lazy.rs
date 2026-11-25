@@ -990,8 +990,8 @@ const MAIN: (&str, &str) = (
      (defn ready [] :ready)\n",
 );
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+// Exercises the embedded engine through EvalSession.
+#[cfg(any(light_v8, light_quickjs))]
 /// The REPL loads the namespace of a loadable it has not loaded, as a
 /// `require` of it would: before a top-level form runs, and after the
 /// namespace holding the loadable when that namespace is loading, as the
@@ -1043,8 +1043,8 @@ fn the_repl_loads_the_namespace_a_loadable_names() {
     );
 }
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+// Exercises the embedded engine through EvalSession.
+#[cfg(any(light_v8, light_quickjs))]
 /// A Var target is checked once every namespace the REPL loads for a form is
 /// loaded, at the site that names it.
 #[test]
@@ -1068,8 +1068,8 @@ fn the_repl_checks_lazy_targets_after_their_namespaces_load() {
     assert_eq!(eval(":next"), Ok(":next".into()));
 }
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+// Exercises the embedded engine through EvalSession.
+#[cfg(any(light_v8, light_quickjs))]
 /// `load-file` evaluates its forms through a runtime callback, which loads
 /// lazy targets the same way.
 #[test]

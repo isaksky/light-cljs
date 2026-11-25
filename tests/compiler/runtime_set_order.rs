@@ -12,11 +12,10 @@ fn both(source: &str) {
             source.to_owned()
         };
         let js = light_cljs::compile_with_macros(&text, &mut host).unwrap();
-        #[cfg(feature = "quickjs")]
+        #[cfg(any(light_v8, light_quickjs))]
         {
-            let rt = rquickjs::Runtime::new().unwrap();
-            let ctx = rquickjs::Context::full(&rt).unwrap();
-            ctx.with(|ctx| assert!(ctx.eval::<bool, _>(js.as_bytes()).unwrap(), "{text}"));
+            let engine = crate::embedded_js::EmbeddedJs::new();
+            assert!(engine.boolean(&js).unwrap(), "{text}");
         }
         let mut child = Command::new("node")
             .arg("-")

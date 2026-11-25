@@ -114,26 +114,24 @@ fn record_receiver_binding_executes_in_actual_phases_and_lifecycles() {
                     )
                 };
                 fs::write(root.join("script.js"), &script).unwrap();
-                #[cfg(feature = "quickjs")]
-                let runtime = rquickjs::Runtime::new().unwrap();
-                #[cfg(feature = "quickjs")]
-                let context = rquickjs::Context::full(&runtime).unwrap();
-                let quickjs_input = format!("(0, eval)({script:?})");
-                fs::write(root.join("quickjs.stdin"), &quickjs_input).unwrap();
-                #[cfg(feature = "quickjs")]
-                let quickjs = context.with(|ctx| {
-                    ctx.eval::<String, _>(quickjs_input.as_bytes())
-                        .unwrap_or_else(|e| {
-                            panic!("{id} {lifecycle} {phase} observer: {e:?} {:?}", ctx.catch())
-                        })
-                });
-                #[cfg(feature = "quickjs")]
-                fs::write(root.join("quickjs.raw"), &quickjs).unwrap();
-                #[cfg(feature = "quickjs")]
-                assert_eq!(quickjs, expected, "{id} {lifecycle} {phase} QuickJS");
-                #[cfg(feature = "quickjs")]
+                #[cfg(any(light_v8, light_quickjs))]
+                let context = crate::embedded_js::EmbeddedJs::new();
+                let embedded_input = format!("(0, eval)({script:?})");
+                fs::write(root.join("embedded.stdin"), &embedded_input).unwrap();
+                #[cfg(any(light_v8, light_quickjs))]
+                let embedded = context
+                    .string(&script)
+                    .unwrap_or_else(|e| panic!("{id} {lifecycle} {phase} observer: {e}"));
+                #[cfg(any(light_v8, light_quickjs))]
+                fs::write(root.join("embedded.raw"), &embedded).unwrap();
+                #[cfg(any(light_v8, light_quickjs))]
+                assert_eq!(
+                    embedded, expected,
+                    "{id} {lifecycle} {phase} embedded engine"
+                );
+                #[cfg(any(light_v8, light_quickjs))]
                 println!(
-                    "record-receiver-observation\t{id}\t{lifecycle}\t{phase}\tQuickJS\t{quickjs}"
+                    "record-receiver-observation\t{id}\t{lifecycle}\t{phase}\tembedded engine\t{embedded}"
                 );
                 let input = format!(
                     "const sha=x=>require('node:crypto').createHash('sha256').update(x).digest('hex');console.log(sha({js:?})+'\\t'+sha({program:?})+'\\t'+sha({script:?}));console.log({script});"
@@ -186,7 +184,7 @@ fn demanded_receiver_methods_and_failure_recover_in_same_host() {
 (pr-str (recovered))
 "#;
         let js = light_cljs::compile_with_macros(recovered, &mut host).unwrap();
-        #[cfg(feature = "quickjs")]
+        #[cfg(any(light_v8, light_quickjs))]
         {
             let evaluator = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
             assert_eq!(
@@ -200,30 +198,25 @@ fn demanded_receiver_methods_and_failure_recover_in_same_host() {
     }
 }
 
+#[cfg(any(light_v8, light_quickjs))]
 #[test]
-#[ignore = "Independent replay of retained actual QuickJS inputs"]
-fn replay_actual_quickjs_inputs() {
+#[ignore = "Independent replay of retained actual embedded engine inputs"]
+fn replay_actual_embedded_inputs() {
     let root = PathBuf::from(std::env::var("LIGHT_RECORD_RECEIVER_ARTIFACTS").unwrap());
     for &(id, _, expected) in ROWS {
         for lifecycle in ["fresh", "reused"] {
             for phase in ["application", "macro"] {
                 let folder = root.join(id).join(lifecycle).join(phase);
-                let input = fs::read(folder.join("quickjs.stdin")).unwrap();
-                #[cfg(feature = "quickjs")]
-                let runtime = rquickjs::Runtime::new().unwrap();
-                #[cfg(feature = "quickjs")]
-                let context = rquickjs::Context::full(&runtime).unwrap();
-                #[cfg(feature = "quickjs")]
-                let actual = context.with(|ctx| ctx.eval::<String, _>(input).unwrap());
-                #[cfg(feature = "quickjs")]
+                let input = fs::read_to_string(folder.join("embedded.stdin")).unwrap();
+                let context = crate::embedded_js::EmbeddedJs::new();
+                let actual = context.string(&input).unwrap();
                 assert_eq!(actual, expected);
-                #[cfg(feature = "quickjs")]
                 assert_eq!(
                     actual,
-                    fs::read_to_string(folder.join("quickjs.raw")).unwrap()
+                    fs::read_to_string(folder.join("embedded.raw")).unwrap()
                 );
-                #[cfg(feature = "quickjs")]
-                println!("receiver-independent-quickjs\t{id}\t{lifecycle}\t{phase}\t{actual}");
+                #[cfg(any(light_v8, light_quickjs))]
+                println!("receiver-independent-embedded\t{id}\t{lifecycle}\t{phase}\t{actual}");
             }
         }
     }

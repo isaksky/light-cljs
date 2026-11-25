@@ -1,4 +1,5 @@
 //! Persistent collection Object equiv methods execute in both engines and phases.
+#[cfg(any(light_v8, light_quickjs))]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 use std::{
@@ -10,7 +11,7 @@ fn both(source: &str, expected: &str) {
     let mut host = MacroHost::new();
     let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host)
         .unwrap_or_else(|error| panic!("{source}\n{error}"));
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let value = evaluator.evaluate(&program).unwrap();
@@ -88,7 +89,7 @@ fn complete_non_lite_object_equiv_body_executes_in_both_phases() {
 
 #[test]
 fn failed_equiv_calls_leave_reused_application_and_macro_hosts_usable() {
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let mut session = light_cljs::EvalSession::new(Default::default()).unwrap();
         session
@@ -107,7 +108,7 @@ fn failed_equiv_calls_leave_reused_application_and_macro_hosts_usable() {
     assert!(light_cljs::compile_with_macros("(defmacro broken-equiv [] (.equiv [1] (map (fn [_] (throw (js/Error. \"equiv failure\"))) [1]))) (broken-equiv)", &mut host).is_err());
     let source = "(defmacro restored-equiv [] (.equiv [1 2] '(1 2))) (restored-equiv)";
     let js = light_cljs::compile_with_macros(source, &mut host).unwrap();
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let value = evaluator.evaluate_js(&js).unwrap();

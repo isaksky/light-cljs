@@ -1,6 +1,7 @@
 //! Complete remaining assertion-free upstream bodies; preserve actual oracles.
 use crate::temp_dir::TempDir;
 use light_cljs::MacroHost;
+#[cfg(any(light_v8, light_quickjs))]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use std::process::Command;
 
@@ -27,7 +28,7 @@ fn both(source: &str, expected: &str, macro_phase: bool) {
         &mut MacroHost::new(),
     )
     .unwrap_or_else(|error| panic!("macro_phase={macro_phase}: {source}: {error}"));
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(
@@ -35,7 +36,7 @@ fn both(source: &str, expected: &str, macro_phase: bool) {
                 .string(evaluator.evaluate_js(&javascript).unwrap())
                 .unwrap(),
             expected,
-            "QuickJS macro_phase={macro_phase}: {source}"
+            "embedded engine macro_phase={macro_phase}: {source}"
         );
     }
     let output = Command::new("node")
@@ -71,7 +72,7 @@ fn remaining_complete_residual_bodies_execute_in_both_phases() {
 }
 
 /// Complete sources in both compiler phases and both host lifecycles, each run in
-/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+/// the embedded engine and Node (see `tests/support/phase_oracle.rs`).
 mod phase_oracles {
     use crate::phase_oracle::{Case, run};
 

@@ -1,6 +1,7 @@
 //! Whole original SCI sources and independent retained outcome/effect literals.
 //! Alias checks are additional observations, never substitutes for source runs.
 use crate::temp_dir::TempDir;
+#[cfg(any(light_v8, light_quickjs))]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, compile_namespace_with_macros};
 use std::io::Write;
@@ -84,16 +85,16 @@ fn original_local_api_sources_execute_in_both_phases_and_host_lifecycles(start: 
                     compile_namespace_with_macros("user", std::slice::from_ref(&root), host)
                         .unwrap_or_else(|error| panic!("{id} {host_kind} {phase}: {error}"));
                 std::fs::write(root.join("compiled.js"), &javascript).unwrap();
-                #[cfg(feature = "quickjs")]
+                #[cfg(any(light_v8, light_quickjs))]
                 {
                     let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
                     let actual = evaluator
                         .string(evaluator.evaluate_js(&javascript).unwrap())
                         .unwrap();
                     println!(
-                        "local-api-source-observation\t{id}\t{host_kind}\t{phase}\tQuickJS\t{actual}"
+                        "local-api-source-observation\t{id}\t{host_kind}\t{phase}\tembedded engine\t{actual}"
                     );
-                    assert_eq!(actual, "true", "{id} {host_kind} {phase} QuickJS");
+                    assert_eq!(actual, "true", "{id} {host_kind} {phase} embedded engine");
                 }
                 let script = format!("console.log({javascript});");
                 std::fs::write(root.join("node.js"), &script).unwrap();

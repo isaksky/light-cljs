@@ -6,7 +6,7 @@ use std::process::Command;
 fn both(source: &str, expected: &str) {
     let program = analyze_with_macros(source, &parse(source).unwrap(), &mut MacroHost::new())
         .unwrap_or_else(|e| panic!("{source}: {e}"));
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(
@@ -14,7 +14,7 @@ fn both(source: &str, expected: &str) {
                 .print(evaluator.evaluate(&program).unwrap())
                 .unwrap(),
             expected,
-            "QuickJS: {source}"
+            "embedded engine: {source}"
         );
     }
     let output = Command::new("node")
@@ -106,7 +106,7 @@ fn unsupported_protocol_values_keep_expansion_diagnostics_and_recover() {
         );
         let source = "(defmacro good [] (inst-ms #inst \"1970-01-01T00:00:00.042Z\")) (good)";
         let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
-        #[cfg(feature = "quickjs")]
+        #[cfg(any(light_v8, light_quickjs))]
         {
             let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
             assert_eq!(
@@ -135,7 +135,7 @@ fn public_protocol_invalid_implementations_are_located() {
 }
 
 /// Complete sources in both compiler phases and both host lifecycles, each run in
-/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+/// the embedded engine and Node (see `tests/support/phase_oracle.rs`).
 mod phase_oracles {
     use crate::phase_oracle::{Case, run};
 

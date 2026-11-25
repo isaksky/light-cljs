@@ -1172,7 +1172,7 @@ fn generated_map_keys_keep_reader_name_parts_before_runtime_spelling_equality() 
         execute(&compile_with_macros(source, &mut h).unwrap()),
         "1 null a/b a b\n"
     );
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     let evaluator = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
     // The exact direct-source fixtures also pass through ordinary source macro
     // imports. Generated keys keep both sets of parts; the generated literal
@@ -1192,7 +1192,7 @@ fn generated_map_keys_keep_reader_name_parts_before_runtime_spelling_equality() 
             compile_with_macros(&format!("(js/console.log (pr-str {source}))"), &mut h).unwrap();
         let expected = format!("{}\n", columns[2]);
         assert_eq!(execute(&js), expected, "Node: {}", columns[0]);
-        #[cfg(feature = "quickjs")]
+        #[cfg(any(light_v8, light_quickjs))]
         {
             let value = evaluator
                 .evaluate_js(&format!(
@@ -1202,7 +1202,7 @@ fn generated_map_keys_keep_reader_name_parts_before_runtime_spelling_equality() 
             assert_eq!(
                 evaluator.string(value).unwrap(),
                 expected,
-                "QuickJS: {}",
+                "embedded engine: {}",
                 columns[0]
             );
         }
@@ -1527,7 +1527,7 @@ fn imported_macro_environment_keeps_qualified_ids_across_a_long_shadow_chain() {
         assert_eq!(result(&js), format!("{expected}\n"));
         // Application evaluation owns a fresh heap: macro mutation is quoted
         // into the expansion, while the imported application atom stays zero.
-        #[cfg(feature = "quickjs")]
+        #[cfg(any(light_v8, light_quickjs))]
         {
             let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
             let value = e.evaluate_js(&js).unwrap();
@@ -1710,10 +1710,9 @@ fn generated_metadata_evaluates_runtime_forms_and_preserves_macro_definition_met
     );
 }
 
-// Compiler/QuickJS bridge observations, with emitted macro functions and source
+// Compiler form bridge observations, with emitted macro functions and source
 // declarations. The numeric fixtures retain their pinned expected outcomes.
-// The QuickJS form bridge is the subject.
-#[cfg(feature = "quickjs")]
+#[cfg(any(light_v8, light_quickjs))]
 mod javascript_form_bridge {
     use super::*;
     use light_cljs::{
@@ -3195,7 +3194,7 @@ mod ordinary_helper_demand {
 
     #[test]
     fn var_identity_quote_metadata_and_resolve_are_lazy_until_consumed() {
-        // No console is installed in QuickJS. Var construction, equality,
+        // Var construction, equality,
         // metadata and resolve must not demand this pending host initializer.
         assert!(
             compile_with_macros(
@@ -3589,7 +3588,7 @@ fn ordinary_dual_use_require_executes_exact_tools_example_through_api_and_cli() 
         for host in [&mut h, &mut MacroHost::new()] {
             let js = s.compile_host("app", host).unwrap();
             assert_eq!(inspect(&js), "[42 42 42]\n");
-            #[cfg(feature = "quickjs")]
+            #[cfg(any(light_v8, light_quickjs))]
             {
                 let evaluator = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
                 let value = evaluator.evaluate_js(&format!("String({js})")).unwrap();
@@ -3803,7 +3802,7 @@ mod top_level_definition_groups {
     fn checked(source: &str, host: &mut MacroHost) {
         let js = compile_with_macros(source, host).unwrap();
         assert_eq!(result(&js), "true\n");
-        #[cfg(feature = "quickjs")]
+        #[cfg(any(light_v8, light_quickjs))]
         {
             let evaluator = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
             let value = evaluator.evaluate_js(&format!("Number({js})")).unwrap();

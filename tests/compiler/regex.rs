@@ -1,6 +1,8 @@
 //! Canonical ECMAScript regex execution and finite macro-form transfer.
 use crate::temp_dir::TempDir;
+#[cfg(any(light_v8, light_quickjs))]
 use light_cljs::eval_session::{EvalOptions, EvalSession};
+#[cfg(any(light_v8, light_quickjs))]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, compile_namespace, compile_with_macros};
 use std::{
@@ -48,11 +50,11 @@ fn node(script: &str) -> String {
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 fn both(javascript: &str, expected: &str) {
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let result = e.evaluate_js(javascript).unwrap();
-        assert_eq!(e.print(result).unwrap(), expected, "QuickJS");
+        assert_eq!(e.print(result).unwrap(), expected, "embedded engine");
     }
     // Namespace bundles return their final expression's native JS representation.
     assert_eq!(
@@ -103,8 +105,8 @@ fn regex_macro_results_preserve_flags_tags_and_diagnose_host_values() {
         "true",
     );
 }
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+// Exercises the embedded engine through EvalSession.
+#[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn regex_failures_reuse_sessions_and_reset_clears_state_and_bounds() {
     let mut session = EvalSession::new(EvalOptions {
@@ -155,12 +157,11 @@ fn regex_failures_reuse_sessions_and_reset_clears_state_and_bounds() {
     assert_eq!(session.print(value).unwrap(), "\"aaa\"");
     assert!(session.eval_string("re").is_err());
 }
-// Poll budgets and cancellation of the QuickJS evaluator are the subject.
-#[cfg(feature = "quickjs")]
+// Poll budgets and cancellation of the embedded evaluator are the subject.
+#[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn built_in_backtracking_observes_budget_deadline_and_cancellation() {
-    // The bounded input causes pathological backtracking inside native RegExp,
-    // not an infinite JS loop. QuickJS 0.14 polls its regexp VM itself.
+    // The bounded input causes pathological backtracking inside native RegExp.
     // The 40 ms deadline case lives in evaluator's unit tests so it can arm the
     // existing operation control after runtime initialization, before matching.
     let work = "(()=>{try { /^(a+)+$/.test('a'.repeat(28)+'!'); } catch(e) {} return 42;})()";

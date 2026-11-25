@@ -500,7 +500,7 @@ fn runtimes_on_one_page_keep_apart_unless_they_share_a_key() {
 /// QuickJS reference) and in Node.
 #[test]
 fn compile_time_runtime_loads_keep_their_own_brands() {
-    use light_cljs::evaluator::{Evaluator, EvaluatorOptions, RUNTIME_SOURCE};
+    use light_cljs::evaluator::RUNTIME_SOURCE;
     let probe = "(rt, other) => {
         const mine = rt.vectorFromArray([1, 2]), theirs = other.vectorFromArray([1, 2]);
         const encodes = (bridge, value) => {
@@ -515,15 +515,20 @@ fn compile_time_runtime_loads_keep_their_own_brands() {
     let expected = format!(
         r#"[{{"kind":"vector","items":[1,2]}},null,{{"kind":"vector","items":[1,2]}},null,"encoded vector","{rejected}","encoded vector","{rejected}",2,2,"[1 2]"]"#
     );
-    let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
-    let observation = evaluator
-        .evaluate_js(&format!("({probe})(rt, {RUNTIME_SOURCE})"))
-        .unwrap();
-    assert_eq!(
-        evaluator.string(observation).unwrap(),
-        expected,
-        "evaluator"
-    );
+    #[cfg(any(light_v8, light_quickjs))]
+    {
+        use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
+
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let observation = evaluator
+            .evaluate_js(&format!("({probe})(rt, {RUNTIME_SOURCE})"))
+            .unwrap();
+        assert_eq!(
+            evaluator.string(observation).unwrap(),
+            expected,
+            "evaluator"
+        );
+    }
     assert_eq!(
         execute(&format!(
             "const load = () => {RUNTIME_SOURCE}; console.log(({probe})(load(), load()));"

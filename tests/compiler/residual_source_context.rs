@@ -1,6 +1,7 @@
 //! Complete upstream namespace bodies and setup execute in both phases.
 use crate::temp_dir::TempDir;
 use light_cljs::MacroHost;
+#[cfg(any(light_v8, light_quickjs))]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use std::path::Path;
 use std::process::Command;
@@ -81,7 +82,7 @@ fn complete_residual_namespace_bodies_execute_in_both_phases() {
                     },
                 )
                 .unwrap_or_else(|error| panic!("{} macro={macro_phase}: {error}", fields[0]));
-                #[cfg(feature = "quickjs")]
+                #[cfg(any(light_v8, light_quickjs))]
                 {
                     let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
                     assert_eq!(
@@ -119,7 +120,7 @@ fn complete_residual_namespace_bodies_execute_in_both_phases() {
 }
 
 /// Complete sources in both compiler phases and both host lifecycles, each run in
-/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+/// the embedded engine and Node (see `tests/support/phase_oracle.rs`).
 mod phase_oracles {
     use crate::phase_oracle::{Case, run};
 

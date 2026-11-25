@@ -22,16 +22,15 @@ fn unhex(s: &str) -> String {
 }
 fn observe(script: &str, artifact: &std::path::Path) -> Vec<(String, String)> {
     let mut observed = Vec::new();
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
-        let runtime = rquickjs::Runtime::new().unwrap();
-        let context = rquickjs::Context::full(&runtime).unwrap();
-        let quickjs = context.with(|ctx| match ctx.eval::<String, _>(script.as_bytes()) {
+        let context = crate::embedded_js::EmbeddedJs::new();
+        let embedded = match context.string(script) {
             Ok(value) => value,
-            Err(error) => format!("HARNESS_ERROR:{error:?}: {:?}", ctx.catch()),
-        });
-        fs::write(artifact.join("quickjs.raw"), &quickjs).unwrap();
-        observed.push(("QuickJS".into(), quickjs));
+            Err(error) => format!("HARNESS_ERROR:{error:?}"),
+        };
+        fs::write(artifact.join("embedded.raw"), &embedded).unwrap();
+        observed.push(("embedded engine".into(), embedded));
     }
     let mut child = Command::new(std::env::var("NODE").unwrap())
         .arg("-")
@@ -383,18 +382,16 @@ fn canonical_literal_constants_and_same_host_diagnostic_recovery() {
                 "(() => {{const value={captured};return ({})(globalThis.lightRuntime)('{id}',()=>value);}})()",
                 include_str!("../support/sci_execution_observation.js")
             );
-            #[cfg(feature = "quickjs")]
-            let runtime = rquickjs::Runtime::new().unwrap();
-            #[cfg(feature = "quickjs")]
-            let context = rquickjs::Context::full(&runtime).unwrap();
+            #[cfg(any(light_v8, light_quickjs))]
+            let context = crate::embedded_js::EmbeddedJs::new();
             assert_eq!(
                 canonical(&node(&script)),
                 canonical(expected),
                 "Node: {id}, macro={phase}"
             );
-            #[cfg(feature = "quickjs")]
-            let raw = context.with(|ctx| ctx.eval::<String, _>(script.as_bytes()).unwrap());
-            #[cfg(feature = "quickjs")]
+            #[cfg(any(light_v8, light_quickjs))]
+            let raw = context.string(&script).unwrap();
+            #[cfg(any(light_v8, light_quickjs))]
             assert_eq!(canonical(&raw), canonical(expected), "{id}, macro={phase}");
         }
     }
@@ -433,16 +430,11 @@ fn canonical_literal_constants_and_same_host_diagnostic_recovery() {
                 &mut host,
             )
             .unwrap();
-            #[cfg(feature = "quickjs")]
-            let runtime = rquickjs::Runtime::new().unwrap();
-            #[cfg(feature = "quickjs")]
-            let context = rquickjs::Context::full(&runtime).unwrap();
+            #[cfg(any(light_v8, light_quickjs))]
+            let context = crate::embedded_js::EmbeddedJs::new();
             assert_eq!(node(&format!("String({js})")), "42");
-            #[cfg(feature = "quickjs")]
-            assert_eq!(
-                context.with(|ctx| ctx.eval::<i32, _>(js.as_bytes()).unwrap()),
-                42
-            );
+            #[cfg(any(light_v8, light_quickjs))]
+            assert_eq!(context.number(&js).unwrap(), 42.0);
         }
     }
 }

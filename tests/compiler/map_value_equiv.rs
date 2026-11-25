@@ -22,16 +22,15 @@ fn unhex(s: &str) -> String {
 }
 fn observe(script: &str, artifact: &std::path::Path) -> Vec<(String, String)> {
     let mut observed = Vec::new();
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
-        let runtime = rquickjs::Runtime::new().unwrap();
-        let context = rquickjs::Context::full(&runtime).unwrap();
-        let quickjs = context.with(|ctx| match ctx.eval::<String, _>(script.as_bytes()) {
+        let context = crate::embedded_js::EmbeddedJs::new();
+        let embedded = match context.string(script) {
             Ok(value) => value,
-            Err(error) => format!("HARNESS_ERROR:{error:?}: {:?}", ctx.catch()),
-        });
-        fs::write(artifact.join("quickjs.raw"), &quickjs).unwrap();
-        observed.push(("QuickJS".into(), quickjs));
+            Err(error) => format!("HARNESS_ERROR:{error:?}"),
+        };
+        fs::write(artifact.join("embedded.raw"), &embedded).unwrap();
+        observed.push(("embedded engine".into(), embedded));
     }
     let mut child = Command::new(std::env::var("NODE").unwrap())
         .arg("-")
@@ -185,10 +184,8 @@ use crate::canonical_json::canonical;
 
 #[test]
 fn map_value_equiv_preserves_exact_contracts_and_same_host_recovery() {
-    #[cfg(feature = "quickjs")]
-    let runtime = rquickjs::Runtime::new().unwrap();
-    #[cfg(feature = "quickjs")]
-    let context = rquickjs::Context::full(&runtime).unwrap();
+    #[cfg(any(light_v8, light_quickjs))]
+    let context = crate::embedded_js::EmbeddedJs::new();
     let catalog = include_str!("../fixtures/contracts/map-value-equiv-contracts.json");
     let extract = format!(
         "(() => {{ const c=JSON.parse({catalog:?}); return c.sources.map(s => [s.id,s.source,JSON.stringify(s.canonical_expected)]); }})()"
@@ -225,13 +222,10 @@ fn map_value_equiv_preserves_exact_contracts_and_same_host_recovery() {
                 "(() => {{const observerRuntime={observer_runtime};const value={captured};return ({})(globalThis.lightRuntime)('{id}',()=>value);}})()",
                 include_str!("../support/sci_execution_observation.js")
             );
-            #[cfg(feature = "quickjs")]
-            let raw = context.with(|ctx| {
-                ctx.eval::<String, _>(script.as_bytes())
-                    .unwrap_or_else(|error| {
-                        panic!("{id}, macro={phase}: {error:?}: {:?}", ctx.catch())
-                    })
-            });
+            #[cfg(any(light_v8, light_quickjs))]
+            let raw = context
+                .string(&script)
+                .unwrap_or_else(|error| panic!("{id}, macro={phase}: {error}"));
             assert_eq!(
                 canonical(&node(&script)),
                 canonical(expected),
@@ -239,8 +233,11 @@ fn map_value_equiv_preserves_exact_contracts_and_same_host_recovery() {
             );
             // Sort JSON object property names only. Collection tags, every
             // sequence position, effects and output remain exact and complete.
-            #[cfg(feature = "quickjs")]
-            assert_eq!(canonical(&raw), canonical(expected), "{id}, macro={phase}");
+            #[cfg(any(light_v8, light_quickjs))]
+            {
+                assert_eq!(canonical(&raw), canonical(expected), "{id}, macro={phase}");
+                context.collect_garbage();
+            }
         }
     }
     for phase in [false, true] {
@@ -259,11 +256,8 @@ fn map_value_equiv_preserves_exact_contracts_and_same_host_recovery() {
                 "(() => {{ try {{ const value={js}; return 'returned'; }} catch(e) {{ return e.message; }} }})()"
             );
             assert_eq!(node(&script), "value-equiv");
-            #[cfg(feature = "quickjs")]
-            assert_eq!(
-                context.with(|ctx| ctx.eval::<String, _>(script.as_bytes()).unwrap()),
-                "value-equiv"
-            );
+            #[cfg(any(light_v8, light_quickjs))]
+            assert_eq!(context.string(&script).unwrap(), "value-equiv");
         }
         let js = light_cljs::compile_with_macros(
             "(defmacro equiv-recovery [] (= {:a 42} {:a 42})) (equiv-recovery)",
@@ -271,8 +265,8 @@ fn map_value_equiv_preserves_exact_contracts_and_same_host_recovery() {
         )
         .unwrap();
         assert_eq!(node(&js), "true");
-        #[cfg(feature = "quickjs")]
-        assert!(context.with(|ctx| ctx.eval::<bool, _>(js.as_bytes()).unwrap()));
+        #[cfg(any(light_v8, light_quickjs))]
+        assert!(context.boolean(&js).unwrap());
     }
     for source in [
         "{:a 1 :a 2}",
@@ -306,11 +300,8 @@ fn map_value_equiv_preserves_exact_contracts_and_same_host_recovery() {
             )
             .unwrap();
             assert_eq!(node(&js), "42");
-            #[cfg(feature = "quickjs")]
-            assert_eq!(
-                context.with(|ctx| ctx.eval::<i32, _>(js.as_bytes()).unwrap()),
-                42
-            );
+            #[cfg(any(light_v8, light_quickjs))]
+            assert_eq!(context.number(&js).unwrap(), 42.0);
         }
     }
 }

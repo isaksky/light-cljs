@@ -44,14 +44,14 @@ fn node_script(script: &str) -> std::process::Output {
 }
 fn check(source: &str, expected: &str) {
     let js = compile(source).unwrap_or_else(|e| panic!("{source}: {e}"));
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
-        let quickjs = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
-        let value = quickjs.evaluate_js(&format!("String({js})")).unwrap();
+        let embedded = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
+        let value = embedded.evaluate_js(&format!("String({js})")).unwrap();
         assert_eq!(
-            quickjs.string(value).unwrap(),
+            embedded.string(value).unwrap(),
             expected,
-            "QuickJS: {source}"
+            "embedded engine: {source}"
         );
     }
     assert_eq!(run(&js), format!("{expected}\n"));
@@ -76,7 +76,7 @@ fn complete_pinned_syntax_quote_and_tagged_bodies_execute_in_both_engines() {
         )
         .unwrap();
         assert_eq!(run(&js), format!("{assertions}\n"));
-        #[cfg(feature = "quickjs")]
+        #[cfg(any(light_v8, light_quickjs))]
         {
             let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
             assert_eq!(
@@ -93,7 +93,7 @@ fn reader_api_arities_and_rest_execute_in_application_and_macro_phases() {
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/reader-coverage");
     let js = light_cljs::compile_namespace("reader.api", &[root]).unwrap();
     assert_eq!(run(&js), "true\n");
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
         assert_eq!(
@@ -133,7 +133,7 @@ fn spelling_metadata_gensyms_and_public_tagged_data_execute_in_both_phases() {
     )
     .unwrap();
     assert_eq!(run(&js), "true\n");
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
         assert_eq!(
@@ -197,8 +197,8 @@ fn parser_acceptance_does_not_hide_contextual_reader_errors_or_numeric_duplicate
     }
 }
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+// Exercises the embedded engine through EvalSession.
+#[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn cljc_selection_metadata_and_inactive_forms_have_distinct_phase_evidence() {
     use light_cljs::compiler_data::Name;
@@ -565,7 +565,7 @@ fn runtime_reader_registers_aliases_refers_and_source_namespace_entries() {
     .unwrap();
     let js =
         light_cljs::compile_namespace("reader.app", std::slice::from_ref(root.path())).unwrap();
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
         assert_eq!(
@@ -627,8 +627,8 @@ fn runtime_reader_leaves_special_forms_a_namespace_binds_unqualified() {
     );
 }
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+// Exercises the embedded engine through EvalSession.
+#[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn runtime_reader_macro_and_reused_session_contexts_are_explicit() {
     use light_cljs::{EvalOptions, EvalSession};
@@ -721,7 +721,7 @@ fn runtime_reader_profiles_missing_alias_locations_and_nested_tag_reads() {
         include_str!("../../src/js_runtime.js"),
         checks
     );
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
         e.evaluate_js(&script).unwrap();
@@ -768,7 +768,7 @@ fn anonymous_nonpositive_bindings_execute_in_application_and_macro_phases() {
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/reader-coverage");
     let js = light_cljs::compile_namespace("reader.nonpositive", &[root]).unwrap();
     assert_eq!(run(&js), "[true [true 1] 0]\n");
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
         assert_eq!(
@@ -895,8 +895,8 @@ fn local_macro_shadows_referred_value_in_syntax_quote() {
         "[2 app/value 1]\n",
         "Node"
     );
-    // Evaluating an analyzed program needs the QuickJS evaluator; Node ran it above.
-    #[cfg(feature = "quickjs")]
+    // Evaluating an analyzed program needs the embedded evaluator; Node ran it above.
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let e = light_cljs::evaluator::Evaluator::new(
             light_cljs::evaluator::EvaluatorOptions::default(),

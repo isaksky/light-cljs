@@ -1,5 +1,6 @@
 //! Diagnostic only: unchanged original eval expressions through installed EvalSession.
 //! No coverage registration and no replacement runtime evaluator.
+#[cfg(any(light_v8, light_quickjs))]
 use light_cljs::{EvalOptions, EvalSession, source_provider::SourceInput};
 use std::{fs, io::Write};
 
@@ -16,7 +17,7 @@ fn whole_original_eval_body_uses_installed_application_service() {
     let mut output =
         fs::File::create(std::env::var("LIGHT_ORIGINAL_EVAL_OUTPUT").unwrap()).unwrap();
     for reused in [false, true] {
-        #[cfg(feature = "quickjs")]
+        #[cfg(any(light_v8, light_quickjs))]
         {
             let mut session = EvalSession::new(EvalOptions {
                 namespace: "cljs.eval-test".into(),

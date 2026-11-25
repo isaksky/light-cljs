@@ -1,6 +1,7 @@
 //! Complete pinned residual language bodies in canonical applications and macros.
 use crate::temp_dir::TempDir;
 use light_cljs::MacroHost;
+#[cfg(any(light_v8, light_quickjs))]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 
 fn both(id: &str, source: &str, expected: &str, macro_phase: bool) {
@@ -36,7 +37,7 @@ fn both(id: &str, source: &str, expected: &str, macro_phase: bool) {
         &mut host,
     )
     .unwrap_or_else(|e| panic!("{source}: {e}"));
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let evaluator = Evaluator::new(EvaluatorOptions {
             timeout: std::time::Duration::from_secs(120),
@@ -48,7 +49,7 @@ fn both(id: &str, source: &str, expected: &str, macro_phase: bool) {
                 .string(evaluator.evaluate_js(&javascript).unwrap())
                 .unwrap(),
             expected,
-            "QuickJS: {source}"
+            "embedded engine: {source}"
         );
     }
     assert_eq!(
@@ -82,7 +83,7 @@ mod complete_residual_bodies_execute_in_both_phases {
 }
 
 /// Complete sources in both compiler phases and both host lifecycles, each run in
-/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+/// the embedded engine and Node (see `tests/support/phase_oracle.rs`).
 mod phase_oracles {
     use crate::phase_oracle::{Case, run};
 

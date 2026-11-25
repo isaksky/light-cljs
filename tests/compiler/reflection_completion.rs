@@ -13,7 +13,7 @@ fn both(source: &str, expected: &str) {
     let mut host = MacroHost::new();
     let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host)
         .unwrap_or_else(|e| panic!("{source}\n{e}"));
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let value = evaluator
@@ -57,7 +57,7 @@ fn complete_upstream_var_test_runs_metadata_callbacks_in_both_engines() {
     // This existing source adapter retains both complete upstream definitions,
     // the :test callback assertions, and both function/Var test invocations.
     let script = format!("(() => {{ const run = {js}; return run(null); }})()");
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let value = evaluator.evaluate_js(&script).unwrap();
@@ -170,8 +170,8 @@ fn namespace_view_contains_core_binding_kinds_without_engine_roots() {
     );
     assert_eq!(view.declaration_frontier, 0);
 }
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+// Exercises the embedded engine through EvalSession.
+#[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn namespace_refers_use_actual_public_var_identity() {
     use light_cljs::{

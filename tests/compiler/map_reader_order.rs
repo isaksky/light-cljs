@@ -30,10 +30,8 @@ use crate::canonical_json::{canonical, node};
 
 #[test]
 fn independent_map_sources_preserve_thresholds_groups_metadata_and_recovery() {
-    #[cfg(feature = "quickjs")]
-    let runtime = rquickjs::Runtime::new().unwrap();
-    #[cfg(feature = "quickjs")]
-    let context = rquickjs::Context::full(&runtime).unwrap();
+    #[cfg(any(light_v8, light_quickjs))]
+    let context = crate::embedded_js::EmbeddedJs::new();
     let catalog = include_str!("../fixtures/contracts/literal-map-traversal-contracts.json");
     let extract = format!(
         "(() => {{ const c=JSON.parse({catalog:?}); return c.sources.filter(s => !c.nonpassing_neighbors[s.id]).map(s => [s.id,s.source,JSON.stringify(c.canonical_expected.find(p=>p.id===s.id))]); }})()"
@@ -75,17 +73,17 @@ fn independent_map_sources_preserve_thresholds_groups_metadata_and_recovery() {
                 canonical(expected),
                 "Node: {id}, macro={phase}"
             );
-            #[cfg(feature = "quickjs")]
-            let raw = context.with(|ctx| {
-                ctx.eval::<String, _>(script.as_bytes())
-                    .unwrap_or_else(|error| {
-                        panic!("{id}, macro={phase}: {error:?}: {:?}", ctx.catch())
-                    })
-            });
+            #[cfg(any(light_v8, light_quickjs))]
+            let raw = context
+                .string(&script)
+                .unwrap_or_else(|error| panic!("{id}, macro={phase}: {error}"));
             // Sort JSON object property names only. Collection tags, every
             // sequence position, effects and output remain exact and complete.
-            #[cfg(feature = "quickjs")]
-            assert_eq!(canonical(&raw), canonical(expected), "{id}, macro={phase}");
+            #[cfg(any(light_v8, light_quickjs))]
+            {
+                assert_eq!(canonical(&raw), canonical(expected), "{id}, macro={phase}");
+                context.collect_garbage();
+            }
         }
     }
     for source in [
@@ -118,11 +116,8 @@ fn independent_map_sources_preserve_thresholds_groups_metadata_and_recovery() {
             )
             .unwrap();
             assert_eq!(node(&format!("String({js})")), "42");
-            #[cfg(feature = "quickjs")]
-            assert_eq!(
-                context.with(|ctx| ctx.eval::<i32, _>(js.as_bytes()).unwrap()),
-                42
-            );
+            #[cfg(any(light_v8, light_quickjs))]
+            assert_eq!(context.number(&js).unwrap(), 42.0);
         }
     }
 }
