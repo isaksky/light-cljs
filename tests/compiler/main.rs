@@ -48,7 +48,11 @@ mod reload_fixtures;
 #[allow(dead_code)]
 mod temp_dir;
 
-// Canonical JSON of engine observations, computed in QuickJS or, without it, Node.
+// Embedded execution of standalone JavaScript fixture scripts.
+#[cfg(any(light_v8, light_quickjs))]
+mod embedded_js;
+
+// Canonical JSON of engine observations, computed in the embedded engine or Node.
 #[path = "../support/canonical_json.rs"]
 mod canonical_json;
 

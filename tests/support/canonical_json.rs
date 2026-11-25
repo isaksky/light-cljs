@@ -1,7 +1,8 @@
 //! Canonical JSON for comparing engine observations: the text `JSON.stringify`
-//! prints for the parsed value with every object's keys sorted. QuickJS
-//! computes it in builds that embed QuickJS; Node computes it in the Pants
-//! build, which embeds none, so the Node half of a comparison still runs there.
+//! prints for the parsed value with every object's keys sorted. It uses the
+//! embedded JavaScript engine when available and Node otherwise.
+
+use crate::json::Json;
 
 /// What Node prints running `program` from its standard input; the run must succeed.
 pub fn node_stdout(program: &str) -> String {
@@ -34,39 +35,17 @@ const SORT: &str = "(function sort(v) { if (Array.isArray(v)) return v.map(sort)
 /// The rows of strings the JavaScript expression `extract` gives, an array of
 /// arrays of strings (a fixture catalog's cases), evaluated as [`canonical`] is.
 pub fn rows(extract: &str) -> Vec<Vec<String>> {
-    #[cfg(feature = "quickjs")]
-    {
-        let runtime = rquickjs::Runtime::new().unwrap();
-        let context = rquickjs::Context::full(&runtime).unwrap();
-        context.with(|ctx| ctx.eval::<Vec<Vec<String>>, _>(extract.as_bytes()).unwrap())
-    }
-    #[cfg(not(feature = "quickjs"))]
-    {
-        // encodeURIComponent never yields `,` or a line break, which separate cells and rows.
-        let text = node(&format!(
-            "({extract}).map(r => r.map(encodeURIComponent).join(',')).join('\\n')"
-        ));
-        text.lines()
-            .map(|row| row.split(',').map(decode).collect())
-            .collect()
-    }
-}
-
-#[cfg(not(feature = "quickjs"))]
-fn decode(cell: &str) -> String {
-    let bytes = cell.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' {
-            out.push(u8::from_str_radix(&cell[i + 1..i + 3], 16).unwrap());
-            i += 3;
-        } else {
-            out.push(bytes[i]);
-            i += 1;
-        }
-    }
-    String::from_utf8(out).unwrap()
+    let text = evaluate(&format!("JSON.stringify({extract})"));
+    Json::parse(&text)
+        .items()
+        .iter()
+        .map(|row| {
+            row.items()
+                .iter()
+                .map(|cell| cell.str().to_owned())
+                .collect()
+        })
+        .collect()
 }
 
 /// What Node prints for the JavaScript string expression `expression`. It goes
@@ -78,16 +57,19 @@ pub fn node(expression: &str) -> String {
 
 /// The canonical text of the JSON text `value`.
 pub fn canonical(value: &str) -> String {
-    let script = format!("JSON.stringify({SORT}(JSON.parse({value:?})))");
-    #[cfg(feature = "quickjs")]
+    evaluate(&format!("JSON.stringify({SORT}(JSON.parse({value:?})))"))
+}
+
+fn evaluate(expression: &str) -> String {
+    #[cfg(any(light_v8, light_quickjs))]
     {
-        let runtime = rquickjs::Runtime::new().unwrap();
-        let context = rquickjs::Context::full(&runtime).unwrap();
-        context.with(|ctx| ctx.eval::<String, _>(script.as_bytes()).unwrap())
+        crate::embedded_js::EmbeddedJs::new()
+            .string(expression)
+            .unwrap()
     }
-    #[cfg(not(feature = "quickjs"))]
+    #[cfg(not(any(light_v8, light_quickjs)))]
     {
-        node(&script)
+        node(expression)
     }
 }
 

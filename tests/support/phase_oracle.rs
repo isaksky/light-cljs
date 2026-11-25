@@ -2,7 +2,7 @@
 //!
 //! [`run`] compiles each case twice, once as an application and once as a macro
 //! computation, and each of those twice: with a fresh `MacroHost` and with a reused
-//! one. All four programs run in QuickJS and in Node, and every run must produce the
+//! one. All four programs run in the embedded engine and in Node, and every run must produce the
 //! case's expected result. The reused host first compiles and expands an unrelated
 //! macro, then serves every case of the `run` in turn, so later cases also check a
 //! host that has already compiled other namespaces.
@@ -17,6 +17,7 @@
 //! unit there; otherwise they go to a temporary directory that is removed when the
 //! test ends (`LIGHT_CLJS_KEEP_TMP=1` keeps it; see `tests/support/temp_dir.rs`).
 use crate::temp_dir::TempDir;
+#[cfg(any(light_v8, light_quickjs))]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, compile_namespace_with_macros};
 use std::{
@@ -221,7 +222,7 @@ fn value(
     let js = compile_namespace_with_macros(namespace, &[root.to_path_buf()], host)
         .unwrap_or_else(|e| panic!("{context}: {e}"));
     fs::write(root.join("compiled.js"), &js).unwrap();
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let evaluator = Evaluator::new(EvaluatorOptions {
             timeout: TIMEOUT,
@@ -231,7 +232,7 @@ fn value(
         let actual = evaluator
             .string(evaluator.evaluate_js(&js).unwrap())
             .unwrap();
-        assert_eq!(actual, case.expected, "{context} QuickJS");
+        assert_eq!(actual, case.expected, "{context} embedded engine");
     }
     let actual = node(&format!("console.log(String({js}));"));
     assert_eq!(actual.trim(), case.expected, "{context} Node");
@@ -273,15 +274,12 @@ fn observed(
         )
     };
     fs::write(root.join("script.js"), &script).unwrap();
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
-        let quickjs = rquickjs::Runtime::new().unwrap();
-        let quickjs = rquickjs::Context::full(&quickjs).unwrap();
-        let actual = quickjs.with(|ctx| {
-            ctx.eval::<String, _>(format!("(0, eval)({script:?})").as_bytes())
-                .unwrap_or_else(|e| panic!("{context} observer: {e:?} {:?}", ctx.catch()))
-        });
-        assert_eq!(actual, case.expected, "{context} QuickJS");
+        let actual = crate::embedded_js::EmbeddedJs::new()
+            .string(&script)
+            .unwrap_or_else(|e| panic!("{context} observer: {e}"));
+        assert_eq!(actual, case.expected, "{context} embedded engine");
     }
     let actual = node(&format!("console.log({script});"));
     assert_eq!(actual, case.expected, "{context} Node");
