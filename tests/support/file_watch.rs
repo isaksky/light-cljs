@@ -103,19 +103,11 @@ pub struct Light {
     pub lines: Receiver<String>,
 }
 
-/// Fail the compiler subprocess if it creates a QuickJS runtime in the V8 build.
-pub fn guard_no_quickjs(command: &mut Command) {
-    if cfg!(all(light_v8, debug_assertions)) {
-        command.env("LIGHT_CLJS_ASSERT_NO_QUICKJS", "1");
-    }
-}
-
 impl Light {
     /// `light-cljs ARGS` in `dir`, with `LIGHT_CLJS` set to `light_cljs`
     /// or unset.
     pub fn spawn(dir: &Path, args: &[&str], light_cljs: Option<&str>) -> Self {
         let mut command = Command::new(env!("CARGO_BIN_EXE_light-cljs"));
-        guard_no_quickjs(&mut command);
         command
             .args(args)
             .current_dir(dir)

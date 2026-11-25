@@ -4,9 +4,9 @@
 //! (tests/support/dev_execution.mjs) applies to the running build made before
 //! the change, with the hook protocol, and also loads afresh.
 
-// Some helpers and imports are used only by tests that require QuickJS.
+// Some helpers and imports are used only by tests that require V8.
 #![cfg_attr(
-    not(feature = "quickjs"),
+    not(light_v8),
     allow(unused_imports, unused_variables, unused_mut, unused_macros, dead_code)
 )]
 
@@ -119,8 +119,6 @@ impl Watch {
     /// stderr lines.
     fn spawn(dir: &Path, args: &[&str]) -> (Child, Receiver<String>) {
         let mut command = Command::new(env!("CARGO_BIN_EXE_light-cljs"));
-        #[cfg(all(light_v8, debug_assertions))]
-        command.env("LIGHT_CLJS_ASSERT_NO_QUICKJS", "1");
         let mut child = command
             .args(["--watch", "--entry", "app.main", "--source-root"])
             .arg(dir.join("src"))
@@ -349,7 +347,7 @@ fn position(text: &str, needle: &str) -> String {
     format!("{line}:{column}")
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A saved change to `app.view` rewrites its unit, and only its unit: the
 /// driver applies it to the running first build with the hooks (the next
 /// render runs the new code and the `defonce` state keeps its click) and
@@ -522,7 +520,7 @@ fn a_saved_change_rewrites_the_unit_the_running_build_reloads() {
     assert!(best(&clean) < bound, "steps took {clean:?} ms of {times:?}");
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A form that fails stops the step with its error, located in its file, and
 /// leaves the previous unit and the manifest; the next save compiles again.
 #[test]
@@ -605,7 +603,7 @@ fn a_failing_form_leaves_the_previous_unit() {
     );
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A change to a namespace that declares macros recompiles the namespaces
 /// that require it from their sources, whose units hold the expansions.
 #[test]
@@ -628,7 +626,7 @@ fn a_macro_change_rewrites_the_units_that_use_it() {
     );
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A new require in a changed `ns` form loads the namespace through the
 /// source provider: its unit is written and goes ahead of the requirer in
 /// the manifest and index.js. A require of a file that does not exist yet
@@ -720,7 +718,7 @@ fn a_new_require_adds_a_unit() {
     assert!(watch.dev("app.extra.js").exists());
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A require that closes a cycle through namespaces the session has loaded
 /// is refused, as `--compile` refuses it, so a macro namespace and the
 /// namespace that uses it never recompile each other without end; saving
@@ -762,7 +760,7 @@ fn a_require_cycle_is_refused() {
     );
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A namespace whose last form is a directive has the value nil, as the
 /// first build gives it, after a save too.
 #[test]
@@ -788,7 +786,7 @@ fn a_trailing_directive_keeps_the_namespace_value_nil() {
     assert_eq!(watch.now_and_fresh(), [started.clone(), started]);
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A rewritten unit's forms share its prelude, which binds the runtime to
 /// `rt`, unless raw JavaScript renamed a form's names: then each form's unit
 /// runs whole, and raw text that names a global `rt` still reads it.
@@ -825,7 +823,7 @@ fn a_form_with_raw_javascript_runs_its_whole_unit() {
     assert_eq!(watch.now_and_fresh(), [started.clone(), started]);
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A rewritten unit registers its namespace once, with the aliases and
 /// definitions its forms left, however many the step added; its forms'
 /// units register nothing of their own.
@@ -862,7 +860,7 @@ fn new_definitions_and_aliases_register_the_namespace_once() {
     assert_eq!(watch.now_and_fresh(), [started.clone(), started]);
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// The rewritten unit of the first namespace in load order registers every
 /// namespace of the build, as the build's first unit does, so its forms
 /// find the namespaces that load after it.
@@ -890,7 +888,7 @@ fn the_first_namespace_rewritten_registers_every_namespace() {
     assert_eq!(watch.now_and_fresh(), [started.clone(), started]);
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A changed file is read from its first form in its own namespace, as
 /// `--compile` reads it, whichever namespace the step before compiled: a
 /// `::` keyword in its `ns` form names it.
@@ -938,7 +936,7 @@ fn a_file_is_read_in_its_own_namespace() {
     assert_eq!(now, fresh);
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A macro that inlines a `light.build` resource by a `./` path compiles
 /// in the startup build, in the session the watch loads and in its steps,
 /// each resolving the path against the expansion site's namespace, also
@@ -980,7 +978,7 @@ fn a_macro_inlining_a_resource_compiles_at_startup_and_in_steps() {
     );
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// `--config` reaches `light.build/config` in the startup build and in the
 /// steps the watch's session compiles.
 #[test]
@@ -1035,7 +1033,7 @@ fn helper_example(src: &Path) {
     fs::write(src.join("app/macros.cljs"), macros).unwrap();
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// An edit to a namespace that declares no macros, which a macro's
 /// namespace requires, recompiles the namespaces that use the macro, through
 /// the dependency manifest's helper edges, and not the macro's namespace,
@@ -1074,7 +1072,7 @@ fn a_helper_edit_recompiles_the_macro_consumers() {
     assert_eq!(now, fresh);
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A resource a macro reads through `light.build` is watched where it was
 /// looked for: it appearing, changing and going each recompile the
 /// namespace whose expansion read it, and nothing else.
@@ -1164,7 +1162,7 @@ fn always_example(src: &Path) {
     .unwrap();
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A namespace marked `^:dev/always` is compiled again, with its
 /// compilation consumer `app.main`, by every step, whatever changed: its
 /// macro expands again, in the session's macro heap, which keeps its state.
@@ -1212,7 +1210,7 @@ fn an_always_namespace_recompiles_on_every_step() {
     );
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A macro namespace marked `^:dev/always` is an always-compile provider:
 /// every step compiles it again with the namespaces that use its macros and
 /// their consumers.
@@ -1265,7 +1263,7 @@ fn an_always_provider_recompiles_its_consumers_on_every_step() {
     );
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A disk bypass leaves in-memory units valid: a namespace marked
 /// `^:light-cljs/no-cache`, or a `--cache-blocker` and its compilation
 /// consumers, is not compiled again by a step that changed nothing it
@@ -1312,7 +1310,7 @@ fn a_cache_bypass_forces_no_recompilation() {
     }
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A namespace that a save marks `^:dev/always` is compiled again with its
 /// compilation consumers in that same step, as is one that a changed `ns`
 /// form loads.
@@ -1358,7 +1356,7 @@ fn a_new_always_namespace_recompiles_its_consumers_in_the_same_step() {
     );
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A resource read by a helper's compile-time initializer, whose value a
 /// macro reuses: each change compiles the helper again, so its value is read
 /// again, and the namespaces that use the macro, also after the session has
@@ -1420,7 +1418,7 @@ fn a_retained_helper_resource_is_read_again_after_each_change() {
     assert_eq!(now, fresh);
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A source root's own file for a namespace the compiler also bundles wins,
 /// in the session as in the first build, and is watched.
 #[test]
@@ -1459,7 +1457,7 @@ fn a_source_root_library_overrides_the_bundled_one() {
     assert_eq!(watch.now_and_fresh(), [shouted.clone(), shouted]);
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A file of the build that cannot be written ends the watch with the error.
 #[test]
 fn a_unit_that_cannot_be_written_ends_the_watch() {
@@ -1478,7 +1476,7 @@ fn a_unit_that_cannot_be_written_ends_the_watch() {
     );
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A source that is a symbolic link is watched through its target, and a
 /// save that replaces the link with a file is seen as its namespace's.
 #[cfg(unix)]
@@ -1521,7 +1519,7 @@ fn a_replaced_symbolic_link_is_still_its_namespace_source() {
     );
 }
 
-#[cfg(any(light_v8, feature = "quickjs"))]
+#[cfg(light_v8)]
 /// An uncached watch reports the startup build and session load timings.
 #[test]
 fn stats_report_the_startup_build_and_the_session_load() {
@@ -1579,7 +1577,7 @@ fn many_expansions(src: &Path) {
     .unwrap();
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// The macro limit flags reach the startup build and the session: a
 /// program over the default expansion limit stops the watch without them,
 /// starts with `--macro-expansions`, cold and from the persistent cache,
@@ -1645,7 +1643,7 @@ fn the_macro_limit_flags_raise_the_startup_build_and_the_steps_limits() {
     );
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A macro whose expansion demands a helper of a namespace that extends a
 /// protocol to a type a JavaScript package exports, as cognitect.transit
 /// does in Penpot: the watch's macros see stub packages, as with
@@ -1695,7 +1693,7 @@ fn macros_see_stub_packages_at_startup_and_in_steps() {
     );
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// Each of the other macro limit flags reaches the watch's startup build,
 /// in V8 and, with `--cache-dir`, in the session's host: a value too small
 /// for examples/dev stops the watch with that limit's error.
@@ -2003,7 +2001,7 @@ impl Watch {
     }
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A watch restarted with `--cache-dir` installs every namespace its last
 /// run published, running none of their macros, and its session compiles
 /// the first edits as a session that loaded the program itself: an edit
@@ -2098,7 +2096,7 @@ fn a_warm_started_session_compiles_first_edits_as_a_cold_one() {
     assert_eq!(now, pair.cold.now_and_fresh()[0]);
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A warm-started watch keeps the always-compile and blocker rules: a
 /// `^:dev/always` namespace and its consumers bypass the cache at startup
 /// and every step compiles them again, with the macro state of an installed
@@ -2164,7 +2162,7 @@ fn a_warm_started_session_keeps_the_always_and_blocker_rules() {
     );
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A program whose entry reaches a namespace only through a lazy reference,
 /// which the build loads after the entry: a warm-started session retains
 /// none of the build's bookkeeping for it, so an edit of the entry writes
@@ -2204,7 +2202,7 @@ fn a_warm_started_session_with_a_lazy_target_writes_cold_units() {
     );
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// The helper-resource fixture of
 /// `a_retained_helper_resource_is_read_again_after_each_change`, started
 /// warm, and warm with `app.view` blocked, so that the helper whose
@@ -2255,7 +2253,7 @@ fn a_warm_started_session_reads_a_helper_resource_again() {
     }
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A namespace whose source is a symbolic link to a file outside the
 /// source roots is watched after a warm start too: editing the target, and
 /// saving a file over the link, each recompile it as in a cold session.
@@ -2308,7 +2306,7 @@ fn goog_example(src: &Path) {
     fs::write(src.join("app/view.cljs"), view).unwrap();
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A session that loaded the program itself and one that installed it from
 /// the cache write the same unit and map, byte for byte, for a step whose
 /// forms generate names: `or`'s `gensym`, and a syntax-quote gensym and a
@@ -2338,7 +2336,7 @@ fn a_step_generates_the_same_names_cold_and_warm() {
     assert!(unit.contains("tag"), "{unit}");
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A `goog.*` namespace that no source root provides is a JavaScript host
 /// namespace in the session as in the startup build: neither loads it, and
 /// its alias and refers name host paths. A session that loaded the program
@@ -2384,7 +2382,7 @@ fn an_unprovided_goog_require_is_a_host_namespace_in_the_session() {
     );
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// The cache is on by default (light-cljs-328): a watch that names no cache
 /// starts from `.light-cljs/cache` under the current directory, filling it
 /// on its first start and installing every namespace on the next, while
@@ -2439,7 +2437,7 @@ fn a_watch_starts_from_the_default_cache_directory() {
     assert_eq!(stat(&warm, "macro-calls"), "0");
 }
 
-#[cfg(any(light_v8, feature = "quickjs"))]
+#[cfg(light_v8)]
 /// Steps that each run a changed macro again in the watch's session, after a
 /// start from the persistent cache that installed every namespace, hold no
 /// artifact and the same engines and engine handles after each step, and
@@ -2522,7 +2520,7 @@ fn repeated_steps_hold_bounded_engine_state_and_no_artifact() {
     }
 }
 
-#[cfg(any(light_v8, feature = "quickjs"))]
+#[cfg(light_v8)]
 #[test]
 fn watch_expansion_limit_applies_to_each_compilation() {
     let mut watch = Watch::start("dev-watch-expansion-limit");
@@ -2559,7 +2557,7 @@ fn watch_expansion_limit_applies_to_each_compilation() {
     assert_ne!(watch.read("app.view.js"), before);
 }
 
-#[cfg(any(light_v8, feature = "quickjs"))]
+#[cfg(light_v8)]
 #[test]
 fn namespaces_compiled_in_one_step_share_the_expansion_limit() {
     let initial = "(ns app.macros) (defmacro two [] 2) (defmacro one [] 1)";
@@ -2740,7 +2738,7 @@ fn watch_flags_write_over_the_files_watch_settings() {
     assert!(file_watch::replay(&address, "/events").ends_with(",\"dependents\":true}"));
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// `watch app` compiles what its equivalent `--watch` flags compile, at
 /// startup and after a save: the commands fixture's `:config` and top-level
 /// `:cache-blockers`, and from `LIGHT_CLJS` `:elide-asserts`, a macro limit
@@ -2910,7 +2908,7 @@ fn step_after_polls(
     watch.until("[:app] recompiled ")
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// An edit of another build's section, or of a comment alone, changes
 /// nothing of the running build's settings: the watch does nothing, prints
 /// nothing, and its next step compiles as before (docs/build-configuration.md,
@@ -2934,7 +2932,7 @@ fn a_reread_that_changes_nothing_of_the_build_does_nothing() {
     );
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// An invalid edit is reported, located, on stderr and to every connected
 /// runtime as an error event, and the build keeps running with its settings:
 /// the next save steps with the `:config` it started with.
@@ -2982,7 +2980,7 @@ fn an_invalid_reread_is_reported_and_the_build_keeps_its_settings() {
     );
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A changed `:config` restarts the build in the same process and on the
 /// same server: the startup build and the next step see the new value
 /// through `light.build/config`, and a connected runtime's stream ends, so
@@ -3026,7 +3024,7 @@ fn a_changed_config_restarts_the_build() {
     assert!(watch.child.try_wait().unwrap().is_none());
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// The flags after the id still win after a reread: an edit of the
 /// `:config` entry `--config` gives changes nothing the build runs with, and
 /// restarts nothing; an edit of another entry restarts the build, with the
@@ -3063,7 +3061,7 @@ fn flags_still_win_after_a_reread() {
     assert!(project.join("state/store").is_dir());
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A reread that moves `:output-dir` and the top-level `:source-paths`
 /// restarts the build into the new directory from the new roots, and the
 /// server, on its port, serves the new directory and the new roots' sources
@@ -3131,7 +3129,7 @@ fn a_reread_moves_the_output_and_the_source_roots() {
     );
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A reread that changes a top-level `:cache-blockers`, `:compile-threads` or
 /// `:cache-root` restarts the build; the new `:cache-root` holds the store
 /// the restarted build writes, and `http.port` stays where the watch wrote it.
@@ -3164,7 +3162,7 @@ fn top_level_settings_restart_the_build() {
     assert!(project.join(".light-cljs/http.port").is_file());
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// `:http`, `:nrepl` and `:fs-watch` edits are each reported once, and a
 /// later restart of the build applies none of them: the server keeps its
 /// port and answers nREPL, and the poll interval stays the one the watch
@@ -3204,7 +3202,7 @@ fn held_settings_stay_across_a_restart() {
     assert_eq!(status, "HTTP/1.1 200 OK");
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A restart whose build fails keeps the watch, and the server, running: the
 /// error is reported, and the next change starts the build again.
 #[test]
@@ -3246,7 +3244,7 @@ fn a_restart_that_fails_starts_again_at_the_next_change() {
     assert!(step.starts_with("[:app] recompiled app.main in "), "{step}");
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// An edit of `:http` is reported once, with the exact message, and changes
 /// nothing: the server keeps its port, a comment edit after it reports
 /// nothing again, and the next step compiles as before.
@@ -3276,7 +3274,7 @@ fn an_http_edit_is_reported_once_and_keeps_the_server() {
     assert!(body.contains("after-http"), "{body}");
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// The Phase 2 exit criterion: in a copy of examples/features with a
 /// `:config` key and a namespace that reads it, `light-cljs watch features`
 /// serves the example, and an edit of the `:config` value in light-cljs.edn
@@ -3475,7 +3473,7 @@ fn both_until(watch: &mut file_watch::Light, prefixes: [&str; 2]) -> Vec<String>
     lines
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// `light-cljs watch app worker` runs both builds in one process
 /// (docs/build-configuration.md, "Several builds in one process"): the
 /// startup builds one after another in the order named, then one server,
@@ -3606,7 +3604,7 @@ fn watch_app_worker_steps_each_build_on_its_own() {
     assert!(watch.child.try_wait().unwrap().is_none());
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A reread of light-cljs.edn restarts each build whose settings changed,
 /// and only those (docs/build-configuration.md, "Watching the configuration
 /// file"): an edit of `:worker`'s `:config` restarts the worker, whose event
@@ -3667,7 +3665,7 @@ fn a_reread_restarts_only_the_builds_whose_settings_changed() {
     assert!(watch.child.try_wait().unwrap().is_none());
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// While one build's step is busy (a macro of the worker's `app.jobs` that
 /// spins for three seconds), another build steps on its own: a save of
 /// `app.main` during the worker's step reaches the app first, and a second
@@ -3757,7 +3755,7 @@ fn cpu_seconds(pid: u32) -> f64 {
     seconds
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A build whose restart failed waits for the next change without using
 /// the CPU, while the other build steps; the next change of the file
 /// starts it again.

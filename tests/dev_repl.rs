@@ -6,9 +6,9 @@
 //! server compiles each form with the watch's session and runs it in a
 //! runtime, which prints the value.
 
-// Some helpers and imports are used only by tests that require QuickJS.
+// Some helpers and imports are used only by tests that require V8.
 #![cfg_attr(
-    not(feature = "quickjs"),
+    not(light_v8),
     allow(unused_imports, unused_variables, unused_mut, unused_macros, dead_code)
 )]
 
@@ -133,7 +133,6 @@ impl Watch {
     /// process, its stderr lines after the build, and its address.
     fn spawn(dir: &Path, port: &str, args: &[String]) -> (Process, Receiver<String>, String) {
         let mut command = Command::new(env!("CARGO_BIN_EXE_light-cljs"));
-        file_watch::guard_no_quickjs(&mut command);
         let mut child = command
             .args(["--watch", "--entry", "app.main", "--source-root"])
             .arg(dir.join("src"))
@@ -245,7 +244,6 @@ fn cljs_repl(dir: &Path, id: &str, light_cljs: &str) -> Repl {
 fn client(args: &[&str], setup: impl FnOnce(&mut Command)) -> Repl {
     // One pipe for stdout and stderr keeps the client's lines in order.
     let mut command = Command::new("sh");
-    file_watch::guard_no_quickjs(&mut command);
     command
         .args(["-c", "exec \"$0\" \"$@\" 2>&1"])
         .arg(env!("CARGO_BIN_EXE_light-cljs"))
@@ -317,7 +315,7 @@ impl Repl {
     }
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// `(+ 1 2)` goes from the terminal to the server, which compiles it, to the
 /// runtime, which runs and prints it, and back; the runtime keeps `*1`,
 /// `*2`, `*3` and the application's state; a value that is not finite data
@@ -409,7 +407,7 @@ fn a_form_round_trips_through_a_node_runtime() {
     assert_eq!(short.value("*2"), "nil");
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A watch started warm from `--cache-dir` compiles REPL forms in an
 /// installed namespace as a cold one does: with the aliases, refers and
 /// records the namespace's `ns` form and definitions gave it, the macro it
@@ -460,7 +458,7 @@ fn repl_forms_compile_in_installed_namespaces() {
     assert_eq!(printed[0], printed[1]);
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A cached namespace whose file adds requires after its `ns` form, with
 /// `ns*` and a top-level `require`, keeps their aliases in a warm-started
 /// watch's session, as a cold one has them.
@@ -501,7 +499,7 @@ fn repl_forms_keep_the_later_directives_of_installed_namespaces() {
     assert_eq!(printed[0], printed[1]);
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A definition made at the REPL is seen by a namespace a save reloads, and
 /// a definition the reload makes is seen at the REPL: they share the
 /// watch's program and the runtime's registry.
@@ -532,7 +530,7 @@ fn definitions_cross_between_the_repl_and_reloads() {
     );
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// An error thrown in the runtime comes back with its stack mapped to the
 /// sources, of the REPL form and of a reloaded namespace, and is `*e` there;
 /// an analysis error comes from the server, located, and runs nothing.
@@ -593,7 +591,7 @@ fn errors_come_back_located() {
     );
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// Forms go to the most recently connected runtime unless
 /// `light.dev/select!` chose another; a save's load and what a REPL form
 /// loads reach every runtime; each REPL connection has its own namespace.
@@ -683,7 +681,7 @@ fn two_runtimes_and_selection() {
     );
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A session that closes takes its history out of the runtimes, and a
 /// session belongs to one server: after a restart, a client of the old
 /// server opens a new session rather than take another's, and a new session
@@ -723,7 +721,7 @@ fn sessions_belong_to_one_server() {
     );
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A page cannot use the REPL endpoint: a request with an `Origin`, or
 /// without a JSON content type, which a page could send to another site, is
 /// refused.
@@ -823,7 +821,7 @@ fn watch_features_binds_its_sessions_with_light_dev_repl() {
     assert_eq!(repl.value("(str *ns*)"), "\"app.main\"");
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A flag-only `--watch` runs one unnamed build: `(light.dev/repl ...)` is
 /// an exact error saying so, and `light.dev/runtimes` names no build.
 #[test]
@@ -858,7 +856,7 @@ const MULTI: &str = concat!(
     "/tests/fixtures/build-configuration/multi"
 );
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// `light-cljs watch app worker` on a temporary copy of the multi fixture:
 /// a `--repl --connect` session evaluates in the app's runtime, then after
 /// `(light.dev/repl :worker)` in the worker's, in its entry namespace, then
@@ -919,7 +917,6 @@ fn run_in(
     input: &str,
 ) -> (Option<i32>, String, String) {
     let mut command = Command::new(env!("CARGO_BIN_EXE_light-cljs"));
-    file_watch::guard_no_quickjs(&mut command);
     command
         .args(args)
         .current_dir(dir)
@@ -941,7 +938,7 @@ fn run_in(
     )
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// `light-cljs cljs-repl worker` (docs/build-configuration.md, "Commands")
 /// against a running `watch app worker` of a temporary copy of the multi
 /// fixture: it finds the watch by `.light-cljs/http.port`, and its session
@@ -1082,7 +1079,7 @@ fn cljs_repl_reads_the_cache_root_and_takes_the_print_flags() {
     );
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A `cljs-repl` session the server forgot, because the watch was started
 /// again on its port, is opened again bound to the same build: the next
 /// form runs in the new watch's worker.
@@ -1183,7 +1180,7 @@ fn cljs_repl_errors() {
             "light-cljs cljs-repl features features: takes one build id, the build the session is bound to; (light.dev/repl :ID) binds it to another\n".to_owned(),
         ),
         (
-            &["cljs-repl", "features", "--engine", "quickjs"],
+            &["cljs-repl", "features", "--engine", "v8"],
             None,
             "light-cljs cljs-repl features: --engine is not a flag of cljs-repl, which connects to a running watch; it takes --print-length and --print-level\n".to_owned(),
         ),
