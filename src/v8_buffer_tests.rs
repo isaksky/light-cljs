@@ -1,18 +1,24 @@
 use super::*;
 
+fn with_initial_heap_limit(options: EvaluatorOptions) -> V8Evaluator {
+    let control = ExecutionControl::new(&options).unwrap();
+    V8Evaluator::create(
+        options,
+        control,
+        None,
+        16 * 1024 * 1024,
+        V8Evaluator::startup_source,
+    )
+    .unwrap()
+}
+
 #[test]
 fn initial_heap_threshold_can_grow_for_live_data_within_the_session_budget() {
-    let evaluator = V8Evaluator::new_with_initial_heap_limit(
-        EvaluatorOptions {
-            memory_limit: 128 * 1024 * 1024,
-            timeout: Duration::from_secs(5),
-            ..Default::default()
-        },
-        16 * 1024 * 1024,
-        || include_str!("v8_services.js").replace("__LIGHT_RUNTIME_SOURCE__", RUNTIME_SOURCE),
-        None,
-    )
-    .unwrap();
+    let evaluator = with_initial_heap_limit(EvaluatorOptions {
+        memory_limit: 128 * 1024 * 1024,
+        timeout: Duration::from_secs(5),
+        ..Default::default()
+    });
     assert_eq!(
         number(
             &evaluator,
@@ -29,17 +35,11 @@ fn initial_heap_threshold_can_grow_for_live_data_within_the_session_budget() {
 
 #[test]
 fn adaptive_heap_growth_still_stops_at_the_session_budget() {
-    let evaluator = V8Evaluator::new_with_initial_heap_limit(
-        EvaluatorOptions {
-            memory_limit: 64 * 1024 * 1024,
-            timeout: Duration::from_secs(5),
-            ..Default::default()
-        },
-        16 * 1024 * 1024,
-        || include_str!("v8_services.js").replace("__LIGHT_RUNTIME_SOURCE__", RUNTIME_SOURCE),
-        None,
-    )
-    .unwrap();
+    let evaluator = with_initial_heap_limit(EvaluatorOptions {
+        memory_limit: 64 * 1024 * 1024,
+        timeout: Duration::from_secs(5),
+        ..Default::default()
+    });
     let error = evaluator
         .evaluate_js(
             "(() => { const keep = []; while (true) keep.push(new Array(262144).fill(1)); })()",

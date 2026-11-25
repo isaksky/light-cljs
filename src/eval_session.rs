@@ -70,7 +70,8 @@ pub struct EvalOptions {
     /// The runtime heap's limits.
     pub engine: EvaluatorOptions,
     /// The JavaScript engine the forms run in: V8 by default where the build
-    /// has it, else QuickJS. The compiler's macros run in QuickJS either way.
+    /// has it, else QuickJS. The compiler's macros use V8 when available
+    /// and QuickJS otherwise, independently of this setting.
     pub backend: EvalEngine,
     pub compiler: crate::MacroLimits,
     pub max_source_bytes: usize,
@@ -243,7 +244,7 @@ impl Drop for FileLoadGuard {
     }
 }
 
-/// The session: a [`DevSession`], which compiles, and a QuickJS heap, which
+/// The session: a [`DevSession`], which compiles, and a JavaScript heap, which
 /// interprets the compiler's actions as they come (docs/evaluation.md,
 /// "Actions"). The runtime's `load-file`, `eval` and `macroexpand` call the
 /// same compiler while a unit runs.

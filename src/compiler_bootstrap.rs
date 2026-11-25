@@ -1507,21 +1507,21 @@ mod tests {
     /// Compiling the bootstrap units, as a process's first build does,
     /// spends none of the build engine's poll budget (or deadline): the
     /// engine is charged what installing them costs, as when another build
-    /// compiled them before (light-cljs-378). An interactive host's QuickJS
-    /// engine counts its polls deterministically.
+    /// compiled them before (light-cljs-378). Use QuickJS's deterministic
+    /// poll count to check that the two costs match exactly.
     #[cfg(light_quickjs)]
     #[test]
     fn compiling_the_units_charges_nothing_to_the_build_engine() {
-        let mut owner = MacroHost::new();
-        owner.tables.interactive = true;
+        let options = crate::evaluator::EvaluatorOptions::default();
         let remaining = |cache| {
-            let bootstrap = build(&owner, cache).unwrap();
+            let evaluator = Rc::new(Evaluator::interactive(options.clone()).unwrap());
+            let bootstrap = build_in(evaluator, cache).unwrap();
             bootstrap.evaluator.control().remaining_polls()
         };
         // The first build may compile the units, the second installs them.
         remaining(true);
         let installed = remaining(true);
-        assert!(installed < owner.evaluator_options.poll_budget);
+        assert!(installed < options.poll_budget);
         assert_eq!(remaining(false), installed);
     }
 

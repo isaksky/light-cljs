@@ -1,7 +1,7 @@
 //! The V8 heap of an interactive session (`EvalSession`, `--eval`, `--repl`):
 //! host functions, an input provider, promise jobs and rejection tracking on
 //! top of the macro evaluator's isolate, with QuickJS's interactive contract.
-use super::{Active, State, V8Evaluator, bridge, invoke};
+use super::{Active, INITIAL_HEAP_LIMIT, State, V8Evaluator, bridge, invoke};
 use crate::{
     compiler_data::{Datum, DatumKind},
     eval_session::{HostCallback, Input},
@@ -36,12 +36,30 @@ const QUEUE_MICROTASK: &str = r#"rt => {
 }"#;
 
 impl V8Evaluator {
+    /// Create an interactive macro heap with the session's control. Language
+    /// exceptions leave the heap usable, while limits and cancellation end
+    /// the whole session.
+    pub(crate) fn interactive_with_control(
+        options: EvaluatorOptions,
+        control: ExecutionControl,
+    ) -> Result<Self, EvalError> {
+        let evaluator = Self::create(
+            options,
+            control,
+            None,
+            INITIAL_HEAP_LIMIT,
+            Self::startup_source,
+        )?;
+        evaluator.state.interactive.set(true);
+        Ok(evaluator)
+    }
+
     /// A heap for an interactive session: language exceptions leave it
     /// usable, promise rejections with no handler are tracked, and the
     /// session's jobs run in [`SessionEvaluator::run_jobs`].
     pub(crate) fn interactive(options: EvaluatorOptions) -> Result<Self, EvalError> {
-        let evaluator = Self::new(options)?;
-        evaluator.state.interactive.set(true);
+        let control = ExecutionControl::new(&options)?;
+        let evaluator = Self::interactive_with_control(options, control)?;
         evaluator
             .isolate
             .borrow_mut()

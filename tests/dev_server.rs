@@ -150,7 +150,10 @@ impl Watch {
     /// extra flags `flags`; the process, its stderr lines after the first
     /// build, and its address.
     fn spawn(dir: &Path, port: &str, flags: &[&str]) -> (Child, Receiver<String>, String) {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_light-cljs"));
+        #[cfg(all(light_v8, debug_assertions))]
+        command.env("LIGHT_CLJS_ASSERT_NO_QUICKJS", "1");
+        let mut child = command
             .args(["--watch", "--entry", "app.main", "--source-root"])
             .arg(dir.join("src"))
             .arg("--out-dir")

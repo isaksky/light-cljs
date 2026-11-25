@@ -63,6 +63,9 @@ mod host_clock {
 /// compiler uses ([`crate::runtime_manifest::COMPILER_RUNTIME`]).
 pub const RUNTIME_SOURCE: &str = crate::runtime_manifest::COMPILER_RUNTIME;
 pub(crate) static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
+/// Number of QuickJS runtimes created, including those already dropped.
+#[cfg(all(light_quickjs, debug_assertions))]
+static QUICKJS_RUNTIMES_CREATED: AtomicU64 = AtomicU64::new(0);
 /// The default macro memory limit (`--macro-memory-limit`), which is also
 /// what a build's main isolate is allowed at least when several slots share
 /// a larger limit ([`MemoryPool`]).
@@ -623,6 +626,14 @@ impl Evaluator {
             share,
         })
         .map_err(|e| EvalError(e.to_string()))?;
+        #[cfg(debug_assertions)]
+        {
+            let count = QUICKJS_RUNTIMES_CREATED.fetch_add(1, Ordering::Relaxed) + 1;
+            debug_assert!(
+                std::env::var_os("LIGHT_CLJS_ASSERT_NO_QUICKJS").is_none(),
+                "created QuickJS runtime {count}"
+            );
+        }
         runtime.set_max_stack_size(options.stack_limit);
         let weak = Arc::downgrade(&control.0);
         runtime.set_interrupt_handler(Some(Box::new(move || {

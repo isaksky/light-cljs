@@ -3,7 +3,7 @@ use crate::{
     compiler_data::{Datum, ExpansionOrigin, Form},
     compiler_evaluator::{CompilerEvaluator, UnitService},
     evaluator::{
-        EvalError, EvaluatorOptions, ExecutionControl, MacroEvaluator, NEXT_SESSION,
+        EvalError, EvaluatorOptions, ExecutionControl, MacroEvaluator, MemoryPool, NEXT_SESSION,
         RUNTIME_SOURCE, ValueId,
     },
     form_bridge::ConversionLimits,
@@ -17,6 +17,8 @@ use std::{
     time::{Duration, Instant},
 };
 use v8::{Local, PinScope};
+
+const INITIAL_HEAP_LIMIT: usize = 256 * 1024 * 1024;
 
 /// Bytes a small integer takes in a V8 array: 4 with the pointer-compressed
 /// engines (macOS and x86_64 Linux, see Cargo.toml) and 8 elsewhere, so
@@ -356,16 +358,19 @@ fn invoke<'s>(
 }
 impl V8Evaluator {
     pub(crate) fn new(options: EvaluatorOptions) -> Result<Self, EvalError> {
-        Self::new_with_startup(options, || {
-            include_str!("v8_services.js").replace("__LIGHT_RUNTIME_SOURCE__", RUNTIME_SOURCE)
-        })
+        Self::new_with_startup(options, Self::startup_source)
+    }
+
+    fn startup_source() -> String {
+        include_str!("v8_services.js").replace("__LIGHT_RUNTIME_SOURCE__", RUNTIME_SOURCE)
     }
 
     fn new_with_startup(
         options: EvaluatorOptions,
         source: impl FnOnce() -> String,
     ) -> Result<Self, EvalError> {
-        Self::new_with_initial_heap_limit(options, 256 * 1024 * 1024, source, None)
+        let control = ExecutionControl::new(&options)?;
+        Self::create(options, control, None, INITIAL_HEAP_LIMIT, source)
     }
 
     /// An isolate of a build with several unit slots: its control follows
@@ -378,21 +383,30 @@ impl V8Evaluator {
         resources: &crate::evaluator::BuildResources,
         main: bool,
     ) -> Result<Self, EvalError> {
-        Self::new_with_initial_heap_limit(
+        let build = if main {
+            &resources.control
+        } else {
+            &resources.workers
+        };
+        let control = ExecutionControl::linked(&options, build)?;
+        Self::create(
             options,
-            256 * 1024 * 1024,
-            || include_str!("v8_services.js").replace("__LIGHT_RUNTIME_SOURCE__", RUNTIME_SOURCE),
-            Some((resources, main)),
+            control,
+            Some((resources.memory.clone(), main)),
+            INITIAL_HEAP_LIMIT,
+            Self::startup_source,
         )
     }
 
-    fn new_with_initial_heap_limit(
+    fn create(
         options: EvaluatorOptions,
+        control: ExecutionControl,
+        pool: Option<(Arc<MemoryPool>, bool)>,
         initial_heap_limit: usize,
         source: impl FnOnce() -> String,
-        build: Option<(&crate::evaluator::BuildResources, bool)>,
     ) -> Result<Self, EvalError> {
         if options.memory_limit < 1024 * 1024 {
+            control.memory_exhausted();
             return Err(bridge::error(
                 "JavaScript memory limit must be at least 1048576 bytes for engine startup",
             ));
@@ -402,15 +416,11 @@ impl V8Evaluator {
         // conservative startup minimum until that native startup allocation
         // has a separate failure boundary.
         if options.memory_limit < 16 * 1024 * 1024 {
+            control.memory_exhausted();
             return Err(bridge::error(
                 "JavaScript session memory limit exhausted during V8 startup",
             ));
         }
-        let control = match build {
-            Some((resources, true)) => ExecutionControl::linked(&options, &resources.control)?,
-            Some((resources, false)) => ExecutionControl::linked(&options, &resources.workers)?,
-            None => ExecutionControl::new(&options)?,
-        };
         control.poll()?;
         let platform = platform();
         let heap = v8::cppgc::Heap::create(
@@ -420,11 +430,7 @@ impl V8Evaluator {
                 sweeping_support: v8::cppgc::SweepingType::Atomic,
             },
         );
-        let buffers = buffers::Budget::new(
-            options.memory_limit,
-            control.clone(),
-            build.map(|(resources, main)| (resources.memory.clone(), main)),
-        );
+        let buffers = buffers::Budget::new(options.memory_limit, control.clone(), pool);
         // V8 reserves its code range from the heap limit, which must be
         // page aligned: a build's share of the memory limit need not be.
         let heap_limit =

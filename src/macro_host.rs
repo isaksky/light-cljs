@@ -1210,39 +1210,48 @@ impl MacroHost {
             return Ok(std::rc::Rc::new(evaluator));
         }
         #[cfg(light_v8)]
-        if !self.tables.interactive {
-            // The main isolate of a build with several unit slots shares
-            // the build's deadline and memory with its workers.
-            let session = self.session_handle();
-            let evaluator = match session.as_ref().and_then(|s| s.shared().resources()) {
-                Some(resources) => crate::v8_evaluator::V8Evaluator::new_for_build(
+        {
+            use crate::{evaluator::ExecutionControl, v8_evaluator::V8Evaluator};
+
+            let options = self.evaluator_options.clone();
+            let evaluator = if self.tables.interactive {
+                let control = match &self.engine.interactive_control {
+                    Some(control) => control.clone(),
+                    None => ExecutionControl::new(&options)?,
+                };
+                V8Evaluator::interactive_with_control(options, control)?
+            } else {
+                // The main isolate of a build with several unit slots shares
+                // the build's deadline and memory with its workers.
+                let session = self.session_handle();
+                match session.as_ref().and_then(|s| s.shared().resources()) {
+                    Some(resources) => V8Evaluator::new_for_build(options, resources, true)?,
+                    None => V8Evaluator::new(options)?,
+                }
+            };
+            self.prepare_compiler_evaluator(&evaluator)?;
+            Ok(std::rc::Rc::new(evaluator))
+        }
+        #[cfg(not(light_v8))]
+        {
+            // The main QuickJS runtime of a build with worker runtimes
+            // shares the build's deadline and memory with them (light-cljs-436).
+            #[cfg(light_quickjs)]
+            if !self.tables.interactive
+                && self.engine.interactive_control.is_none()
+                && let Some(session) = self.session_handle()
+                && let Some(resources) = session.shared().resources()
+            {
+                let evaluator = crate::evaluator::Evaluator::new_for_build(
                     self.evaluator_options.clone(),
                     resources,
                     true,
-                )?,
-                None => crate::v8_evaluator::V8Evaluator::new(self.evaluator_options.clone())?,
-            };
-            self.prepare_compiler_evaluator(&evaluator)?;
-            return Ok(std::rc::Rc::new(evaluator));
+                )?;
+                self.prepare_compiler_evaluator(&evaluator)?;
+                return Ok(std::rc::Rc::new(evaluator));
+            }
+            Ok(std::rc::Rc::new(self.new_evaluator()?))
         }
-        // QuickJS-only builds: the main runtime of a build with worker
-        // runtimes shares the build's deadline and memory with them, as a
-        // main V8 isolate does (light-cljs-436).
-        #[cfg(all(light_quickjs, not(light_v8)))]
-        if !self.tables.interactive
-            && self.engine.interactive_control.is_none()
-            && let Some(session) = self.session_handle()
-            && let Some(resources) = session.shared().resources()
-        {
-            let evaluator = crate::evaluator::Evaluator::new_for_build(
-                self.evaluator_options.clone(),
-                resources,
-                true,
-            )?;
-            self.prepare_compiler_evaluator(&evaluator)?;
-            return Ok(std::rc::Rc::new(evaluator));
-        }
-        Ok(std::rc::Rc::new(self.new_evaluator()?))
     }
     /// Give a fresh compile-time engine this host's settings: its
     /// `*assert*` and, with [`MacroEnvironment::opaque_packages`], the
@@ -1437,14 +1446,10 @@ impl MacroHost {
     pub fn new() -> Self {
         Self::default()
     }
-    #[cfg(test)]
-    pub(crate) fn native_macro_backend(&self) -> bool {
-        false
-    }
     /// Run the macros of clean compilations in `host`'s engine instead of
     /// the built-in one (light-cljs-307, a prototype for the browser
-    /// playground; docs/browser-macros.md). Interactive sessions and data
-    /// readers keep the built-in QuickJS.
+    /// playground; docs/browser-macros.md). Interactive macros use the
+    /// built-in macro engine, and compiler data readers use QuickJS.
     pub fn set_script_host(&mut self, host: std::rc::Rc<dyn crate::host_evaluator::ScriptHost>) {
         self.engine.script_host = Some(host);
     }

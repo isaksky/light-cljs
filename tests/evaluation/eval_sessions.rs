@@ -394,9 +394,50 @@ fn failed_macro_compile_can_recover_in_same_session() {
         &mut s,
         "(defmacro bad [] (throw (js/Error. \"macro failed\")))",
     );
-    assert!(s.eval_string("(bad)").is_err());
+    let error = s.eval_string("(bad)").unwrap_err();
+    assert!(error.to_string().contains("macro failed"), "{error}");
     assert_eq!(printed(&mut s, "(defmacro good [] 42) (good)"), "42");
 }
+
+#[test]
+fn macro_limits_are_terminal_until_reset() {
+    use light_cljs::evaluator::EvaluatorOptions;
+    for (engine, body, expected) in [
+        (
+            EvaluatorOptions {
+                timeout: std::time::Duration::from_secs(1),
+                poll_budget: u64::MAX,
+                ..Default::default()
+            },
+            "(loop [] (recur))",
+            "deadline exceeded",
+        ),
+        (
+            EvaluatorOptions {
+                memory_limit: 32 * 1024 * 1024,
+                ..Default::default()
+            },
+            r#"(js* "(() => { const a = []; while (true) a.push(new Array(4096).fill(1)); })()")"#,
+            "memory limit",
+        ),
+    ] {
+        let mut s = EvalSession::new(EvalOptions {
+            engine,
+            ..Default::default()
+        })
+        .unwrap();
+        printed(
+            &mut s,
+            &format!("(defmacro stop [] (try {body} (catch :default e 42)))"),
+        );
+        let error = s.eval_string("(stop)").unwrap_err();
+        assert!(error.to_string().contains(expected), "{error}");
+        assert!(s.eval_string("42").is_err(), "{body}");
+        s.reset().unwrap();
+        assert_eq!(printed(&mut s, "42"), "42");
+    }
+}
+
 #[test]
 fn session_drop_releases_callback_captures_and_cyclic_application_roots() {
     use light_cljs::{HostArity, HostFunction};

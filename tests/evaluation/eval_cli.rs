@@ -16,7 +16,10 @@ fn command() -> Command {
     command
 }
 fn run(args: &[&str], input: &str) -> Output {
-    let mut child = command()
+    run_command(command(), args, input)
+}
+fn run_command(mut command: Command, args: &[&str], input: &str) -> Output {
+    let mut child = command
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -473,6 +476,23 @@ fn number_js_macros_and_clj_migration_are_explicit() {
     let output = run(&["--eval", "old.clj"], "");
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("rename/adapt"));
+}
+
+#[cfg(all(light_v8, light_quickjs, debug_assertions))]
+#[test]
+fn default_eval_and_repl_expand_macros_without_quickjs() {
+    let guarded = || {
+        let mut command = command();
+        command.env("LIGHT_CLJS_ASSERT_NO_QUICKJS", "1");
+        command
+    };
+    let source = "(defmacro answer [] 42)\n(answer)\n";
+    ok(run_command(guarded(), &["--eval"], source), "42\n");
+    ok(run_command(guarded(), &["--repl"], source), "nil\n42\n");
+
+    let output = run_command(guarded(), &["--eval", "--engine", "quickjs"], "42");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("created QuickJS runtime 1"));
 }
 // Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
 #[cfg(feature = "quickjs")]

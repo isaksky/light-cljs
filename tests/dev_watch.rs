@@ -118,7 +118,10 @@ impl Watch {
     /// A `--watch` process with `args` on the sources of `dir`, and its
     /// stderr lines.
     fn spawn(dir: &Path, args: &[&str]) -> (Child, Receiver<String>) {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_light-cljs"));
+        #[cfg(all(light_v8, debug_assertions))]
+        command.env("LIGHT_CLJS_ASSERT_NO_QUICKJS", "1");
+        let mut child = command
             .args(["--watch", "--entry", "app.main", "--source-root"])
             .arg(dir.join("src"))
             .arg("--out-dir")

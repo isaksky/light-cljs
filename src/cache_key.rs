@@ -13,8 +13,9 @@
 //!   bundled first-party libraries are among them), its vendored engines,
 //!   `Cargo.lock`, features, profile, target and `rustc` version, with the
 //!   artifact schema version, the core operation table and the macro engine
-//!   that runs this compilation's macros (V8 with its version, or QuickJS).
-//!   A key from one engine never matches a key from the other.
+//!   that runs this compilation's macros (V8 with its version, QuickJS or
+//!   a script host). Interactive compilations have a separate identity
+//!   because they can observe retained session state.
 //! - **options**: the analysis and macro options of [`KeyEnvironment::new`].
 //! - **config**: the fingerprint of the `--config` map
 //!   ([`crate::BuildConfiguration::fingerprint`]), the host's
@@ -244,13 +245,14 @@ pub fn build_identity() -> Digest {
 
 /// The compiler component of every key `host` analyzes with: the
 /// [`build_identity`], the artifact schema version, the core operation
-/// table and the macro engine with its version.
+/// table, compilation mode and the macro engine with its version.
 pub fn compiler_identity(host: &MacroHost) -> Digest {
     let mut fingerprint = Fingerprint::new("light-cljs compiler");
     fingerprint
         .digest(&build_identity())
         .number(u64::from(crate::artifact_codec::SCHEMA_VERSION))
-        .digest(&crate::artifact_codec::core_table());
+        .digest(&crate::artifact_codec::core_table())
+        .flag(host.tables.interactive);
     if let Some(script) = &host.engine.script_host
         && !host.tables.interactive
     {
@@ -258,11 +260,8 @@ pub fn compiler_identity(host: &MacroHost) -> Digest {
         return fingerprint.finish();
     }
     #[cfg(light_v8)]
-    if !host.tables.interactive {
-        fingerprint.text("v8").text(v8::V8::get_version());
-        return fingerprint.finish();
-    }
-    let _ = host;
+    fingerprint.text("v8").text(v8::V8::get_version());
+    #[cfg(not(light_v8))]
     fingerprint.text("quickjs");
     fingerprint.finish()
 }
@@ -1290,23 +1289,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_macro_engine_is_part_of_the_compiler_identity() {
+    fn clean_and_interactive_compilations_have_distinct_compiler_identities() {
         let clean = MacroHost::new();
         let mut interactive = MacroHost::new();
         interactive.tables.interactive = true;
-        let (v8, quickjs) = (compiler_identity(&clean), compiler_identity(&interactive));
-        if cfg!(light_v8) || clean.native_macro_backend() {
-            assert_ne!(v8, quickjs);
-        } else {
-            assert_eq!(v8, quickjs);
-        }
+        let clean_identity = compiler_identity(&clean);
+        assert_ne!(clean_identity, compiler_identity(&interactive));
         assert_eq!(
             crate::sha256::hex(&build_identity()),
             env!("LIGHT_CLJS_COMPILER_IDENTITY")
         );
         assert_eq!(
             KeyEnvironment::new(&clean, AnalysisOptions::default()).compiler,
-            v8
+            clean_identity
         );
     }
 }
