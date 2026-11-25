@@ -491,9 +491,10 @@ impl V8Evaluator {
     pub(crate) fn new_for_build(
         options: EvaluatorOptions,
         resources: &BuildResources,
-        main: bool,
+        slot: usize,
+        readers_registered: bool,
     ) -> Result<Self, EvalError> {
-        if main && resources.isolates == 1 {
+        if slot == 0 && resources.isolates == 1 {
             // The serial coordinator can exempt process-wide bootstrap work.
             return Self::create(
                 options,
@@ -503,41 +504,42 @@ impl V8Evaluator {
                 Self::startup_source,
             );
         }
-        let build = if main {
+        let build = if slot == 0 {
             &resources.control
         } else {
             &resources.workers
         };
         let control = ExecutionControl::linked(&options, build)?;
-        let share = if main {
-            buffers::Share::Coordinator
-        } else {
-            buffers::Share::Worker
-        };
         Self::create(
             options,
             control,
-            Some((resources.memory.clone(), share)),
+            Some((
+                resources.memory.clone(),
+                buffers::Share::Macro {
+                    slot,
+                    readers_registered,
+                },
+            )),
             INITIAL_HEAP_LIMIT,
             Self::startup_source,
         )
     }
 
     /// Give a reader its own startup allowance. When the build plans worker
-    /// isolates, growth also uses the macro isolates' shared headroom.
+    /// isolates, growth uses the slot's reserved share and shared headroom.
     pub(crate) fn new_for_build_reader(
         options: EvaluatorOptions,
         resources: &BuildResources,
-        worker: bool,
+        slot: Option<usize>,
     ) -> Result<Self, EvalError> {
-        let build = if worker {
-            &resources.workers
-        } else {
+        let build = if slot == Some(0) {
             &resources.control
+        } else {
+            &resources.workers
         };
         let control = ExecutionControl::linked(&options, build)?;
-        let pool =
-            (resources.isolates > 1).then(|| (resources.memory.clone(), buffers::Share::Reader));
+        let pool = (resources.isolates > 1)
+            .then(|| (resources.memory.clone(), buffers::Share::Reader(slot)));
         Self::create(
             options,
             control,
@@ -1451,6 +1453,9 @@ impl CompilerEvaluator for V8Evaluator {
     fn headroom_held(&self) -> usize {
         self.state.buffers.headroom_held()
     }
+    fn v8_memory_slot(&self) -> Option<usize> {
+        self.state.buffers.slot()
+    }
     fn collect_garbage(&self) {
         self.collect_garbage()
     }
@@ -1903,7 +1908,7 @@ mod tests {
         let slots = 256_000 / SLOT_BYTES;
         for old in (share * 3 / 4..=share + 8).step_by(2) {
             let resources = crate::evaluator::BuildResources::new(&options, 3, true).unwrap();
-            let worker = V8Evaluator::new_for_build(options.clone(), &resources, false).unwrap();
+            let worker = V8Evaluator::new_for_build(options.clone(), &resources, 1, false).unwrap();
             let result = worker.evaluate_js(&format!(
                 "(() => {{ globalThis.kept = []; for (let i = 0; i < {old}; i++) kept.push(new Array({slots}).fill(1)); globalThis.young = []; for (let i = 0; i < 2000; i++) young.push(new Array(64).fill(i)); return kept.length; }})()"
             ));
@@ -2201,9 +2206,9 @@ mod tests {
             ..Default::default()
         };
         let resources = BuildResources::new(&options, 3, true).unwrap();
-        let spinning = V8Evaluator::new_for_build(options.clone(), &resources, false).unwrap();
-        let sibling = V8Evaluator::new_for_build(options.clone(), &resources, false).unwrap();
-        let main = V8Evaluator::new_for_build(options.clone(), &resources, true).unwrap();
+        let spinning = V8Evaluator::new_for_build(options.clone(), &resources, 1, false).unwrap();
+        let sibling = V8Evaluator::new_for_build(options.clone(), &resources, 2, false).unwrap();
+        let main = V8Evaluator::new_for_build(options.clone(), &resources, 0, false).unwrap();
 
         spinning
             .control()

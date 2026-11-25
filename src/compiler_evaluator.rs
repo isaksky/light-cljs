@@ -43,6 +43,11 @@ pub(crate) trait CompilerEvaluator: MacroEvaluator {
     fn headroom_held(&self) -> usize {
         0
     }
+    /// The reserved share a parallel V8 macro isolate can share with its reader.
+    #[cfg(light_v8)]
+    fn v8_memory_slot(&self) -> Option<usize> {
+        None
+    }
     /// Collect the engine's garbage in full, between operations, so that
     /// what it still holds is what is reachable (`--watch --stats`).
     fn collect_garbage(&self) {}

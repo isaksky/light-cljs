@@ -779,6 +779,10 @@ impl MacroEnvironment {
     pub(crate) fn evaluator_options(&self) -> &crate::evaluator::EvaluatorOptions {
         &self.evaluator_options
     }
+    #[cfg(light_v8)]
+    pub(crate) fn has_data_readers(&self) -> bool {
+        self.tables.data_readers.len() != 0
+    }
     /// The limits the host was made with.
     pub(crate) fn limits(&self) -> &MacroLimits {
         &self.limits
@@ -1129,6 +1133,11 @@ struct DataReaderSources {
     units: HashMap<Name, String>,
     default_unit: Option<String>,
 }
+impl DataReaderSources {
+    fn len(&self) -> usize {
+        self.units.len() + usize::from(self.default_unit.is_some())
+    }
+}
 /// The data-reader heap of one binding and the functions evaluated in it.
 #[derive(Default)]
 struct DataReaderEngine {
@@ -1240,13 +1249,22 @@ impl MacroHost {
                 V8Evaluator::interactive_with_control(options, control)?
             } else if let Some(resources) = self.v8_build_resources()? {
                 if data_reader {
-                    V8Evaluator::new_for_build_reader(
+                    let slot = if self.engine.catalog.is_some() {
+                        self.engine
+                            .bootstrap
+                            .as_ref()
+                            .and_then(|bootstrap| bootstrap.evaluator.v8_memory_slot())
+                    } else {
+                        Some(0)
+                    };
+                    V8Evaluator::new_for_build_reader(options, &resources, slot)?
+                } else {
+                    V8Evaluator::new_for_build(
                         options,
                         &resources,
-                        self.engine.catalog.is_some(),
+                        0,
+                        self.data_reader_count() != 0,
                     )?
-                } else {
-                    V8Evaluator::new_for_build(options, &resources, true)?
                 }
             } else {
                 V8Evaluator::new(options)?
@@ -2241,8 +2259,7 @@ impl MacroHost {
         self.tables.runtime_vars.get(key).copied()
     }
     pub(crate) fn data_reader_count(&self) -> usize {
-        let readers = &self.tables.data_readers;
-        readers.units.len() + usize::from(readers.default_unit.is_some())
+        self.tables.data_readers.len()
     }
     pub(crate) fn set_renames(&mut self, caller: &str, renames: Vec<(String, String, String)>) {
         self.tables.renames.insert(caller.to_owned(), renames);
@@ -4023,6 +4040,9 @@ mod compiler_default_reader_tests {
     use crate::compiler_data::{DatumKind, Source};
 
     #[cfg(light_v8)]
+    const SIZE_READER: &str = "(fn [mib] (.-byteLength (js/ArrayBuffer. (* mib 1024 1024))))";
+
+    #[cfg(light_v8)]
     #[test]
     fn a_grown_coordinator_keeps_all_planned_worker_engines() {
         use crate::{compilation_session::PoolEngines, scheduler::Slots};
@@ -4137,7 +4157,7 @@ mod compiler_default_reader_tests {
 
     #[cfg(light_v8)]
     #[test]
-    fn compiler_data_reader_allocates_40_mib_at_the_default_build_limit() {
+    fn coordinator_data_reader_allocates_40_mib_with_and_without_worker_engines() {
         use crate::{
             compile_stats::CompileStats,
             compiler::{EntryRecorders, analyze_namespace_entry_recorded_with_provider},
@@ -4152,17 +4172,16 @@ mod compiler_default_reader_tests {
                 "(ns reader) #size 40",
             )))
         };
-        // At 64 MiB total, the coordinator reserves the entire macro budget,
-        // so three jobs still plan no worker isolates. The coordinator's
-        // reader has its own full 64 MiB allowance, with no shared headroom
-        // needed for this allocation.
-        for jobs in [1, 3] {
+        // At the default 64 MiB, no worker gets an engine and the reader has
+        // its own 64 MiB allowance. At 192 MiB, the three reserved macro
+        // shares leave no shared headroom and the reader needs its slot's share.
+        for (jobs, limit, workers) in [(1, None, 0), (3, None, 0), (3, Some(192 << 20), 2)] {
             let mut host = MacroHost::new();
-            host.register_compiler_data_reader(
-                Name::new(None, "size"),
-                "(fn [mib] (.-byteLength (js/ArrayBuffer. (* mib 1024 1024))))",
-            )
-            .unwrap();
+            if let Some(limit) = limit {
+                host.evaluator_options.memory_limit = limit;
+            }
+            host.register_compiler_data_reader(Name::new(None, "size"), SIZE_READER)
+                .unwrap();
             let mut stats = CompileStats::default();
             let (program, _) = analyze_namespace_entry_recorded_with_provider(
                 "reader",
@@ -4176,8 +4195,8 @@ mod compiler_default_reader_tests {
                     ..Default::default()
                 },
             )
-            .unwrap_or_else(|error| panic!("{jobs} jobs: {error}"));
-            assert_eq!(stats.deferred_units.pool_engine_workers, 0);
+            .unwrap_or_else(|error| panic!("{jobs} jobs at {limit:?}: {error}"));
+            assert_eq!(stats.deferred_units.pool_engine_workers, workers);
             let evaluator = V8Evaluator::new(Default::default()).unwrap();
             let result = evaluator.evaluate(&program).unwrap();
             assert_eq!(evaluator.number(result).unwrap(), (40 << 20) as f64);
@@ -4186,7 +4205,74 @@ mod compiler_default_reader_tests {
 
     #[cfg(light_v8)]
     #[test]
-    fn parallel_readers_grow_only_into_shared_headroom() {
+    fn engine_worker_data_reader_allocates_40_mib_without_shared_headroom() {
+        use crate::{compilation_session::PoolEngines, scheduler::Slots};
+
+        let mut host = MacroHost::new();
+        host.evaluator_options.memory_limit = 192 << 20;
+        host.register_compiler_data_reader(Name::new(None, "size"), SIZE_READER)
+            .unwrap();
+        host.begin_compilation();
+        crate::compiler_bootstrap::prepare(&host).unwrap();
+        let session = host.session_handle().unwrap();
+        session.plan_v8_pool(3);
+        let environment = host.environment();
+        session
+            .start_pool(
+                Slots::new(3).unwrap(),
+                PoolEngines::Persistent,
+                3,
+                environment.clone(),
+                Default::default(),
+            )
+            .unwrap();
+        assert_eq!(session.shared().resources().unwrap().memory.headroom(), 0);
+        let (send, receive) = std::sync::mpsc::channel();
+        assert!(session.submit_namespace(
+            0,
+            true,
+            Box::new(move |context| {
+                let context = context.expect("engine worker");
+                assert!(context.has_engine);
+                let mut worker = MacroHost::from_parts(environment, context.view.engine_frame());
+                let result = worker.read_compiler_form(&Source::new("reader.cljs", "#size 40"));
+                send.send(result).unwrap();
+                false
+            }),
+        ));
+        let form = receive.recv().unwrap().unwrap().unwrap();
+        assert!(matches!(
+            form.data().kind(),
+            DatumKind::Integer(41_943_040) | DatumKind::Double(41_943_040.0)
+        ));
+        session.finish_pool();
+    }
+
+    #[cfg(light_v8)]
+    #[test]
+    fn reader_cannot_spend_its_slots_live_macro_memory() {
+        let mut host = MacroHost::new();
+        host.evaluator_options.memory_limit = 192 << 20;
+        host.register_compiler_data_reader(Name::new(None, "size"), SIZE_READER)
+            .unwrap();
+        host.begin_compilation();
+        host.session_handle().unwrap().plan_v8_pool(3);
+        let macro_heap = host.new_compiler_evaluator().unwrap();
+        let buffer = macro_heap
+            .evaluate_js("new ArrayBuffer(48 * 1024 * 1024)")
+            .unwrap();
+
+        let error = host
+            .read_compiler_form(&Source::new("reader.cljs", "#size 40"))
+            .unwrap_err();
+        assert!(error.message.contains("memory limit exhausted"), "{error}");
+        assert!(macro_heap.control().check().is_ok());
+        macro_heap.release(buffer).unwrap();
+    }
+
+    #[cfg(light_v8)]
+    #[test]
+    fn readers_without_a_macro_slot_compete_for_shared_headroom() {
         use crate::{compilation_session::PoolEngines, scheduler::Slots};
 
         let mut host = MacroHost::new();
@@ -4266,7 +4352,8 @@ mod compiler_default_reader_tests {
         let worker_macro = crate::v8_evaluator::V8Evaluator::new_for_build(
             host.evaluator_options.clone(),
             resources,
-            false,
+            1,
+            true,
         )
         .unwrap();
         let mut worker = MacroHost::bind(host.environment(), None).unwrap();

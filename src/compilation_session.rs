@@ -4237,9 +4237,7 @@ impl CompilationSession {
         if !self.v8_pool_elided.replace(true)
             && let Some(resources) = self.shared.resources()
         {
-            resources
-                .memory
-                .give(resources.memory.base() * resources.isolates.saturating_sub(1));
+            resources.memory.release_unused_worker_shares();
         }
     }
     /// Start the build's unit pool of `slots`, whose workers are bound to
@@ -6259,6 +6257,7 @@ fn worker_view(
     shared: &Arc<SharedCatalog>,
     engines: PoolEngines,
     environment: &MacroEnvironment,
+    #[cfg_attr(not(light_v8), allow(unused_variables))] slot: usize,
 ) -> Result<Rc<WorkerView>, String> {
     let started = std::time::Instant::now();
     let engine: Option<Rc<dyn crate::compiler_evaluator::CompilerEvaluator>> = match engines {
@@ -6271,7 +6270,8 @@ fn worker_view(
                 Some(resources) => crate::v8_evaluator::V8Evaluator::new_for_build(
                     environment.evaluator_options().clone(),
                     resources,
-                    false,
+                    slot,
+                    environment.has_data_readers(),
                 ),
                 None => {
                     crate::v8_evaluator::V8Evaluator::new(environment.evaluator_options().clone())
@@ -6368,7 +6368,7 @@ fn execute_pool_job(
             };
             let view = match kept {
                 Some(view) => view,
-                None => match worker_view(shared, engines, environment) {
+                None => match worker_view(shared, engines, environment, worker.slot()) {
                     Ok(view) => view,
                     Err(_) => {
                         run(None);
@@ -6421,7 +6421,7 @@ fn execute_pool_job(
     // an idle one, or makes way for a view that boots one.
     let view = match kept {
         Some(view) => view,
-        None => match worker_view(shared, engines, environment) {
+        None => match worker_view(shared, engines, environment, worker.slot()) {
             Ok(view) => view,
             Err(error) => {
                 shared.fail_unstarted(id, error);

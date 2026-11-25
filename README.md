@@ -479,13 +479,16 @@ Without custom data-reader calls, the total JavaScript memory budget is
 `--macro-memory-limit` for any job count. When the build plans worker isolates,
 the coordinator and each engine worker can lazily start one reader isolate
 with a 16 MiB base allowance. The pool caps the sum of these allowances at
-25% of the configured limit. Any growth uses the macro isolates' shared
-headroom, so the total budget is at most 125% of the limit. A serial build or
-one with no worker isolates planned gives its single reader an independent
-allowance equal to `--macro-memory-limit`, for a total of twice that limit when
-the reader is used. An isolate that exhausts its allowance and the available
-headroom reports a memory-limit error. Process peak memory also includes
-native engine overhead and the compiler's own data.
+25% of the configured limit. With readers registered, each macro isolate
+starts with 32 MiB of its slot's reserved share. The macro and reader isolates
+can both grow into the remainder of that share, then into the build's shared
+headroom. Memory they take stays charged until their allocators are dropped,
+so the total budget is at most 125% of the limit. A serial build or one with
+no worker isolates planned gives its single reader an independent allowance
+equal to `--macro-memory-limit`, for a total of twice that limit when the reader
+is used. An isolate that exhausts its allowance and the available headroom
+reports a memory-limit error. Process peak memory also includes native engine
+overhead and the compiler's own data.
 
 `--macro-timeout-ms` is one deadline for the build, from the pool's start;
 `--macro-poll-budget` is per isolate. A timeout or memory failure depends on
