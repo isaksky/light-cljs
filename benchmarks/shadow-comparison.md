@@ -21,12 +21,15 @@ in the source sections.
 
 In short: light-cljs compiles large programs several times faster than
 shadow-cljs and reloads edits far sooner; its release output now **beats
-shadow-cljs on TodoMVC's interactive steps (0.84x on adding 1,000 todos) and
-runs within 1.11 to 1.20 times on the generated workloads' steady state**
-(`4d8d02d5`, down from 3.5 to 7 times), while dev-build steady state is 1.47 to
-1.82 times slower, its memory advantage is small once shadow-cljs's heap is
-sized to need, and small apps come out larger. The scale figures come from
-projects we generate ourselves, and none comes from a quiet machine.
+shadow-cljs on generated workload steady state (0.90x at 200k and 0.92x at 800k)
+and TodoMVC's add-1,000 step (0.81x), reaches parity on TodoMVC's other
+interactive steps (1.01 to 1.02x, overlapping ranges), and runs at 1.10x on the
+re-frame-shaped 200k app's steady state** (`d7281fe8`, down from 3.5 to 7
+times), while dev-build steady state is 1.11x on workload 200k and at parity
+(1.02x) on TodoMVC add 1,000 (1.23x on toggle all), its memory advantage is
+small once shadow-cljs's heap is sized to need, and small apps come out larger.
+The scale figures come from projects we generate ourselves, and none comes from
+a quiet machine.
 
 **Where light-cljs is ahead**
 
@@ -48,15 +51,22 @@ projects we generate ourselves, and none comes from a quiet machine.
 
 **Where light-cljs loses** (recorded as found)
 
-- **Some output paths are still slower, mostly in dev builds and startup.**
-  After the output-speed pellets (`4d8d02d5`, [runtime][r1019]), release output
-  beats shadow-cljs on all four interactive TodoMVC steps (0.84x on "add 1,000
-  todos", 0.96 to 0.97x on toggle/edit/clear), but remains 1.11 to 1.20 times
-  shadow-cljs's steady-state time on the generated programs in Node (1.05 to
-  1.12 times first output) and 1.26 times on TodoMVC page load to interactive.
-  Dev-build steady state is 1.47 times on generated workload 200k and 1.82 times
-  on TodoMVC "add 1,000 todos" (1.33 times on toggle all). Every remaining gap
-  has a profile and follow-up pellet (`light-cljs-1114` to `1119`).
+- **A few output paths remain slower: re-frame-shaped steady state, TodoMVC
+  page load, and two dev steady-state rows.** After the second round of
+  output-speed pellets (`d7281fe8`, [runtime][r1126]), release output beats
+  shadow-cljs on generated workload 200k and 800k steady state (0.90x and
+  0.92x) and TodoMVC "add 1,000 todos" (0.81x), and is at parity on 1-iteration
+  first output (0.98 to 1.03x, overlapping ranges) and TodoMVC's other
+  interactive steps (1.01 to 1.02x, overlapping wall and script ranges). It
+  remains 1.10 times shadow-cljs's steady-state time on the re-frame-shaped
+  200k app (`light-cljs-1125`) and 1.23 times on TodoMVC page load to
+  interactive (`light-cljs-1127`, runs 1-9 disjoint). In dev builds, workload
+  200k 1-iteration first output (0.87x) and TodoMVC page load (0.69x) beat
+  shadow-cljs and TodoMVC "add 1,000 todos" is at parity (1.02x, overlapping),
+  while workload 200k dev steady state is 1.11x and TodoMVC dev toggle all is
+  1.23x (script disjoint; `light-cljs-1124`). Every remaining gap above
+  shadow-cljs's range is covered by a deferred pellet (`light-cljs-1112`,
+  `1113`, `1124`, `1125`, `1127`).
 - **Its memory advantage shrinks once shadow-cljs gets only the heap it
   needs.** At shadow-cljs's smallest adequate heap light-cljs uses 0.45x,
   0.62x and 0.85x its peak memory (generated 200k, re-frame-shaped 200k,
@@ -100,8 +110,8 @@ uses `goog.*`, its port carries a small shim.
 | Peak memory against shadow's smallest adequate heap, 200k / re-frame 200k / 800k | 1.03 / 1.41 / 3.65 GB | 2.28 / 2.27 / 4.30 GB | 0.45 / 0.62 / 0.85 | `6ea2540d`, [heap sweep][g969] |
 | Clean-build growth, 200k to 800k (4.0x the lines), plain / re-frame shape | 4.37x / 4.29x | 4.70x / 5.69x | | `809302a4` [append][g996]; shadow [growth][g970] |
 | Output after gzip, generated 200k / 800k | 859,697 / 3,299,312 B | 1,002,909 / 3,894,315 B | 0.86 / 0.85 | `627b9ed5`, [baseline][g968] |
-| Output speed, release steady state per iteration, workload 200k / 800k / re-frame-shaped 200k | 26.5 / 117.1 / 302.8 ms | 23.9 / 104.3 / 252.3 ms | 1.11 / 1.12 / 1.20 | `4d8d02d5`, [runtime][r1019] |
-| TodoMVC release, add 1,000 todos in Chromium | 761 ms | 907 ms | 0.84 | `4d8d02d5`, [runtime][r1019] |
+| Output speed, release steady state per iteration, workload 200k / 800k / re-frame-shaped 200k | 22.7 / 101.5 / 276.3 ms | 25.2 / 109.9 / 251.7 ms | 0.90 / 0.92 / 1.10 | `d7281fe8`, [runtime][r1126] |
+| TodoMVC release, add 1,000 todos in Chromium | 753 ms | 935 ms | 0.81 | `d7281fe8`, [runtime][r1126] |
 | TodoMVC release after gzip / brotli, React included | 137,348 / 119,062 B | 137,088 / 114,615 B | 1.002 / 1.039 | `8b11492b`, [size][f984] |
 | Watch, generated re-frame 200k: save to new code running, view / widely required / macro | 83 / 77 / 255 ms | 2,388 / 6,463 / 2,281 ms | | `fa9856b4`, [watch][w1001] |
 | Watch startup / dev page load, same app | 18.6-20.0 s / 4.9-5.3 s | 37.0-45.7 s / 2.0 s | | `fa9856b4`, [watch][w1001], [page][w993] |
@@ -134,6 +144,7 @@ uses `goog.*`, its port carries a small shim.
 [r990]: runtime-vs-shadow.md#2026-11-14-one-kind-brand-for-the-runtimes-stores-light-cljs-990
 [r998]: runtime-vs-shadow.md#2026-11-14-the-protocol-hooks-on-the-runtimes-own-values-light-cljs-998
 [r1019]: runtime-vs-shadow.md#2026-11-24-the-real-workloads-after-the-output-speed-pellets-light-cljs-1019
+[r1126]: runtime-vs-shadow.md#2026-11-24-the-real-workloads-after-the-second-round-light-cljs-1126
 [w972]: watch-vs-shadow.md#2026-11-14-todomvc-and-the-generated-200k-re-frame-app
 [w991]: watch-vs-shadow.md#2026-11-14-later-watch-steps-after-light-cljs-991
 [w992]: watch-vs-shadow.md#2026-11-14-later-watch-startup-after-light-cljs-992
@@ -141,9 +152,10 @@ uses `goog.*`, its port carries a small shim.
 [w1001]: watch-vs-shadow.md#2026-11-14-later-watch-steps-after-light-cljs-1001
 
 The TodoMVC and generated-workload output-speed figures come from the same
-alternated 10-run sessions on `4d8d02d5`. The growth row's two sides come from
-different runs on the same day: light-cljs's from `809302a4` with `--stats`,
-shadow-cljs's from the growth section's alternated runs with `fc31d229`.
+alternated 10-run session on one immutable binary (`d7281fe8`). The growth row's
+two sides come from different runs on the same day: light-cljs's from `809302a4`
+with `--stats`, shadow-cljs's from the growth section's alternated runs with
+`fc31d229`.
 
 **What a compile figure includes.** Neither side bundles in the generated
 projects: both outputs run in Node and take React from `node_modules` at run
@@ -270,49 +282,53 @@ at which no build failed and the median wall time is within 10% of its best
 
 ### 4. "Output was judged by size only"
 
-**How fast the output runs** ([runtime][r1019]). Both compilers' release builds
-were run 10 times each, alternated, on `4d8d02d5` (master `265007fd` differs
-only by a test file): the generated programs in Node, the re-frame-shaped app
-mounted in jsdom, and TodoMVC driven through its own DOM events in headless
-Chromium, plus dev-build runs of workload 200k and TodoMVC. After the
-output-speed-parity pellets (class layout, secret-key protocol slots, and
-follow-up runtime optimizations), **light-cljs's release output beats
-shadow-cljs on all four interactive TodoMVC steps and cuts the Node steady-state
-gap from 3.5 to 5.7 times down to 1.11 to 1.20 times.** Latest release ratios,
-light/shadow:
+**How fast the output runs** ([runtime][r1126]). Both compilers' release builds
+were run 10 times each, alternated, on one immutable binary (`d7281fe8`): the
+generated programs in Node, the re-frame-shaped app mounted in jsdom, and
+TodoMVC driven through its own DOM events in headless Chromium, plus dev-build
+runs of workload 200k and TodoMVC. After both rounds of output-speed-parity
+pellets, **light-cljs's release output beats shadow-cljs on generated workload
+200k and 800k steady state and TodoMVC's add-1,000 step, reaches parity on
+TodoMVC's other interactive steps and 1-iteration first output, and cuts the
+re-frame-shaped 200k steady-state gap from 3.5-5.7x down to 1.10x.** Latest
+release ratios, light/shadow:
 
 | Workload | First output (startup and one iteration) | Steady state per iteration | Peak memory | Commit |
 | --- | --- | --- | --- | --- |
-| generated workload 200k | 1.06 (0.330 vs 0.311 s, ranges overlap) | 1.11 (26.5 vs 23.9 ms) | 0.97 | `4d8d02d5` |
-| generated workload 800k | 1.05 (1.013 vs 0.966 s, ranges overlap) | 1.12 (117.1 vs 104.3 ms) | 0.92 | `4d8d02d5` |
-| re-frame-shaped 200k app | 1.12 (1.455 vs 1.301 s) | 1.20 (302.8 vs 252.3 ms) | 1.09 | `4d8d02d5` |
+| generated workload 200k | 1.01 (0.323 vs 0.321 s, ranges overlap) | 0.90 (22.7 vs 25.2 ms) | 0.92 | `d7281fe8` |
+| generated workload 800k | 0.98 (1.006 vs 1.023 s, ranges overlap) | 0.92 (101.5 vs 109.9 ms) | 0.90 | `d7281fe8` |
+| re-frame-shaped 200k app | 1.03 (1.420 vs 1.374 s, ranges overlap) | 1.10 (276.3 vs 251.7 ms) | 1.02 | `d7281fe8` |
 
 Peak memory is at the largest iteration count (40, 16 and 10). In TodoMVC
-release, light-cljs beats shadow-cljs on end-to-end wall time across all four
-interactive steps: add 1,000 todos 0.84x (761 vs 907 ms; script 719 vs 865 ms),
-toggle all 0.97x (45.6 vs 47.2 ms; script 24.1 vs 20.2 ms, disjoint), edit one
-of 1,000 todos 0.96x (62.3 vs 64.9 ms; script 8.1 vs 7.1 ms, overlapping),
-clear completed 0.96x (25.6 vs 26.8 ms; script 6.8 vs 6.5 ms, overlapping),
-whole-run wall time 0.91x (1.30 vs 1.43 s), peak memory 0.99x (253.7 vs
-257.4 MB); page load to interactive is 1.26x (40.3 vs 31.9 ms; script 20.5 vs
-13.5 ms) and JavaScript heap is 1.16x after load (3.18 vs 2.74 MB) and 1.10x
-with 1,000 todos (8.29 vs 7.52 MB). On the 80-operation core-ops gate
-(`4d8d02d5`), 71 operations are at or below 1.00x and nothing exceeds 1.10x
-(remaining gate gaps referenced under `light-cljs-1112` and `light-cljs-1113`).
+release, light-cljs is disjointly faster on add 1,000 todos (0.81x, 753 vs 935
+ms; script 712 vs 894 ms), beats shadow-cljs on whole-run wall time (0.89x,
+1.31 vs 1.48 s), user CPU (0.90x, 1.56 vs 1.73 s), and peak memory (0.98x,
+253.5 vs 257.5 MB), and is at parity on the other three interactive steps where
+both wall and script ranges overlap shadow-cljs's: toggle all 1.01x (51.3 vs
+50.6 ms; script 22.2 vs 21.4 ms), edit one of 1,000 todos 1.02x (62.2 vs 60.8
+ms; script 7.9 vs 7.3 ms), and clear completed 1.02x (26.6 vs 26.1 ms; script
+6.9 vs 6.9 ms). Page load to interactive is 1.23x (41.4 vs 33.8 ms; script 21.1
+vs 14.3 ms; overlaps only via shadow-cljs's run-0 cold start 62.4 ms, runs 1-9
+disjoint) and JavaScript heap is 1.17x after load (3.19 vs 2.74 MB) and 1.10x
+with 1,000 todos (8.31 vs 7.52 MB), tracked in `light-cljs-1127`. On the
+80-operation core-ops gate (`d7281fe8`, 5 runs), 76 operations are at or below
+1.00x, nothing exceeds 1.10x, and only `closure-alloc-call` (1.05x,
+`light-cljs-1112`) is disjoint above shadow-cljs's range (`reduce-entries-small`
+at 1.10x overlaps shadow-cljs's range and is also tracked in `light-cljs-1113`).
 
-In dev builds, TodoMVC page load under static HTTP serving is faster (0.77x,
-93.0 vs 120.5 ms, including fallback from `/__light_bundle.js` 404 to per-file
-loading and `/events` 404; shadow-cljs logged 0 HTTP errors) and edit (0.93x)
-and clear completed (0.96x) beat shadow-cljs on wall time, while steady state
-is slower: 1.47x on generated workload 200k (45.4 vs 31.0 ms/iter; 1-iter first
-output 1.11x), and 1.82x on TodoMVC add 1,000 todos (1,789 vs 982 ms) and
-1.33x on toggle all (71.9 vs 54.1 ms), even with shadow-cljs's unmodified `:dev`
-build enabling re-frame tracing. Every remaining losing row is profiled and
-filed (`light-cljs-1114` to `1119`): `ExceptionInfo` eager stack/property
-copying, `callable` wrapper allocation and user-type protocol misses,
-`preserveMeta` and `equalPairOf` fallbacks, release startup initialization,
-dev-mode protocol/printer/keyword dispatch, and Node dev-build `define`
-startup.
+In dev builds, workload 200k 1-iteration first output is faster (0.87x, 0.820
+vs 0.938 s; rounds 1-9 disjoint below shadow-cljs), TodoMVC page load under
+static HTTP serving is faster (0.69x, 83.1 vs 120.5 ms, including fallback from
+`/__light_bundle.js` 404 to per-file loading and `/events` 404; shadow-cljs
+logged 0 HTTP errors), TodoMVC add 1,000 todos is at parity (1.02x, 1,039 vs
+1,023 ms; both wall and script ranges overlap, even with shadow-cljs's
+unmodified `:dev` build enabling re-frame tracing), and edit (0.93x) and clear
+completed (0.98x) are below shadow-cljs on wall time. Remaining dev-build
+steady-state gaps — generated workload 200k steady state (1.11x, 39.3 vs 35.4
+ms/iter) and TodoMVC dev toggle all (1.23x, 67.2 vs 54.5 ms; wall overlaps,
+script disjoint 40.8 vs 34.2 ms) — are tracked in `light-cljs-1124`. Remaining
+release gaps on re-frame-shaped 200k steady state (`light-cljs-1125`) and
+TodoMVC page load (`light-cljs-1127`) are likewise profiled and filed.
 
 **Property renaming.** Closure's `:advanced` renames properties and leaves no
 `cljs$core$...` names; light-cljs never renames host-facing names, by design,
@@ -367,8 +383,8 @@ checksums of `app-db` and the rendered markup; both outputs must print them.
   800k (`fc31d229`), rebuild after a one-file edit 0.07 to 0.09x (the latest
   light-cljs figures against the growth run's shadow-cljs), peak memory 0.62x at
   shadow-cljs's smallest adequate heap, output 0.95x after gzip (`4d2669bc`
-  smoke row) and running 1.20x shadow-cljs's time in steady state (`4d8d02d5`,
-  [runtime][r1019]).
+  smoke row) and running 1.10x shadow-cljs's time in steady state (`d7281fe8`,
+  [runtime][r1126]).
 
 ### 6. "The measurements are sloppy"
 
