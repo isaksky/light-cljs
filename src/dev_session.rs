@@ -141,7 +141,7 @@ pub struct DevSession {
     /// that interprets the actions in process, or the session's own.
     control: ExecutionControl,
     /// The evaluator limits for each operation when the session owns its
-    /// control. Its operations also begin a fresh macro expansion budget.
+    /// control.
     operation: Option<EvaluatorOptions>,
     loaded: RefCell<HashSet<String>>,
     loading: RefCell<Vec<String>>,
@@ -632,12 +632,14 @@ impl DevSession {
     /// its first form in `namespace`, as `--compile` reads a namespace's
     /// source: a `::` keyword in its `ns` form names `namespace`, whatever
     /// namespace is current before. A watch step compiles a changed file so.
+    /// The step starts the shared budget with [`Self::reset_expansion_budget`]
+    /// before its first file. Each file gets a fresh deadline and poll budget.
     /// Its units, and those of the namespaces it loads, register no
     /// namespace: the file of each namespace's units registers it once,
     /// with what all its forms defined ([`crate::dev_build::namespace_unit`]).
     pub fn load_namespace_file(&self, namespace: &str, source: &SourceInput) -> Vec<Action> {
         collect(|to| {
-            self.begin()?;
+            self.begin_control()?;
             self.compiler.borrow_mut().set_namespace(namespace);
             let registering = self.registering.replace(false);
             let result = self.run_source(source, Mode::Load, to);
@@ -706,13 +708,21 @@ impl DevSession {
     }
     /// Begin an operation of a session that owns its control.
     fn begin(&self) -> Result<(), EvalDiagnostic> {
-        if let Some(options) = &self.operation {
-            self.control.begin(options)?;
+        self.begin_control()?;
+        if self.operation.is_some() {
             self.reset_expansion_budget();
         }
         Ok(())
     }
-    pub(crate) fn reset_expansion_budget(&self) {
+    fn begin_control(&self) -> Result<(), EvalDiagnostic> {
+        if let Some(options) = &self.operation {
+            self.control.begin(options)?;
+        }
+        Ok(())
+    }
+    /// Start a fresh expansion and generated-node budget. A watch step
+    /// calls this once for all the namespace files it compiles.
+    pub fn reset_expansion_budget(&self) {
         self.compiler.borrow().host.reset_expansion_budget();
     }
     pub(crate) fn compiler(&self) -> Ref<'_, InteractiveCompiler> {

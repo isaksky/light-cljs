@@ -4318,6 +4318,14 @@ impl CompilationSession {
     pub(crate) fn note_charged(&self, charged: (usize, usize)) {
         self.shared.raise_charged(charged.0, charged.1);
     }
+    /// Clear the starting counts for recorded units between interactive
+    /// operations, after any build workers have finished.
+    pub(crate) fn reset_charged(&self) {
+        debug_assert!(self.pool.borrow().is_none());
+        for count in &self.shared.charged {
+            count.store(0, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
     /// Start the coordinator's engine for `host` at a namespace's dispatch,
     /// if it has none ([`MacroHost::start_session_engine`]).
     pub(crate) fn start_dispatch_engine(self: &Rc<Self>, host: &MacroHost) -> Result<(), String> {
@@ -6815,6 +6823,24 @@ mod environment_bundle_tests {
 #[cfg(test)]
 mod retention_tests {
     use super::*;
+
+    #[test]
+    fn a_new_interactive_operation_clears_the_recorded_unit_budget() {
+        use crate::{EvalOptions, dev_session::DevSession, source_provider::SourceInput};
+
+        let dev = DevSession::new(&EvalOptions::default()).unwrap();
+        let session = dev.compiler().host.session_handle().unwrap();
+        let actions = dev.source(&SourceInput::new("<test>", "(let [] nil) (def a 1)"));
+        assert!(matches!(
+            actions.last(),
+            Some(crate::dev_session::Action::Invoke(_))
+        ));
+        let (expansions, nodes) = session.shared.charged();
+        assert!(expansions > 0 && nodes > 0, "{expansions}, {nodes}");
+
+        dev.read_forms(&SourceInput::new("<test>", "nil")).unwrap();
+        assert_eq!(session.shared.charged(), (0, 0));
+    }
 
     #[test]
     fn completed_units_release_their_analysis_inputs() {

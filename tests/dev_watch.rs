@@ -2559,6 +2559,69 @@ fn watch_expansion_limit_applies_to_each_compilation() {
     assert_ne!(watch.read("app.view.js"), before);
 }
 
+#[cfg(any(light_v8, feature = "quickjs"))]
+#[test]
+fn namespaces_compiled_in_one_step_share_the_expansion_limit() {
+    let initial = "(ns app.macros) (defmacro two [] 2) (defmacro one [] 1)";
+    let limit = ["--macro-expansions", "16"];
+    let mut watch = Watch::start_with_args("dev-watch-step-expansion-limit", &limit, |src| {
+        fs::write(src.join("app/macros.cljs"), initial).unwrap();
+        let calls = "(def result [(one) (one) (one) (one) (one)])";
+        fs::write(
+            src.join("app/view.cljs"),
+            format!("(ns app.view (:require [app.macros :refer [one]]))\n{calls}"),
+        )
+        .unwrap();
+        fs::write(
+            src.join("app/main.cljs"),
+            format!("(ns app.main (:require [app.macros :refer [one]] [app.view]))\n{calls}"),
+        )
+        .unwrap();
+    });
+
+    // The macro edit recompiles both consumers. Each now needs ten
+    // expansions, which only exceed the budget when counted together.
+    let edited = initial.replace("one [] 1", "one [] '(app.macros/two)");
+    let before = watch.read("app.main.js");
+    let (lines, step) = watch.save("app/macros.cljs", &edited);
+    assert!(
+        step.starts_with("light-cljs: recompiled app.macros, app.view in ")
+            && step.ends_with("app.main failed and keeps its previous unit"),
+        "{step}\n{lines:#?}"
+    );
+    let error = "compiler macro expansion limit exceeded";
+    assert!(lines.iter().any(|line| line.contains(error)), "{lines:#?}");
+    assert_eq!(watch.read("app.main.js"), before);
+
+    let clean = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+        .args([
+            "--compile",
+            "--no-cache",
+            "--entry",
+            "app.main",
+            "--source-root",
+        ])
+        .arg(watch.dir.join("src"))
+        .arg("--out-dir")
+        .arg(watch.dir.join("fresh"))
+        .arg("--reloadable")
+        .args(limit)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&clean.stderr);
+    assert!(
+        !clean.status.success() && stderr.contains("app/main.cljs") && stderr.contains(error),
+        "{stderr}"
+    );
+
+    let (lines, step) = watch.save("app/macros.cljs", initial);
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert!(
+        step.starts_with("light-cljs: recompiled app.macros, app.view, app.main in "),
+        "{step}"
+    );
+}
+
 /// `light-cljs watch features` (docs/build-configuration.md, "Commands"),
 /// from the example's `app/` subdirectory, with `:http {:port 0}` and
 /// `:fs-watch {:loop-wait 50}` from `LIGHT_CLJS`: it builds `out/dev` in the

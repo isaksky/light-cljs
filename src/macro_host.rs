@@ -2413,6 +2413,9 @@ impl MacroHost {
         self.engine.expansions.set(0);
         self.engine.generated_nodes.set(0);
         self.engine.work.charged_expansions.set(0);
+        if let Some(session) = self.session_handle() {
+            session.reset_charged();
+        }
     }
     /// Begin measuring the next namespace's logical work
     /// ([`WorkMarks`]): its counts start here, and its marks from nothing.

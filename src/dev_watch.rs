@@ -112,11 +112,11 @@ roots for the compiler.
 With --macro-expansions N, --macro-nodes N, --macro-timeout-ms N,
 --macro-memory-limit N and --macro-poll-budget N, raise the macro limits as
 --compile does (defaults 1024, 100000, 10000, 67108864 and 1000000), for the
-startup build and for the watch's session: its load of the program at
-startup is one operation, as is each namespace compiled again in a step.
-Each operation gets a fresh expansion budget, generated-node budget, deadline
-and poll budget. As with --compile, macros see stub JavaScript packages, which
-only the application has.
+startup build and for the watch's session. Each step gets an expansion and
+generated-node budget shared by all namespaces it recompiles. The session
+gets a fresh deadline and poll budget for its load at startup and for each
+namespace it recompiles. As with --compile, macros see stub JavaScript
+packages, which only the application has.
 
 With --config KEY=EDN, repeatable, give light.build/config the value EDN for
 the keyword KEY in the build and in every step, as --compile does.
@@ -1678,6 +1678,7 @@ impl Watch {
         for namespace in self.always_compile() {
             enqueue(&mut queue, namespace);
         }
+        self.session.reset_expansion_budget();
         let mut recompiled = Vec::new();
         let mut failed = None;
         while !queue.is_empty() {
