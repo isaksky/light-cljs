@@ -185,7 +185,6 @@ fn reflected_factory_metadata_does_not_force_unrelated_roots_and_failure_recover
 (pr-str (recovered))
 "#;
         let js = light_cljs::compile_with_macros(recovered, &mut host).unwrap();
-        // The Pants build embeds no QuickJS to run this half of the check.
         #[cfg(feature = "quickjs")]
         {
             let evaluator = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();

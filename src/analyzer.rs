@@ -5097,12 +5097,6 @@ impl NamespaceTop {
         let _names = crate::generated_names::enter_namespace(
             crate::generated_names::namespace_discriminator(input.name, input.source),
         );
-        // The pass is the next position of the compilation's effect lanes;
-        // a blocker's consumer starts after every earlier unit
-        // (light-cljs-480).
-        let _pass = macro_host
-            .session_handle()
-            .map(|session| session.begin_pass(self.main_isolate, source_index));
         let top_level = crate::compile_trace::enter(
             crate::compile_trace::Stage::TopLevel,
             source_index,
@@ -8161,7 +8155,6 @@ impl Analyzer<'_> {
                     &datum,
                     self.namespace,
                     self.macro_host.limits.generated_nodes,
-                    self.macro_host.native_macro_backend(),
                 )
                 .is_some_and(|expanded| {
                     self.macro_free_datum(&expanded, 1, true)
@@ -8267,7 +8260,6 @@ impl Analyzer<'_> {
                                 datum,
                                 self.namespace,
                                 self.macro_host.limits.generated_nodes,
-                                self.macro_host.native_macro_backend(),
                             )
                             .is_some_and(|expanded| {
                                 self.macro_free_datum(&expanded, depth + 1, true)
@@ -8533,10 +8525,7 @@ impl Analyzer<'_> {
                     SymbolUse::Ineligible
                 } else if matches!(name.as_str(), "let" | "loop" | "fn" | "letfn") {
                     SymbolUse::Free
-                } else if crate::native_core_macros::native(
-                    &name,
-                    self.macro_host.native_macro_backend(),
-                ) {
+                } else if crate::native_core_macros::native(&name) {
                     // A name the namespace shadows is no core macro to
                     // analysis (`Analyzer::expand_macro`): nothing to judge
                     // by expanding it.
@@ -8693,13 +8682,8 @@ impl Analyzer<'_> {
             self.dispatched = Some((units, Vec::new()));
             return;
         }
-        // Each unit's lane position follows the pass (light-cljs-480); a
-        // blocker's consumer's units wait for their lanes.
-        let pooled_pairs = session.hold_and_poolable(
-            units.iter().map(|d| d.unit),
-            self.unit_slots.get() == 1,
-            self.unit_slots.get() > 1,
-        );
+        let pooled_pairs =
+            session.hold_and_poolable(units.iter().map(|d| d.unit), self.unit_slots.get() > 1);
         let charged = (
             self.macro_host.engine.expansions.get(),
             self.macro_host.engine.generated_nodes.get(),
@@ -8741,13 +8725,6 @@ impl Analyzer<'_> {
         let units = std::mem::take(&mut self.deferred);
         if session.is_local_overlay() {
             return self.drain_local_units(&session, units, keep_later);
-        }
-        let forced = self.unit_slots.get() == 1;
-        if let [only] = units.as_slice() {
-            session.schedule_units(&[only.unit], forced);
-        } else {
-            let ids: Vec<usize> = units.iter().map(|d| d.unit).collect();
-            session.schedule_units(&ids, forced);
         }
         // With `--jobs N`, the build pool analyzes the units given to it,
         // one batch in unit order, while this thread drains every unit in
@@ -12084,9 +12061,10 @@ impl Analyzer<'_> {
         }
         // The hottest core macros expand natively, as their definitions
         // would (light-cljs-426); a call one would reject is left to it.
-        if let Some(core_name) = core_name.as_deref().filter(|name| {
-            crate::native_core_macros::native(name, self.macro_host.native_macro_backend())
-        }) {
+        if let Some(core_name) = core_name
+            .as_deref()
+            .filter(|name| crate::native_core_macros::native(name))
+        {
             if self.expansion_depth_exceeded(self.macro_depth) {
                 return Err(error(
                     "compiler macro expansion depth limit exceeded".into(),
@@ -12096,17 +12074,9 @@ impl Analyzer<'_> {
             let form = self
                 .compiler_read_form(call)
                 .map_err(|e| error(e.to_string()))?;
-            // Outside every scope the V8 build converts the environment
-            // first; the Pants build checks what that conversion rejects.
             if let Some(expanded) = self
                 .macro_host
-                .expand_core_native(
-                    core_name,
-                    &form,
-                    self.namespace,
-                    (&name, &call_span),
-                    self.engine,
-                )
+                .expand_core_native(core_name, &form, self.namespace, (&name, &call_span))
                 .map_err(error)?
             {
                 return self.import_form(&expanded).map(Some);

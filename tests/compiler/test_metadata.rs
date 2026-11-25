@@ -82,7 +82,6 @@ fn metadata_test_original_source_passes_both_phases_and_recovers() {
             {
                 let js = compiled.unwrap();
                 std::fs::write(root.join("compiled.js"), &js).unwrap();
-                // The Pants build embeds no QuickJS to run this half of the check.
                 #[cfg(feature = "quickjs")]
                 {
                     let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
@@ -109,7 +108,6 @@ fn metadata_test_original_source_passes_both_phases_and_recovers() {
             let js = compile_namespace_with_macros("user", std::slice::from_ref(&recovery), host)
                 .unwrap();
             std::fs::write(recovery.join("compiled.js"), &js).unwrap();
-            // The Pants build embeds no QuickJS to run this half of the check.
             #[cfg(feature = "quickjs")]
             {
                 let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
@@ -132,7 +130,6 @@ fn metadata_test_original_source_passes_both_phases_and_recovers() {
 
 fn both(source: &str, host: &mut MacroHost, expected: &str) {
     let js = light_cljs::compile_with_macros(source, host).unwrap();
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();

@@ -49,7 +49,6 @@ fn both(source: &str, expected: &str, identity: &str) {
     let parsed = parse(source).unwrap_or_else(|error| panic!("{identity}: {error}"));
     let program = analyze_with_macros(source, &parsed, &mut MacroHost::new())
         .unwrap_or_else(|error| panic!("{identity}: {error}"));
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();

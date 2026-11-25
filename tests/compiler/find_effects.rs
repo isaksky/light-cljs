@@ -14,7 +14,6 @@ fn execute(unit: &str, expected: &str, directory: &Path) {
         light_cljs::evaluator::RUNTIME_SOURCE,
         unit
     );
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let runtime = rquickjs::Runtime::new().unwrap();
@@ -57,7 +56,6 @@ fn uncaught_application(failed_unit: &str, recovery_unit: &str, message: &str, d
         light_cljs::evaluator::RUNTIME_SOURCE,
         failed_unit
     );
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let runtime = rquickjs::Runtime::new().unwrap();

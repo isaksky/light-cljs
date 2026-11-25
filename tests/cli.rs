@@ -2487,7 +2487,7 @@ fn jobs_counts_work_slots_without_changing_output() {
     }
 }
 
-// Counts per-worker engine isolates; the Pants build shares one runtime.
+// Counts per-worker engine isolates.
 #[cfg(any(feature = "quickjs", feature = "v8-macros"))]
 /// With `--jobs N`, units are analyzed in persistent worker isolates, and
 /// the program is the one a fresh isolate per unit gives, the correctness

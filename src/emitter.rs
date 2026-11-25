@@ -275,8 +275,6 @@ pub(crate) fn emit_application(
         module,
         mapped,
         None,
-        false,
-        &[],
     )
 }
 
@@ -622,8 +620,6 @@ fn emit_unit_parts(
         false,
         false,
         registration,
-        false,
-        &[],
     )
     .0
 }
@@ -701,8 +697,6 @@ fn emit_js_mode(
     module: bool,
     mapped: bool,
     detached_registration: Option<&mut NamespaceRegistration>,
-    native_forms: bool,
-    native_replacements: &[&'static str],
 ) -> (String, EmittedRuntime, Option<SourceMapping>) {
     let application_roots = interactive.is_some();
     let entry = interactive.and_then(|interactive| interactive.entry);
@@ -753,24 +747,9 @@ fn emit_js_mode(
             },
             register_namespaces,
         );
-        emitter.native_forms = native_forms;
         emitter.unit_reify_sites = (shared == Some(UNIT_RUNTIME)).then(HashMap::new);
-        if native_forms {
-            emitter.index_native_unit(root);
-            emitter
-                .native_replaced_core
-                .extend(native_replacements.iter().copied());
-        }
-        // A deferred definition's program contains its initializer alone,
-        // usually wrapped in a Do; no Def node reaches the emitter there.
-        emitter.native_multimethod_function = native_forms && emitter.function_value(root);
         emitter.output.push_str(PRELUDE_OPEN);
-        if native_forms {
-            // Truth tests are the engine's `__rt.cljTruth` ([`Emitter::truth_open`]):
-            // no local `truth` closes over the task's runtime object.
-        } else {
-            emitter.output.push_str(PRELUDE_TRUTH);
-        }
+        emitter.output.push_str(PRELUDE_TRUTH);
         let mut prelude_end = emitter.output.len();
         // At `Advanced` a single file's top-level definitions declare their
         // globals where they define them (light-cljs-1051), and the
@@ -869,14 +848,6 @@ fn emit_js_mode(
         if record_kits.any() {
             emitter.splice_record_kits(record_kits);
         }
-    }
-    if let Some(temporary) = emitter.native_invoke_temporary {
-        let declaration = format!("  const temporary{temporary}_0 = {NATIVE_PREPARE_INVOKE};\n");
-        emitter.insert(InsertPoint::at(prelude_end), &declaration);
-    }
-    if let Some(temporary) = emitter.native_call_member_temporary {
-        let declaration = format!("  const temporary{temporary}_0 = {NATIVE_CALL_MEMBER};\n");
-        emitter.insert(InsertPoint::at(prelude_end), &declaration);
     }
     #[cfg(debug_assertions)]
     check_runtime_reads(
@@ -1016,13 +987,6 @@ fn emit_js_mode(
         for (name, initial) in &emitter.core_cells {
             writeln!(runtime, "  let core${name} = {initial};").unwrap();
         }
-        for name in &emitter.native_core_bindings {
-            writeln!(
-                runtime,
-                "  const {{value: nativeCore${name}, get: nativeCoreGetter${name}}} = rt.nativeCoreBinding(\"{name}\");"
-            )
-            .unwrap();
-        }
         // The constant table follows the runtime it reads.
         let constants_at = runtime.len();
         if let Some(constants) = &emitter.constants {
@@ -1115,15 +1079,10 @@ fn emit_js_mode(
     // Unit emission never requests source maps or application minification.
     if shared == Some(UNIT_RUNTIME) {
         debug_assert!(!mapped && !terse);
-        // A native unit's struct types exist once for every task that runs
-        // its factory, which captures them (light-cljs-478).
         let mut open = String::new();
         let reify_sites = emitter.unit_reify_sites.as_ref().map_or(0, HashMap::len);
-        if !emitter.native_types.is_empty() || reify_sites != 0 {
+        if reify_sites != 0 {
             open.push_str("(() => { ");
-            for (index, ty) in emitter.native_types.iter().enumerate() {
-                write!(open, "const __lightUnitType{index} = {ty}; ").unwrap();
-            }
             // A local expression number is not a type identity across
             // independently emitted units. Keep opaque site tokens in the
             // factory's closure, shared by all calls of that factory.
@@ -2260,41 +2219,6 @@ impl EmptyCollection {
 /// collection pool").
 const LAZY_CONSTANT_NODES: u32 = 1024;
 
-/// The most operands a native compile-time unit passes to one counted
-/// engine constructor (`__rt.formVector(…)`); larger literals and calls use
-/// the runtime's array constructors, whose operand stack stays small.
-/// `bbp_evaluator` tests that emission selects those constructors and that
-/// they check what the inline forms check.
-const NATIVE_CONSTRUCTOR_LIMIT: usize = 4096;
-
-// Fixed calls retain the actual method and receiver in their operand slots.
-// Keep native multimethod recognition out of each call site's syntax tree.
-const NATIVE_CALL_MEMBER: &str = r#"(function(_, ...args) {
-    return globalThis.__lightNativeRuntime.core.invokeMulti(this, args);
-})"#;
-
-/// Prepare native collection dispatch or read the legacy `.call` method before
-/// evaluating arguments. Retain that method and its receiver across suspension;
-/// the adapter captures no task-owned runtime object. The RegExp constructor
-/// as a value makes shareable regexes (light-cljs-563).
-const NATIVE_PREPARE_INVOKE: &str = r#"(f => {
-    const value = __rt.formValue(f), kind = __rt.formKind(value);
-    if (value === globalThis.__lightNativeRuntime.intrinsicRegExp) {
-        return globalThis.__lightNativeRuntime.nativeRegExpCall(value);
-    }
-    if (kind === 'struct' && __rt.formName(__rt.structTypeOf(value)) === 'cljs.core/MultiFn') {
-        return (m => (...a) => globalThis.__lightNativeRuntime.core.invokeMulti(m, a))(value);
-    }
-    if (kind === 'vector' || kind === 'map' || kind === 'set' || kind === 'keyword' || kind === 'symbol') {
-        return (...a) => {
-            if (kind !== 'vector' && (a.length < 1 || a.length > 2)) throw new Error('Invalid arity: ' + a.length);
-            return __rt.cljInvoke(f, a[0], a.length > 1 ? a[1] : null, a.length);
-        };
-    }
-    const call = value.call;
-    return (...a) => Reflect.apply(call, value, [null, ...a]);
-})"#;
-
 /// What the pool knows about an expression (indexed by `ExprId`).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ConstantClass {
@@ -2592,30 +2516,6 @@ enum EntrySlots {
 }
 
 struct Emitter<'a, 's> {
-    native_forms: bool,
-    /// Native units bind their immutable core functions once per factory call.
-    native_core_bindings: Vec<&'static str>,
-    native_replaced_core: HashSet<&'static str>,
-    /// A protocol entry that receives its hidden receiver explicitly. Object,
-    /// IFn and scope-sensitive methods retain the JavaScript receiver ABI.
-    native_protocol_target: Option<RecurTargetId>,
-    /// A function root or ordinary callback may publish with native state.
-    /// Its runtime reads resolve in the calling task, like root reads.
-    native_multimethod_function: bool,
-    native_multimethod_arguments: HashSet<ExprId>,
-    /// Direct operands already evaluated by `native_form_statements`, in
-    /// occurrence order (the same ExprId can occur more than once), with
-    /// the operand array's temporary name and slot index.
-    native_arguments: std::collections::VecDeque<(ExprId, usize, usize)>,
-    native_temporary: usize,
-    native_invoke_temporary: Option<usize>,
-    native_call_member_temporary: Option<usize>,
-    /// [`Emitter::struct_fields`] by method, computed once each.
-    struct_targets: std::cell::RefCell<HashMap<crate::analyzer::RecurTargetId, bool>>,
-    /// In a native compile-time unit, the struct types its `deftype`s and
-    /// `defrecord`s define, created once where the unit's factory is made
-    /// (light-cljs-478): each the expression of `__lightUnitType<i>`.
-    native_types: Vec<String>,
     /// Compile-time units share a runtime but not an expression arena.
     /// Application emission retains its whole-program numeric site IDs.
     unit_reify_sites: Option<HashMap<ExprId, usize>>,
@@ -2954,73 +2854,6 @@ impl<'a, 's> Emitter<'a, 's> {
         }
     }
 
-    /// Index only the code this native factory can emit. A deferred program's
-    /// arenas also contain its frozen definition-time catalog, including other
-    /// units' initializers. Global reads demand those units separately; they
-    /// are not children of this unit. Explicit Var metadata remains a child.
-    /// Cross-unit core writes come from the session's conservative source index
-    /// (`SharedCatalog::native_replaced_core`), including later/generated writes.
-    fn index_native_unit(&mut self, root: ExprId) {
-        let program = self.program;
-        let mut pending = vec![root];
-        let mut seen = HashSet::new();
-        while let Some(id) = pending.pop() {
-            if !seen.insert(id) {
-                continue;
-            }
-            match &program.exprs[id.0].kind {
-                ExprKind::Call { callee, args }
-                    if args.len() == 3
-                        && matches!(
-                            program.exprs[callee.0].kind,
-                            ExprKind::CoreFn(crate::CoreFnId::AddMethod)
-                        ) =>
-                {
-                    self.native_multimethod_arguments.insert(args[2]);
-                }
-                ExprKind::SetGlobal { target, .. } => self.index_native_core_target(*target),
-                ExprKind::Binding { bindings, .. } => {
-                    for &(target, _) in bindings {
-                        self.index_native_core_target(target);
-                    }
-                }
-                ExprKind::DefType {
-                    record,
-                    layout,
-                    methods,
-                    ..
-                } => {
-                    let native = !Self::mutable_type(*record, layout);
-                    let mut targets = self.struct_targets.borrow_mut();
-                    for (_, method) in methods {
-                        targets.insert(method.target, native);
-                    }
-                }
-                ExprKind::Reify { methods, .. } => {
-                    let mut targets = self.struct_targets.borrow_mut();
-                    for (_, method) in methods {
-                        targets.insert(method.target, false);
-                    }
-                }
-                _ => (),
-            }
-            visit_children(&program.exprs[id.0].kind, |child| pending.push(child));
-        }
-    }
-
-    fn index_native_core_target(&mut self, mut target: ExprId) {
-        while let ExprKind::Property { receiver, .. } | ExprKind::JsIndex { receiver, .. } =
-            self.program.exprs[target.0].kind
-        {
-            target = receiver;
-        }
-        if let ExprKind::CoreFn(core) = self.program.exprs[target.0].kind {
-            self.native_replaced_core.insert(core.runtime_name());
-        }
-    }
-
-    /// A fresh emitter of `program` for `setup`, which registers its
-    /// namespaces when `register_namespaces`.
     fn new(program: &'a Program, setup: Setup<'a, 's>, register_namespaces: bool) -> Self {
         let Setup {
             demand_roots,
@@ -3038,18 +2871,6 @@ impl<'a, 's> Emitter<'a, 's> {
             .and_then(|application| application.shapes)
             .filter(|_| direct.is_some());
         Emitter {
-            native_forms: false,
-            native_core_bindings: Vec::new(),
-            native_replaced_core: HashSet::new(),
-            native_protocol_target: None,
-            native_multimethod_function: false,
-            native_multimethod_arguments: HashSet::new(),
-            native_arguments: Default::default(),
-            native_temporary: 0,
-            native_invoke_temporary: None,
-            native_call_member_temporary: None,
-            struct_targets: Default::default(),
-            native_types: Vec::new(),
             unit_reify_sites: None,
             registration_chunks: Vec::new(),
             program,
@@ -3510,29 +3331,6 @@ impl<'a, 's> Emitter<'a, 's> {
     /// when the program may replace the operation, or else to the binding (or
     /// member of one) holding it.
     fn runtime_read(&mut self, name: RuntimeName, site: Option<ExprId>, used: NameUse) -> String {
-        if self.native_forms && self.native_multimethod_function {
-            self.runtime_root(name, site, used);
-            return name
-                .to_string()
-                .replacen("rt.", "globalThis.__lightNativeRuntime.", 1);
-        }
-        if self.native_forms
-            && name.binding == CORE_HUB
-            && let Some(member) = name.member
-            && crate::CoreFnId::ALL
-                .iter()
-                .find(|core| core.runtime_name() == member)
-                .is_some_and(|core| core.operation().value == crate::core_operations::Type::FN)
-            && !self.replaced(member)
-        {
-            self.runtime_root(name, site, used);
-            if !self.native_core_bindings.contains(&member) {
-                self.native_core_bindings.push(member);
-            }
-            // Unsupported entries are getters that throw on access. Keep
-            // that access at its original site, before call operands run.
-            return format!("(nativeCore${member} ?? nativeCoreGetter${member}())");
-        }
         if self.replaced_core.is_none() {
             if self.application_roots && used == NameUse::Value {
                 self.note_dev_host_ext_escape(name, site);
@@ -3672,10 +3470,8 @@ impl<'a, 's> Emitter<'a, 's> {
     /// Whether the program may replace the core operation with this runtime name,
     /// so that `Advanced` output reads it through an output-level cell.
     fn replaced(&self, name: &str) -> bool {
-        self.native_replaced_core.contains(name)
-            || self
-                .replaced_core
-                .is_some_and(|replaced| replaced.binary_search(&name).is_ok())
+        self.replaced_core
+            .is_some_and(|replaced| replaced.binary_search(&name).is_ok())
     }
 
     /// Whether a call of this core operation may be a plain call of its unit
@@ -4121,13 +3917,7 @@ impl<'a, 's> Emitter<'a, 's> {
     /// `rt.keyword(namespace, name)` or `rt.symbol(namespace, name)`.
     fn construct_named(&mut self, literal: NamedLiteralId, symbol: bool) {
         let name = &self.program.named_literals[literal.0];
-        if self.native_forms {
-            self.output.push_str(if symbol {
-                "__rt.formSymbol("
-            } else {
-                "__rt.formKeyword("
-            });
-        } else {
+        {
             let constructor = if symbol { "symbol" } else { "keyword" };
             self.rt(RuntimeName::export(constructor));
             self.output.push('(');
@@ -4151,7 +3941,7 @@ impl<'a, 's> Emitter<'a, 's> {
     /// `rt.keyword(namespace, name)` or `rt.symbol(namespace, name)`.
     fn named_literal(&mut self, literal: NamedLiteralId, symbol: bool) {
         if self.constants.is_none() {
-            if !symbol && !self.native_forms && self.dev_keywords.is_some() {
+            if !symbol && self.dev_keywords.is_some() {
                 let entry = &self.program.named_literals[literal.0];
                 let key = (
                     entry
@@ -4543,19 +4333,6 @@ impl<'a, 's> Emitter<'a, 's> {
     /// (`rt$PersistentVectorValue.EMPTY` at `Advanced`), which an empty
     /// literal reads at every level instead of allocating.
     fn empty_collection(&mut self, empty: EmptyCollection) {
-        if self.native_forms {
-            // A native unit builds its empty form; no closure reads the
-            // task's runtime object for it.
-            self.output.push_str(match empty {
-                EmptyCollection::Vector => "__rt.formVector()",
-                EmptyCollection::Map => {
-                    "__rt.formReaderCollection(__rt.formLiteralMap(__rt.formVector()))"
-                }
-                EmptyCollection::Set => "__rt.formReaderCollection(__rt.formSet())",
-                EmptyCollection::List => "__rt.formList()",
-            });
-            return;
-        }
         let binding = match empty {
             EmptyCollection::Set => Some("PersistentHashSetValue"),
             EmptyCollection::Map => Some("PersistentArrayMapValue"),
@@ -4583,50 +4360,6 @@ impl<'a, 's> Emitter<'a, 's> {
         self.output.push_str(".EMPTY");
     }
 
-    // Quoted #js objects contain only compiler data. Canonicalize their
-    // known string keys before emission, preserving JavaScript own-property
-    // ordering and last writes, without capturing the task runtime.
-    fn native_literal_object_items(&self, items: &[ExprId]) -> Vec<ExprId> {
-        let mut positions: std::collections::HashMap<&[u16], usize> =
-            std::collections::HashMap::new();
-        let mut fields: Vec<(&[u16], ExprId, ExprId)> = Vec::new();
-        for [key, value] in items.as_chunks::<2>().0 {
-            let ExprKind::String(id) = self.program.exprs[key.0].kind else {
-                unreachable!("quoted JS object keys are strings");
-            };
-            let units = &self.program.strings[id.0][..];
-            if units.iter().copied().eq("__proto__".encode_utf16()) {
-                continue;
-            }
-            if let Some(&index) = positions.get(units) {
-                fields[index].2 = *value;
-            } else {
-                positions.insert(units, fields.len());
-                fields.push((units, *key, *value));
-            }
-        }
-        let array_index = |units: &[u16]| {
-            if units.is_empty() || units.len() > 1 && units[0] == u16::from(b'0') {
-                return None;
-            }
-            let mut index = 0u32;
-            for unit in units {
-                let digit = unit
-                    .checked_sub(u16::from(b'0'))
-                    .filter(|digit| *digit < 10)?;
-                index = index.checked_mul(10)?.checked_add(u32::from(digit))?;
-            }
-            (index != u32::MAX).then_some(index)
-        };
-        fields.sort_by_key(|(units, _, _)| {
-            array_index(units).map_or((true, 0), |index| (false, index))
-        });
-        fields
-            .into_iter()
-            .flat_map(|(_, key, value)| [key, value])
-            .collect()
-    }
-
     /// A call of a composite's runtime constructor with `count` items, which
     /// `item` writes by index: the one construction of both a pooled
     /// constant's initializer and a site that builds its value.
@@ -4644,82 +4377,6 @@ impl<'a, 's> Emitter<'a, 's> {
                 item(emitter, index);
             }
         };
-        if self.native_forms
-            && count <= NATIVE_CONSTRUCTOR_LIMIT
-            && let Some(intrinsic) = match constructor {
-                Composite::Vector => Some("formVector"),
-                Composite::List => Some("formList"),
-                Composite::ArrayMap => Some("formArrayMap"),
-                Composite::HashMap => Some("formMap"),
-                Composite::Set | Composite::CheckedSet => Some("formSet"),
-                Composite::LiteralMap => Some("formLiteralMap"),
-                Composite::LiteralSet => Some("formLiteralSet"),
-                Composite::WithMeta => Some("cljWithExportedMeta"),
-                Composite::Uuid => Some("formCompilerLiteral"),
-            }
-        {
-            // A native unit's literal is the engine's form constructor
-            // (light-cljs-477). Map items alternate keys and values.
-            if constructor == Composite::HashMap {
-                // A hash-map literal evaluates every key before any value
-                // (`mapFromArrays`): two flat operand lists, then the map.
-                self.output
-                    .push_str("__rt.formReaderCollection(__rt.cljZipMap(__rt.formList(");
-                items(self, &mut (0..count).step_by(2));
-                self.output.push_str("), __rt.formList(");
-                items(self, &mut (1..count).step_by(2));
-                self.output.push_str(")))");
-                return;
-            }
-            let ordered = matches!(
-                constructor,
-                Composite::ArrayMap
-                    | Composite::Set
-                    | Composite::CheckedSet
-                    | Composite::LiteralMap
-                    | Composite::LiteralSet
-            );
-            if ordered {
-                self.output.push_str("__rt.formReaderCollection(");
-            }
-            // Dynamic set literals reject equal members after every operand
-            // has run. Constant literals retain their positional storage.
-            let check = match constructor {
-                Composite::CheckedSet => Some((count, "Duplicate key")),
-                _ => None,
-            };
-            if let Some((_, message)) = check {
-                write!(
-                    self.output,
-                    "((value, count) => {{ if (__rt.formCount(value) !== count) \
-                     throw new Error({message:?}); return value; }})("
-                )
-                .unwrap();
-            }
-            write!(self.output, "__rt.{intrinsic}(").unwrap();
-            if constructor == Composite::Uuid {
-                self.output.push_str("\"uuid\", ");
-            }
-            let positional = matches!(
-                constructor,
-                Composite::ArrayMap | Composite::LiteralMap | Composite::LiteralSet
-            );
-            if positional {
-                self.output.push_str("__rt.formVector(");
-            }
-            items(self, &mut (0..count));
-            self.output.push(')');
-            if positional {
-                self.output.push(')');
-            }
-            if let Some((expected, _)) = check {
-                write!(self.output, ", {expected})").unwrap();
-            }
-            if ordered {
-                self.output.push(')');
-            }
-            return;
-        }
         self.rt(match constructor {
             Composite::Vector => RuntimeName::export("vectorFromArray"),
             Composite::List => RuntimeName::export("listFromArray"),
@@ -4812,17 +4469,6 @@ impl<'a, 's> Emitter<'a, 's> {
                     .map(|&(target, _)| target)
             })
         {
-            // A native struct's field is read by its source name
-            // (light-cljs-478).
-            if self.struct_target(target) && self.program.field_bindings.contains_key(&id) {
-                self.output.push_str("__rt.structField(");
-                self.receiver(target);
-                self.output.push_str(", ");
-                let name = self.program.locals[id.0].name.clone();
-                self.string_units(&name.encode_utf16().collect::<Vec<_>>());
-                self.output.push(')');
-                return;
-            }
             // A `reify` defines each captured local as a member munged the
             // same way (`mungeMember` in the runtime's `reify`), as a type
             // its fields.
@@ -4857,12 +4503,7 @@ impl<'a, 's> Emitter<'a, 's> {
             );
             self.output.push(']');
         } else if self.demand_roots {
-            if self.native_forms {
-                // A producer that adopted a catalog without applying it names
-                // its registry here until its code reads the public global
-                // (light-cljs-590, `lazyAdopt` in src/bbp_runtime.js).
-                self.output.push_str("(__rt.cljReadRoot(globalThis.__lightCompilerRootReceiver ?? globalThis.__lightCompilerRoots, globalThis.__lightCompilerRootContext, ");
-            } else {
+            {
                 self.output
                     .push_str("globalThis[\"__lightCompilerRoots\"][");
             }
@@ -4872,8 +4513,7 @@ impl<'a, 's> Emitter<'a, 's> {
                     .encode_utf16()
                     .collect::<Vec<_>>(),
             );
-            self.output
-                .push_str(if self.native_forms { "))" } else { "]" });
+            self.output.push_str("]");
         } else {
             write!(self.output, "g{}", id.0).unwrap();
         }
@@ -4902,12 +4542,7 @@ impl<'a, 's> Emitter<'a, 's> {
             let name = format!("{}/{}", binding.namespace, binding.name)
                 .encode_utf16()
                 .collect::<Vec<_>>();
-            if self.native_forms {
-                self.output
-                    .push_str("globalThis.__lightCompilerProductTarget(");
-                self.string_units(&name);
-                self.output.push_str(")[");
-            } else {
+            {
                 self.output
                     .push_str("globalThis.__lightCompilerBundleProducts[");
             }
@@ -5074,57 +4709,6 @@ impl<'a, 's> Emitter<'a, 's> {
     /// It unwraps occurrences and converts nothing else (a native form is
     /// the same object in JavaScript, docs/native-macros.md, light-cljs-558),
     /// rejecting explicit interop with a non-struct form.
-    fn interop_value(&mut self, value: ExprId) {
-        if self.native_forms {
-            self.rt(RuntimeName::export("nativeInterop"));
-            self.output.push('(');
-            self.value(value);
-            self.output.push(')');
-        } else {
-            self.value(value);
-        }
-    }
-
-    /// The receiver or an operand of a compiled member read or call, with
-    /// the member's name: a non-struct native form is rejected there, except
-    /// for `call`/`apply`, which apply a function to its operands.
-    fn interop_receiver(&mut self, value: ExprId, member: &str) {
-        if self.native_forms {
-            self.rt(RuntimeName::export("nativeInterop"));
-            self.output.push('(');
-            self.value(value);
-            self.output.push_str(", ");
-            self.string_units(&member.encode_utf16().collect::<Vec<_>>());
-            self.output.push(')');
-        } else {
-            self.value(value);
-        }
-    }
-
-    /// Whether `callee` is the host `RegExp` constructor, `js/RegExp`.
-    fn is_regexp_global(&self, callee: ExprId) -> bool {
-        matches!(
-            self.program.exprs[callee.0].kind,
-            ExprKind::JsGlobal(global)
-                if self.program.js_globals[global.0].package().is_none()
-                    && self.program.js_globals[global.0].path == ["RegExp"]
-        )
-    }
-
-    /// The operands of a host call, or of a member call with the member's
-    /// name: those of `.call`/`.apply` pass through unchanged.
-    fn interop_arguments(&mut self, args: &[ExprId], member: Option<&str>) {
-        for (index, &arg) in args.iter().enumerate() {
-            if index > 0 {
-                self.output.push_str(", ");
-            }
-            match member {
-                Some(member) => self.interop_receiver(arg, member),
-                None => self.interop_value(arg),
-            }
-        }
-    }
-
     /// An `if` test: `truth(test)`, or the test itself when it is a
     /// `BooleanHint` or, at `Advanced`, when its inferred type makes JavaScript
     /// truthiness agree with Clojure's (no number, string or host value).
@@ -5145,15 +4729,10 @@ impl<'a, 's> Emitter<'a, 's> {
         }
     }
 
-    /// The opening of a ClojureScript truth test of a value: `truth(`, or in
-    /// a native compile-time unit the engine intrinsic `__rt.cljTruth(`.
+    /// Start a ClojureScript truth test.
     fn truth_open(&mut self) {
-        if self.native_forms {
-            self.output.push_str("__rt.cljTruth(");
-        } else {
-            self.truth_used = true;
-            self.output.push_str("truth(");
-        }
+        self.truth_used = true;
+        self.output.push_str("truth(");
     }
 
     /// At `Advanced`, the operands of `(and a b)` or `(or a b)` that emit as
@@ -5348,514 +4927,6 @@ impl<'a, 's> Emitter<'a, 's> {
     /// At `Advanced`, a call that emission writes as JavaScript operators or a
     /// field read instead of calling the runtime (docs/advanced-optimization.md,
     /// "Phase 2 type inference extension points"); whether it wrote one.
-    /// In a native compile-time unit, write a call of a core operation on
-    /// forms as the engine's `__rt` intrinsic and return true
-    /// (light-cljs-477; docs/native-macros.md, "Native core lowering"). The
-    /// operation runs in Rust, and no closure reaches the task's mutable
-    /// runtime object through it, so helper values built with it publish.
-    /// A keyword invocation is `get`. Other calls return false.
-    fn native_call(&mut self, callee: ExprId, args: &[ExprId]) -> bool {
-        use crate::CoreFnId as C;
-        if matches!(
-            self.program.exprs[callee.0].kind,
-            ExprKind::CoreFn(C::AddMethod)
-        ) && args.len() == 3
-            && !self.replaced(C::AddMethod.runtime_name())
-        {
-            self.rt(RuntimeName::core("addMethod"));
-            self.output.push('(');
-            self.arguments(&args[..2]);
-            self.output.push_str(", ");
-            let previous = std::mem::replace(&mut self.native_multimethod_function, true);
-            self.value(args[2]);
-            self.native_multimethod_function = previous;
-            self.output.push(')');
-            return true;
-        }
-        let core = match self.program.exprs[callee.0].kind {
-            ExprKind::Keyword(_) if matches!(args.len(), 1 | 2) => {
-                self.output.push_str(if args.len() == 1 {
-                    "__rt.cljGet2("
-                } else {
-                    "__rt.cljGet("
-                });
-                self.value(args[0]);
-                self.output.push_str(", ");
-                self.value(callee);
-                if let Some(&default) = args.get(1) {
-                    self.output.push_str(", ");
-                    self.value(default);
-                }
-                self.output.push(')');
-                return true;
-            }
-            ExprKind::CoreFn(core) if !self.replaced(core.runtime_name()) => core,
-            _ => return false,
-        };
-        if core == C::Comp && args.is_empty() {
-            self.rt(RuntimeName::core("identity"));
-            return true;
-        }
-        if matches!(core, C::Identity | C::Comp | C::Partial) && args.len() == 1 {
-            self.value(args[0]);
-            return true;
-        }
-        if args.len() == 1 && self.native_transducer(core) {
-            self.output.push('(');
-            self.arguments(args);
-            self.output.push(')');
-            return true;
-        }
-        if self.native_combinator(core) {
-            self.output.push('(');
-            self.arguments(args);
-            self.output.push(')');
-            return true;
-        }
-        if self.native_numeric_call(core, args) {
-            return true;
-        }
-        let kind_test = |kind: &'static str| -> (&'static str, &'static str, bool, &'static str) {
-            ("(__rt.formKind(", "formValue", false, kind)
-        };
-        // Text before the intrinsic, its name, whether a missing default
-        // is passed as `null`, and the text after its call.
-        let (before, intrinsic, null_default, after) = match (core, args.len()) {
-            (C::Count, 1) => ("", "cljCount", false, ""),
-            (C::Seq, 1) => ("", "cljSeq", false, ""),
-            (C::First, 1) => ("", "cljFirst", false, ""),
-            (C::Second, 1) => ("__rt.cljFirst(", "cljNext", false, ")"),
-            (C::Rest, 1) => ("", "cljRest", false, ""),
-            (C::Next, 1) => ("", "cljNext", false, ""),
-            (C::Peek, 1) => ("", "cljPeek", false, ""),
-            (C::Cons, 2) => ("", "cljCons", false, ""),
-            (C::Nth, 2) => ("", "cljNth", false, ""),
-            (C::Nth, 3) => ("", "cljNthOr", false, ""),
-            (C::Get, 2) => ("", "cljGet2", false, ""),
-            (C::Get, 3) => ("", "cljGet", false, ""),
-            (C::Contains, 2) => ("", "cljContains", false, ""),
-            (C::Assoc, 3) => ("", "cljAssoc", false, ""),
-            (C::Dissoc, 2) => ("", "cljDissoc", false, ""),
-            (C::Conj, 2) => ("", "cljConj", false, ""),
-            (C::Disj, 2) => ("", "cljDisj", false, ""),
-            (C::Meta, 1) => ("", "cljMeta", false, ""),
-            (C::WithMeta, 2) => ("", "cljWithExportedMeta", false, ""),
-            (C::Equal, 2) => ("", "formEquals", false, ""),
-            (C::Hash, 1) => ("", "formHash", false, ""),
-            (C::Concat, 0) => ("__rt.cljConcatAll(", "formList", false, ")"),
-            (C::Not, 1) => ("(!", "cljTruth", false, ")"),
-            (C::Boolean, 1) => ("", "cljTruth", false, ""),
-            (C::IsZero, 1) => ("", "cljIsZero", false, ""),
-            (C::IsFalse, 1) => ("", "cljIsFalse", false, ""),
-            (C::IsString, 1) => ("(typeof ", "formValue", false, " === 'string')"),
-            (C::Reduced, 1) => ("", "cljReduced", false, ""),
-            (C::IsReduced, 1) => ("", "cljIsReduced", false, ""),
-            (C::Unreduced, 1) => ("", "cljUnreduced", false, ""),
-            (C::EnsureReduced, 1) => {
-                self.output
-                    .push_str("(x => __rt.cljIsReduced(x) ? x : __rt.cljReduced(x))(");
-                self.value(args[0]);
-                self.output.push(')');
-                return true;
-            }
-            (C::IsNil, 1) => ("(", "formValue", false, " == null)"),
-            (C::IsSome, 1) => ("(", "formValue", false, " != null)"),
-            (C::IsEmpty, 1) => ("(", "cljSeq", false, " === null)"),
-            (C::IsKeyword, 1) => kind_test(") === \"keyword\")"),
-            (C::IsSymbol, 1) => kind_test(") === \"symbol\")"),
-            (C::IsList, 1) => ("", "cljIsList", false, ""),
-            (C::IsColl, 1) => ("", "cljIsColl", false, ""),
-            (C::IsMapEntry, 1) => ("", "cljIsMapEntry", false, ""),
-            (C::IsSequential, 1) => ("", "cljIsSequential", false, ""),
-            (C::IsVector, 1) => ("", "cljIsVector", false, ""),
-            // A record is a map too (light-cljs-478).
-            (C::IsMap, 1) => (
-                "((k) => k === \"map\" || k === \"record\")(__rt.formKind(",
-                "formValue",
-                false,
-                "))",
-            ),
-            (C::IsSet, 1) => kind_test(") === \"set\")"),
-            (C::IsSeq, 1) => ("", "cljIsSeq", false, ""),
-            // Lazy and chunked sequences (light-cljs-479): what `for` and
-            // `doseq` expand to, so that their helper values publish.
-            (C::Realized, 1) => ("", "cljRealized", false, ""),
-            (C::IsChunkedSeq, 1) => ("", "cljChunkedSeq", false, ""),
-            (C::ChunkFirst, 1) => ("", "cljChunkFirst", false, ""),
-            (C::ChunkRest, 1) => ("", "cljChunkRest", false, ""),
-            (C::ChunkNext, 1) => ("", "cljChunkNext", false, ""),
-            (C::ChunkCons, 2) => ("", "cljChunkCons", false, ""),
-            (C::Chunk, 1) => ("", "freeze", false, ""),
-            (C::NthProtocol, 2) => ("", "cljNth", false, ""),
-            (C::NthProtocol, 3) => ("", "cljNthOr", false, ""),
-            // The arithmetic `for` and `doseq` count chunks with, as the
-            // runtime object's entries compute it on unwrapped operands.
-            (C::Less | C::LessEqual | C::Greater | C::GreaterEqual, 2) => {
-                let operator = match core {
-                    C::Less => " < ",
-                    C::LessEqual => " <= ",
-                    C::Greater => " > ",
-                    _ => " >= ",
-                };
-                self.output.push_str("(__rt.formValue(");
-                self.value(args[0]);
-                write!(self.output, "){operator}__rt.formValue(").unwrap();
-                self.value(args[1]);
-                self.output.push_str("))");
-                return true;
-            }
-            (C::Inc | C::Dec, 1) => {
-                self.output.push_str("(__rt.formValue(");
-                self.value(args[0]);
-                self.output
-                    .push_str(if core == C::Inc { ") + 1)" } else { ") - 1)" });
-                return true;
-            }
-            // A chunk buffer is a task-owned vector builder; its capacity
-            // operand is evaluated and ignored.
-            (C::ChunkBuffer, 1) => {
-                self.output.push('(');
-                self.value(args[0]);
-                self.output.push_str(", __rt.vectorBuilder())");
-                return true;
-            }
-            (C::ChunkAppend, 2) => {
-                self.output.push_str("(__rt.builderConj(");
-                self.arguments(args);
-                self.output.push_str("), null)");
-                return true;
-            }
-            (C::Vector, n) if n <= NATIVE_CONSTRUCTOR_LIMIT => ("", "formVector", false, ""),
-            (C::List, n) if n <= NATIVE_CONSTRUCTOR_LIMIT => ("", "formList", false, ""),
-            (C::HashSet, n) if n <= NATIVE_CONSTRUCTOR_LIMIT => {
-                ("__rt.formReaderCollection(", "formSet", false, ")")
-            }
-            (C::HashMap, n) if n <= NATIVE_CONSTRUCTOR_LIMIT && n % 2 == 0 => {
-                ("__rt.formReaderCollection(", "formMap", false, ")")
-            }
-            (C::ArrayMap, n) if n <= NATIVE_CONSTRUCTOR_LIMIT && n % 2 == 0 => (
-                "__rt.formReaderCollection(__rt.formArrayMap(",
-                "formVector",
-                false,
-                "))",
-            ),
-            (C::Concat, 2) => ("", "cljConcat", false, ""),
-            // `(concat a b c …)`: one flat operand list, so a wide call
-            // nests no deeper than a narrow one.
-            (C::Concat, n) if n <= NATIVE_CONSTRUCTOR_LIMIT => {
-                ("__rt.cljConcatAll(", "formList", false, ")")
-            }
-            (C::Keyword, 1) => ("", "cljKeyword", false, ""),
-            (C::Keyword, 2) => ("", "cljKeywordNs", false, ""),
-            (C::Symbol, 1) => ("", "cljSymbol", false, ""),
-            (C::Symbol, 2) => ("", "cljSymbolNs", false, ""),
-            _ => return false,
-        };
-        self.output.push_str(before);
-        write!(self.output, "__rt.{intrinsic}(").unwrap();
-        self.arguments(args);
-        if null_default {
-            self.output.push_str(", null");
-        }
-        self.output.push(')');
-        self.output.push_str(after);
-        true
-    }
-
-    /// Fixed operands avoid the runtime's rest arrays and reducer callbacks.
-    /// Unwrap occurrences at the operator, retaining JavaScript nil, string,
-    /// NaN and signed-zero coercion. Wider calls evaluate every operand before
-    /// coercing any of them, including a comparison that short-circuits.
-    fn native_numeric_call(&mut self, core: crate::CoreFnId, args: &[ExprId]) -> bool {
-        use crate::CoreFnId as C;
-        let (operator, comparison) = match core {
-            C::Add => (" + ", false),
-            C::Subtract => (" - ", false),
-            C::Multiply => (" * ", false),
-            C::Divide => (" / ", false),
-            C::Less => (" < ", true),
-            C::LessEqual => (" <= ", true),
-            C::Greater => (" > ", true),
-            C::GreaterEqual => (" >= ", true),
-            _ => return false,
-        };
-        match args {
-            [] => match core {
-                C::Add => self.output.push('0'),
-                C::Multiply => self.output.push('1'),
-                _ => return false,
-            },
-            [arg] => match core {
-                C::Add | C::Multiply => self.value(*arg),
-                C::Subtract | C::Divide => {
-                    self.output.push_str(if core == C::Subtract {
-                        "(-__rt.formValue("
-                    } else {
-                        "(1 / __rt.formValue("
-                    });
-                    self.value(*arg);
-                    self.output.push_str("))");
-                }
-                _ => self.wrapped("", *arg, ", true"),
-            },
-            _ => {
-                let positional = args.len() > 2;
-                let temporary = if positional {
-                    self.operands.as_mut().map(|operands| {
-                        let base = operands.live;
-                        operands.live += args.len();
-                        operands.declared = operands.declared.max(operands.live);
-                        base
-                    })
-                } else {
-                    None
-                };
-                if let Some(base) = temporary {
-                    self.output.push('(');
-                    for (index, &arg) in args.iter().enumerate() {
-                        write!(self.output, "operand{} = ", base + index).unwrap();
-                        self.value(arg);
-                        self.output.push_str(", ");
-                    }
-                } else if positional {
-                    self.output.push_str("((");
-                    self.positional_params(args.len());
-                    self.output.push_str(") => ");
-                }
-                self.output.push('(');
-                let count = if comparison { args.len() - 1 } else { 1 };
-                for pair in 0..count {
-                    if pair > 0 {
-                        self.output.push_str(" && ");
-                    }
-                    let operands = if comparison {
-                        pair..pair + 2
-                    } else {
-                        0..args.len()
-                    };
-                    for (index, arg) in operands.enumerate() {
-                        if index > 0 {
-                            self.output.push_str(operator);
-                        }
-                        self.output.push_str("__rt.formValue(");
-                        if let Some(base) = temporary {
-                            write!(self.output, "operand{}", base + arg).unwrap();
-                        } else if positional {
-                            write!(self.output, "a{arg}").unwrap();
-                        } else {
-                            self.value(args[arg]);
-                        }
-                        self.output.push(')');
-                    }
-                }
-                self.output.push(')');
-                if let Some(base) = temporary {
-                    self.output.push(')');
-                    self.operands.as_mut().unwrap().live = base;
-                } else if positional {
-                    self.output.push_str(")(");
-                    self.arguments(args);
-                    self.output.push(')');
-                }
-            }
-        }
-        true
-    }
-
-    /// A transducer factory captures only immutable inputs. Stateful reducers
-    /// allocate their cells when applied, on the consuming task, and therefore
-    /// cannot publish. Keep the core-value adapters in `bbp_runtime.js` equivalent.
-    fn native_transducer(&mut self, core: crate::CoreFnId) -> bool {
-        use crate::CoreFnId as C;
-        let constructor = match core {
-            C::Filter => {
-                r#"f => rf => (...a) => {
-                if (a.length === 0) return invoke(rf);
-                if (a.length === 1) return invoke(rf, a[0]);
-                if (a.length === 2) return __rt.cljTruth(invoke(f, a[1])) ? invoke(rf, ...a) : a[0];
-                throw new Error('Invalid arity: ' + a.length);
-            }"#
-            }
-            C::Remove => {
-                r#"f => rf => (...a) => {
-                if (a.length === 0) return invoke(rf);
-                if (a.length === 1) return invoke(rf, a[0]);
-                if (a.length === 2) return __rt.cljTruth(invoke(f, a[1])) ? a[0] : invoke(rf, ...a);
-                throw new Error('Invalid arity: ' + a.length);
-            }"#
-            }
-            // Only nil results are dropped; false is kept.
-            C::Keep => {
-                r#"f => rf => (...a) => {
-                if (a.length === 0) return invoke(rf);
-                if (a.length === 1) return invoke(rf, a[0]);
-                if (a.length !== 2) throw new Error('Invalid arity: ' + a.length);
-                const v = invoke(f, a[1]);
-                return __rt.formValue(v) == null ? a[0] : invoke(rf, a[0], v);
-            }"#
-            }
-            C::KeepIndexed => {
-                r#"f => rf => {
-                let i = -1;
-                return (...a) => {
-                    if (a.length === 0) return invoke(rf);
-                    if (a.length === 1) return invoke(rf, a[0]);
-                    if (a.length !== 2) throw new Error('Invalid arity: ' + a.length);
-                    const v = invoke(f, ++i, a[1]);
-                    return __rt.formValue(v) == null ? a[0] : invoke(rf, a[0], v);
-                };
-            }"#
-            }
-            C::MapSeq => {
-                r#"f => rf => (...a) => {
-                if (a.length < 2) return invoke(rf, ...a);
-                return prepare(rf)(a[0], invoke(f, ...a.slice(1)));
-            }"#
-            }
-            C::Mapcat => {
-                r#"f => rf => (...a) => {
-                if (a.length < 2) return invoke(rf, ...a);
-                let result = a[0];
-                for (let s = __rt.cljSeq(invoke(f, ...a.slice(1))); s !== null; s = __rt.cljNext(s)) {
-                    result = invoke(rf, result, __rt.cljFirst(s));
-                    if (__rt.cljIsReduced(result)) return result;
-                }
-                return result;
-            }"#
-            }
-            C::PartitionAll => {
-                r#"n => {
-                const count = __rt.formValue(n);
-                return rf => {
-                    let buffer = __rt.formVector();
-                    const flush = result => {
-                        const group = buffer; buffer = __rt.formVector();
-                        return invoke(rf, result, group);
-                    };
-                    return (...a) => {
-                        if (a.length === 0) return invoke(rf);
-                        if (a.length === 1) {
-                            const result = __rt.formCount(buffer) === 0 ? a[0] : __rt.cljUnreduced(flush(a[0]));
-                            return invoke(rf, result);
-                        }
-                        if (a.length !== 2) throw new Error('Invalid arity: ' + a.length);
-                        buffer = __rt.formConj(buffer, a[1]);
-                        return __rt.formCount(buffer) === count ? flush(a[0]) : a[0];
-                    };
-                };
-            }"#
-            }
-            C::PartitionBy => {
-                r#"f => rf => {
-                const none = __rt.formKeyword('cljs.core', 'none');
-                let buffer = __rt.formVector(), prior = none;
-                const flush = result => {
-                    const group = buffer; buffer = __rt.formVector();
-                    return invoke(rf, result, group);
-                };
-                return (...a) => {
-                    if (a.length === 0) return invoke(rf);
-                    if (a.length === 1) {
-                        const result = __rt.formCount(buffer) === 0 ? a[0] : __rt.cljUnreduced(flush(a[0]));
-                        return invoke(rf, result);
-                    }
-                    if (a.length !== 2) throw new Error('Invalid arity: ' + a.length);
-                    const previous = prior, key = invoke(f, a[1]); prior = key;
-                    if (__rt.formEquals(previous, none) || __rt.formEquals(previous, key)) {
-                        buffer = __rt.formConj(buffer, a[1]); return a[0];
-                    }
-                    const result = flush(a[0]);
-                    if (!__rt.cljIsReduced(result)) buffer = __rt.formConj(buffer, a[1]);
-                    return result;
-                };
-            }"#
-            }
-            _ => return false,
-        };
-        self.output
-            .push_str("((prepare) => { const invoke = (f, ...a) => prepare(f)(...a); return (");
-        self.output.push_str(constructor);
-        self.output.push_str("); })(");
-        self.native_prepare_invoke();
-        self.output.push(')');
-        true
-    }
-
-    /// Pure function constructors: their closures capture native persistent
-    /// vectors, never the rest arrays or the task's runtime object. Keep the
-    /// core-value adapters in `bbp_runtime.js` equivalent. Calls inside these
-    /// closures still run on the task VM and may park at a helper dependency.
-    fn native_combinator(&mut self, core: crate::CoreFnId) -> bool {
-        use crate::CoreFnId as C;
-        let constructor = match core {
-            C::Identity => "x => x",
-            C::Constantly => "x => (...a) => x",
-            C::Complement => "f => (...a) => !__rt.cljTruth(invoke(f, ...a))",
-            C::Comparator => {
-                "f => (x, y) => __rt.cljTruth(invoke(f, x, y)) ? -1 : __rt.cljTruth(invoke(f, y, x)) ? 1 : 0"
-            }
-            C::Comp => {
-                r#"(...fs) => {
-                const n = fs.length;
-                if (n === 0) return x => x;
-                if (n === 1) return fs[0];
-                const functions = fs.reduce((v, f) => __rt.formConj(v, f), __rt.formVector());
-                return (...a) => {
-                    let r = invoke(__rt.formNth(functions, n - 1), ...a);
-                    for (let i = n - 2; i >= 0; i--) r = invoke(__rt.formNth(functions, i), r);
-                    return r;
-                };
-            }"#
-            }
-            C::Partial => {
-                r#"(...supplied) => {
-                const f = supplied[0];
-                if (supplied.length === 1) return f;
-                const prefix = supplied.length === 0 ? __rt.formVector(undefined, undefined, undefined)
-                    : supplied.slice(1).reduce((v, x) => __rt.formConj(v, x), __rt.formVector());
-                return (...a) => {
-                    const args = [];
-                    for (let i = 0, n = __rt.formCount(prefix); i < n; i++) args.push(__rt.formNth(prefix, i));
-                    return invoke(f, ...args, ...a);
-                };
-            }"#
-            }
-            C::Juxt => {
-                r#"(...fs) => {
-                const functions = fs.length === 0 ? __rt.formVector(undefined, undefined, undefined) : fs.reduce((v, f) => __rt.formConj(v, f), __rt.formVector());
-                return (...a) => {
-                    let result = __rt.formVector();
-                    for (let i = 0, n = __rt.formCount(functions); i < n; i++) result = __rt.formConj(result, invoke(__rt.formNth(functions, i), ...a));
-                    return result;
-                };
-            }"#
-            }
-            C::Fnil => {
-                r#"(f, ...ds) => {
-                const n = ds.length;
-                if (n < 1 || n > 3) throw new Error('Invalid arity: ' + (n + 1));
-                const defaults = ds.reduce((v, x) => __rt.formConj(v, x), __rt.formVector());
-                return (...a) => {
-                    // The legacy callable's missing fixed arity takes its
-                    // variadic branch with three undefined operands.
-                    if (a.length < (n === 1 ? 1 : 2)) a.length = 3;
-                    for (let i = 0; i < n && i < a.length; i++) if (__rt.formValue(a[i]) == null) a[i] = __rt.formNth(defaults, i);
-                    return invoke(f, ...a);
-                };
-            }"#
-            }
-            _ => return false,
-        };
-        // This small invocation adapter has the runtime's callable-collection
-        // semantics. It captures no runtime object and preserves occurrences.
-        self.output.push_str("((invoke) => (");
-        self.output.push_str(constructor);
-        self.output.push_str("))((f, ...a) => ");
-        self.native_prepare_invoke();
-        self.output.push_str("(f)(...a))");
-        true
-    }
-
     fn lowered_call(&mut self, callee: ExprId, args: &[ExprId]) -> bool {
         let Some(inference) = self.inference else {
             return false;
@@ -7283,11 +6354,7 @@ impl<'a, 's> Emitter<'a, 's> {
             self.output.push_str(keyword);
             self.local(param);
             if frame.receiver_from_this && index == 0 {
-                if self.native_protocol_target == Some(target) {
-                    writeln!(self.output, " = receiver{};", target.0).unwrap();
-                } else {
-                    self.output.push_str(" = this;\n");
-                }
+                self.output.push_str(" = this;\n");
             } else {
                 writeln!(self.output, " = r{}_{index};", target.0).unwrap();
             }
@@ -7402,13 +6469,6 @@ impl<'a, 's> Emitter<'a, 's> {
 
     /// The statements of `method`'s function, after its opening brace.
     fn method_body(&mut self, method: &FnMethod, ifn_call: bool, through_this: bool) {
-        let explicit_receiver = self.native_protocol_target == Some(method.target);
-        if explicit_receiver {
-            self.indentation();
-            write!(self.output, "const receiver{} = ", method.target.0).unwrap();
-            self.local(method.params[0]);
-            self.output.push_str(";\n");
-        }
         let field_reset = ifn_call
             && self.program.type_methods.contains(&method.target)
             && self.program.recur_targets[method.target.0].used;
@@ -7441,19 +6501,14 @@ impl<'a, 's> Emitter<'a, 's> {
                 method.target.0
             )
             .unwrap();
-            if explicit_receiver {
-                writeln!(self.output, "receiver{};", method.target.0).unwrap();
-            } else {
-                self.output.push_str("this;\n");
-            }
-            if !explicit_receiver && let Some(receiver) = method.params.first() {
+            self.output.push_str("this;\n");
+            if let Some(receiver) = method.params.first() {
                 self.indentation();
                 self.local(*receiver);
                 self.output.push_str(" = this;\n");
             }
         }
         if self.program.recur_targets[method.target.0].receiver_from_this
-            && !explicit_receiver
             && !self.reify_receivers.contains(&method.target)
             && !self.program.type_methods.contains(&method.target)
             && let Some(receiver) = method.params.first()
@@ -7654,42 +6709,8 @@ impl<'a, 's> Emitter<'a, 's> {
         }
     }
 
-    fn function_value(&self, mut id: ExprId) -> bool {
-        loop {
-            match &self.program.exprs[id.0].kind {
-                ExprKind::Do(items) if !items.is_empty() => id = *items.last().unwrap(),
-                ExprKind::WithMeta { value, .. } => id = *value,
-                ExprKind::Let { body, .. } | ExprKind::LetFn { body, .. } => id = *body,
-                ExprKind::Fn { .. } => return !self.program.macro_functions.contains(&id),
-                _ => return false,
-            }
-        }
-    }
-
-    fn definition_value(&mut self, id: ExprId) {
-        // A referenced dispatcher can be compiled in another namespace before
-        // its MultiFn consumer is analyzed. Function roots use consuming-task
-        // runtime reads and shareable arity dispatchers, just like inline
-        // methods. Actual user captures still undergo publication.
-        let previous = self.native_multimethod_function;
-        if self.native_forms && self.function_value(id) {
-            self.native_multimethod_function = true;
-        }
-        self.value(id);
-        self.native_multimethod_function = previous;
-    }
-
     fn function(&mut self, name: Option<LocalId>, methods: &[FnMethod], macro_function: bool) {
-        // Any ordinary callback can be retained by memoize, including one
-        // passed through a first-class constructor or another helper. Resolve
-        // runtime reads in its consumer just as for function roots. User
-        // captures still undergo the engine's publication check.
-        let previous = self.native_multimethod_function;
-        if self.native_forms && !macro_function {
-            self.native_multimethod_function = true;
-        }
         self.function_with_ifn_captures(name, methods, macro_function, false);
-        self.native_multimethod_function = previous;
     }
 
     fn function_with_ifn_captures(
@@ -7708,25 +6729,6 @@ impl<'a, 's> Emitter<'a, 's> {
         let entries: Vec<String> = (0..methods.len())
             .map(|index| format!("m{index}"))
             .collect();
-        let apply_null =
-            self.native_forms && !macro_function && methods.iter().any(|m| m.rest.is_some());
-        if self.native_forms && !macro_function && name.is_some() {
-            // Define the methods inside a named dispatcher so they capture
-            // its immutable self binding, rather than a forward binding cell
-            // that cannot publish with a memoized callback.
-            if apply_null {
-                self.output.push_str("__rt.fnApplyNull(");
-            }
-            // A discarded named fn must remain an expression, so JavaScript
-            // cannot hoist a declaration into its enclosing scope.
-            self.output.push('(');
-            self.named_dispatcher(&entries, methods, macro_function, name);
-            self.output.push(')');
-            if apply_null {
-                self.output.push(')');
-            }
-            return;
-        }
         self.output.push_str("(() => {\n");
         self.indent += 1;
         for (entry, method) in entries.iter().zip(methods) {
@@ -7743,13 +6745,7 @@ impl<'a, 's> Emitter<'a, 's> {
         self.output.push_str(";\n");
         self.arity_properties(&function, &entries, methods, macro_function, true);
         self.indentation();
-        if apply_null {
-            // Preserve applyTo's null receiver without mutable JS arity
-            // properties that would prevent the function from publishing.
-            writeln!(self.output, "return __rt.fnApplyNull({function});").unwrap();
-        } else {
-            writeln!(self.output, "return {function};").unwrap();
-        }
+        writeln!(self.output, "return {function};").unwrap();
         self.indent -= 1;
         self.indentation();
         self.output.push_str("})()");
@@ -7828,16 +6824,7 @@ impl<'a, 's> Emitter<'a, 's> {
             for i in 0..method.params.len() {
                 write!(self.output, "arguments[{i}], ").unwrap();
             }
-            if self.native_forms && self.native_multimethod_function {
-                // A native variadic dispatcher must not capture the task's
-                // runtime just to construct its immutable rest argument.
-                writeln!(
-                    self.output,
-                    "((args) => {{ if (args.length <= {}) return null; let rest = __rt.formList(); for (let i = args.length - 1; i >= {}; i--) rest = __rt.formConj(rest, args[i]); return rest; }})(arguments));",
-                    method.params.len(), method.params.len()
-                )
-                .unwrap();
-            } else {
+            {
                 self.rt(RuntimeName::export("fnRest"));
                 writeln!(self.output, "(arguments, {}));", method.params.len()).unwrap();
             }
@@ -7872,9 +6859,6 @@ impl<'a, 's> Emitter<'a, 's> {
         // a mutable JS property record and prevent ordinary callbacks from
         // publishing with memoized state or multimethod tables. Macro functions
         // keep the properties the host uses to check their public arity.
-        if self.native_forms && self.native_multimethod_function && !macro_function {
-            return;
-        }
         let end = if statements { ";\n" } else { "" };
         let start = |emitter: &mut Self| {
             if statements {
@@ -8764,178 +7748,6 @@ impl<'a, 's> Emitter<'a, 's> {
         self.output.push(']');
     }
 
-    /// Whether methods use JavaScript field access: mutable fields enter
-    /// the task runtime's resolver and effect lanes. Raw `deftype*` bodies
-    /// and mutable records retain ordinary JavaScript instances.
-    fn mutable_type(record: bool, layout: &crate::analyzer::TypeLayout) -> bool {
-        if layout.body.is_some() {
-            return !record;
-        }
-        layout.mutable
-    }
-
-    /// Whether the method `target` reads fields directly: not
-    /// [`Emitter::mutable_type`]. A field read with no type method target
-    /// reads a struct unless a field of `target` is mutable. A record's
-    /// `^:mutable __hash` does not count: a native record caches its hash
-    /// in an atomic, idempotent slot instead.
-    fn struct_fields(&self, target: crate::analyzer::RecurTargetId) -> bool {
-        *self
-            .struct_targets
-            .borrow_mut()
-            .entry(target)
-            .or_insert_with(|| {
-                let owner = self.program.exprs.iter().find_map(|expr| match &expr.kind {
-                    ExprKind::DefType {
-                        record,
-                        layout,
-                        methods,
-                        ..
-                    } if methods.iter().any(|(_, m)| m.target == target) => {
-                        Some(!Self::mutable_type(*record, layout))
-                    }
-                    _ => None,
-                });
-                if let Some(owner) = owner {
-                    return owner;
-                }
-                !self
-                    .program
-                    .field_bindings
-                    .iter()
-                    .any(|(local, &(t, mutable))| {
-                        mutable
-                            && t == target
-                            && !(self.program.locals[local.0].name == "__hash"
-                                && self.record_target(target))
-                    })
-            })
-    }
-
-    /// Whether the method `target` is a record's: its type has the
-    /// record's `__extmap` field.
-    fn record_target(&self, target: crate::analyzer::RecurTargetId) -> bool {
-        self.program
-            .field_bindings
-            .iter()
-            .any(|(local, &(t, _))| t == target && self.program.locals[local.0].name == "__extmap")
-    }
-
-    /// Whether field reads of the method `target` read a native struct: in a
-    /// native compile-time unit, a type without mutable fields.
-    fn struct_target(&self, target: crate::analyzer::RecurTargetId) -> bool {
-        self.native_forms && self.struct_fields(target)
-    }
-
-    /// A `deftype` or `defrecord` in a native compile-time unit
-    /// (light-cljs-478; docs/native-macros.md, "Protocols and types"): the
-    /// runtime's `nativeType` makes the type and installs its methods in
-    /// the protocol tables. Mutable deftypes use versioned field cells;
-    /// raw bodies and mutable records retain task-owned host instances.
-    /// The factories of a struct type construct with `__rt.structNew` and
-    /// `__rt.recordFromMap`.
-    fn native_def_type(
-        &mut self,
-        id: ExprId,
-        record: bool,
-        global: GlobalId,
-        layout: &crate::analyzer::TypeLayout,
-        methods: &[(MethodDispatch, FnMethod)],
-    ) {
-        let crate::analyzer::TypeLayout {
-            constructor,
-            body,
-            map_constructor,
-            fields,
-            ..
-        } = layout;
-        let mutable = (record || layout.body.is_some()) && Self::mutable_type(record, layout);
-        let wrapper = self.iife_open(id, true);
-        self.output.push(' ');
-        self.product(global);
-        self.output.push_str(" = ");
-        self.rt(RuntimeName::export("nativeType"));
-        self.output.push('(');
-        self.type_field_names(fields);
-        self.output.push_str(", ");
-        self.object_methods(methods, None, EntrySlots::InPlaceOfKey);
-        write!(self.output, ", {record}, ").unwrap();
-        self.type_name(global);
-        // The constructor of a mutable type's instances, and of the
-        // JavaScript view a struct's interop reads (`(.-x s)`).
-        let members = Self::type_members(fields, record);
-        self.output.push_str(", function(");
-        self.positional_params(members.len());
-        self.output.push_str(") {");
-        self.field_assignments(&members);
-        // The type itself, made once with the unit's factory.
-        let binding = &self.program.globals[global.0];
-        let name = format!("{}/{}", binding.namespace, binding.name);
-        let names = fields
-            .iter()
-            .map(|f| quoted(f))
-            .collect::<Vec<_>>()
-            .join(", ");
-        // The fields' JavaScript member names: the struct's own properties.
-        let member_names = members[..fields.len()]
-            .iter()
-            .map(|m| quoted(m))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let index = self.native_types.len();
-        let type_intrinsic = if layout.mutable && !mutable {
-            "mutableStructType"
-        } else {
-            "structType"
-        };
-        self.native_types.push(format!(
-            "__rt.{type_intrinsic}({}, __rt.formVector({names}), {record}, __rt.formVector({member_names}))",
-            quoted(&name)
-        ));
-        write!(self.output, " }}, {mutable}, __lightUnitType{index}, ").unwrap();
-        self.type_field_names(&members[..fields.len()]);
-        self.output.push_str("); ");
-        if let Some(constructor) = constructor {
-            self.product(*constructor);
-            if mutable {
-                self.output.push_str(" = (...args) => new ");
-                self.global(global);
-                self.output.push_str("(...args); ");
-            } else {
-                self.output.push_str(" = (");
-                self.positional_params(fields.len());
-                self.output.push_str(") => __rt.structNew(");
-                self.global(global);
-                for index in 0..fields.len() {
-                    write!(self.output, ", a{index}").unwrap();
-                }
-                self.output.push_str("); ");
-            }
-        }
-        if let Some(map_constructor) = map_constructor
-            && mutable
-        {
-            self.product(*map_constructor);
-            self.output.push_str(
-                " = () => { throw new Error(\"unsupported operation: map-> of a native macro record with mutable fields\"); }; ",
-            );
-        } else if let Some(map_constructor) = map_constructor {
-            self.product(*map_constructor);
-            self.output.push_str(" = value => __rt.recordFromMap(");
-            self.global(global);
-            self.output.push_str(", value); ");
-        }
-        self.return_open();
-        if let Some(body) = body {
-            self.value(*body);
-        } else {
-            self.product(global);
-        }
-        self.return_close();
-        self.output.push_str("; ");
-        self.iife_close(wrapper);
-    }
-
     /// `"ns/T"`, the name of the type that `global` holds.
     fn type_name(&mut self, global: GlobalId) {
         let binding = &self.program.globals[global.0];
@@ -9400,7 +8212,7 @@ impl<'a, 's> Emitter<'a, 's> {
     /// leaves them out (docs/value-layout.md, section 1, "Short names at
     /// `:advanced`"): at `Advanced`.
     fn names_program_slots(&self) -> bool {
-        self.replaced_core.is_some() && !self.native_forms
+        self.replaced_core.is_some()
     }
 
     /// Whether the protocol method whose dispatcher is `dispatcher`
@@ -9483,20 +8295,7 @@ impl<'a, 's> Emitter<'a, 's> {
                 }
             };
             write!(self.output, ", {arity}, ").unwrap();
-            // Callable adapters supply the receiver as the first argument;
-            // their rest binding still needs the ordinary fn dispatcher.
-            let direct = self.native_forms
-                && !ifn
-                && !matches!(dispatch, MethodDispatch::Builtin(name) if name.starts_with("Object/"))
-                && method.rest.is_none()
-                && !method.params.is_empty()
-                && self.scope_flags(method.body) & SCOPE_READ == 0;
-            let enclosing_target = self.native_protocol_target;
-            if direct {
-                self.native_protocol_target = Some(method.target);
-            }
             self.entry_function(method, ifn);
-            self.native_protocol_target = enclosing_target;
             if let Some(slot) = slot {
                 self.output.push_str(", ");
                 write_string(&mut self.output, slot.encode_utf16(), false);
@@ -9512,23 +8311,6 @@ impl<'a, 's> Emitter<'a, 's> {
                 {
                     write!(self.output, ", null, {}", method.params.len()).unwrap();
                 }
-            }
-            // The native runtime installs an `Object` method under the
-            // member name interop reads (`(.foo-bar x)` reads `foo_bar`), as
-            // the legacy `installMethods` munges it: the entry's sixth item.
-            if let MethodDispatch::Builtin(name) = dispatch
-                && let Some(member) = name.strip_prefix("Object/")
-                && self.native_forms
-            {
-                if method.rest.is_none() {
-                    self.output.push_str(", null, null");
-                }
-                self.output.push_str(", ");
-                let member = crate::analyzer::munge_js_member(member);
-                self.string_units(&member.encode_utf16().collect::<Vec<_>>());
-            }
-            if direct {
-                self.output.push_str(", null, null, null, true");
             }
             self.output.push(']');
         }
@@ -9579,254 +8361,11 @@ impl<'a, 's> Emitter<'a, 's> {
     }
 
     fn value(&mut self, id: ExprId) {
-        let previous_multimethod = self.native_multimethod_function;
-        if self.native_forms && self.native_multimethod_arguments.contains(&id) {
-            self.native_multimethod_function = true;
-        }
         let site = self.site.replace(id);
         self.mark(Some(id));
-        if self
-            .native_arguments
-            .front()
-            .is_some_and(|&(arg, _, _)| arg == id)
-        {
-            let (_, temporary, slot) = self.native_arguments.pop_front().unwrap();
-            write!(self.output, "temporary{temporary}_0[{slot}]").unwrap();
-        } else if self.native_forms && self.deep_native_form(id) {
-            let wrapper = self.iife_open(id, true);
-            self.output.push('\n');
-            self.indent += 1;
-            let temporary = self.native_form_statements(id);
-            self.indentation();
-            self.return_open();
-            write!(self.output, "temporary{temporary}_0[0]").unwrap();
-            self.return_close();
-            self.output.push_str(";\n");
-            self.indent -= 1;
-            self.indentation();
-            self.iife_close(wrapper);
-        } else {
-            self.value_expr(id);
-        }
+        self.value_expr(id);
         self.site = site;
         self.mark(site);
-        self.native_multimethod_function = previous_multimethod;
-    }
-
-    /// The eagerly evaluated operands of native syntax-quote constructors.
-    /// These calls bypass JavaScript property lookup already; extracting
-    /// their operands preserves evaluation order, throws and lazy realization.
-    /// Stop at other calls, branches and closures so they keep their scope
-    /// and conditional evaluation. Legacy/application emission never uses this.
-    fn native_form_arguments(&self, id: ExprId) -> Option<Cow<'a, [ExprId]>> {
-        use crate::{CoreFnId as C, compiler_data::CompilerLiteralKind as K};
-        if let ExprKind::ReaderLiteral {
-            kind,
-            items,
-            quoted: true,
-        } = &self.program.exprs[id.0].kind
-        {
-            match kind {
-                K::JsArray => return Some(Cow::Borrowed(items)),
-                K::JsObject => return Some(Cow::Owned(self.native_literal_object_items(items))),
-                _ => {}
-            }
-        }
-        let ExprKind::Call { callee, args } = &self.program.exprs[id.0].kind else {
-            return None;
-        };
-        let ExprKind::CoreFn(core) = self.program.exprs[callee.0].kind else {
-            return None;
-        };
-        if self.replaced(core.runtime_name()) {
-            return (args.len() <= NATIVE_CONSTRUCTOR_LIMIT)
-                .then_some(Cow::Borrowed(args.as_ref()));
-        }
-        match (core, args.len()) {
-            (C::Seq | C::Sequence, 1) | (C::WithMeta | C::Cons, 2) => {
-                Some(Cow::Borrowed(args.as_ref()))
-            }
-            (C::List | C::Vector | C::Concat, n) if n <= NATIVE_CONSTRUCTOR_LIMIT => {
-                Some(Cow::Borrowed(args.as_ref()))
-            }
-            _ => None,
-        }
-    }
-
-    /// A syntax quote expands each source level into several nested seq,
-    /// concat and list calls. Keep the engine's weighted nesting limit of
-    /// 256, rather than spending it on compiler-generated constructor trees.
-    /// Three constructor levels leave room for the surrounding macro body.
-    fn deep_native_form(&self, id: ExprId) -> bool {
-        let mut pending = vec![(id, 0)];
-        while let Some((id, depth)) = pending.pop() {
-            if let Some(args) = self.native_form_arguments(id) {
-                if depth == 2 {
-                    return true;
-                }
-                pending.extend(args.iter().map(|&arg| (arg, depth + 1)));
-            }
-        }
-        false
-    }
-
-    /// Evaluate a constructor tree as shallow statements in left-to-right
-    /// postorder. One local holds an operand stack, reusing consumed slots
-    /// and dropping their references after each constructor. Thus wide or
-    /// deep trees do not spend a frontend local on every node. Neither
-    /// effectful operands nor constructors are deduplicated. An explicit
-    /// worklist adds no recursion to the emitter's Rust stack.
-    fn native_form_statements(&mut self, id: ExprId) -> usize {
-        let outer = std::mem::take(&mut self.native_arguments);
-        let temporary = self.native_temporary;
-        self.native_temporary += 1;
-        self.indentation();
-        writeln!(self.output, "const temporary{temporary}_0 = [];").unwrap();
-        let mut pending = vec![(id, false, None)];
-        let mut values = 0;
-        while let Some((id, ready, prepared)) = pending.pop() {
-            let operands = self.native_form_arguments(id);
-            let args = operands.as_deref();
-            if !ready && let Some(args) = args {
-                // A replaced constructor remains an ordinary callable. Save
-                // its callee and `.call` before any operand effects, then use
-                // the same shallow traversal as intrinsic constructors.
-                let prepared = match self.program.exprs[id.0].kind {
-                    ExprKind::Call { callee, .. } if matches!(self.program.exprs[callee.0].kind, ExprKind::CoreFn(core) if self.replaced(core.runtime_name())) =>
-                    {
-                        let slot = values;
-                        values += 1;
-                        self.indentation();
-                        write!(self.output, "temporary{temporary}_0[{slot}] = ").unwrap();
-                        self.native_prepare_invoke();
-                        self.output.push('(');
-                        self.value(callee);
-                        self.output.push_str(");\n");
-                        Some(slot)
-                    }
-                    _ => None,
-                };
-                pending.push((id, true, prepared));
-                pending.extend(args.iter().rev().map(|&arg| (arg, false, None)));
-                continue;
-            }
-            let first = values - args.map_or(0, |args| args.len());
-            let destination = prepared.unwrap_or(first);
-            if let Some(args) = args {
-                self.native_arguments = args
-                    .iter()
-                    .enumerate()
-                    .map(|(index, &arg)| (arg, temporary, first + index))
-                    .collect();
-            }
-            self.indentation();
-            write!(self.output, "temporary{temporary}_0[{destination}] = ").unwrap();
-            // The constructor's arguments read the operand slots above. A leaf
-            // emits normally, including any independent quote in its body.
-            if let Some(slot) = prepared {
-                write!(self.output, "temporary{temporary}_0[{slot}](").unwrap();
-                self.arguments(args.unwrap());
-                self.output.push(')');
-            } else if args.is_some() {
-                let site = self.site.replace(id);
-                self.mark(Some(id));
-                self.value_expr(id);
-                self.site = site;
-            } else {
-                self.value(id);
-            }
-            debug_assert!(self.native_arguments.is_empty());
-            self.output.push_str(";\n");
-            if args.is_some_and(|args| args.len() > 1 || prepared.is_some() && !args.is_empty()) {
-                self.indentation();
-                writeln!(
-                    self.output,
-                    "temporary{temporary}_0.length = {};",
-                    destination + 1
-                )
-                .unwrap();
-            }
-            values = destination + 1;
-        }
-        self.native_arguments = outer;
-        debug_assert_eq!(values, 1);
-        temporary
-    }
-
-    /// Keep the callable adapter out of deeply scoped constructor leaves.
-    /// It runs before the arguments, as before, but its function body is
-    /// parsed once at the unit's top level rather than at each call site.
-    fn native_prepare_invoke(&mut self) {
-        debug_assert!(self.native_forms);
-        let temporary = *self.native_invoke_temporary.get_or_insert_with(|| {
-            let temporary = self.native_temporary;
-            self.native_temporary += 1;
-            temporary
-        });
-        write!(self.output, "temporary{temporary}_0").unwrap();
-    }
-
-    /// Fixed calls keep the callee, its `.call` read and operands in the
-    /// enclosing frame. This preserves the adapter's evaluation order across
-    /// suspension without allocating a closure, a rest array and a spread
-    /// array on every call. Wider calls retain the bounded generic adapter.
-    /// The RegExp constructor makes shareable regexes (light-cljs-563).
-    fn native_fixed_invoke(&mut self, callee: ExprId, args: &[ExprId]) -> bool {
-        if !(1..=2).contains(&args.len()) {
-            return false;
-        }
-        let Some(operands) = self.operands.as_mut() else {
-            return false;
-        };
-        let base = operands.live;
-        operands.live += 3 + args.len();
-        operands.declared = operands.declared.max(operands.live);
-        write!(self.output, "(operand{base} = ").unwrap();
-        self.value(callee);
-        write!(
-            self.output,
-            ", operand{} = __rt.cljCallable(operand{base}), operand{} = operand{} ? null : __rt.formValue(operand{base}) === globalThis.__lightNativeRuntime.intrinsicRegExp ? globalThis.__lightNativeRuntime.nativeRegExpMember : __rt.cljCallMember(operand{base}, ",
-            base + 1,
-            base + 2,
-            base + 1,
-        )
-        .unwrap();
-        let member = *self.native_call_member_temporary.get_or_insert_with(|| {
-            let temporary = self.native_temporary;
-            self.native_temporary += 1;
-            temporary
-        });
-        write!(self.output, "temporary{member}_0), ").unwrap();
-        for (index, &arg) in args.iter().enumerate() {
-            write!(self.output, "operand{} = ", base + 3 + index).unwrap();
-            self.value(arg);
-            self.output.push_str(", ");
-        }
-        write!(
-            self.output,
-            "operand{} ? __rt.cljInvoke(operand{base}, operand{}, ",
-            base + 1,
-            base + 3,
-        )
-        .unwrap();
-        if args.len() == 2 {
-            write!(self.output, "operand{}", base + 4).unwrap();
-        } else {
-            self.output.push_str("null");
-        }
-        write!(
-            self.output,
-            ", {}) : __rt.call(__rt.formValue(operand{base}), operand{}, null",
-            args.len(),
-            base + 2,
-        )
-        .unwrap();
-        for index in 0..args.len() {
-            write!(self.output, ", operand{}", base + 3 + index).unwrap();
-        }
-        self.output.push_str("))");
-        self.operands.as_mut().unwrap().live = base;
-        true
     }
 
     fn value_expr(&mut self, id: ExprId) {
@@ -10049,78 +8588,15 @@ impl<'a, 's> Emitter<'a, 's> {
             // the other constructor operands are the literal `nil`s the
             // analyzer gives `lazy-seq`; any other construction is the
             // runtime object's `LazySeq`.
-            ExprKind::Construct { callee, args }
-                if self.native_forms
-                    && matches!(
-                        self.program.exprs[callee.0].kind,
-                        ExprKind::CoreFn(crate::CoreFnId::LazySeq)
-                    )
-                    && args.len() == 4
-                    && [0, 2, 3]
-                        .iter()
-                        .all(|&i| matches!(self.program.exprs[args[i].0].kind, ExprKind::Nil)) =>
-            {
-                self.output.push_str("__rt.lazySeq(");
-                self.value(args[1]);
-                self.output.push(')');
-            }
             // In a native compile-time unit, a constructor that is a struct
             // type (an immutable `deftype` or `defrecord`, light-cljs-478)
             // makes the engine's native struct; `RegExp` (a local alias,
             // `(let [R js/RegExp] (R. …))`) a shareable regex value
             // (light-cljs-563); any other is `new`. The callee and then the
             // arguments are evaluated once, in order.
-            ExprKind::Construct { callee, args }
-                if self.native_forms
-                    && !matches!(self.program.exprs[callee.0].kind, ExprKind::JsGlobal(_)) =>
-            {
-                self.output.push_str("((c");
-                for index in 0..args.len() {
-                    write!(self.output, ", a{index}").unwrap();
-                }
-                self.output
-                    .push_str(") => __rt.formKind(c) === \"type\" ? __rt.structNew(c");
-                for index in 0..args.len() {
-                    write!(self.output, ", a{index}").unwrap();
-                }
-                self.output.push_str(") : ");
-                self.rt(RuntimeName::export("nativeConstruct"));
-                self.output.push_str("(c");
-                for index in 0..args.len() {
-                    write!(self.output, ", a{index}").unwrap();
-                }
-                self.output.push_str("))(");
-                self.value(*callee);
-                for (index, arg) in args.iter().enumerate() {
-                    self.output.push_str(", ");
-                    let previous = self.native_multimethod_function;
-                    if index == 1
-                        && matches!(
-                            self.program.exprs[callee.0].kind,
-                            ExprKind::CoreFn(crate::CoreFnId::MultiFn)
-                        )
-                    {
-                        self.native_multimethod_function = true;
-                    }
-                    self.value(*arg);
-                    self.native_multimethod_function = previous;
-                }
-                self.output.push(')');
-            }
             // `(js/RegExp. …)` in a native compile-time unit makes a
             // shareable regex value, like `re-pattern` (light-cljs-563), so
             // atoms and published helpers can hold it.
-            ExprKind::Construct { callee, args }
-                if self.native_forms && self.is_regexp_global(*callee) =>
-            {
-                // The constructor is read before the operands.
-                self.rt(RuntimeName::export("nativeRegExp"));
-                self.output.push('(');
-                self.value(*callee);
-                self.output.push_str(")(");
-                self.interop_arguments(args, None);
-                self.output.push(')');
-            }
             ExprKind::Construct { callee, args } => {
                 self.output.push_str("new ");
                 // Host resolution is an implementation call, not a source call.
@@ -10139,7 +8615,7 @@ impl<'a, 's> Emitter<'a, 's> {
                         self.output.push_str(", ");
                     }
                     if host {
-                        self.interop_value(*arg);
+                        self.value(*arg);
                     } else {
                         self.value(*arg);
                     }
@@ -10277,12 +8753,6 @@ impl<'a, 's> Emitter<'a, 's> {
                 global,
                 layout,
                 methods,
-            } if self.native_forms => self.native_def_type(id, *record, *global, layout, methods),
-            ExprKind::DefType {
-                record,
-                global,
-                layout,
-                methods,
             } => {
                 let crate::analyzer::TypeLayout {
                     constructor,
@@ -10383,11 +8853,11 @@ impl<'a, 's> Emitter<'a, 's> {
             }
             ExprKind::JsIndex { receiver, indices } => {
                 self.output.push('(');
-                self.interop_value(*receiver);
+                self.value(*receiver);
                 self.output.push(')');
                 for index in indices {
                     self.output.push('[');
-                    self.interop_value(*index);
+                    self.value(*index);
                     self.output.push(']');
                 }
             }
@@ -10402,9 +8872,9 @@ impl<'a, 's> Emitter<'a, 's> {
                     }
                 }
                 self.output.push_str("(delete (");
-                self.interop_value(*receiver);
+                self.value(*receiver);
                 self.output.push_str(")[");
-                self.interop_value(*key);
+                self.value(*key);
                 self.output.push_str("])");
             }
             ExprKind::QualifiedMethod { class, method } => {
@@ -10615,7 +9085,6 @@ impl<'a, 's> Emitter<'a, 's> {
                 direct,
             } => {
                 if self.replaced_core.is_some()
-                    && !self.native_forms
                     && self.repeatable(*value)
                     && (*direct || self.pure_operand(*protocol))
                 {
@@ -10640,7 +9109,6 @@ impl<'a, 's> Emitter<'a, 's> {
                     self.output.push(')');
                 } else if self.application_roots
                     && !self.demand_roots
-                    && !self.native_forms
                     && *direct
                     && self.repeatable(*value)
                 {
@@ -10758,54 +9226,6 @@ impl<'a, 's> Emitter<'a, 's> {
                 quoted,
             } => {
                 use crate::compiler_data::CompilerLiteralKind as K;
-                if self.native_forms && *quoted && matches!(kind, K::JsArray | K::JsObject) {
-                    let object = *kind == K::JsObject;
-                    let canonical;
-                    let items = if object {
-                        canonical = self.native_literal_object_items(items);
-                        &canonical[..]
-                    } else {
-                        &items[..]
-                    };
-                    self.output.push_str(if object {
-                        "__rt.formCompilerLiteral(\"js-object\", "
-                    } else {
-                        "__rt.formCompilerLiteral(\"js-array\", "
-                    });
-                    self.construct(
-                        if object {
-                            Composite::LiteralMap
-                        } else {
-                            Composite::Vector
-                        },
-                        items.len(),
-                        |emitter, index| emitter.value(items[index]),
-                    );
-                    self.output.push(')');
-                    return;
-                }
-                if self.native_forms
-                    && (matches!(kind, K::Uuid | K::Queue)
-                        || *quoted && matches!(kind, K::Regex | K::Instant))
-                {
-                    let tag = match kind {
-                        K::Regex => "regex",
-                        K::Instant => "instant",
-                        K::Uuid => "uuid",
-                        K::Queue => "queue",
-                        _ => unreachable!(),
-                    };
-                    write!(self.output, "__rt.formCompilerLiteral({tag:?}, ").unwrap();
-                    if *kind == K::Queue {
-                        self.construct(Composite::Vector, items.len(), |emitter, index| {
-                            emitter.value(items[index])
-                        });
-                    } else {
-                        self.arguments(items);
-                    }
-                    self.output.push(')');
-                    return;
-                }
                 let (constructor, open) = match (kind, quoted) {
                     (K::JsArray, true) => (Some(RuntimeName::compiler_forms("jsArray")), "(["),
                     (K::JsObject, true) => (Some(RuntimeName::compiler_forms("jsObject")), "(["),
@@ -10848,17 +9268,8 @@ impl<'a, 's> Emitter<'a, 's> {
                     self.value(*value);
                 }
             }
-            ExprKind::NamespaceView { namespace, value } => {
-                if self.native_forms {
-                    self.output.push_str("(__rt.effect(65527,");
-                    self.string(*namespace);
-                    self.output.push_str(") ? ");
-                    self.value(*value);
-                    self.output
-                        .push_str(" : __rt.formArrayMap(__rt.formVector()))");
-                } else {
-                    self.value(*value);
-                }
+            ExprKind::NamespaceView { value, .. } => {
+                self.value(*value);
             }
             ExprKind::WithMeta { value, metadata } => {
                 // `#js` data keeps its compiler form `withMeta`.
@@ -10887,8 +9298,6 @@ impl<'a, 's> Emitter<'a, 's> {
                 symbol,
                 metadata,
             } => {
-                // The Pants build's runtime has the same two constructors,
-                // over its native Var (`bbp_runtime.js`).
                 self.rt(RuntimeName::export(if *definition {
                     "definitionVar"
                 } else {
@@ -11011,19 +9420,6 @@ impl<'a, 's> Emitter<'a, 's> {
                     *value
                 };
                 if self.compiler_binding(value) {
-                    if self.native_forms {
-                        self.rt(RuntimeName::core("nativeRootExists"));
-                        self.output.push('(');
-                        self.binding_name(value);
-                        self.output.push_str(
-                            if matches!(self.program.exprs[id.0].kind, ExprKind::BindingExists(_)) {
-                                ", true)"
-                            } else {
-                                ", false)"
-                            },
-                        );
-                        return;
-                    }
                     self.output.push_str(
                         if matches!(self.program.exprs[id.0].kind, ExprKind::BindingExists(_)) {
                             "globalThis.__lightHasCompilerRoot("
@@ -11082,41 +9478,6 @@ impl<'a, 's> Emitter<'a, 's> {
         match &self.program.exprs[id.0].kind {
             ExprKind::SetGlobal { target, value } => {
                 self.note_core_method_write(*target);
-                if self.native_forms && self.compiler_binding(*target) {
-                    self.output.push_str("globalThis.__lightSetCompilerRoot(");
-                    self.binding_name(*target);
-                    self.output.push_str(", ");
-                    self.value(*value);
-                    self.output.push(')');
-                    return;
-                }
-                if self.native_forms
-                    && let ExprKind::Property { receiver, property } =
-                        &self.program.exprs[target.0].kind
-                {
-                    // The assignment itself stays in this (sloppy) unit, so a
-                    // rejected host store follows the caller's mode; the
-                    // runtime only prepares the value for its receiver. The
-                    // receiver is demanded exactly as a member read's
-                    // (`ExprKind::Property`): only in a unit with demand roots.
-                    self.output.push_str(
-                        "((__lightStoreReceiver, __lightStoreValue) => __lightStoreReceiver",
-                    );
-                    self.member(property);
-                    self.output.push_str(" = ");
-                    self.rt(RuntimeName::export("nativeStoreValue"));
-                    self.output
-                        .push_str("(__lightStoreReceiver, __lightStoreValue))(");
-                    if self.demand_roots {
-                        self.rt(RuntimeName::export("declarationReceiver"));
-                    }
-                    self.output.push('(');
-                    self.interop_receiver(*receiver, property);
-                    self.output.push_str("), ");
-                    self.value(*value);
-                    self.output.push(')');
-                    return;
-                }
                 let interop = matches!(
                     self.program.exprs[target.0].kind,
                     ExprKind::JsGlobal(_) | ExprKind::Property { .. } | ExprKind::JsIndex { .. }
@@ -11126,7 +9487,7 @@ impl<'a, 's> Emitter<'a, 's> {
                     |emitter| emitter.assignable(*target),
                     |emitter| {
                         if interop {
-                            emitter.interop_value(*value)
+                            emitter.value(*value)
                         } else {
                             emitter.value(*value)
                         }
@@ -11215,11 +9576,11 @@ impl<'a, 's> Emitter<'a, 's> {
             self.output.push_str("typeof ");
             self.global(global);
             self.output.push_str(" === \"undefined\" ? ");
-            self.definition_value(init);
+            self.value(init);
             self.output.push_str(" : ");
             self.global(global);
         } else {
-            self.definition_value(init);
+            self.value(init);
         }
         self.output.push_str(";\n");
     }
@@ -11264,7 +9625,7 @@ impl<'a, 's> Emitter<'a, 's> {
                             self.output.push_str("value.cljs$lang$test = test, ");
                         }
                         self.output.push_str("value))(");
-                        self.definition_value(*init);
+                        self.value(*init);
                         if let Some(test) = test {
                             self.output.push_str(", ");
                             self.value(*test);
@@ -11275,13 +9636,13 @@ impl<'a, 's> Emitter<'a, 's> {
                         self.without_operands(|emitter| {
                             if let Some(test) = test {
                                 emitter.output.push_str("{ const value = ");
-                                emitter.definition_value(*init);
+                                emitter.value(*init);
                                 emitter.output.push_str("; value.cljs$lang$test = ");
                                 emitter.value(*test);
                                 emitter.output.push_str("; return value; }");
                             } else {
                                 emitter.output.push('(');
-                                emitter.definition_value(*init);
+                                emitter.value(*init);
                                 emitter.output.push(')');
                             }
                         });
@@ -11320,7 +9681,7 @@ impl<'a, 's> Emitter<'a, 's> {
                     self.output.push('(');
                     self.global(*global);
                     self.output.push_str(" = ");
-                    self.definition_value(*init);
+                    self.value(*init);
                     if let Some(test) = test
                         && self.returned_definition != Some(id)
                     {
@@ -11350,22 +9711,10 @@ impl<'a, 's> Emitter<'a, 's> {
             // A native struct type is not a constructor: `instance?` of one
             // compares the value's type (light-cljs-478); the value and then
             // the class are evaluated once, as `x instanceof c` does.
-            ExprKind::InstanceOf { class, value }
-                if self.native_forms
-                    && !matches!(self.program.exprs[class.0].kind, ExprKind::JsGlobal(_)) =>
-            {
-                self.output.push_str("((x, c) => ");
-                self.rt(RuntimeName::core("isInstance"));
-                self.output.push_str("(c, x))(");
-                self.value(*value);
-                self.output.push_str(", ");
-                self.value(*class);
-                self.output.push(')');
-            }
             ExprKind::InstanceOf { class, value } => {
                 self.output.push('(');
                 if matches!(self.program.exprs[class.0].kind, ExprKind::JsGlobal(_)) {
-                    self.interop_value(*value);
+                    self.value(*value);
                 } else {
                     self.value(*value);
                 }
@@ -11387,7 +9736,7 @@ impl<'a, 's> Emitter<'a, 's> {
                 } else {
                     self.output.push('(');
                 }
-                self.interop_receiver(*receiver, property);
+                self.value(*receiver);
                 self.output.push(')');
                 self.member(property);
             }
@@ -11402,11 +9751,11 @@ impl<'a, 's> Emitter<'a, 's> {
                 } else {
                     self.output.push('(');
                 }
-                self.interop_receiver(*receiver, method);
+                self.value(*receiver);
                 self.output.push(')');
                 self.member(method);
                 self.output.push('(');
-                self.interop_arguments(args, Some(method));
+                self.arguments(args);
                 self.output.push(')');
             }
             _ => unreachable!("member_value of another kind"),
@@ -11444,20 +9793,6 @@ impl<'a, 's> Emitter<'a, 's> {
                     self.membership_value(&membership, membership.contains);
                     return;
                 }
-                if self.native_forms && self.is_regexp_global(*callee) {
-                    // `(js/RegExp …)`: as the constructor above, keeping
-                    // `RegExp(r)`'s identity (light-cljs-563).
-                    self.rt(RuntimeName::export("nativeRegExpCall"));
-                    self.output.push('(');
-                    self.value(*callee);
-                    self.output.push_str(")(");
-                    self.interop_arguments(args, None);
-                    self.output.push(')');
-                    return;
-                }
-                if self.native_forms && self.native_call(*callee, args) {
-                    return;
-                }
                 if self.lowered_call(*callee, args) {
                     return;
                 }
@@ -11473,10 +9808,7 @@ impl<'a, 's> Emitter<'a, 's> {
                     return;
                 }
                 if let ExprKind::CoreFn(core) = self.program.exprs[callee.0].kind
-                    && (self.known_unit(core)
-                        || self.native_forms
-                            && core.operation().value == crate::core_operations::Type::FN
-                            && !self.replaced(core.runtime_name()))
+                    && (self.known_unit(core))
                 {
                     // `rt$add(1, 2)`: a core operation in a unit binding of its
                     // own. Only called, its value does not escape, so the slice
@@ -11514,21 +9846,6 @@ impl<'a, 's> Emitter<'a, 's> {
                     return;
                 }
                 let specialized = self.specialized_calls.and_then(|calls| calls.get(&id));
-                if self.native_forms
-                    && specialized.is_none()
-                    && !matches!(self.program.exprs[callee.0].kind, ExprKind::JsGlobal(_))
-                {
-                    if self.native_fixed_invoke(*callee, args) {
-                        return;
-                    }
-                    self.native_prepare_invoke();
-                    self.output.push('(');
-                    self.value(*callee);
-                    self.output.push_str(")(");
-                    self.arguments(args);
-                    self.output.push(')');
-                    return;
-                }
                 self.output.push('(');
                 let cell = match self.program.exprs[callee.0].kind {
                     ExprKind::CoreFn(core) if specialized.is_none() => {
@@ -11549,7 +9866,7 @@ impl<'a, 's> Emitter<'a, 's> {
                 if matches!(self.program.exprs[callee.0].kind, ExprKind::JsGlobal(_)) {
                     // A JS path is a host invocation and retains its final receiver.
                     self.output.push_str(")(");
-                    self.interop_arguments(args, None);
+                    self.arguments(args);
                 } else {
                     self.output.push_str(").call(null");
                     if !args.is_empty() {
@@ -11691,8 +10008,6 @@ fn emit_interactive(
         false,
         mapped,
         None,
-        false,
-        &[],
     );
     (unit, mapping)
 }
@@ -11766,8 +10081,6 @@ impl<'a> NamespaceUnits<'a> {
             false,
             true,
             None,
-            false,
-            &[],
         );
         (unit, mapping.expect("a mapped emission has a source map"))
     }
@@ -11876,8 +10189,6 @@ mod namespace_unit_tests {
             false,
             true,
             None,
-            false,
-            &[],
         );
         (unit, mapping.unwrap().to_json(None, &[], false))
     }

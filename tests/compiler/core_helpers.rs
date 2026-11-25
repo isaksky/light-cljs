@@ -84,7 +84,6 @@ fn applied_partial_and_juxt_constructors_preserve_lazy_tails_in_both_phases() {
     for _ in 0..2 {
         for (source, expected) in cases {
             let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
-            // The Pants build embeds no QuickJS to run this half of the check.
             #[cfg(feature = "quickjs")]
             {
                 let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();

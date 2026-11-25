@@ -7,7 +7,6 @@ use std::process::{Command, Stdio};
 fn both(source: &str, expected: &str) {
     let program = analyze_with_macros(source, &parse(source).unwrap(), &mut MacroHost::new())
         .unwrap_or_else(|e| panic!("{source}: {e}"));
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
@@ -102,7 +101,6 @@ fn factory_phase_isolation_diagnostics_and_bounded_repetition() {
         );
         let source = "(defmacro good [] (str (->UUID \"ABC\" nil))) (good)";
         let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
-        // The Pants build embeds no QuickJS to run this half of the check.
         #[cfg(feature = "quickjs")]
         {
             let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();

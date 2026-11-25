@@ -43,7 +43,6 @@ fn host() -> MacroHost {
 #[test]
 fn complete_declaration_sources_execute_in_fresh_and_reused_hosts_and_both_phases() {
     let mut reused = host();
-    // The Pants build embeds no QuickJS; Node runs every script below.
     #[cfg(feature = "quickjs")]
     let evaluator = Evaluator::new(EvaluatorOptions {
         timeout: std::time::Duration::from_secs(120),
@@ -94,14 +93,12 @@ fn complete_declaration_sources_execute_in_fresh_and_reused_hosts_and_both_phase
                         let emitted = light_cljs::compile_with_macros(&computation, host).unwrap();
                         format!("eval({emitted:?})")
                     };
-                    // The Pants build embeds no QuickJS; Node runs the script below.
                     #[cfg(feature = "quickjs")]
                     let actual = evaluator
                         .string(evaluator.evaluate_js(&script).unwrap())
                         .unwrap();
                     #[cfg(feature = "quickjs")]
                     assert_eq!(actual, expected, "{id} {phase} {session} {cycle}");
-                    // The Pants build embeds no QuickJS to run this half of the check.
                     #[cfg(feature = "quickjs")]
                     {
                         let fresh_engine = Evaluator::new(EvaluatorOptions {
@@ -179,7 +176,6 @@ fn declaration_demand_failures_ownership_and_generations_recover() {
             node(&format!("eval({js:?})")),
             "[[[true [:pending]] 43 [:pending]] 43 [:pending :unrelated]]"
         );
-        // The Pants build embeds no QuickJS to run this half of the check.
         #[cfg(feature = "quickjs")]
         {
             let evaluator = Evaluator::new(EvaluatorOptions {
@@ -201,7 +197,6 @@ fn declaration_demand_failures_ownership_and_generations_recover() {
         light_cljs::compile("(pr-str (let [d (declare single)] [(undefined? d) (nil? d)]))")
             .unwrap();
     assert_eq!(node(&format!("eval({direct:?})")), "[true true]");
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let direct_engine = Evaluator::new(EvaluatorOptions {

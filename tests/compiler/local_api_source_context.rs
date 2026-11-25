@@ -84,7 +84,6 @@ fn original_local_api_sources_execute_in_both_phases_and_host_lifecycles(start: 
                     compile_namespace_with_macros("user", std::slice::from_ref(&root), host)
                         .unwrap_or_else(|error| panic!("{id} {host_kind} {phase}: {error}"));
                 std::fs::write(root.join("compiled.js"), &javascript).unwrap();
-                // The Pants build embeds no QuickJS to run this half of the check.
                 #[cfg(feature = "quickjs")]
                 {
                     let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();

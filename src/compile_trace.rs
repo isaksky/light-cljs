@@ -1052,15 +1052,6 @@ pub(crate) fn recording() -> bool {
     active()
 }
 
-/// Whether any thread records a trace, with one relaxed load: runtime-wide
-/// counters that `--stats` reports (the Pants build's bridge and task log
-/// counters) are kept only then.
-#[inline]
-#[allow(dead_code)]
-pub(crate) fn any_recording() -> bool {
-    RECORDING.load(Ordering::Relaxed) != 0
-}
-
 /// A load phase run on the pool (light-cljs-337): the coordinator's wall
 /// time in it is charged to [`Stage::Load`], as a frame with no inner frames
 /// would be, and the time of each source's parse job is its namespace's

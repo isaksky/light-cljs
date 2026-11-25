@@ -7,14 +7,6 @@ this repository that derive from it. When adapting more upstream material, keep
 the upstream notice in the file, name the pinned revision, and add the path
 here.
 
-## big-boy-pants-js
-
-The engine under `crates/big-boy-pants-js/` was imported with its history from
-commit `7a6e6478469ded185d0eb6bc633eaa7ea6f57033`. Its adapted QuickJS sources,
-fixtures and generated Unicode/locale data retain their original notices.
-The engine's [attribution inventory](crates/big-boy-pants-js/docs/attribution.md)
-records the upstream revisions, derived paths and retained license texts.
-
 ## ClojureScript
 
 - Upstream: <https://github.com/clojure/clojurescript>, pinned at commit
@@ -40,15 +32,6 @@ records the upstream revisions, derived paths and retained license texts.
 Some tests additionally read the upstream checkout at run time from the
 gitignored `research/clojurescript` directory. Nothing from that checkout is
 committed beyond the adapted files listed above.
-
-## Cuerdas
-
-- Upstream: <https://github.com/funcool/cuerdas>, pinned to the Clojars artifact
-  `funcool/cuerdas` version `2026.415` used by the Penpot port.
-- Copyright (c) Andrey Antukh. License: BSD-2-Clause, reproduced in
-  `tests/fixtures/native-reader/cuerdas/core.cljc`.
-- That fixture retains `concat`, `interpolate-ffmt` and `ffmt`, with a reduced
-  string-repeat helper for the native reader integration test.
 
 ## SCI (Small Clojure Interpreter)
 

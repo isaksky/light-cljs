@@ -10,7 +10,6 @@ fn both(source: &str, expected: &str) {
     let mut host = MacroHost::new();
     let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host)
         .unwrap_or_else(|error| panic!("{source}\n{error}"));
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
@@ -89,7 +88,6 @@ fn complete_non_lite_object_equiv_body_executes_in_both_phases() {
 
 #[test]
 fn failed_equiv_calls_leave_reused_application_and_macro_hosts_usable() {
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let mut session = light_cljs::EvalSession::new(Default::default()).unwrap();
@@ -109,7 +107,6 @@ fn failed_equiv_calls_leave_reused_application_and_macro_hosts_usable() {
     assert!(light_cljs::compile_with_macros("(defmacro broken-equiv [] (.equiv [1] (map (fn [_] (throw (js/Error. \"equiv failure\"))) [1]))) (broken-equiv)", &mut host).is_err());
     let source = "(defmacro restored-equiv [] (.equiv [1 2] '(1 2))) (restored-equiv)";
     let js = light_cljs::compile_with_macros(source, &mut host).unwrap();
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();

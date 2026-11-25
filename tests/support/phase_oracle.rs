@@ -221,7 +221,6 @@ fn value(
     let js = compile_namespace_with_macros(namespace, &[root.to_path_buf()], host)
         .unwrap_or_else(|e| panic!("{context}: {e}"));
     fs::write(root.join("compiled.js"), &js).unwrap();
-    // The Pants build embeds no QuickJS; Node still runs the program below.
     #[cfg(feature = "quickjs")]
     {
         let evaluator = Evaluator::new(EvaluatorOptions {
@@ -274,7 +273,6 @@ fn observed(
         )
     };
     fs::write(root.join("script.js"), &script).unwrap();
-    // The Pants build embeds no QuickJS; Node still runs the script below.
     #[cfg(feature = "quickjs")]
     {
         let quickjs = rquickjs::Runtime::new().unwrap();

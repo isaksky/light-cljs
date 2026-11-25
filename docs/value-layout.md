@@ -191,11 +191,6 @@ and chunk buffers.
   `chunkRest`, `chunkNext` and `chunkDropFirst`) read a value's slot
   first, as the slot-first wrappers do; the core dispatchers
   (`coreMethod`) stay as they are.
-- **The Pants build.** The shared-heap profile's `lazyOf` and
-  `chunkedConsOf` answer the engine's lazy seqs and chunked conses with a
-  view of the same keyed fields, its `cells` no longer holds chunked
-  conses, its `delays` is a unit of its own, and its `stamped` accepts the
-  engine's lazy seqs and conses, which the form bridge reads.
 
 What light-cljs-1026 landed: the vector classes hold their data themselves,
 replacing 1009's one `store$LKEY` (`state$LKEY`) field.
@@ -289,10 +284,6 @@ were the last values of the `cells` store.
   reads a repeat's kind, and `inspect`'s cell test carries `/*@stamped*/`.
   A seq's `toJSON` (the shared base's) now leaves out every keyed own
   field by its key, since a destructuring would run the cells' getters.
-- **The Pants build.** The shared-heap profile's `cellOf` answers the
-  engine's lists and conses (not its chunked ones) with a view of the same
-  keyed fields, its `cons` builds a `ListCell` onto a runtime-owned tail,
-  and its `stamped` accepts the engine's lists.
 
 What light-cljs-1028 landed: the vector classes declare their protocols and
 answer their operations from slots.
@@ -512,9 +503,6 @@ What light-cljs-1031 landed: a symbol's metadata in its own field.
   a value made by reflection from a symbol's prototype reads an undefined
   field as its metadata, where it read nil (deliberate reflection, which
   the group gave up).
-- **The Pants build.** `sharedSymbol`'s runtime-owned symbol cells take the
-  field; engine symbol forms keep the engine's metadata (`formWithMeta`),
-  which `ownMeta` does not answer.
 
 What light-cljs-1036 landed: the map transients hold their own fields, a
 public hash map its count and nil entry, and no reader takes an array or
@@ -602,8 +590,7 @@ sets and records, and the values of the WeakMap stores that section 2 gives
 - **`swap!`.** An atom's `swap!` and `swap-vals!` call its function with
   the arguments as they came, or, past two, with the first two and an
   indexed seq of the others (upstream's `apply`), and build no seq of them
-  all for `swapState` to walk; the Pants build's engine atoms take
-  `swapState`.
+  all for `swapState` to walk.
 - **Enumeration.** `Object.keys` of a set, set transient, queue, reduced
   value, delay or UUID lists its keyed fields, and its `toJSON` (the set,
   reduced, UUID and delay prototypes', the transient and sequence bases')
@@ -982,14 +969,12 @@ What light-cljs-1040 landed: keywords and symbols compare by their own
   `keywordProgramEquiv`, which takes the class's own slot for none. Where no
   session demands declarations (`slotFirst`), it reads the key's slot itself
   and compares it with `keywordEquiv`, so the common search makes no lookup
-  and no test of the runtime's own slots (`builtinSlots`, a WeakSet probe in
-  the V8 profile and a linear search in the Pants build's); a getter on the
+  and no test of the runtime's own slots (`builtinSlots`, a WeakSet probe); a getter on the
   slot still runs once per search. A session that demands declarations
   takes the lookup, which demands first, and drops the class's slot from its
   answer, as the compile-time lookup (build.rs `interpreterDispatch`)
   returns the runtime's own slots. A host type's method (`externalMethod`)
-  never answers a keyword. The Pants build's keywords are engine forms,
-  which carry no slot: their searches take the lookup as before.
+  never answers a keyword.
 - **Extensions.** `extend-type` of `IEquiv` on `Keyword` or `Symbol`
   replaces the slot and `specify!` shadows it, so `=` and the searches call
   the program's method as before (tests/fixtures/compiler_sequence_object_equiv.tsv).
@@ -1104,10 +1089,7 @@ What light-cljs-1046 landed: no protocol lookup probes the stores in turn.
   chunk buffers and string writers stay outside it, so `extend-type` of
   `object` or `default` still reaches them; the Proxy of
   `protocol_hooks_answer_runtime_values_as_the_full_lookup` is asked 340
-  and 345 times, where 842 and 809. The Pants build's profile, whose
-  engine forms have no kind, keeps probing (its `storesPredicate` and
-  `ownedProtocolValue`), and the QuickJS reference's reordering of the
-  probes (build.rs) is gone.
+  and 345 times, where 842 and 809.
 - **Slots.** A hash or array set has `-count`, `-seq`, `-conj` and
   `-lookup` slots, a queue `-count`, `-seq` and `-conj`, and a vector, a
   subvector and a map entry `-contains-key?` (`vectorContains`), each
@@ -1142,10 +1124,7 @@ fields.
   lacks one is not enumerable, so metadata stays out of `Object.keys` and
   JSON, as it was in the store, and a var, a function with metadata, a
   `reify` value and a host literal of the compiler form bridge need nothing
-  of their own. `ownMeta` is the field's presence. The Pants build's
-  profile swaps `meta`, `setMeta`, `heldHash` and `holdHash`, which also
-  answer its engine forms (`formMeta`, the task's hash cache) and leave a
-  value the boot sealed without a cached hash.
+  of their own. `ownMeta` is the field's presence.
 - **A public constructor's slots** are its value's own field `slots`
   (`constructorSlots`), which the operations read where they read the
   store: the slots keep a constructor's answers (a queue's or a set's
@@ -1276,11 +1255,7 @@ spelling, and its walk takes about 9 ns less.
   one (`extend-type`, `specify!`), so the program still decides which keys
   are equal, a getter on the slot runs as often, and a session that demands
   declarations takes the lookup (light-cljs-1040's rule). Any other key
-  compares by `equalPair` alone: the Pants build's profile makes its
-  identity test after reading a boxed scalar, so that an occurrence of NaN
-  equals nothing, itself included, which an identity test before it broke
-  (`shared_profile_nan_occurrence_keys_use_canonical_equality`). A
-  collision node compares each entry so.
+  compares by `equalPair` alone. A collision node compares each entry this way.
 - **A slot written by name.** `keywordProgramEquiv` reads the key's slot
   without the protocol lookup (`protocolHooks.builtin`), which only its
   lookups need, as `equalPair`'s wrapper reads it: a program that writes a
@@ -1341,7 +1316,7 @@ metadata field without `meta`'s lookup.
   called `preserveMeta`; the vectors' `-conj` slots already did. Its unit is
   among `protocolHooks.extend`'s `when:` units, so a program that keeps
   `extendType` keeps the flag. Dev builds, the macro host, the REPL, the
-  evaluator, the QuickJS reference and the Pants build's profile keep every
+  evaluator and QuickJS keep every
   unit, so they take `meta` as before. A value that `specify!` or a method
   written by name gives its own `IMeta` hands what that method answers to
   its `conj` and `assoc` at every level, as before
@@ -2433,14 +2408,6 @@ lists in turn; six native tests read their class's mask bit
   runtime class, host values, atoms, delays, volatiles, uuids, dates).
   Spliced into the apps' output before they were written, the six
   measured 0, 21 and 9 bytes after gzip (simple, TodoMVC, flow).
-- **The Pants build's profile** swaps in its own `seqableValue`,
-  `collectionValue`, `metaValue`, `withMetaValue`, `fnValue`,
-  `withMetaKeeps`, `withMetaCopies` and the six mask-read tests, which
-  probe the stores in turn as its `ownedProtocolValue` does
-  (src/js_shared_profile.js): its engine forms have no kind. The `*Cells`
-  lists and `protocolStores` stay in the runtime's text for it; a V8
-  slice keeps them only with `clone`, whose copy of the stores' entries
-  only the profile's stores feed.
 - **Answers kept.** Every runtime, host and `specify!`-ed row of
   `protocol_hooks_answer_runtime_values_as_the_full_lookup`, its forged
   rows, and `extended_programs_answer_count_meta_and_predicates_without_the_lookup`
@@ -2584,8 +2551,7 @@ kept every type's `.fields` effect, all their fields.
   operation checks whether a slot was replaced.
 - Release, dev builds and the target-side REPL use this layout and nothing
   else. The compile-time runtime (macro host, evaluator) uses it too and
-  adds a per-load brand for the compiler form bridge; the Pants build keeps
-  its engine forms for the kinds it swaps today (section 4).
+  adds a per-load brand for the compiler form bridge.
 - Deliberate reflection (reading the prototype's keys, `Object.create` of a
   runtime prototype, copying fields onto one) can forge a value. Nothing an
   accident can produce does (section 5). String-named protocol interop and
@@ -2909,7 +2875,7 @@ in flow, about 265 bytes after gzip, and the whole bundles shrink a further
   it.
 
 **Where names stay whole.** Dev builds, the REPL, the macro host, the
-evaluator, the Pants build, the `:none` and `:prepare` levels, and
+evaluator, the `:none` and `:prepare` levels, and
 `--pseudo-names` keep the whole names, and `"$LNAMES"` stays the
 placeholder there.
 
@@ -3255,7 +3221,6 @@ keywords and symbols their `-equiv`; mixed comparisons keep their answers.
 | macro host, compile-time runtime (V8 build) | classes | fixed (`$LKEY`) | per-load private field |
 | evaluator: `--eval`, `--repl`, folding (V8 build) | classes | fixed | per-load private field |
 | QuickJS reference (`lightCljsWeakMapStores`) | classes | fixed | per-load `WeakSet` |
-| Pants build, shared-heap profile (`src/js_shared_profile.js`) | engine forms for the kinds it swaps; classes for the kinds it inherits | fixed | engine forms; per-load brand for inherited classes |
 
 **Release and dev builds** adopt the class layout and nothing else: after
 light-cljs-1015 no payload class, kind table, `behindProtocol`,
@@ -3300,24 +3265,6 @@ emission keeps `Shared` or `Own` by today's rules, so `TypeBrand`,
 (section 5). `makeType`'s constructor, which dev builds and the lower levels
 use, carries the `/*@brand*/` marker in place of its `new TypeBrand(...)`.
 
-**The Pants build** keeps its engine forms (`__rt` intrinsics) for the kinds
-`src/js_shared_profile.js` swaps today (vectors and map entries, maps, sets,
-keywords, symbols, list cells), and takes the class layout for every kind it
-inherits from the V8 profile. Its boot seals the prototypes, so `extend-type`
-or `specify!` of a runtime kind keeps throwing there, as it does today
-(`sharedProfileBoot`, until light-cljs-649). A generic operation's
-slot-first path finds no slot on an engine form and falls through to the
-host-value fallback (section 3), where the profile's units answer engine
-forms; so a converted operation keeps a hook (as `kindHooks` are today) that
-only `src/js_shared_profile.js` fills. Where a conversion changes an
-interface a swapped unit or one of build.rs's pattern rewrites
-(`shared_owned_allocations`, `shared_persistent_updates`,
-`shared_scalar_reads`) relies on, the converting pellet changes them in the
-same commit; an old-layout unit the profile still needs moves into
-`src/js_shared_profile.js` rather than staying in `src/js_runtime.js`. Every
-conversion runs `cargo nextest run --locked --no-default-features --features
-bbp-macros --test bbp_macros`.
-
 ## 5. Tests
 
 The rule: a test that a value no accident can produce is no language value
@@ -3344,9 +3291,6 @@ its line in the commit message.
   both extension sets.
 - `macros::rejection_never_calls_arbitrary_getters_or_to_string`, all four
   cases, unchanged: the compile-time brand keeps it (section 4).
-- `bbp_macros::shared_profile::shared_profile_class_brands_are_task_local`,
-  unchanged: `defineClass`, `ClassBrand` and `TypeBrand` stay compile-time
-  units with task-local flags.
 - tests/support/execution.js (lines 4-5 and 71), the harness rule: language
   values are recognised only through the backend's `inspect`, "never ... by a
   public property or a tag-shaped host object", and plain objects are

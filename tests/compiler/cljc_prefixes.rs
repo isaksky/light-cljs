@@ -18,7 +18,6 @@ impl Sources {
     }
 }
 fn both(js: &str, expected: &str) {
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
@@ -285,7 +284,6 @@ mod original_reader_rejections {
         assert!(out.status.success());
         assert!(out.stderr.is_empty());
         let mut observed = Vec::new();
-        // The Pants build embeds no QuickJS; Node still runs the script above.
         #[cfg(feature = "quickjs")]
         observed.push(("QuickJS", q));
         observed.push(("Node", String::from_utf8(out.stdout).unwrap().trim().into()));

@@ -257,9 +257,7 @@ pub struct Exports<'a> {
     /// The shorthand properties of `return Object.freeze({...})`, in order.
     pub names: Vec<&'a str>,
     /// The binding the export object is returned through, `return
-    /// WRAPPER(Object.freeze({...}));` (the shared-heap profile's
-    /// `sharedProfileBoot`): a runtime binding, an export root, and kept in
-    /// a slice that keeps its unit.
+    /// WRAPPER(Object.freeze({...}));`. Its unit is an export root.
     pub wrapper: Option<&'a str>,
 }
 
@@ -1923,8 +1921,6 @@ fn parse_exports(
                 .to_string(),
         )
     };
-    // The shared-heap profile returns the export object through its boot
-    // function: `return sharedProfileBoot(Object.freeze({...}));`.
     let wrapped = texts.len() > 2
         && texts[0] == "return"
         && tokens[1].kind == Kind::Name
@@ -1977,7 +1973,6 @@ fn parse_core_table<'a>(
     let (cells, hub) = match (find(CORE_CELLS), find(CORE_HUB)) {
         (None, None) => return Ok(HashMap::new()),
         (Some(cells), Some(hub)) => (cells, hub),
-        // The shared-heap profile swaps the cells alone (`src/js_shared_profile.js`).
         (Some(cells), None) => (cells, cells),
         (None, Some(unit)) => {
             return Err((
@@ -2042,7 +2037,7 @@ fn parse_core_table<'a>(
             }
         }
     }
-    // The shared-heap profile's unit follows the literal with statements.
+    // Statements can follow the object literal.
     if cell_tokens[at..]
         .iter()
         .map(|token| token.text(source))

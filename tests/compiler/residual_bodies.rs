@@ -36,7 +36,6 @@ fn both(id: &str, source: &str, expected: &str, macro_phase: bool) {
         &mut host,
     )
     .unwrap_or_else(|e| panic!("{source}: {e}"));
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let evaluator = Evaluator::new(EvaluatorOptions {

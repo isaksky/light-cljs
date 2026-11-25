@@ -309,7 +309,6 @@ fn all_131_native_string_bodies_execute_with_canonical_printing_evidence() {
                 continue;
             }
         };
-        // The Pants build embeds no QuickJS to run this half of the check.
         #[cfg(feature = "quickjs")]
         let observation = {
             let e = Evaluator::new(Default::default()).unwrap();
@@ -324,7 +323,6 @@ fn all_131_native_string_bodies_execute_with_canonical_printing_evidence() {
             }
             observation
         };
-        // The Pants build embeds no QuickJS; Node checks each case below.
         #[cfg(not(feature = "quickjs"))]
         let observation = String::new();
         scripts.push(format!("console.log(JSON.stringify({javascript}));"));
@@ -403,7 +401,6 @@ fn verbatim_pinned_upstream_string_api_and_capitalization_property_execute() {
         .unwrap();
     let observation = node(&format!("console.log(JSON.stringify({js}));"));
     assert_eq!(observation.trim(), "[true,95,true,1000]");
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let e = Evaluator::new(light_cljs::evaluator::EvaluatorOptions {

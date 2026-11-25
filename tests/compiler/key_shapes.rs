@@ -61,8 +61,7 @@ fn quickjs(expression: &str) -> String {
     evaluator.string(value).unwrap()
 }
 
-/// `expression`'s string value in QuickJS, or in Node in the Pants build,
-/// which embeds no QuickJS.
+/// `expression`'s string value in QuickJS when available, otherwise in Node.
 fn summary_of(expression: &str) -> String {
     #[cfg(feature = "quickjs")]
     return quickjs(expression);

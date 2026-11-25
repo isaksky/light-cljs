@@ -578,7 +578,7 @@ impl Project {
 /// What a child process does when `LIGHT_CACHE_MATRIX_CHILD` names an
 /// entry: compile it from `ROOTS` with the readers `#app/inline`,
 /// `#app/uniq` and `#app/core-target`, through the cache in `CACHE` when
-/// set, on the Pants build's macro backend when `NATIVE` is set, writing
+/// set, writing
 /// the script to `OUT` and the `--stats` report to `REPORT`.
 #[test]
 #[ignore = "a child process of the other tests"]

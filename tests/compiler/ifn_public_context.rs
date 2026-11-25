@@ -72,7 +72,6 @@ fn execute(identity: &str) {
                     .unwrap_or_else(|error| {
                         panic!("{identity} macro={macro_phase} reuse={reuse}: {error}")
                     });
-            // The Pants build embeds no QuickJS to run this half of the check.
             #[cfg(feature = "quickjs")]
             let actual = {
                 let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();

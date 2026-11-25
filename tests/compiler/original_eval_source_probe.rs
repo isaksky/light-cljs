@@ -16,7 +16,6 @@ fn whole_original_eval_body_uses_installed_application_service() {
     let mut output =
         fs::File::create(std::env::var("LIGHT_ORIGINAL_EVAL_OUTPUT").unwrap()).unwrap();
     for reused in [false, true] {
-        // The Pants build embeds no QuickJS to run this half of the check.
         #[cfg(feature = "quickjs")]
         {
             let mut session = EvalSession::new(EvalOptions {

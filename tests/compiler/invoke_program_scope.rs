@@ -81,7 +81,6 @@ fn unchanged_invoke_fixture_preserves_its_original_declared_call_failure() {
             quote(&javascript)
         );
         std::fs::write(sources.join("observed.js"), &observed).unwrap();
-        // The Pants build embeds no QuickJS to run this half of the check.
         #[cfg(feature = "quickjs")]
         {
             let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();

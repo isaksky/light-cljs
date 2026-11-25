@@ -44,7 +44,6 @@ fn node_script(script: &str) -> std::process::Output {
 }
 fn check(source: &str, expected: &str) {
     let js = compile(source).unwrap_or_else(|e| panic!("{source}: {e}"));
-    // The Pants build embeds no QuickJS; Node still runs the program below.
     #[cfg(feature = "quickjs")]
     {
         let quickjs = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
@@ -77,7 +76,6 @@ fn complete_pinned_syntax_quote_and_tagged_bodies_execute_in_both_engines() {
         )
         .unwrap();
         assert_eq!(run(&js), format!("{assertions}\n"));
-        // The Pants build embeds no QuickJS; Node ran the program above.
         #[cfg(feature = "quickjs")]
         {
             let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
@@ -95,7 +93,6 @@ fn reader_api_arities_and_rest_execute_in_application_and_macro_phases() {
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/reader-coverage");
     let js = light_cljs::compile_namespace("reader.api", &[root]).unwrap();
     assert_eq!(run(&js), "true\n");
-    // The Pants build embeds no QuickJS; Node ran the program above.
     #[cfg(feature = "quickjs")]
     {
         let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
@@ -136,7 +133,6 @@ fn spelling_metadata_gensyms_and_public_tagged_data_execute_in_both_phases() {
     )
     .unwrap();
     assert_eq!(run(&js), "true\n");
-    // The Pants build embeds no QuickJS; Node ran the program above.
     #[cfg(feature = "quickjs")]
     {
         let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
@@ -569,7 +565,6 @@ fn runtime_reader_registers_aliases_refers_and_source_namespace_entries() {
     .unwrap();
     let js =
         light_cljs::compile_namespace("reader.app", std::slice::from_ref(root.path())).unwrap();
-    // The Pants build embeds no QuickJS; Node runs the program below.
     #[cfg(feature = "quickjs")]
     {
         let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
@@ -726,7 +721,6 @@ fn runtime_reader_profiles_missing_alias_locations_and_nested_tag_reads() {
         include_str!("../../src/js_runtime.js"),
         checks
     );
-    // The Pants build embeds no QuickJS; the same checks run in Node elsewhere.
     #[cfg(feature = "quickjs")]
     {
         let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
@@ -774,7 +768,6 @@ fn anonymous_nonpositive_bindings_execute_in_application_and_macro_phases() {
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/reader-coverage");
     let js = light_cljs::compile_namespace("reader.nonpositive", &[root]).unwrap();
     assert_eq!(run(&js), "[true [true 1] 0]\n");
-    // The Pants build embeds no QuickJS; Node ran the program above.
     #[cfg(feature = "quickjs")]
     {
         let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();

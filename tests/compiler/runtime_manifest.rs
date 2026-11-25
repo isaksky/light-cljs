@@ -18,6 +18,46 @@ fn manifest() -> &'static RuntimeManifest<'static> {
     RuntimeManifest::embedded()
 }
 
+#[test]
+fn export_wrapper_is_validated_and_preserved() {
+    assert_eq!(manifest().exports.wrapper, None);
+    let source = ANNOTATED_RUNTIME
+        .replace(
+            "  //@exports\n  return Object.freeze({",
+            "  //@unit wrapExports\n  function wrapExports(exports) { return exports; }\n  //@exports\n  return wrapExports(Object.freeze({",
+        )
+        .replace("});\n})()\n", "}));\n})()\n");
+    let wrapped = RuntimeManifest::parse(&source).unwrap();
+    wrapped.validate().unwrap();
+    assert_eq!(wrapped.exports.wrapper, Some("wrapExports"));
+    let wrapper = wrapped.unit_named("wrapExports").unwrap();
+    assert!(wrapped.export_roots().contains(&wrapper));
+    let mut kept = vec![true; wrapped.units.len()];
+    assert_eq!(
+        wrapped.sliced_text(&kept, &wrapped.exports.names),
+        wrapped.runtime_text()
+    );
+    assert!(wrapped.runtime_text().ends_with("}));\n})()\n"));
+    kept[wrapper.0] = false;
+    assert!(
+        wrapped
+            .sliced_text(&kept, &[])
+            .ends_with("  return Object.freeze({});\n})()\n")
+    );
+    let missing = source.replace("return wrapExports(", "return missingBoot(");
+    let errors = RuntimeManifest::parse(&missing)
+        .unwrap()
+        .validate()
+        .unwrap_err();
+    assert_eq!(
+        errors
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect::<Vec<_>>(),
+        ["returns the exports through `missingBoot`, which no unit declares"]
+    );
+}
+
 /// A kind test of a value that may be a host object at compile time, and
 /// the compile-time runtime's text in its place (build.rs `STAMPED_MARKER`).
 const STAMPED_MARKER: &str = "/*@stamped*/";

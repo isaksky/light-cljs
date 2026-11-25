@@ -65,42 +65,6 @@ impl NamespaceAnalysis {
         }
     }
 
-    /// Snapshot only the state analysis reads. Pending merges and compiler
-    /// counters remain with the coordinator. `source_index` is canonical.
-    #[allow(dead_code)]
-    pub(crate) fn namespace_job(
-        &mut self,
-        source_index: usize,
-        slots: crate::scheduler::Slots,
-    ) -> NamespaceJob {
-        self.wave_snapshot().job(source_index, slots)
-    }
-
-    /// Append only top-level IR now. Deferred fragments retain their original
-    /// snapshots and relocate when the ordinary `merge_front` drains them.
-    #[allow(dead_code)]
-    pub(crate) fn publish_namespace(&mut self, mut published: NamespacePublication) {
-        assert_eq!(published.drained.source_index, self.roots.len());
-        let start = self.program.exprs.len();
-        let first_lazy = self.program.lazy_targets.len();
-        published.program.root = published.root;
-        let (root, ids) = crate::program_fragment::append_published(
-            &mut self.program,
-            &published.program,
-            &published.shared,
-            &published.drained.namespace,
-            &mut self.globals,
-            &published.changed_globals,
-        );
-        published.drained.relocate(ids);
-        published.drained.top = start..self.program.exprs.len();
-        self.record_layouts.extend(&self.program.exprs);
-        self.last_lazy = self.lazy_namespaces_since(first_lazy);
-        self.roots.push(root);
-        self.requires.push(published.requires);
-        self.pending.push_back(Pending::Analyzed(published.drained));
-    }
-
     /// Publish a parallel overlay namespace pass in canonical order: relocates
     /// local unit IDs to canonical unit IDs, appends top-level warnings in
     /// serial order (so `finish_capture` and `hold_warnings` match `--jobs 1`),
@@ -147,73 +111,6 @@ impl NamespaceAnalysis {
 }
 
 impl NamespaceJob {
-    /// The host belongs to this thread and must share the build's unit catalog.
-    /// Namespace workers run their own units; no nested unit pool is started.
-    #[allow(dead_code)]
-    pub(crate) fn analyze(
-        mut self,
-        input: &NamespaceInput<'_>,
-        resolution: NamespaceResolution,
-        result: bool,
-        host: &mut MacroHost,
-        options: AnalysisOptions,
-    ) -> Result<NamespacePublication, AnalysisError> {
-        let mut warnings = Vec::new();
-        let recording = crate::macro_host::MacroFreeUnit::enter(
-            input.name.to_owned(),
-            false,
-            Default::default(),
-            true,
-        );
-        let outcome = self
-            .top
-            .analyze(input, resolution, result, host, options, &mut warnings);
-        let charges = crate::compilation_session::UnitCharges::namespace(
-            recording.finish(),
-            host,
-            input.name,
-            Vec::new(),
-            Vec::new(),
-            None,
-        );
-        let (root, mut drained) = outcome?;
-        if let Some(session) = host.session_handle() {
-            for unit in &drained.dispatched {
-                if session.unit_failed(unit.unit) {
-                    return Err(session
-                        .diagnostic(unit.unit)
-                        .unwrap_or_else(|| AnalysisError {
-                            kind: AnalysisErrorKind::MacroExpansion(
-                                "a deferred namespace unit failed".into(),
-                            ),
-                            span: self.top.program.exprs[unit.placeholder.0].span.clone(),
-                        }));
-                }
-            }
-        }
-        assert!(
-            drained.pooled.is_empty(),
-            "namespace workers must not start a nested unit pool"
-        );
-        drained.warnings = HeldWarnings::Held(warnings);
-        let changed_globals = self
-            .top
-            .program
-            .globals
-            .changed_entries(&self.globals_before, self.globals_before.len());
-        Ok(NamespacePublication {
-            program: self.top.program,
-            shared: self.shared,
-            root,
-            drained,
-            requires: input.requires.to_vec(),
-            charges: Some(charges),
-            changed_globals,
-            warnings: Vec::new(),
-            mutated_foreign_ns: false,
-        })
-    }
-
     /// Analyze a namespace's top-level pass on a pool worker backed by a
     /// private [`crate::compilation_session::CompilationSession`] overlay
     /// (Stage C, light-cljs-1090). Deferred units stay unanalyzed in the
@@ -236,8 +133,7 @@ impl NamespaceJob {
         if logs_capture {
             crate::generated_names::start_log();
         }
-        let captures_namespaces =
-            logs_capture && engine.is_some_and(|engine| !engine.has_native_bridge());
+        let captures_namespaces = logs_capture && engine.is_some();
         let pending_capture =
             (engine.is_some() && (logs_capture || captures_namespaces)).then(|| {
                 crate::macro_host::PendingCaptureGuard::install(
@@ -364,10 +260,6 @@ impl NamespacePublication {
         host.session_handle()
             .unwrap()
             .charge_namespace(charges, host)
-    }
-    #[allow(dead_code)]
-    pub(crate) fn deferred_units(&self) -> impl Iterator<Item = usize> + '_ {
-        self.drained.dispatched.iter().map(|unit| unit.unit)
     }
     pub(crate) fn dispatched_local_ids(&self) -> Vec<usize> {
         self.drained

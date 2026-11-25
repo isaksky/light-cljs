@@ -1,6 +1,5 @@
 //! A per-thread timeline of what each compiling thread does and waits for,
-//! for measuring why a parallel build leaves cores idle (light-cljs-573,
-//! docs/shared-heap-compilation.md, "Why the Pants build leaves cores idle").
+//! for measuring idle time in parallel builds (light-cljs-573).
 //!
 //! It records only in a `--stats` build run with `LIGHT_CLJS_WAIT_TIMELINE`
 //! naming a file; the build writes the events there when it reports its

@@ -20,156 +20,6 @@ pub const REPORT_VERSION: u32 = 1;
 /// How many namespaces the report's table lists.
 pub const REPORT_NAMESPACES: usize = 20;
 
-/// Native form bridge work and collection diagnostics for one macro expansion.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct NativeBridgeCall {
-    pub imported: usize,
-    pub exported: usize,
-    pub reused: usize,
-    /// Bridge time, excluding JavaScript execution.
-    pub nanos: u128,
-    pub collections: u64,
-    pub gc_pause_nanos: u128,
-    /// Runtime high-water pause through this call, not a per-call delta.
-    pub gc_pause_max_nanos: u128,
-    pub gc_live_objects: usize,
-    /// Accounted bytes under the memory limit after this call, runtime-wide
-    /// and including unswept garbage (docs/native-macros.md, "Memory limit").
-    pub gc_managed_bytes: usize,
-    /// Runtime high-water accounted bytes through this call.
-    pub gc_peak_managed_bytes: usize,
-    /// Accounted bytes left after the runtime's last collection.
-    pub gc_live_bytes: usize,
-    /// Bytes admitted during this call, by every task of the runtime.
-    pub gc_admitted_bytes: usize,
-    /// The runtime's accounted-byte limit; 0 when it has none.
-    pub gc_byte_limit: usize,
-    pub helper_compiled: usize,
-    pub helper_published: usize,
-    pub helper_per_task: usize,
-    pub helper_waits: usize,
-}
-
-/// Actual native-runtime work across all tasks, counted once per event.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct NativeHelperCounts {
-    /// One snapshot of the shared heap, including pooled tasks. Per-call
-    /// samples alone omit calls whose worker-local host has been dropped.
-    pub heap: Option<NativeHeapStats>,
-    pub compiled: usize,
-    pub published: usize,
-    pub per_task: usize,
-    pub waits: usize,
-    pub steps: usize,
-    pub migrations: usize,
-    /// Task contexts booted on the runtime: the coordinator's, each
-    /// worker's and each nested producer's.
-    pub contexts: usize,
-    /// Distinct unit sources compiled once into a shared factory.
-    pub units_compiled: usize,
-    /// Unit evaluations served by a shared factory.
-    pub units_shared: usize,
-    /// Unit evaluations compiled by the evaluating task itself.
-    pub units_evaluated: usize,
-    /// Task contexts pool slots parked between jobs for others to borrow.
-    pub contexts_lent: usize,
-    /// Parked task contexts a pool slot borrowed instead of booting one.
-    pub contexts_borrowed: usize,
-    /// Parked task steps a completion queued on the pool from its wakeups.
-    pub woken: usize,
-    /// The bridge's prune walk and `&env` cache, counted only while a
-    /// trace records (`--stats`).
-    pub bridge: NativeBridgeCounters,
-    /// Task steps after which the host read the task's dependency log, the
-    /// edges those reads copied and the edges they handed to the dependency
-    /// graph, counted only while a trace records (`--stats`).
-    pub log_reads: usize,
-    pub log_edges_copied: usize,
-    pub log_edges_recorded: usize,
-    /// Catalog installs into a task (each applies the registrations after
-    /// its task's frontier, or a producer adopts its parent's catalog), the
-    /// registrations they applied, including those producers applied on
-    /// first use of a name or protocol, and the installs' time, counted only
-    /// while a trace records (`--stats`).
-    pub catalog_uses: usize,
-    pub catalog_entries: usize,
-    pub catalog_nanos: usize,
-    /// Helper producer tasks set up, the standalone registrations their
-    /// setup replayed, the catalog registrations they applied (on first use
-    /// of a name or protocol of the catalog they adopted, light-cljs-590),
-    /// and the setup's time, counted only while a trace records.
-    pub producers: usize,
-    pub producer_replayed: usize,
-    pub producer_catalog_entries: usize,
-    pub producer_nanos: usize,
-    /// The real cljs.core of `--macro-core real` (light-cljs-648); none
-    /// with the port.
-    pub real_core: Option<RealCoreCounts>,
-}
-
-/// The real cljs.core one compilation booted (`--macro-core real`;
-/// `src/bbp_evaluator/real_core.rs`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct RealCoreCounts {
-    /// Members of the profile's hub (its per-task defaults included,
-    /// the evaluator's compile-time members not), and those that published.
-    pub members: usize,
-    pub published: usize,
-    /// Tasks that booted a private copy of the profile for a member that
-    /// did not publish (the per-task fallback).
-    pub private_boots: usize,
-    /// The boot task's time, from spawn to the published hub.
-    pub boot_nanos: u64,
-}
-
-/// What the Pants build's form bridge did to keep its import memo and its
-/// one `&env` envelope, runtime-wide (`src/bbp_evaluator.rs`, `Bridge`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct NativeBridgeCounters {
-    /// Prune walks: one on the first import after each collection.
-    pub prune_passes: usize,
-    /// Imports examined following reclamation notifications, and those dropped.
-    pub prune_imports_visited: usize,
-    pub prune_imports_removed: usize,
-    /// Datum nodes traversed to rediscover reachability. Cached child links
-    /// eliminate this walk; keep the counter for comparison with older builds.
-    pub prune_nodes_walked: usize,
-    /// Imported roots and cached child links released. Children are examined
-    /// only when the last reference to their parent dies.
-    pub prune_references_released: usize,
-    /// Form, cost and native-object entries the walks dropped.
-    pub prune_entries_removed: usize,
-    pub prune_nanos: u128,
-    /// `&env` imports served by the envelope as it is (the same Datum).
-    pub env_hits: usize,
-    /// `&env` imports that rebuilt the envelope from the previous one, and
-    /// those with no previous envelope (a full import).
-    pub env_misses: usize,
-    pub env_full: usize,
-    /// Rebuilds that replaced a different envelope.
-    pub env_evictions: usize,
-    /// Envelope keys the rebuilds assoc'd or dissoc'd.
-    pub env_entries_rebuilt: usize,
-    /// Bytes the engine admitted during `&env` imports (runtime-wide, so
-    /// exact only on one thread) and the time those imports took.
-    pub env_bytes_rebuilt: usize,
-    pub env_nanos: u128,
-}
-
-/// Aggregate native heap accounting; this is not process RSS.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct NativeHeapStats {
-    pub collections: u64,
-    /// Edges every collection so far traced: the total marking work.
-    pub traced_edges: u64,
-    pub live_objects: usize,
-    pub managed_bytes: usize,
-    pub peak_managed_bytes: usize,
-    pub live_bytes: usize,
-    pub admitted_bytes: usize,
-    pub byte_limit: usize,
-}
-
 /// Wall time per phase of a compilation. The phases do not overlap; work a
 /// phase demands of another (such as a deferred unit a macro needs while a
 /// namespace's top level is analyzed) counts in the phase that demanded it.
@@ -242,8 +92,6 @@ pub struct DeferredUnitCounts {
     /// and the compile-time units its workers' engines initialized, each
     /// once per isolate that demanded it.
     pub pooled: usize,
-    /// Pooled units the Pants coordinator claimed before a worker started.
-    pub coordinator_units: usize,
     pub worker_isolates: usize,
     pub worker_isolate_startup: std::time::Duration,
     pub worker_unit_time: std::time::Duration,
@@ -268,13 +116,6 @@ pub struct DeferredUnitCounts {
 /// The numbers of one compilation; see the module documentation.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CompileStats {
-    /// The Pants build's selected core, even when no macro task executes
-    /// (a macro-free compilation or a rebuild using cached artifacts).
-    /// Other macro engines have no core selection.
-    pub native_macro_calls: Vec<NativeBridgeCall>,
-    pub native_helpers: NativeHelperCounts,
-    /// The native backend's effect lanes (light-cljs-480).
-    pub lanes: crate::effect_lanes::LaneCounts,
     pub phases: PhaseTimes,
     /// From the start of the compilation to the end of its last recorded
     /// phase.
@@ -411,7 +252,7 @@ pub struct LiveCounts {
     /// [`crate::namespace_artifact::NamespaceArtifact`]s captured, decoded
     /// or cloned and not yet dropped.
     pub artifacts: usize,
-    /// JavaScript engines (a shared Pants runtime, V8 isolate or QuickJS runtime)
+    /// JavaScript engines (V8 isolates and QuickJS runtimes)
     /// made for macros, deferred units or a session and not yet dropped.
     pub engines: usize,
     /// Persistent handles Rust holds into an engine's heap: V8 `Global`s (a
@@ -480,8 +321,7 @@ pub struct CacheCounts {
     pub hits: usize,
     /// `(namespace, kind, description)`, the kind being the first key
     /// component that differed (`source`, `dependencies`, ...) or
-    /// `no-artifact`, `index`, `unreadable`, `undecodable`, `refused` or, on
-    /// the Pants build, `core-write`.
+    /// `no-artifact`, `index`, `unreadable`, `undecodable` or `refused`.
     pub misses: Vec<(String, &'static str, String)>,
     /// `(namespace, reason, path)`, the path naming the namespace a
     /// propagated reason came from and those it came through.
@@ -688,153 +528,6 @@ impl CompileStats {
         }
         line("namespaces", &self.namespaces.len());
         line("macro-calls", &self.macro_calls);
-        for (i, call) in self.native_macro_calls.iter().enumerate() {
-            line(&format!("macro.bridge.{i}.imported"), &call.imported);
-            line(&format!("macro.bridge.{i}.exported"), &call.exported);
-            line(&format!("macro.bridge.{i}.reused"), &call.reused);
-            line(&format!("macro.bridge.{i}.ns"), &call.nanos);
-            line(&format!("macro.gc.{i}.collections"), &call.collections);
-            line(
-                &format!("macro.gc.{i}.pause-total-ns"),
-                &call.gc_pause_nanos,
-            );
-            line(
-                &format!("macro.gc.{i}.pause-max-ns"),
-                &call.gc_pause_max_nanos,
-            );
-            line(&format!("macro.gc.{i}.live-objects"), &call.gc_live_objects);
-            if call.gc_byte_limit > 0 {
-                line(
-                    &format!("macro.gc.{i}.managed-bytes"),
-                    &call.gc_managed_bytes,
-                );
-                line(
-                    &format!("macro.gc.{i}.peak-managed-bytes"),
-                    &call.gc_peak_managed_bytes,
-                );
-                line(&format!("macro.gc.{i}.live-bytes"), &call.gc_live_bytes);
-                line(
-                    &format!("macro.gc.{i}.admitted-bytes"),
-                    &call.gc_admitted_bytes,
-                );
-                line(&format!("macro.gc.{i}.byte-limit"), &call.gc_byte_limit);
-            }
-            line(
-                &format!("macro.helpers.{i}.compiled"),
-                &call.helper_compiled,
-            );
-            line(
-                &format!("macro.helpers.{i}.published"),
-                &call.helper_published,
-            );
-            line(
-                &format!("macro.helpers.{i}.per-task"),
-                &call.helper_per_task,
-            );
-            line(&format!("macro.helpers.{i}.waits"), &call.helper_waits);
-        }
-        if self.native_helpers.steps > 0 {
-            let helpers = &self.native_helpers;
-            if let Some(heap) = helpers.heap {
-                line("macro.gc.collections", &heap.collections);
-                line("macro.gc.traced-edges", &heap.traced_edges);
-                line("macro.gc.live-objects", &heap.live_objects);
-                line("macro.gc.managed-bytes", &heap.managed_bytes);
-                line("macro.gc.peak-managed-bytes", &heap.peak_managed_bytes);
-                line("macro.gc.live-bytes", &heap.live_bytes);
-                line("macro.gc.admitted-bytes", &heap.admitted_bytes);
-                line("macro.gc.byte-limit", &heap.byte_limit);
-            }
-            line("native.helpers.compiled", &helpers.compiled);
-            line("native.helpers.published", &helpers.published);
-            line("native.helpers.per-task", &helpers.per_task);
-            line("native.helpers.waits", &helpers.waits);
-            line("native.tasks.steps", &helpers.steps);
-            line("native.tasks.migrations", &helpers.migrations);
-            line("native.tasks.contexts", &helpers.contexts);
-            line("native.units.compiled", &helpers.units_compiled);
-            line("native.units.shared", &helpers.units_shared);
-            line("native.units.evaluated", &helpers.units_evaluated);
-            line("native.tasks.lent", &helpers.contexts_lent);
-            line("native.tasks.borrowed", &helpers.contexts_borrowed);
-            line("native.tasks.woken", &helpers.woken);
-            line("native.log.reads", &helpers.log_reads);
-            line("native.log.edges-copied", &helpers.log_edges_copied);
-            line("native.log.edges-recorded", &helpers.log_edges_recorded);
-            line("native.catalog.uses", &helpers.catalog_uses);
-            line("native.catalog.entries", &helpers.catalog_entries);
-            line(
-                "native.catalog.ms",
-                &ms(Duration::from_nanos(helpers.catalog_nanos as u64)),
-            );
-            line("native.producers.setups", &helpers.producers);
-            line("native.producers.replayed", &helpers.producer_replayed);
-            line(
-                "native.producers.catalog-entries",
-                &helpers.producer_catalog_entries,
-            );
-            line(
-                "native.producers.setup-ms",
-                &ms(Duration::from_nanos(helpers.producer_nanos as u64)),
-            );
-            if let Some(core) = &helpers.real_core {
-                line("native.core.members", &core.members);
-                line("native.core.published", &core.published);
-                line("native.core.per-task", &(core.members - core.published));
-                line("native.core.private-boots", &core.private_boots);
-                line(
-                    "native.core.boot-ms",
-                    &ms(Duration::from_nanos(core.boot_nanos)),
-                );
-            }
-            let bridge = &helpers.bridge;
-            line("native.prune.passes", &bridge.prune_passes);
-            line(
-                "native.prune.imports-visited",
-                &bridge.prune_imports_visited,
-            );
-            line(
-                "native.prune.imports-removed",
-                &bridge.prune_imports_removed,
-            );
-            line("native.prune.nodes-walked", &bridge.prune_nodes_walked);
-            line(
-                "native.prune.references-released",
-                &bridge.prune_references_released,
-            );
-            line(
-                "native.prune.entries-removed",
-                &bridge.prune_entries_removed,
-            );
-            line(
-                "native.prune.ms",
-                &ms(Duration::from_nanos(bridge.prune_nanos as u64)),
-            );
-            line("native.env.hits", &bridge.env_hits);
-            line("native.env.misses", &bridge.env_misses);
-            line("native.env.full", &bridge.env_full);
-            line("native.env.evictions", &bridge.env_evictions);
-            line("native.env.entries-rebuilt", &bridge.env_entries_rebuilt);
-            line("native.env.bytes-rebuilt", &bridge.env_bytes_rebuilt);
-            line(
-                "native.env.ms",
-                &ms(Duration::from_nanos(bridge.env_nanos as u64)),
-            );
-            let lanes = &self.lanes;
-            line("native.lanes.entered", &lanes.entered);
-            line("native.lanes.waits", &lanes.waits);
-            line("native.lanes.inherited", &lanes.inherited);
-            line(
-                "native.lanes.wait-ms",
-                &ms(Duration::from_nanos(lanes.wait_nanos)),
-            );
-            line(
-                "native.lanes.longest-wait-ms",
-                &ms(Duration::from_nanos(lanes.longest_wait_nanos)),
-            );
-            line("native.lanes.rescued", &lanes.rescued);
-            line("native.lanes.skipped", &lanes.skipped);
-        }
         line("macro-nodes.peak", &self.peak_macro_nodes);
         line("deferred-units.registered", &self.deferred_units.registered);
         line("deferred-units.analyzed", &self.deferred_units.analyzed);
@@ -860,9 +553,6 @@ impl CompileStats {
             line("pool.engine-workers", &units.pool_engine_workers);
             line("pool.engine-participants", &units.pool_engine_participants);
             line("pool.engine-less-units", &units.engine_less_units);
-            if self.native_helpers.contexts > 0 || units.coordinator_units > 0 {
-                line("pool.coordinator-units", &units.coordinator_units);
-            }
             line("time.pool-ms", &ms(units.pool_time));
             // The share of the workers' time spent analyzing units.
             let capacity = units.pool_time.as_secs_f64() * units.pool_workers as f64;
@@ -1010,40 +700,6 @@ mod tests {
         assert!(!report.contains("session-load"));
         assert!(report.ends_with("[macro-calls-by-namespace]\nb 5\na 1\nc 1\n"));
         assert!(!report.contains("cache.codec"));
-    }
-
-    #[test]
-    fn report_includes_native_collection_pause_and_live_set_counters() {
-        let stats = CompileStats {
-            native_macro_calls: vec![NativeBridgeCall {
-                collections: 3,
-                gc_pause_nanos: 40,
-                gc_pause_max_nanos: 20,
-                gc_live_objects: 100,
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-        let report = stats.report();
-        assert!(report.contains("\nmacro.gc.0.collections 3\nmacro.gc.0.pause-total-ns 40\nmacro.gc.0.pause-max-ns 20\nmacro.gc.0.live-objects 100\n"), "{report}");
-        assert!(!report.contains("macro.gc.0.managed-bytes"), "{report}");
-    }
-
-    #[test]
-    fn report_includes_native_byte_accounting_under_a_memory_limit() {
-        let stats = CompileStats {
-            native_macro_calls: vec![NativeBridgeCall {
-                gc_managed_bytes: 5,
-                gc_peak_managed_bytes: 7,
-                gc_live_bytes: 3,
-                gc_admitted_bytes: 11,
-                gc_byte_limit: 64,
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-        let report = stats.report();
-        assert!(report.contains("\nmacro.gc.0.live-objects 0\nmacro.gc.0.managed-bytes 5\nmacro.gc.0.peak-managed-bytes 7\nmacro.gc.0.live-bytes 3\nmacro.gc.0.admitted-bytes 11\nmacro.gc.0.byte-limit 64\n"), "{report}");
     }
 
     #[test]

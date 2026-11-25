@@ -267,7 +267,6 @@ mod original_record_tags {
         .unwrap();
         for reused in [false, true] {
             let lifecycle = if reused { "reused" } else { "fresh" };
-            // The Pants build embeds no QuickJS to run this half of the check.
             #[cfg(feature = "quickjs")]
             {
                 let mut session = EvalSession::new(EvalOptions {
@@ -326,7 +325,6 @@ mod original_record_tags {
         std::fs::write(root.join("namespace-adapted-records.cljs"), &adapted).unwrap();
         for reused in [false, true] {
             let lifecycle = if reused { "reused" } else { "fresh" };
-            // The Pants build embeds no QuickJS to run this half of the check.
             #[cfg(feature = "quickjs")]
             {
                 let mut session = EvalSession::new(EvalOptions {

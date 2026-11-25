@@ -1,8 +1,5 @@
-//! Core macro calls analyzed outside every scope of generated names (a single
-//! source, `light-cljs --compile FILE`) expand on the Pants build as they do in
-//! the V8 build, and calls their definitions reject fail with the definitions'
-//! diagnostics (light-cljs-611). The expectations are the V8 build's: there
-//! the definitions run in the engine, on the Pants build natively.
+//! Core macros outside a generated-name scope use the engine's definitions
+//! and report their diagnostics (light-cljs-611).
 use super::optimization::execute;
 use light_cljs::{MacroHost, analyze_with_macros, compile_with_macros, parse};
 
@@ -312,8 +309,7 @@ fn declined_doseq_preserves_surrogate_regex_ranges() {
 }
 
 /// The engine's snapshot of a call charges a map's keys it finds equal
-/// (`0` and `-0.0`) as one entry, and the Pants build's emulation of it
-/// refuses the call where the engine does (light-cljs-620).
+/// (`0` and `-0.0`) as one entry (light-cljs-620).
 #[test]
 fn snapshots_of_calls_merge_keys_the_engine_finds_equal() {
     let source = "(if-not 1 2 3 4 {-0.0 1 0 2})";

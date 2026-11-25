@@ -26,7 +26,6 @@ fn execute(javascript: &str, expected_value: &str, directory: &std::path::Path) 
     let expected = format!(
         r#"{{"id":"duplicate-method","outcome":{{"status":"returned","value":{expected_value}}},"trace":[],"stdout":""}}"#
     );
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let runtime = rquickjs::Runtime::new().unwrap();

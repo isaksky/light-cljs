@@ -98,7 +98,7 @@ fn the_counter_fixture_prints_one_two_at_every_slot_count_with_its_provider_bloc
     assert_eq!(execute(&built.output.unwrap()), undeclared());
 }
 
-// Counts units kept on the main isolate; the Pants build shares one runtime.
+// Counts units kept on the main isolate.
 #[cfg(any(feature = "quickjs", feature = "v8-macros"))]
 #[test]
 fn a_consumer_through_a_fully_qualified_macro_keeps_the_main_isolate() {
@@ -159,7 +159,7 @@ fn a_sibling_of_a_blockers_consumer_still_runs_on_workers() {
     assert_eq!(built.stats.deferred_units.pool.started, 3);
 }
 
-// Counts units kept on the main isolate; the Pants build shares one runtime.
+// Counts units kept on the main isolate.
 #[cfg(any(feature = "quickjs", feature = "v8-macros"))]
 #[test]
 fn no_cache_on_a_provider_gives_its_consumers_no_affinity() {

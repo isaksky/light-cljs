@@ -652,13 +652,6 @@ fn build_in(
     evaluator: Rc<dyn crate::compiler_evaluator::CompilerEvaluator>,
     cache: bool,
 ) -> Result<Bootstrap, String> {
-    if evaluator.native_forms() {
-        return Ok(Bootstrap {
-            evaluator,
-            functions: HashMap::new(),
-            dropped: Default::default(),
-        });
-    }
     let cached = if cache { UNITS.get() } else { None };
     // Compiling the units is the process's work, not the build's: the
     // engine's deadline and poll budget stand still meanwhile, so a build
@@ -752,11 +745,6 @@ impl MacroHost {
     ) -> Result<Form, String> {
         crate::macro_host::forbid_engine_entry(name);
         self.ensure_bootstrap(name)?;
-        // On the Pants build a call native expansion declines that the
-        // definition rejects fails as the V8 build's engine reports it, every
-        // time, as the Pants runtime's conversions do not refuse what the
-        // engine's do; any other runs the definition, installed in the
-        // runtime on first use.
         let bootstrap = self.engine.bootstrap.as_ref().unwrap().clone();
         if engine.is_none()
             && let Some(session) = self.session_handle()
@@ -767,13 +755,7 @@ impl MacroHost {
             .functions
             .get(name)
             .ok_or_else(|| {
-                if bootstrap.evaluator.native_forms() {
-                    format!("big-boy-pants-js: unsupported operation: bootstrap macro {name}")
-                } else {
-                    format!(
-                        "core macro {name} is not a compiler declaration or bootstrapped function"
-                    )
-                }
+                format!("core macro {name} is not a compiler declaration or bootstrapped function")
             })?
             .clone();
         let origin = ExpansionOrigin {
@@ -942,17 +924,6 @@ impl CompiledMacro {
         engine: &dyn crate::evaluator::MacroEvaluator,
         binding: &crate::macro_host::EngineBinding,
     ) -> Result<ValueId, String> {
-        if engine.has_native_bridge() {
-            // A helper's analysis runs in a fresh native task, even on the
-            // coordinator. Only its declaring task may use the ready handle;
-            // every other task materializes the declaration from its code.
-            if let MacroFunction::Ready(function, _) = &self.function
-                && function.id.session as usize == engine.heap()
-            {
-                return Ok(function.id);
-            }
-            return self.foreign_function(engine, binding);
-        }
         if binding.foreign {
             return self.foreign_function(engine, binding);
         }
@@ -998,13 +969,7 @@ impl CompiledMacro {
                 installed.lock().expect("installed macro").identity.0
             }
         };
-        let native = engine.has_native_bridge();
-        let cached = if native {
-            engine.cached_source_macro_function(key)
-        } else {
-            binding.foreign_macros.borrow().get(&key).copied()
-        };
-        if let Some(function) = cached {
+        if let Some(function) = binding.foreign_macros.borrow().get(&key).copied() {
             return Ok(function);
         }
         let parts;
@@ -1021,12 +986,8 @@ impl CompiledMacro {
         binding.on_engine_entry(engine);
         crate::reader_registration::register(engine, tables).map_err(|e| e.to_string())?;
         let source = format!("rt => rt.core.macroReaderFunction(({})(rt))", unit);
-        let function = engine
-            .source_macro_function(key, &source)
-            .map_err(|e| e.to_string())?;
-        if !native {
-            binding.foreign_macros.borrow_mut().insert(key, function);
-        }
+        let function = engine.evaluate_unit(&source).map_err(|e| e.to_string())?;
+        binding.foreign_macros.borrow_mut().insert(key, function);
         Ok(function)
     }
     /// The `defmacro` form's place.
@@ -1280,15 +1241,6 @@ impl MacroHost {
             .ok_or_else(|| format!("compile-time macro {key} is not declared"))?
             .clone();
         let (owner, member) = key.split_once('/').unwrap();
-        if self.native_macro_backend()
-            && self
-                .session_handle()
-                .is_some_and(|session| !session.shared().lanes().sees_here(owner))
-        {
-            return Err(format!(
-                "compile-time namespace outside require closure: {key} (add a require of {owner})"
-            ));
-        }
         if owner != namespace && self.source_binding_private(owner, member) {
             return Err(format!(
                 "{key} is private; macros can only be imported from public bindings"
@@ -1769,14 +1721,11 @@ mod tests {
             );
         };
         check(MacroHost::new());
-        // The Pants build expands `doto` natively and checks the
-        // environment's literals itself (light-cljs-611).
     }
 
     /// A function evaluated through the handle a callback receives, which is
     /// not the bootstrap's evaluator but the same heap, is owned too, and
     /// released only once its last owner is gone (light-cljs-381).
-    // These engines lend callback views of one value-handle heap; Pants callbacks own separate tasks.
     #[cfg(any(feature = "quickjs", feature = "v8-macros"))]
     #[test]
     fn a_function_evaluated_in_a_callback_is_released_after_its_last_owner() {
@@ -1914,7 +1863,6 @@ mod tests {
         assert_eq!(fresh.number(value).unwrap(), 42.0);
     }
 
-    // Tests inline JavaScript declaration transactions; Pants executes compiler-owned catalog units.
     #[cfg(any(feature = "quickjs", feature = "v8-macros"))]
     #[test]
     fn declaration_products_are_atomic_and_unfinished_value_reads_cycle() {

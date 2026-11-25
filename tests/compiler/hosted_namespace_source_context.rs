@@ -110,7 +110,6 @@ fn original_namespace_bodies_execute_in_fresh_and_reused_hosts() {
                 "(() => {{ {loader}; const run = {captured}; return ({})(globalThis.lightRuntime)('{id}',observe => run(observe)); }})()",
                 include_str!("../support/sci_execution_observation.js")
             );
-            // The Pants build embeds no QuickJS to run this half of the check.
             #[cfg(feature = "quickjs")]
             {
                 let runtime = rquickjs::Runtime::new().unwrap();

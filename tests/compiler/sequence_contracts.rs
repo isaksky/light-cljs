@@ -8,7 +8,6 @@ fn program(source: &str) -> light_cljs::Program {
 }
 fn both(source: &str, expected: &str) {
     let p = program(source);
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let e = Evaluator::new(EvaluatorOptions::default()).unwrap();

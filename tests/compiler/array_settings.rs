@@ -24,7 +24,6 @@ fn program(
     (p, warnings)
 }
 fn both(p: &Program, expected: &str) {
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
@@ -232,7 +231,6 @@ fn complete_source_bodies_retain_modules_and_file_isolation() {
         let source = format!(
             "JSON.stringify(({js})(() => {{ throw new Error('unexpected host request'); }}))"
         );
-        // The Pants build embeds no QuickJS to run this half of the check.
         #[cfg(feature = "quickjs")]
         {
             let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
@@ -282,7 +280,6 @@ fn checked_options_reset_between_loaded_files_and_capture_definitions() {
     .unwrap();
     assert!(warnings.is_empty(), "{warnings:?}");
     let script = format!("JSON.stringify(({js})())");
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let e = Evaluator::new(EvaluatorOptions::default()).unwrap();

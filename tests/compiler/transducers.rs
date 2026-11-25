@@ -84,7 +84,6 @@ fn eager_transducer_values_effects_and_errors_match_in_quickjs_and_node() {
             let javascript =
                 compile(case.source).unwrap_or_else(|error| panic!("{}: {error}", case.id));
             // Each case receives its own runtime and reducer instances in both engines.
-            // The Pants build embeds no QuickJS to run this half of the check.
             #[cfg(feature = "quickjs")]
             {
                 let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();

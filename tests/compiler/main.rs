@@ -4,8 +4,8 @@
 //! Run one suite with `cargo nextest run --test compiler <feature>::` or
 //! `cargo test --test compiler <feature>::`.
 
-// The Pants build compiles out the QuickJS half of cross-engine checks, which
-// leaves some of their imports, helpers and inputs unused there.
+// Some checks use QuickJS when it is available. Their supporting code can be
+// unused in builds without QuickJS.
 #![cfg_attr(
     not(feature = "quickjs"),
     allow(unused_imports, unused_variables, unused_mut, unused_macros, dead_code)

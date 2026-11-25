@@ -9,7 +9,6 @@ use light_cljs::{
 use std::process::Command;
 fn both(source: &str, host: &mut MacroHost, expected: &str) {
     let p = analyze_with_macros(source, &parse(source).unwrap(), host).unwrap();
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
@@ -115,7 +114,6 @@ fn ordinary_namespace_files_and_macro_generated_definitions_keep_paths() {
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/source-metadata");
     let js = light_cljs::compile_namespace("metadata.main", std::slice::from_ref(&root)).unwrap();
     let expected = "true";
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let e = Evaluator::new(EvaluatorOptions::default()).unwrap();

@@ -321,7 +321,6 @@ conditional, and no discard that hides a duplicate key.
 | `--checked-arrays-warn`, `--checked-arrays-error` | `:compiler-options {:checked-arrays :warn\|:error}` | build | release |
 | `--warnings` | `:compiler-options {:cljs-warnings true}` | build | release (dev implies it) |
 | `--macro-expansions N`, `--macro-nodes N`, `--macro-timeout-ms N`, `--macro-memory-limit N`, `--macro-poll-budget N` | `:compiler-options {:macro-expansions N ...}`, the flag's name as key | build | both |
-| `--macro-core port\|real` (the Pants build only) | `:compiler-options {:macro-core :port\|:real}` | build | both |
 | `--config KEY=EDN` | `:config {KEY EDN}` | build | both |
 | `--jobs N` | `:compile-threads N` | top level | both (the watch runs one slot) |
 | `--cache-dir DIR` | `:cache-root "ROOT"`, the store in `ROOT/cache` | top level | both |
@@ -451,9 +450,8 @@ only in the file, the commands and messages.
 | `:macro-expansions` | positive integer | 1024 |
 | `:macro-nodes` | positive integer | 100000 |
 | `:macro-timeout-ms` | positive integer | 10000 |
-| `:macro-memory-limit` | positive integer, bytes; one budget for all isolates under `:compile-threads` (compiler-concurrency.md, "Memory is one budget"); with native macros, the shared runtime's accounted managed-heap cap, not an RSS cap (native-macros.md, "Memory limit") | 67108864 |
+| `:macro-memory-limit` | positive integer, bytes; one budget for all isolates under `:compile-threads` (compiler-concurrency.md, "Memory is one budget") | 67108864 |
 | `:macro-poll-budget` | positive integer | 1000000 |
-| `:macro-core` | `:port` or `:real`: the `cljs.core` the Pants build's macros run on, the hand-written port or the real runtime booted once per compilation (real-core-design.md, section 5); an error on every other build | `:port` |
 
 Shadow-cljs's other compiler options (`:infer-externs`, `:externs`,
 `:output-feature-set`, `:output-wrapper`, `:source-map`, `:warnings`,
@@ -625,7 +623,6 @@ for any flag-only build:
 | `:elide-asserts`, `:cljs-warnings`, `:checked-arrays`, dev mode's warning mode | `AnalysisOptions`, `MacroHost::set_assertions` | Options |
 | `:macro-expansions`, `:macro-nodes`, `:macro-memory-limit` | `MacroLimits`, `EvaluatorOptions` | Options (the logical limits and the memory limit) |
 | `:macro-timeout-ms`, `:macro-poll-budget` | `EvaluatorOptions` | None, as for the flags: they stop work, which is never stored |
-| `:macro-core` | `EvaluatorOptions::macro_core` | Compiler: `:real` adds to the Pants build's compiler identity; `:port`'s is unchanged |
 | `:source-paths` | `FileSourceProvider` roots | Resolution: every candidate path and the file found |
 | `:optimizations`, `:closure-defines`, `:pseudo-names`, `:runtime-key`, `:output-dir`, `:modules` | `ApplicationOptions`, `OutputLayout`, the entry | Emission key only (recorded as zeros today; compiler-cache "As built (light-cljs-324)"); the entry is the build's root, not a key |
 | `:cache-root`, `:cache-blockers`, `:cache-level` | `CacheOptions`, the policy evaluator | Policy: what may read or write, never a key |
@@ -2005,7 +2002,6 @@ shadow-cljs's style:
 | Build-time values for `light.build/config` | build key `:config` | `--config KEY=EDN` |
 | ClojureScript warning compatibility | `:compiler-options {:cljs-warnings true}` | `--warnings` |
 | Macro limits | `:compiler-options` `:macro-expansions`, `:macro-nodes`, `:macro-timeout-ms`, `:macro-memory-limit`, `:macro-poll-budget` | the same names |
-| The Pants build's `cljs.core` | `:compiler-options :macro-core` | `--macro-core` |
 | What a release build's runtime key derives from besides its output (light-cljs-1018) | `:compiler-options :runtime-key` | `--runtime-key` |
 | Environment values | `#light-cljs/env`, and the variable `LIGHT_CLJS` | - |
 | Printing the merged configuration | `--print-config` | - |

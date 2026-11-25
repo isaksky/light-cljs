@@ -15,7 +15,6 @@ fn both(source: &str, expected: &str) {
             &mut MacroHost::new(),
         )
         .unwrap();
-        // The Pants build embeds no QuickJS to run this half of the check.
         #[cfg(feature = "quickjs")]
         {
             let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
@@ -47,7 +46,6 @@ fn both(source: &str, expected: &str) {
     }
     let p = analyze_with_macros(source, &parse(source).unwrap(), &mut MacroHost::new())
         .unwrap_or_else(|e| panic!("{source}: {e}"));
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
@@ -160,7 +158,6 @@ fn javascript_object_prefixes_survive_depth_limits_in_both_phases_and_sessions()
     let expected = format!("[{OBSERVATIONS} 0 {OBSERVATIONS} 1]");
     both(SOURCE, &expected);
 
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let mut session = light_cljs::EvalSession::new(light_cljs::EvalOptions::default()).unwrap();

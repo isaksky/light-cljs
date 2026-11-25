@@ -226,9 +226,8 @@
 //! 1,000 above its size. Advanced sizes are unchanged: no fixture keeps the
 //! hooks.
 //!
-//! The Pants build's runtime (light-cljs-1024, 2026-11-15): the stores' own
-//! metadata are read by descriptor, as the Pants engine has no
-//! `Object.hasOwn`, and an array map's search leaves the identity of keys
+//! Runtime layout (light-cljs-1024, 2026-11-15): the stores' own metadata are
+//! read by descriptor and an array map's search leaves the identity of keys
 //! other than keywords, strings and numbers to `equalPair`. The readable
 //! runtime grows up to 126 bytes, past the none and prepare ceilings of
 //! `keyword-case` and `event-maps`, which move to the next 1,000. At
@@ -243,7 +242,7 @@
 //! Advanced sizes grow by a few bytes and stay under their ceilings.
 //!
 //! Vectors, subvecs, map entries and vector transients as classes, rebased
-//! onto the Pants build's runtime (light-cljs-1009 with light-cljs-1024,
+//! with the compatibility changes from light-cljs-1024 (light-cljs-1009,
 //! 2026-11-15): the two changes together put the readable runtime past most
 //! none and prepare ceilings, and the review fixes (the shared-heap
 //! profile's slot registry and switch, the unkeyed `IFn` invoke slots in

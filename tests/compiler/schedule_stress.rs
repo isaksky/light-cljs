@@ -651,7 +651,7 @@ fn a_cross_worker_cycle_fails_the_build_at_the_same_unit_under_any_schedule() {
     assert_several_workers("cycle");
 }
 
-// Retires a per-worker engine isolate; the Pants build shares one runtime.
+// Retires a per-worker engine isolate.
 #[cfg(any(feature = "quickjs", feature = "v8-macros"))]
 /// A Rust panic inside `__lightCompileUnit`, the callback a running
 /// macro's nested demand enters, fails the unit whose macro ran, in
@@ -710,7 +710,7 @@ fn retired_for_some_seed(fixture: &Fixture, base: &Perturbation) {
 /// A macro that holds `mb` MiB of JavaScript heap while it runs.
 const HOG: &str = "(ns app.m) (defmacro hog [mb] (let [keep #js []] (dotimes [_ mb] (.push keep (.fill (js/Array. 131072) 1.5))) (.-length keep)))";
 
-// Retires a per-worker engine isolate; the Pants build shares one runtime.
+// Retires a per-worker engine isolate.
 #[cfg(any(feature = "quickjs", feature = "v8-macros"))]
 /// An isolate that runs out of memory is retired: the unit fails as with
 /// one slot, and a unit after it gets a new isolate.

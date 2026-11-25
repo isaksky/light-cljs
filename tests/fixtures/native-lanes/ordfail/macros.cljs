@@ -1,5 +1,0 @@
-(ns ordfail.macros)
-(def counter (atom 0))
-(defmacro check-zero [] (when-not (= 0 @counter) (throw (js/Error. (str "saw " @counter)))) 0)
-(defmacro boom [] (throw (js/Error. "boom")))
-(defmacro bump [] (swap! counter inc))

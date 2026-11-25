@@ -567,9 +567,6 @@ fn reset_encode_peak(
     evaluator: &dyn crate::evaluator::MacroEvaluator,
     cached: &std::cell::Cell<Option<crate::evaluator::ValueId>>,
 ) -> bool {
-    if evaluator.has_native_bridge() {
-        return true;
-    }
     let reset = |function| -> Result<(), crate::evaluator::EvalError> {
         let value = evaluator.call(function, &[])?;
         let _ = evaluator.release(value);
@@ -598,11 +595,6 @@ fn take_encode_peak(
     evaluator: &dyn crate::evaluator::MacroEvaluator,
     cached: &std::cell::Cell<Option<crate::evaluator::ValueId>>,
 ) -> Option<usize> {
-    // Native forms have no descriptor encoder. Input and output nodes are
-    // accounted by the host, without adding a fictitious bridge export.
-    if evaluator.has_native_bridge() {
-        return Some(0);
-    }
     use crate::compiler_data::{Datum, DatumKind};
     let read = |function| -> Result<Option<usize>, crate::evaluator::EvalError> {
         let value = evaluator.call(function, &[])?;
@@ -840,8 +832,6 @@ pub(crate) struct MacroTables {
 /// thread.
 #[derive(Default)]
 pub(crate) struct EngineBinding {
-    native_macro_calls:
-        std::rc::Rc<std::cell::RefCell<Vec<crate::compile_stats::NativeBridgeCall>>>,
     /// The data-reader engine and the reader functions evaluated in it.
     data_readers: std::rc::Rc<std::cell::RefCell<DataReaderEngine>>,
     pub(crate) interactive_control: Option<crate::evaluator::ExecutionControl>,
@@ -943,7 +933,6 @@ impl EngineBinding {
     /// reaches weakly.
     pub(crate) fn frame(&self) -> Self {
         Self {
-            native_macro_calls: self.native_macro_calls.clone(),
             data_readers: self.data_readers.clone(),
             interactive_control: self.interactive_control.clone(),
             bootstrap: self.bootstrap.clone(),
@@ -1026,9 +1015,7 @@ impl EngineBinding {
         };
         let mut gensym_error = false;
         if logs_gensyms && !self.work_cache.gensym_log_enabled.get() {
-            if engine.has_native_bridge()
-                || crate::compilation_session::CompilationSession::enable_gensym_log(engine).is_ok()
-            {
+            if crate::compilation_session::CompilationSession::enable_gensym_log(engine).is_ok() {
                 self.work_cache.gensym_log_enabled.set(true);
             } else {
                 gensym_error = true;
@@ -1343,7 +1330,6 @@ impl MacroHost {
         origin: crate::compiler_data::ExpansionOrigin,
     ) -> Result<Form, String> {
         self.engine.on_engine_entry(evaluator);
-        let native_before = evaluator.native_bridge_stats();
         if self.engine.expansions.get() >= self.limits.expansions {
             return Err("compiler macro expansion limit exceeded".into());
         }
@@ -1421,29 +1407,6 @@ impl MacroHost {
             EXPANDING.set(EXPANDING.get() - 1);
             expanded
         };
-        if let (Some(before), Some(after)) = (native_before, evaluator.native_bridge_stats()) {
-            self.engine.native_macro_calls.borrow_mut().push(
-                crate::compile_stats::NativeBridgeCall {
-                    imported: after.imported - before.imported,
-                    exported: after.exported - before.exported,
-                    reused: after.reused - before.reused,
-                    nanos: after.nanos - before.nanos,
-                    collections: after.collections - before.collections,
-                    gc_pause_nanos: after.gc_pause_nanos - before.gc_pause_nanos,
-                    gc_pause_max_nanos: after.gc_pause_max_nanos,
-                    gc_live_objects: after.gc_live_objects,
-                    gc_managed_bytes: after.gc_managed_bytes,
-                    gc_peak_managed_bytes: after.gc_peak_managed_bytes,
-                    gc_live_bytes: after.gc_live_bytes,
-                    gc_admitted_bytes: after.gc_admitted_bytes - before.gc_admitted_bytes,
-                    gc_byte_limit: after.gc_byte_limit,
-                    helper_compiled: after.helper_compiled - before.helper_compiled,
-                    helper_published: after.helper_published - before.helper_published,
-                    helper_per_task: after.helper_per_task - before.helper_per_task,
-                    helper_waits: after.helper_waits - before.helper_waits,
-                },
-            );
-        }
         // What the conversions charged on the JavaScript side, which bounds
         // them by the same remaining budget.
         if measuring && expanded.is_ok() {
@@ -1474,10 +1437,7 @@ impl MacroHost {
     pub fn new() -> Self {
         Self::default()
     }
-    /// One entry per expansion executed by the native backend, in call order.
-    pub fn native_macro_calls(&self) -> Vec<crate::compile_stats::NativeBridgeCall> {
-        self.engine.native_macro_calls.borrow().clone()
-    }
+    #[cfg(test)]
     pub(crate) fn native_macro_backend(&self) -> bool {
         false
     }
@@ -2314,13 +2274,8 @@ impl MacroHost {
             },
         );
         if let Some(evaluator) = evaluator {
-            // A native task context another pool slot parked holds these
-            // settings already ([`crate::bbp_evaluator::TaskContext`]).
-            let prepared = false;
-            if !prepared {
-                host.prepare_compiler_evaluator(evaluator.as_ref())
-                    .map_err(|e| e.to_string())?;
-            }
+            host.prepare_compiler_evaluator(evaluator.as_ref())
+                .map_err(|e| e.to_string())?;
             host.engine.bootstrap = Some(crate::compiler_bootstrap::bind(evaluator)?);
         }
         Ok(host)
@@ -2482,7 +2437,6 @@ impl MacroHost {
             self.engine.session_ref = std::rc::Weak::new();
         }
         self.engine.expansions = Default::default();
-        self.engine.native_macro_calls = Default::default();
         self.engine.generated_nodes = Default::default();
         self.engine.work = Default::default();
         self.engine.reader_declared = Default::default();
@@ -2705,7 +2659,7 @@ impl MacroHost {
         form: &Form,
         name: &Name,
         site: Option<(&str, &std::ops::Range<usize>)>,
-        runtime_reflection: bool,
+        _runtime_reflection: bool,
     ) -> Result<Option<Form>, String> {
         let builder = crate::compiler_data::DataBuilder;
         let extended = crate::compiler_destructuring::expand(&builder, form, name)?;
@@ -2763,7 +2717,7 @@ impl MacroHost {
         };
         let expanded = match expanded {
             Some(form) => Some(form),
-            None => self.expand_namespace_reflection(form, name, runtime_reflection)?,
+            None => self.expand_namespace_reflection(form, name)?,
         };
         if let Some(expanded) = &expanded {
             if let Some((operator, span)) = site {
@@ -2817,7 +2771,6 @@ impl MacroHost {
         &self,
         form: &Form,
         name: &Name,
-        runtime_reflection: bool,
     ) -> Result<Option<Form>, String> {
         let operation = String::from_utf16_lossy(name.name());
         let operation = operation.strip_prefix("compiler-").unwrap_or(&operation);
@@ -2847,18 +2800,7 @@ impl MacroHost {
                 unreachable!()
             };
             let namespace = String::from_utf16(namespace.name())?;
-            let guarded = self.native_macro_backend();
             let c = crate::compiler_data::DataBuilder;
-            // Dynamic macroexpand requests use the live consumer immediately.
-            // Compiled helper bodies retain a guard evaluated by each caller.
-            if guarded
-                && runtime_reflection
-                && self
-                    .session_handle()
-                    .is_some_and(|session| !session.shared().lanes().sees_here(&namespace))
-            {
-                return Ok(Form::from_expansion(c.map(&[])?, form, name.clone()));
-            }
             if !matches!(namespace.as_str(), "cljs.core" | "clojure.core") {
                 self.engine
                     .reflected_namespaces
@@ -2927,15 +2869,6 @@ impl MacroHost {
                 entries.push((key, value));
             }
             let view = c.map(&entries)?;
-            let view = if guarded && !runtime_reflection {
-                c.list(&[
-                    symbol("compiler-namespace-view*"),
-                    c.string(namespace.encode_utf16().collect::<Vec<_>>()),
-                    view,
-                ])?
-            } else {
-                view
-            };
             Ok(Form::from_expansion(view, form, name.clone()))
         };
         run().map(Some).map_err(|e| e.to_string())
@@ -3882,9 +3815,6 @@ mod compiler_pure_tests {
             .expect("evaluator materialized")
             .evaluator
             .clone();
-        if evaluator.has_native_bridge() {
-            return;
-        }
         let tiny_fn = evaluator
             .evaluate_unit("rt => (_form, _env) => \"ok\"")
             .unwrap();

@@ -73,7 +73,6 @@ fn literal(identity: &str) {
         let parsed = parse(&observed_source).unwrap();
         let program =
             analyze_with_macros(&observed_source, &parsed, &mut MacroHost::new()).unwrap();
-        // The Pants build embeds no QuickJS to run this half of the check.
         #[cfg(feature = "quickjs")]
         {
             let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
@@ -146,7 +145,6 @@ fn syntax_namespace_context_executes_with_actual_macro_environment() {
             &mut MacroHost::new(),
         )
         .unwrap();
-        // The Pants build embeds no QuickJS to run this half of the check.
         #[cfg(feature = "quickjs")]
         {
             let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
@@ -193,7 +191,6 @@ fn syntax_raw_nsstar_alias_executes_in_fresh_and_reused_macro_hosts() {
                     host,
                 )
                 .unwrap();
-                // The Pants build embeds no QuickJS to run this half of the check.
                 #[cfg(feature = "quickjs")]
                 {
                     let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
@@ -330,7 +327,6 @@ fn raw_nsstar_imports_keep_ordinary_cljs_macro_and_definition_ownership() {
                 host,
             )
             .unwrap();
-            // The Pants build embeds no QuickJS to run this half of the check.
             #[cfg(feature = "quickjs")]
             {
                 let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();

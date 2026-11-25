@@ -1,8 +1,7 @@
 //! `light.build`: compile-time resource reads and declared dependencies,
 //! from macros, helpers and data readers, each recorded in the dependency
 //! manifest of every namespace whose compilation used it (docs/compiler.md,
-//! "Compile-time services: light.build"). This suite runs on the V8 build,
-//! QuickJS reference and, through `bbp_macros`, the Pants build.
+//! "Compile-time services: light.build").
 use crate::temp_dir::TempDir;
 use light_cljs::cache_policy::{self, Bypass, CacheSettings};
 use light_cljs::compiler::{

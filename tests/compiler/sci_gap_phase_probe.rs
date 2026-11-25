@@ -21,7 +21,6 @@ fn unhex(text: &str) -> String {
 }
 fn observe(script: &str) -> Vec<(String, String)> {
     let mut observed = Vec::new();
-    // The Pants build embeds no QuickJS; Node still runs the script below.
     #[cfg(feature = "quickjs")]
     {
         let runtime = rquickjs::Runtime::new().unwrap();

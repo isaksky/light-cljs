@@ -69,10 +69,6 @@ pub struct CacheOptions {
     pub retention: Retention,
 }
 
-/// The miss kind of a namespace the Pants build analyzed without a lookup
-/// because it may write a core function ([`CompileCache::core_write`]).
-pub(crate) const CORE_WRITE: &str = "core-write";
-
 /// Why the current namespace was not installed, until it completes.
 #[derive(Clone, Debug)]
 enum Pending {
@@ -1822,18 +1818,6 @@ impl CompileCache {
         }
     }
 
-    /// The next namespace is analyzed without a lookup, because the
-    /// Pants build may write a core function's value, which `description`
-    /// names. It misses as [`CORE_WRITE`] and publishes nothing: no build
-    /// that writes the function looks its artifact up, so publishing would
-    /// only write what no identical rebuild reads.
-    pub(crate) fn core_write(&mut self, description: String) {
-        self.prefetched.clear();
-        self.lookahead.clear();
-        self.prefetched_speculative = false;
-        self.pending = Some(Pending::Miss(CORE_WRITE, description));
-    }
-
     /// The artifact [`Self::lookup`] returned was installed.
     pub(crate) fn installed(&mut self, macros: &MacroHost) {
         let Some(Pending::Hit { key, artifact }) = self.pending.take() else {
@@ -1930,9 +1914,8 @@ impl CompileCache {
             Some(Pending::Miss(kind, description)) => (kind, description),
             _ => ("no-artifact", "no artifact was published".to_owned()),
         };
-        let core_write = kind == CORE_WRITE;
         self.counts.misses.push((name.clone(), kind, description));
-        (!core_write).then_some(Publication { name, id, key })
+        Some(Publication { name, id, key })
     }
 
     /// Publish the artifact captured of the namespace [`Self::analyzed`]

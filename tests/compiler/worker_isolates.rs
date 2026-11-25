@@ -222,7 +222,7 @@ fn a_worker_isolate_that_runs_out_of_time_fails_its_unit_and_the_build_ends() {
     }
 }
 
-// Starts per-worker engine isolates; the Pants build shares one runtime.
+// Starts per-worker engine isolates.
 #[cfg(any(feature = "quickjs", feature = "v8-macros"))]
 #[test]
 #[cfg(debug_assertions)]
@@ -556,7 +556,7 @@ fn mixed_units(sources: &Sources) {
         .write("app/u.cljs", &body);
 }
 
-// Counts per-worker engine isolates; the Pants build shares one runtime.
+// Counts per-worker engine isolates.
 #[cfg(any(feature = "quickjs", feature = "v8-macros"))]
 #[test]
 fn workers_beyond_the_isolates_take_only_macro_free_units() {

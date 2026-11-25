@@ -5,7 +5,6 @@ use std::process::Command;
 
 fn both(host: &mut MacroHost, source: &str, expected: &str) {
     let program = analyze_with_macros(source, &parse(source).unwrap(), host).unwrap();
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();

@@ -25,7 +25,6 @@ impl Sources {
 }
 fn check(name: &str, javascript: &str) {
     let expression = format!("JSON.stringify({javascript})");
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();

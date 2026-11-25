@@ -179,7 +179,6 @@ fn empty_literals_read_the_runtime_singletons_at_every_level() {
             .all(|line| !line.contains("EMPTY"))
     );
 
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let mut session = EvalSession::new(EvalOptions::default()).unwrap();

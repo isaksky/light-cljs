@@ -382,7 +382,8 @@ pub(crate) fn reaches_environment_data(extensions: &[(String, Option<String>, St
 }
 impl BundleRecord {
     /// The unit that registers the bundle in the compile-time session.
-    pub fn source(&self) -> String {
+    #[cfg(all(test, light_v8))]
+    fn source(&self) -> String {
         fn quoted(s: &str) -> String {
             let mut out = String::from("\"");
             for c in s.encode_utf16() {
@@ -425,12 +426,6 @@ impl BundleRecord {
 #[derive(Default)]
 struct Catalog {
     units: Vec<Unit>,
-    /// Declaration keys are implicit IDs until pass reservations overlap.
-    /// Keeping them out of Unit preserves the ordinary compiler's layout.
-    unit_orders: Option<Vec<crate::effect_lanes::UnitOrder>>,
-    /// Needed only when reserved passes register out of source order. The
-    /// serial compiler keeps its allocation-free, contiguous ID traversal.
-    unit_order: Option<std::collections::BTreeMap<crate::effect_lanes::UnitOrder, usize>>,
     bindings: HashMap<String, (VarId, usize)>,
     journal: RegistrationJournal,
     /// Compiler-owned index of registered roots, bundles, :test units and
@@ -791,34 +786,6 @@ fn write_bundle_fields(out: &mut String, pos: usize, order: usize, bundle: &Bund
     crate::source_map::json_string(out, &bundle.location);
     let _ = write!(out, ",{},{}", bundle.once, bundle.group);
 }
-impl Catalog {
-    fn order(&self, id: usize) -> crate::effect_lanes::UnitOrder {
-        self.unit_orders.as_ref().map_or_else(
-            || crate::effect_lanes::UnitOrder::serial(id),
-            |orders| orders[id],
-        )
-    }
-    fn push_unit(&mut self, unit: Unit, order: crate::effect_lanes::UnitOrder) {
-        let id = self.units.len();
-        if self.unit_orders.is_none() && order != crate::effect_lanes::UnitOrder::serial(id) {
-            self.unit_orders = Some(
-                (0..id)
-                    .map(crate::effect_lanes::UnitOrder::serial)
-                    .collect(),
-            );
-        }
-        if self.unit_order.is_none() && id > 0 && self.order(id - 1) > order {
-            self.unit_order = Some((0..id).map(|id| (self.order(id), id)).collect());
-        }
-        if let Some(orders) = &mut self.unit_orders {
-            orders.push(order);
-        }
-        if let Some(index) = &mut self.unit_order {
-            assert!(index.insert(order, id).is_none(), "duplicate unit order");
-        }
-        self.units.push(unit);
-    }
-}
 /// The analyzed unit IR of a compilation measured with `--stats` that
 /// waits to merge into its program: from when a unit's analysis settles,
 /// on whichever thread, while the catalog holds it for the drain to take
@@ -931,9 +898,6 @@ pub(crate) struct SharedCatalog {
     /// What the build's isolates share when its pool runs engines: its
     /// deadline, cancellation and memory ([`crate::evaluator::BuildResources`]).
     resources: std::sync::OnceLock<crate::evaluator::BuildResources>,
-    /// Source-order effect lanes for compile-time atoms on the native
-    /// backend ([`crate::effect_lanes`], light-cljs-480).
-    lanes: Arc<crate::effect_lanes::Lanes>,
     /// One more than the ID of the earliest failed pool job in declaration
     /// order, or 0. The ID locates the cutoff; IDs themselves are not ordered.
     /// Updates hold the catalog lock; the atomic keeps the no-failure fast path.
@@ -974,7 +938,6 @@ const _: () = {
 #[derive(Default)]
 struct PoolCounters {
     pooled: std::sync::atomic::AtomicUsize,
-    coordinator_units: std::sync::atomic::AtomicUsize,
     isolates: std::sync::atomic::AtomicUsize,
     startup_ns: std::sync::atomic::AtomicU64,
     unit_ns: std::sync::atomic::AtomicU64,
@@ -1021,32 +984,6 @@ const DEPTH_LIMIT: &str = "compiler macro expansion depth limit exceeded in defe
 /// Why a wait for a pooled unit after a failed one ends ([`SharedCatalog::claim`]).
 const SKIPPED_AFTER_FAILURE: &str = "an earlier unit in unit order failed";
 impl SharedCatalog {
-    /// The compilation's effect lanes.
-    pub(crate) fn lanes(&self) -> &Arc<crate::effect_lanes::Lanes> {
-        &self.lanes
-    }
-    /// Give `units` their lane positions ([`crate::effect_lanes::Lanes::schedule`]);
-    /// with `forced` (a cache blocker's consumer), each waits for its lane
-    /// before it starts.
-    pub(crate) fn schedule_lanes(&self, units: &[usize], forced: bool) {
-        self.lanes.schedule(units.iter().copied(), forced);
-        let finished: Vec<(usize, bool)> = {
-            let c = self.lock();
-            (units.iter())
-                .filter_map(|&id| match c.units.get(id).map(|u| &u.state) {
-                    Some(AnalysisState::Failed(..)) => Some((id, true)),
-                    Some(AnalysisState::Analyzed(..) | AnalysisState::Prepared(..)) => {
-                        Some((id, false))
-                    }
-                    _ => None,
-                })
-                .collect()
-        };
-        for (id, failed) in finished {
-            self.lanes.finish(id, failed);
-        }
-    }
-
     fn lock(&self) -> MutexGuard<'_, Catalog> {
         match self.catalog.try_lock() {
             Ok(catalog) => catalog,
@@ -1071,12 +1008,7 @@ impl SharedCatalog {
     /// (docs/compiler-concurrency.md, "As built (light-cljs-341)").
     fn admits(&self, id: usize) -> bool {
         let failed = self.failed_job.load(std::sync::atomic::Ordering::Relaxed);
-        failed == 0 || self.admits_in(&self.lock(), id)
-    }
-    /// The same check when the caller already holds the catalog lock.
-    fn admits_in(&self, catalog: &Catalog, id: usize) -> bool {
-        let failed = self.failed_job.load(std::sync::atomic::Ordering::Relaxed);
-        failed == 0 || catalog.order(id) <= catalog.order(failed - 1)
+        failed == 0 || id < failed
     }
     /// Wake any coordinator or worker waiting on `self.settled` without risking
     /// a lost wakeup between predicate check and `Condvar::wait`.
@@ -1140,7 +1072,7 @@ impl SharedCatalog {
         if matches!(catalog.units[id].state, AnalysisState::Failed(..)) {
             use std::sync::atomic::Ordering::Relaxed;
             let failed = self.failed_job.load(Relaxed);
-            if failed == 0 || catalog.order(id) < catalog.order(failed - 1) {
+            if failed == 0 || id < failed - 1 {
                 self.failed_job.store(id + 1, Relaxed);
             }
         }
@@ -1181,8 +1113,7 @@ impl SharedCatalog {
     /// With `queued`, the unit was given to the pool and this thread waits
     /// for a worker to analyze it even while it is unstarted: the
     /// V8 coordinator never analyzes a pooled unit in its own isolate,
-    /// whose compile-time state would then depend on scheduling. The Pants
-    /// coordinator may preclaim an unstarted unit before this wait.
+    /// whose compile-time state would then depend on scheduling.
     ///
     /// While it waits, the coordinator serves its `light.build` requests
     /// that workers forward with `server` ([`Self::forward_build`]).
@@ -1209,7 +1140,6 @@ impl SharedCatalog {
         // The trace's frame for the time this thread blocks here.
         let mut _blocked = None;
         // This thread's wait for the unit, which its analysis inherits.
-        let mut _lane_wait: Option<crate::effect_lanes::WaitGuard> = None;
         let mut guard = self.lock();
         loop {
             if let Some(serve) = server
@@ -1233,7 +1163,7 @@ impl SharedCatalog {
             // starts ([`Self::admits`]): its namespace's analysis stops,
             // and the earlier failure, whose drain point comes first, is
             // the build's (light-cljs-395).
-            let skipped = matches!(*state, AnalysisState::Unstarted) && !self.admits_in(c, id);
+            let skipped = matches!(*state, AnalysisState::Unstarted) && !self.admits(id);
             if waits && (skipped || c.abandoned.is_some()) {
                 if c.threads[thread].waiting.take().is_some() {
                     c.waiting -= 1;
@@ -1245,14 +1175,6 @@ impl SharedCatalog {
                     .unwrap_or_else(|| SKIPPED_AFTER_FAILURE.to_owned()));
             }
             if waits {
-                // The unit's analysis inherits this thread's lane position
-                // while it waits (light-cljs-480).
-                if _lane_wait.is_none() {
-                    drop(guard);
-                    _lane_wait = Some(self.lanes.wait_for(crate::effect_lanes::Target::Unit(id)));
-                    guard = self.lock();
-                    continue;
-                }
                 if c.threads[thread].waiting.is_none() {
                     if let Some(path) = c.wait_cycle(thread, id) {
                         return Err(format!("compile dependency cycle: {path}"));
@@ -1302,11 +1224,6 @@ impl SharedCatalog {
                     if !matches!(guard.units[id].state, AnalysisState::Analyzing(_)) {
                         span.end(2, 0);
                         continue;
-                    }
-                    if let Some(wait) = &_lane_wait {
-                        drop(guard);
-                        wait.refresh();
-                        guard = self.lock();
                     }
                     let (next, timeout) = self
                         .settled
@@ -1371,8 +1288,7 @@ impl SharedCatalog {
             return Ok(self.start_unit(c, thread, id));
         }
     }
-    /// Claim an unstarted unit under the catalog lock, whether a pool
-    /// worker or the Pants coordinator found it first.
+    /// Claim an unstarted unit under the catalog lock.
     fn start_unit(&self, c: &mut Catalog, thread: usize, id: usize) -> Claim {
         let depth = c.threads[thread].stack.len();
         let unit = &mut c.units[id];
@@ -1405,7 +1321,7 @@ impl SharedCatalog {
         charges: Option<(UnitCharges, std::time::Duration)>,
         note_failed: bool,
     ) {
-        let (previous, waiting, failed) = {
+        let (previous, waiting) = {
             let mut c = self.lock();
             let c = &mut *c;
             if held > 0 && matches!(state, Some(AnalysisState::Analyzed(..))) {
@@ -1427,15 +1343,14 @@ impl SharedCatalog {
             if failed && note_failed {
                 use std::sync::atomic::Ordering::Relaxed;
                 let prev_failed = self.failed_job.load(Relaxed);
-                if prev_failed == 0 || c.order(id) < c.order(prev_failed - 1) {
+                if prev_failed == 0 || id < prev_failed - 1 {
                     self.failed_job.store(id + 1, Relaxed);
                 }
             }
-            (previous, c.waiting > 0, failed)
+            (previous, c.waiting > 0)
         };
         crate::wait_timeline::instant(crate::wait_timeline::Kind::Settle, id as u64, 0);
         drop(previous);
-        self.lanes.finish(id, failed);
         if waiting {
             self.settled.notify_all();
         }
@@ -1484,7 +1399,6 @@ impl SharedCatalog {
             unit.state = AnalysisState::Failed(message, None);
             c.waiting > 0
         };
-        self.lanes.finish(id, true);
         if waiting {
             self.settled.notify_all();
         }
@@ -1494,7 +1408,6 @@ impl SharedCatalog {
     pub(crate) fn abandon(&self, message: String) {
         self.lock().abandoned.get_or_insert(message);
         self.settled.notify_all();
-        self.lanes.abandon();
     }
     /// How many extension bundles the compilation registered.
     pub(crate) fn extension_frontier(&self) -> usize {
@@ -1733,7 +1646,6 @@ impl SharedCatalog {
             AnalysisState::Failed(message, diagnostic),
         );
         drop(previous);
-        self.lanes.finish(id, true);
     }
     #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
     fn unit_name(&self, id: usize) -> String {
@@ -1850,9 +1762,7 @@ pub(crate) struct CompilationSession {
     /// The last unit, in unit order, a drain point took
     /// ([`Self::analyze_drained`] or [`Self::note_drained`]); a failed build's
     /// counts stop there ([`Self::failed_unit_counts`]).
-    drained_through: Cell<Option<crate::effect_lanes::UnitOrder>>,
-    /// No top-level pass remains; a drain may help later namespaces too.
-    tail_ready: Cell<bool>,
+    drained_through: Cell<Option<usize>>,
     /// Private local overlay used while analyzing a namespace's top-level pass
     /// on a pool worker thread (Stage C, light-cljs-1090). `None` on the
     /// coordinator.
@@ -1861,10 +1771,6 @@ pub(crate) struct CompilationSession {
     /// parallel worker; materialized lazily into the coordinator's JS namespace
     /// registry only if `find-ns` / `all-ns` actually reflects on it.
     deferred_engine_namespaces: RefCell<Vec<String>>,
-    // The manual namespace probe owns a local IR prefix but runs on a
-    // compilation-wide lane. Production source indexes remain unchanged.
-    #[cfg(test)]
-    probe_source: Cell<Option<(usize, usize)>>,
 }
 /// Base ID for units registered inside a worker's private [`NamespaceOverlay`]
 /// before canonical unit IDs are assigned at publication time.
@@ -2054,11 +1960,8 @@ impl Default for CompilationSession {
             namespaces_seen: Default::default(),
             pool: Default::default(),
             drained_through: Default::default(),
-            tail_ready: Default::default(),
             local_overlay: RefCell::new(None),
             deferred_engine_namespaces: Default::default(),
-            #[cfg(test)]
-            probe_source: Default::default(),
         }
     }
 }
@@ -2362,14 +2265,8 @@ impl CompilationSession {
     ) -> Result<(), String> {
         let mut units = units.into_iter();
         let mut needs_sync = false;
-        let native = self
-            .engine
-            .borrow()
-            .bootstrap
-            .as_ref()
-            .is_some_and(|b| b.evaluator.native_forms());
         for registration in registrations {
-            let (end, effect) = {
+            let effect = {
                 let mut c = self.shared.lock();
                 let c = &mut *c;
                 match &registration {
@@ -2400,36 +2297,29 @@ impl CompilationSession {
                             if let Some(capture) = self.capture.borrow_mut().as_mut() {
                                 capture.units.push(UnitCapture::default());
                             }
-                            let order = self
-                                .shared
-                                .lanes
-                                .register_unit(c.units.len(), source as usize);
-                            c.push_unit(
-                                Unit {
-                                    request,
-                                    name: name.clone(),
-                                    source,
-                                    inputs: None,
-                                    state: AnalysisState::Prepared(
-                                        std::sync::Weak::new(),
-                                        Vec::new(),
-                                        Arc::new(prepared),
-                                    ),
-                                    analyses: 0,
-                                    emitted: false,
-                                    waiters: 0,
-                                    retained: None,
-                                    macro_free: false,
-                                    pooled: false,
-                                    // Prepared: never analyzed again.
-                                    dispatch: crate::namespace_artifact::UnitDispatch::Definition,
-                                    held: false,
-                                    dispatched: false,
-                                    charges: None,
-                                    time: Default::default(),
-                                },
-                                order,
-                            );
+                            c.units.push(Unit {
+                                request,
+                                name: name.clone(),
+                                source,
+                                inputs: None,
+                                state: AnalysisState::Prepared(
+                                    std::sync::Weak::new(),
+                                    Vec::new(),
+                                    Arc::new(prepared),
+                                ),
+                                analyses: 0,
+                                emitted: false,
+                                waiters: 0,
+                                retained: None,
+                                macro_free: false,
+                                pooled: false,
+                                // Prepared: never analyzed again.
+                                dispatch: crate::namespace_artifact::UnitDispatch::Definition,
+                                held: false,
+                                dispatched: false,
+                                charges: None,
+                                time: Default::default(),
+                            });
                         }
                         self.record_registration(
                             c,
@@ -2441,16 +2331,14 @@ impl CompilationSession {
                     }
                 }
             };
-            if native {
-                self.install_registrations(end, |_| Ok(()))?;
-            } else if effect.redefined || effect.has_extensions {
+            if effect.redefined || effect.has_extensions {
                 needs_sync = true;
             }
         }
         if units.next().is_some() {
             return Err("an installed unit has no root".into());
         }
-        if !native && needs_sync {
+        if needs_sync {
             self.sync_catalog(None)?;
         }
         Ok(())
@@ -2497,20 +2385,14 @@ impl CompilationSession {
             };
             if let Some((total, bundles, tagged)) = sync {
                 let bootstrap_hold = active.is_none().then(|| self.bootstrap()).flatten();
-                let native = match &bootstrap_hold {
-                    Some(bootstrap) => bootstrap.evaluator.native_forms(),
-                    None => self.bootstrap().is_some_and(|b| b.evaluator.native_forms()),
-                };
                 let evaluator = match (active, &bootstrap_hold) {
                     (Some(engine), _) => engine,
                     (None, Some(bootstrap)) => bootstrap.evaluator.as_ref(),
                     (None, None) => return Ok(()),
                 };
-                if !native {
-                    evaluator
-                        .sync_catalog(total, bundles, &tagged)
-                        .map_err(|e| e.to_string())?;
-                }
+                evaluator
+                    .sync_catalog(total, bundles, &tagged)
+                    .map_err(|e| e.to_string())?;
             }
             return Ok(());
         }
@@ -2523,9 +2405,6 @@ impl CompilationSession {
             let Some(bootstrap) = state.bootstrap.as_ref() else {
                 return Ok(());
             };
-            if bootstrap.evaluator.native_forms() {
-                return Ok(());
-            }
             if state.installed >= total
                 && state.synced_bundles >= bundles
                 && state.synced_ext_protocols >= ext_count
@@ -2556,32 +2435,6 @@ impl CompilationSession {
             .sync_catalog(total, bundles, &new_protocols)
             .map_err(|e| e.to_string())
     }
-    /// Install in this view's engine, if it has one, the catalog's
-    /// registrations before position `end` that it lacks, in order;
-    /// `before_last` runs in the engine before the last of them.
-    fn install_registrations(
-        &self,
-        end: usize,
-        before_last: impl FnOnce(&dyn MacroEvaluator) -> Result<(), String>,
-    ) -> Result<(), String> {
-        let mut installed = self.engine.borrow_mut();
-        let Some(bootstrap) = installed.bootstrap.clone() else {
-            return Ok(());
-        };
-        if !bootstrap.evaluator.native_forms() {
-            drop(installed);
-            return self.sync_catalog(None);
-        }
-        let start = installed.installed;
-        if start >= end {
-            return Ok(());
-        }
-        installed.installed = end;
-        drop(installed);
-        let pending: Vec<_> =
-            self.with_journal(|journal| journal.registrations.range(start..end).cloned().collect());
-        install_registrations(bootstrap.evaluator.as_ref(), start, &pending, before_last)
-    }
     fn with_journal<T>(&self, read: impl FnOnce(&RegistrationJournal) -> T) -> T {
         read(&self.shared.lock().journal)
     }
@@ -2589,17 +2442,17 @@ impl CompilationSession {
         &self,
         catalog: &mut Catalog,
         registration: Registration,
-    ) -> (usize, RecordEffect) {
+    ) -> RecordEffect {
         use std::sync::atomic::Ordering::Release;
         let position = catalog.journal.registrations.len();
         let effect = catalog.roots.record(position, &registration);
-        let end = catalog.journal.push(registration);
+        catalog.journal.push(registration);
         self.shared.journal_len.store(effect.journal_len, Release);
         self.shared.bundle_count.store(effect.bundle_count, Release);
         self.shared
             .ext_protocol_count
             .store(effect.ext_protocol_count, Release);
-        (end, effect)
+        effect
     }
     /// Keep the compile-time runtime's `gensym` from returning any of
     /// `names` in this compilation: now if the session has started, else
@@ -2948,9 +2801,7 @@ impl CompilationSession {
         }
     }
     /// Add `names` to `engine`'s registry, unlogged, each after `p` for one
-    /// whose later touches are logged (`pooled`, see build.rs) or `c`. An
-    /// engine without the compiler's registry hooks (the Pants build's)
-    /// keeps its own.
+    /// whose later touches are logged (`pooled`, see build.rs) or `c`.
     fn create_namespaces(engine: &dyn MacroEvaluator, names: &[String]) -> Result<(), String> {
         if names.is_empty() {
             return Ok(());
@@ -2978,9 +2829,6 @@ impl CompilationSession {
         pooled: bool,
         cached: &std::cell::Cell<Option<crate::evaluator::ValueId>>,
     ) -> Result<Vec<crate::namespace_artifact::RegistryEntry>, String> {
-        if engine.has_native_bridge() {
-            return Ok(Vec::new());
-        }
         let function = match cached.get() {
             Some(function) => function,
             None => {
@@ -3100,7 +2948,6 @@ impl CompilationSession {
             namespaces_seen: Default::default(),
             pool: Default::default(),
             drained_through: Default::default(),
-            tail_ready: Default::default(),
             deferred_engine_namespaces: Default::default(),
             local_overlay: RefCell::new(Some(NamespaceOverlay {
                 prefix_cursor,
@@ -3122,8 +2969,6 @@ impl CompilationSession {
                 synced_local_ext: 0,
                 synced_local_cursor: prefix_cursor,
             })),
-            #[cfg(test)]
-            probe_source: Default::default(),
         })
     }
     /// Clear any temporary V8/QuickJS overlay window installed during a parallel
@@ -3138,9 +2983,7 @@ impl CompilationSession {
         if !should_clear {
             return Ok(());
         }
-        if let Some(bootstrap) = self.bootstrap()
-            && !bootstrap.evaluator.native_forms()
-        {
+        if let Some(bootstrap) = self.bootstrap() {
             let tag = ["\0clear".to_owned()];
             bootstrap
                 .evaluator
@@ -3578,7 +3421,6 @@ impl CompilationSession {
         output: NamespaceOverlayOutput,
         host: &MacroHost,
         dispatched_local_ids: &[usize],
-        forced_lanes: bool,
         can_pool: bool,
         snap_globals_len: usize,
         canonical_globals_len: usize,
@@ -3590,7 +3432,7 @@ impl CompilationSession {
                 id
             }
         };
-        let (base, pooled_pairs, all_dispatched, needs_sync, unit_count) = {
+        let (base, pooled_pairs, needs_sync, unit_count) = {
             use std::sync::atomic::Ordering::Release;
             let mut c = self.shared.lock();
             let c = &mut *c;
@@ -3626,29 +3468,24 @@ impl CompilationSession {
                         added: Vec::new(),
                     });
                 }
-                let source = self.lane_source(local.source as usize);
-                let order = self.shared.lanes.register_unit(id, source);
-                c.push_unit(
-                    Unit {
-                        request,
-                        name,
-                        source: source as u32,
-                        inputs: local.inputs,
-                        state: local.state,
-                        analyses: local.analyses,
-                        emitted: local.emitted,
-                        waiters: 0,
-                        retained: None,
-                        macro_free: local.macro_free,
-                        pooled: local.pooled,
-                        dispatch: local.dispatch,
-                        held: false,
-                        dispatched: false,
-                        charges: None,
-                        time: Default::default(),
-                    },
-                    order,
-                );
+                c.units.push(Unit {
+                    request,
+                    name,
+                    source: local.source,
+                    inputs: local.inputs,
+                    state: local.state,
+                    analyses: local.analyses,
+                    emitted: local.emitted,
+                    waiters: 0,
+                    retained: None,
+                    macro_free: local.macro_free,
+                    pooled: local.pooled,
+                    dispatch: local.dispatch,
+                    held: false,
+                    dispatched: false,
+                    charges: None,
+                    time: Default::default(),
+                });
             }
             drop(capture_units);
             let mut needs_sync = false;
@@ -3690,11 +3527,9 @@ impl CompilationSession {
                     needs_sync = true;
                 }
             }
-            let mut all_dispatched = Vec::with_capacity(dispatched_local_ids.len());
             let mut pooled_pairs = Vec::new();
             for &local_id in dispatched_local_ids {
                 let id = relocate(local_id, base);
-                all_dispatched.push(id);
                 if let Some(unit) = c.units.get_mut(id) {
                     unit.held = true;
                     unit.dispatched = true;
@@ -3703,11 +3538,8 @@ impl CompilationSession {
                     }
                 }
             }
-            (base, pooled_pairs, all_dispatched, needs_sync, unit_count)
+            (base, pooled_pairs, needs_sync, unit_count)
         };
-        if !all_dispatched.is_empty() {
-            self.shared.schedule_lanes(&all_dispatched, forced_lanes);
-        }
         if unit_count > 0 {
             let mut bindings = self.unit_bindings.borrow_mut();
             if bindings.len() < base + unit_count {
@@ -3741,7 +3573,7 @@ impl CompilationSession {
         &self,
         source_index: usize,
         needs_engine: bool,
-        run: Box<dyn FnOnce(Option<&NamespaceWorkerContext<'_>>) -> bool + Send>,
+        run: NamespaceJob,
     ) -> bool {
         match &*self.pool.borrow() {
             Some(pool) => {
@@ -3813,16 +3645,6 @@ impl CompilationSession {
     pub fn new() -> Rc<Self> {
         Rc::new(Self::default())
     }
-    #[inline]
-    fn lane_source(&self, source: usize) -> usize {
-        #[cfg(test)]
-        if let Some((local, canonical)) = self.probe_source.get()
-            && source == local
-        {
-            return canonical;
-        }
-        source
-    }
     pub fn attach(self: &Rc<Self>, bootstrap: &Bootstrap, host: &MacroHost) -> Result<(), String> {
         if self.engine.borrow().bootstrap.is_some() {
             return Ok(());
@@ -3846,8 +3668,7 @@ impl CompilationSession {
             Self::take_namespaces_from(evaluator.as_ref(), false)?;
         }
         self.engine.borrow_mut().bootstrap = Some(bootstrap.clone());
-        let end = self.with_journal(|journal| journal.registrations.len());
-        self.install_registrations(end, |_| Ok(()))
+        self.sync_catalog(None)
     }
     pub fn compilation_uses(&self) -> Vec<crate::analyzer::CompilationUse> {
         self.shared
@@ -3888,21 +3709,13 @@ impl CompilationSession {
     /// Other merges, such as a speculative definition's `:test` metadata,
     /// must not advance the cutoff past an earlier failing unit.
     pub(crate) fn note_drained(&self, id: usize) {
-        let order = if self.shared.lanes.uses_reserved_unit_order() {
-            self.shared.lock().order(id)
-        } else {
-            crate::effect_lanes::UnitOrder::serial(id)
-        };
-        let last = self
-            .drained_through
-            .get()
-            .map_or(order, |last| last.max(order));
+        let last = self.drained_through.get().map_or(id, |last| last.max(id));
         self.drained_through.set(Some(last));
     }
     /// How many units this compilation registered, analyzed, prepared and
     /// executed (`--stats`).
     pub fn unit_counts(&self) -> crate::compile_stats::DeferredUnitCounts {
-        self.counts_through(Some(crate::effect_lanes::UnitOrder::MAX))
+        self.counts_through(Some(usize::MAX))
     }
     /// [`Self::unit_counts`] of a build that failed before its final
     /// analysis: the analyses only of the units up to the last one a drain
@@ -3918,10 +3731,7 @@ impl CompilationSession {
     }
     /// The unit counts, with the analyses and preparations of the units
     /// through `end`, or none when no unit has been drained.
-    fn counts_through(
-        &self,
-        end: Option<crate::effect_lanes::UnitOrder>,
-    ) -> crate::compile_stats::DeferredUnitCounts {
+    fn counts_through(&self, end: Option<usize>) -> crate::compile_stats::DeferredUnitCounts {
         let catalog = self.shared.lock();
         let mut counts = crate::compile_stats::DeferredUnitCounts {
             registered: catalog.units.len(),
@@ -3932,7 +3742,7 @@ impl CompilationSession {
             if unit.macro_free {
                 counts.macro_free_time += unit.time;
             }
-            let drained = end.is_some_and(|end| catalog.order(id) <= end);
+            let drained = end.is_some_and(|end| id <= end);
             counts.analyzed += usize::from(drained && unit.analyses > 0);
             counts.prepared +=
                 usize::from(drained && matches!(unit.state, AnalysisState::Prepared(..)));
@@ -3941,7 +3751,6 @@ impl CompilationSession {
         use std::sync::atomic::Ordering::Relaxed;
         let pool = &self.shared.counters;
         counts.pooled = pool.pooled.load(Relaxed);
-        counts.coordinator_units = pool.coordinator_units.load(Relaxed);
         counts.worker_isolates = pool.isolates.load(Relaxed);
         counts.worker_isolate_startup =
             std::time::Duration::from_nanos(pool.startup_ns.load(Relaxed));
@@ -4093,23 +3902,11 @@ impl CompilationSession {
             once,
             group,
         });
-        let (end, effect) = {
+        let effect = {
             let mut c = self.shared.lock();
             self.record_registration(&mut c, Registration::Bundle(bundle))
         };
-        // Initializers that call `gensym` number in the scope that
-        // registers them.
-        if self
-            .engine
-            .borrow()
-            .bootstrap
-            .as_ref()
-            .is_some_and(|b| b.evaluator.native_forms())
-        {
-            self.install_registrations(end, |engine| {
-                crate::generated_names::sync_gensym_scope(engine).map_err(|e| e.to_string())
-            })?;
-        } else if effect.has_extensions || effect.redefined {
+        if effect.has_extensions || effect.redefined {
             self.sync_catalog(None)?;
         }
         if group {
@@ -4244,7 +4041,7 @@ impl CompilationSession {
             return Ok(id);
         }
         let (environment, binding) = host.into_parts();
-        let (id, end, effect) = {
+        let (id, effect) = {
             let mut c = self.shared.lock();
             let c = &mut *c;
             // Allocate synthetic names under the same lock as their unit ID.
@@ -4270,38 +4067,33 @@ impl CompilationSession {
                         added: Vec::new(),
                     });
                 }
-                let source = self.lane_source(snapshot.source_index);
-                let order = self.shared.lanes.register_unit(id, source);
-                c.push_unit(
-                    Unit {
-                        request,
-                        name: name.clone(),
-                        source: source as u32,
-                        inputs: Some(Box::new(UnitInputs {
-                            form,
-                            snapshot,
-                            environment,
-                        })),
-                        state: AnalysisState::Unstarted,
-                        analyses: 0,
-                        emitted: false,
-                        waiters: 0,
-                        retained: None,
-                        macro_free,
-                        pooled,
-                        dispatch,
-                        held: false,
-                        dispatched: false,
-                        charges: None,
-                        time: Default::default(),
-                    },
-                    order,
-                );
+                c.units.push(Unit {
+                    request,
+                    name: name.clone(),
+                    source: snapshot.source_index as u32,
+                    inputs: Some(Box::new(UnitInputs {
+                        form,
+                        snapshot,
+                        environment,
+                    })),
+                    state: AnalysisState::Unstarted,
+                    analyses: 0,
+                    emitted: false,
+                    waiters: 0,
+                    retained: None,
+                    macro_free,
+                    pooled,
+                    dispatch,
+                    held: false,
+                    dispatched: false,
+                    charges: None,
+                    time: Default::default(),
+                });
                 id
             });
-            let (end, effect) =
+            let effect =
                 self.record_registration(c, Registration::Root(name, id, test, once, location));
-            (id, end, effect)
+            (id, effect)
         };
         if let Some(id) = id {
             let mut bindings = self.unit_bindings.borrow_mut();
@@ -4310,15 +4102,7 @@ impl CompilationSession {
             }
             bindings[id] = Some(Box::new(binding));
         }
-        if self
-            .engine
-            .borrow()
-            .bootstrap
-            .as_ref()
-            .is_some_and(|b| b.evaluator.native_forms())
-        {
-            self.install_registrations(end, |_| Ok(()))?;
-        } else if effect.redefined {
+        if effect.redefined {
             self.sync_catalog(None)?;
         }
         Ok(id)
@@ -4366,29 +4150,24 @@ impl CompilationSession {
     pub(crate) fn hold_and_poolable(
         &self,
         units: impl Iterator<Item = usize>,
-        forced: bool,
         can_pool: bool,
     ) -> Vec<(usize, bool)> {
         let units: Vec<usize> = units.collect();
-        let pooled = {
-            let mut c = self.shared.lock();
-            let mut pooled = if can_pool {
-                Vec::with_capacity(units.len())
-            } else {
-                Vec::new()
-            };
-            for &id in &units {
-                if let Some(unit) = c.units.get_mut(id) {
-                    unit.held = true;
-                    unit.dispatched = true;
-                    if can_pool && unit.pooled && matches!(unit.state, AnalysisState::Unstarted) {
-                        pooled.push((id, unit.macro_free));
-                    }
+        let mut c = self.shared.lock();
+        let mut pooled = if can_pool {
+            Vec::with_capacity(units.len())
+        } else {
+            Vec::new()
+        };
+        for &id in &units {
+            if let Some(unit) = c.units.get_mut(id) {
+                unit.held = true;
+                unit.dispatched = true;
+                if can_pool && unit.pooled && matches!(unit.state, AnalysisState::Unstarted) {
+                    pooled.push((id, unit.macro_free));
                 }
             }
-            pooled
-        };
-        self.shared.schedule_lanes(&units, forced);
+        }
         pooled
     }
     /// Perturb this build's unit pool and analyses, for a stress test.
@@ -4585,7 +4364,6 @@ impl CompilationSession {
             resources.workers.cancel();
         }
         // Nothing the pool still runs is ordered against an earlier unit.
-        self.shared.lanes.abandon();
     }
     /// Stop the build's unit pool and join its workers ([`UnitPool::finish`]).
     pub(crate) fn finish_pool(&self) {
@@ -4593,8 +4371,6 @@ impl CompilationSession {
         if let Some(pool) = pool {
             pool.finish();
         }
-        self.shared.lanes.set_rescuer(None);
-        self.shared.lanes.join_rescues();
     }
     /// Whether unit `id`'s analysis failed.
     pub(crate) fn unit_failed(&self, id: usize) -> bool {
@@ -4696,8 +4472,6 @@ impl CompilationSession {
         id: usize,
         engine: Option<&dyn MacroEvaluator>,
     ) -> Result<(), String> {
-        // A kept unit's analysis starts its own activity at its lane.
-        let _root = self.shared.lanes.enter_root();
         let analysis = self.analyze_in(id, engine, false, Take::Hold).map(drop);
         // No pool job after it in unit order starts, as after a worker's.
         if analysis.is_err() {
@@ -4738,7 +4512,7 @@ impl CompilationSession {
                 self.apply_drained_charges(
                     id,
                     binding,
-                    charges,
+                    *charges,
                     depth,
                     dispatch,
                     None,
@@ -4746,9 +4520,6 @@ impl CompilationSession {
                 )?;
             }
             return Ok((program, warnings, true));
-        }
-        if queued {
-            self.analyze_queued(Some(id));
         }
         self.analyze_in(id, None, queued, Take::Drain)
             .map(|(program, warnings)| (program, warnings, false))
@@ -4808,57 +4579,12 @@ impl CompilationSession {
             .raise_charged(binding.expansions.get(), binding.generated_nodes.get());
         Ok(())
     }
-    /// Use the coordinator's otherwise idle slot on the Pants build. At a
-    /// drain, take only that drain's units, in order; past the last top-level
-    /// pass, take all remaining queued units. Pool jobs reuse these results.
-    /// Nothing is charged or reported until the unit's own drain point.
-    pub(crate) fn analyze_queued(&self, drain: Option<usize>) {
-        let _ = drain;
-    }
     /// Wait for unit `id`'s analysis, a worker's if the pool was given it
     /// (`queued`), and add what it observed to the dependency log now, at
     /// its namespace's settle point; its drain point charges the rest
     /// (light-cljs-394). An error is the unit's failure.
     pub(crate) fn observe_pooled(&self, id: usize, queued: bool) -> Result<(), String> {
-        if queued {
-            self.analyze_queued(Some(id));
-        }
         self.analyze_in(id, None, queued, Take::Observe).map(drop)
-    }
-    /// Note that the dispatch of their namespace keeps `units` for its
-    /// drain point, which charges them; until then a demand of one takes
-    /// its analysis and leaves its charges (light-cljs-394).
-    #[allow(dead_code)]
-    pub(crate) fn hold_units(&self, units: impl Iterator<Item = usize>, forced: bool) {
-        let units: Vec<usize> = units.collect();
-        {
-            let mut c = self.shared.lock();
-            for &id in &units {
-                if let Some(unit) = c.units.get_mut(id) {
-                    unit.held = true;
-                    unit.dispatched = true;
-                }
-            }
-        }
-        self.shared.schedule_lanes(&units, forced);
-    }
-    /// Give `units`, drained here in order, their lane positions
-    /// ([`SharedCatalog::schedule_lanes`]).
-    pub(crate) fn schedule_units(&self, units: &[usize], forced: bool) {
-        self.shared.schedule_lanes(units, forced);
-    }
-    /// Start a namespace's top-level pass segment on its lane
-    /// ([`crate::effect_lanes::Lanes::begin_pass`]).
-    pub(crate) fn begin_pass(&self, forced: bool, source: usize) -> crate::effect_lanes::PassGuard {
-        self.tail_ready.set(false);
-        self.shared
-            .lanes
-            .begin_pass(forced, Some(self.lane_source(source)))
-    }
-    /// Remaining drains can use all queued units while they wait, taking
-    /// each ready result's charges before starting the next drain.
-    pub(crate) fn end_top_level_passes(&self) {
-        self.tail_ready.set(true);
     }
     fn analyze_in(
         &self,
@@ -5016,7 +4742,7 @@ impl CompilationSession {
                 let c = self.shared.lock();
                 (c.threads[self.thread].stack.len(), c.units[id].dispatch)
             };
-            self.apply_drained_charges(id, binding, charges, depth, dispatch, engine, take)?;
+            self.apply_drained_charges(id, binding, *charges, depth, dispatch, engine, take)?;
         }
         analysis
     }
@@ -5025,7 +4751,7 @@ impl CompilationSession {
         &self,
         id: usize,
         binding: EngineBinding,
-        mut charges: Box<UnitCharges>,
+        mut charges: UnitCharges,
         depth: usize,
         dispatch: crate::namespace_artifact::UnitDispatch,
         engine: Option<&dyn MacroEvaluator>,
@@ -5089,7 +4815,7 @@ impl CompilationSession {
             events,
             emitted,
             ..
-        } = *charges;
+        } = charges;
         for emitted_id in emitted {
             self.shared.set_emitted(emitted_id);
         }
@@ -5180,7 +4906,6 @@ fn analyze_unit(
     let (inputs, depth, name, macro_free) = match claim {
         Claim::Reuse(program, warnings) => return Ok((program, warnings)),
         Claim::TooDeep(inputs, depth) => {
-            shared.lanes.finish(id, true);
             let (binding, _) = binding();
             crate::macro_host::WorkMarks::note(&binding.work.unit_depth, depth + 1);
             drop((inputs, binding));
@@ -5193,7 +4918,6 @@ fn analyze_unit(
         .flatten();
     // Its atom effects keep its `--jobs 1` place (light-cljs-480); declared
     // before the guard, so it ends after the unit settles.
-    let _lane = shared.lanes.enter_unit(id);
     // From here on, however the analysis ends, even by unwinding, the unit
     // settles and its waiters wake.
     let mut guard = AnalysisGuard {
@@ -5318,9 +5042,7 @@ fn analyze_unit(
             // coordinator's log so far stays its own (light-cljs-1004).
             // A unit a pool may place logs, besides what it adds, what it
             // touches that only such units added (light-cljs-1006).
-            let logs_namespaces = recording.capture
-                && !nested
-                && scope_engine.is_some_and(|engine| !engine.has_native_bridge());
+            let logs_namespaces = recording.capture && !nested && scope_engine.is_some();
             let session = (!on_worker).then(|| host.session_handle()).flatten();
             let captures_namespaces = logs_namespaces && (on_worker || session.is_some());
             let pooled = captures_namespaces
@@ -5487,9 +5209,11 @@ fn analyze_unit(
 /// an engine at once, in blocks aligned to the catalog: an engine catching
 /// up, such as a pool worker's, then installs a full block with the same
 /// text as every other engine ([`MacroEvaluator::register_compiler_roots`]).
+#[cfg(all(test, light_v8))]
 const ROOT_BLOCK: usize = 64;
 /// Install `registrations`, the catalog's from position `first`, in
 /// `engine` in order; `before_last` runs in it before the last of them.
+#[cfg(all(test, light_v8))]
 fn install_registrations(
     engine: &dyn MacroEvaluator,
     first: usize,
@@ -5543,17 +5267,6 @@ fn prepare_engine(
     view: std::rc::Weak<dyn CatalogView>,
     binding: &EngineBinding,
 ) -> Result<(), String> {
-    if evaluator.native_forms() {
-        install_catalog_services(
-            evaluator,
-            view,
-            binding.build.clone(),
-            binding.dependency_log.clone(),
-        )?;
-        return evaluator
-            .install_build_object("globalThis.__lightBuildCaller")
-            .map_err(|e| e.to_string());
-    }
     let roots_view = view.clone();
     install_catalog_services(
         evaluator,
@@ -5625,14 +5338,6 @@ fn prepare_engine(
 /// [`WorkerView`] of the shared catalog (docs/compiler-concurrency.md, "As
 /// built (light-cljs-334)" and "As built (light-cljs-335)").
 pub(crate) trait CatalogView {
-    fn help(&self) -> Result<bool, String> {
-        Ok(false)
-    }
-    /// The coordinator can answer forwarded build requests even while a
-    /// helped unit's engine waits for another activity.
-    fn service_build(&self, _server: BuildServer<'_>) -> bool {
-        false
-    }
     /// `__lightCompileUnit`: unit `id`'s initializer, analyzed first if it
     /// is not yet, with the registration it needs evaluated in `active`.
     fn compile_unit(&self, active: &dyn MacroEvaluator, id: usize) -> Result<String, String>;
@@ -5711,19 +5416,6 @@ fn compile_unit_in(
     })
 }
 impl CatalogView for CompilationSession {
-    fn service_build(&self, serve: BuildServer<'_>) -> bool {
-        let request = self.shared.lock().requests.pop_front();
-        let Some(request) = request else {
-            return false;
-        };
-        let (reply, log) = serve(&request.text, request.analysis);
-        self.shared
-            .lock()
-            .replies
-            .push((request.ticket, reply, log));
-        self.shared.settled.notify_all();
-        true
-    }
     fn compile_unit(&self, active: &dyn MacroEvaluator, id: usize) -> Result<String, String> {
         self.sync_catalog(Some(active))?;
         let code = compile_unit_in(&self.shared, active, id, || self.analyze(id, Some(active)))?;
@@ -5763,7 +5455,6 @@ impl CatalogView for CompilationSession {
 /// the roots it evaluates are its own engine's. Made, used and dropped on
 /// the worker's thread.
 pub(crate) struct WorkerView {
-    help: RefCell<Option<crate::compiler_evaluator::WaitService>>,
     shared: Arc<SharedCatalog>,
     thread: usize,
     /// The worker's host ([`MacroHost::bind`]), whose binding each unit's
@@ -5813,7 +5504,6 @@ impl WorkerView {
         let view = Rc::new_cyclic(|view| {
             host.engine.worker = Some(view.clone());
             Self {
-                help: RefCell::new(None),
                 shared,
                 thread,
                 host,
@@ -5864,9 +5554,6 @@ impl WorkerView {
         let Some(bootstrap) = &self.host.engine.bootstrap else {
             return Ok(Some(false));
         };
-        if bootstrap.evaluator.native_forms() {
-            return Ok(None);
-        }
         let installed = self.installed.get();
         if installed > limit {
             let isolated = {
@@ -5911,62 +5598,34 @@ impl WorkerView {
     /// frontier. On V8/QuickJS, updates the lightweight catalog cursor and
     /// extended-protocol set without locking or replaying individual roots or
     /// bundles (`__lightRootService` resolves them on demand from `RootIndex`).
-    /// On the native Pants backend, installs pending registrations directly.
     fn install(&self, active: Option<&dyn MacroEvaluator>) -> Result<(), String> {
         use std::sync::atomic::Ordering::Acquire;
         let Some(bootstrap) = &self.host.engine.bootstrap else {
-            if active.is_none_or(|active| !active.has_native_bridge()) {
-                self.installed.set(self.shared.journal_len.load(Acquire));
-            }
+            self.installed.set(self.shared.journal_len.load(Acquire));
             return Ok(());
         };
-        let producer = active.is_some_and(|active| {
-            active.has_native_bridge() && active.heap() != bootstrap.evaluator.heap()
-        });
         let engine = active.unwrap_or(bootstrap.evaluator.as_ref());
-        if !bootstrap.evaluator.native_forms() && !producer {
-            let total = self.shared.journal_len.load(Acquire);
-            if total == self.installed.get() {
-                return Ok(());
-            }
-            let prev_ext = self.synced_ext_protocols.get();
-            let ext_count = self.shared.ext_protocol_count.load(Acquire);
-            let (bundles, new_protocols) = if ext_count > prev_ext {
-                let c = self.shared.lock();
-                let bundles = c.roots.bundles_before(total);
-                let (new_synced, protocols) = c.roots.new_extended_protocols(prev_ext, total);
-                drop(c);
-                self.synced_ext_protocols.set(new_synced);
-                (bundles, protocols)
-            } else {
-                (self.shared.bundle_count.load(Acquire), Vec::new())
-            };
-            self.installed.set(total);
-            self.synced_bundles.set(bundles);
-            return engine
-                .sync_catalog(total, bundles, &new_protocols)
-                .map_err(|e| e.to_string());
+        let total = self.shared.journal_len.load(Acquire);
+        if total == self.installed.get() {
+            return Ok(());
         }
-        // A producer imported its parent's catalog frontier, which is the
-        // engine's (`installed`), and keeps its own cursor from there: a
-        // registration is installed in it once, however often it demands.
-        let first = match producer {
-            true => engine.catalog_cursor().unwrap_or(self.installed.get()),
-            false => self.installed.get(),
-        };
-        let pending = {
+        let prev_ext = self.synced_ext_protocols.get();
+        let ext_count = self.shared.ext_protocol_count.load(Acquire);
+        let (bundles, new_protocols) = if ext_count > prev_ext {
             let c = self.shared.lock();
-            if c.journal.registrations.len() == first {
-                return Ok(());
-            }
-            let pending: Vec<_> = c.journal.registrations.tail_from(first).cloned().collect();
-            match producer {
-                true => engine.set_catalog_cursor(c.journal.registrations.len()),
-                false => self.installed.set(c.journal.registrations.len()),
-            }
-            pending
+            let bundles = c.roots.bundles_before(total);
+            let (new_synced, protocols) = c.roots.new_extended_protocols(prev_ext, total);
+            drop(c);
+            self.synced_ext_protocols.set(new_synced);
+            (bundles, protocols)
+        } else {
+            (self.shared.bundle_count.load(Acquire), Vec::new())
         };
-        install_registrations(engine, first, &pending, |_| Ok(()))
+        self.installed.set(total);
+        self.synced_bundles.set(bundles);
+        engine
+            .sync_catalog(total, bundles, &new_protocols)
+            .map_err(|e| e.to_string())
     }
     /// Whether the view's engine took more headroom from the build's
     /// memory budget than a worker keeps between jobs
@@ -6000,17 +5659,14 @@ impl WorkerView {
         engine: Option<&dyn MacroEvaluator>,
     ) -> Result<(Arc<Program>, Vec<AnalysisWarning>), String> {
         self.install(engine)?;
-        let help = || self.help();
+
         analyze_unit(
             &self.shared,
             self.thread,
             id,
             engine,
             Demand {
-                help: self
-                    .host
-                    .native_macro_backend()
-                    .then_some(&help as &dyn Fn() -> Result<bool, String>),
+                help: None,
                 queued: false,
                 on_worker: true,
                 held: false,
@@ -6021,6 +5677,8 @@ impl WorkerView {
         )
     }
 }
+type NamespaceJob = Box<dyn FnOnce(Option<&NamespaceWorkerContext<'_>>) -> bool + Send>;
+
 /// A job for a pool worker: either a deferred unit analysis or a parallel
 /// top-level namespace pass (Stage C, light-cljs-1090).
 enum UnitJob {
@@ -6030,7 +5688,7 @@ enum UnitJob {
         source_index: usize,
         phase: usize,
         needs_engine: bool,
-        run: Box<dyn FnOnce(Option<&NamespaceWorkerContext<'_>>) -> bool + Send>,
+        run: NamespaceJob,
     },
 }
 /// Phase layout for mixed pools (`0 < engine_workers < workers`):
@@ -6465,7 +6123,7 @@ impl UnitPool {
         &self,
         source_index: usize,
         needs_engine: bool,
-        run: Box<dyn FnOnce(Option<&NamespaceWorkerContext<'_>>) -> bool + Send>,
+        run: NamespaceJob,
     ) {
         let phase = if self.mixed {
             if needs_engine {
@@ -6566,30 +6224,22 @@ fn worker_view(
         }
     };
     let engine_view = engine.is_some();
-    let counted = engine
-        .as_ref()
-        .is_some_and(|engine| !engine.has_native_bridge());
     let view = WorkerView::new(
         shared.clone(),
         MacroHost::bind(environment.clone(), engine)?,
     )?;
     view.forwards.set(true);
-    if counted {
+    if engine_view {
         let counters = &shared.counters;
         counters
             .isolates
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         PoolCounters::add(&counters.startup_ns, started);
     }
-    // Scheduling perturbations observe task-view creation too. They are
-    // separate from the public count of worker isolates: Pants tasks all
-    // execute in the compilation's shared runtime.
     #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
     if engine_view && let Some(perturbation) = shared.perturbation.get() {
         (perturbation.isolates).fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
-    #[cfg(not(any(debug_assertions, feature = "scheduling-stress")))]
-    let _ = engine_view;
     Ok(view)
 }
 /// A pool slot's state, made and dropped on its thread: its catalog view,
@@ -6620,30 +6270,6 @@ impl Drop for HelpDepth {
 /// The pool's thread: run the scheduler, submitting each batch the inbox
 /// gets and consuming outcomes, until the inbox closes and every job has
 /// run. A worker's panic stops the pool and ends every wait in the catalog.
-fn help_pool(
-    helper: &crate::scheduler::HelpHandle<UnitJob, ()>,
-    engines: PoolEngines,
-    shared: &Arc<SharedCatalog>,
-    environment: &MacroEnvironment,
-) -> Result<bool, String> {
-    match helper
-        .help(
-            |_| WorkerSlot {
-                view: None,
-                plain: None,
-                engines,
-                _trace: None,
-            },
-            |slot, job, worker| execute_pool_job(slot, job, worker, shared, environment),
-        )
-        .map_err(|e| e.to_string())?
-    {
-        crate::scheduler::Help::Ran => Ok(true),
-        crate::scheduler::Help::Idle => Ok(false),
-        crate::scheduler::Help::DepthLimit => Err("compiler help nesting limit exceeded".into()),
-    }
-}
-
 fn execute_pool_job(
     slot: &mut WorkerSlot,
     job: UnitJob,
@@ -6730,35 +6356,8 @@ fn execute_pool_job(
     if engines != PoolEngines::None {
         shared.counters.note_engine_participant(worker.slot());
     }
-    let engines = slot.engines;
-    let control = view
-        .host
-        .engine
-        .bootstrap
-        .as_ref()
-        .filter(|b| b.evaluator.native_forms())
-        .map(|b| b.evaluator.control());
-    let wait_control = control.clone();
-    let helper = worker.help_handle();
-    let catalog = shared.clone();
-    let settings = environment.clone();
-    *view.help.borrow_mut() = Some(Rc::new(move || {
-        if let Some(control) = &wait_control {
-            control.poll().map_err(|e| e.to_string())?;
-        }
-        help_pool(&helper, engines, &catalog, &settings)
-    }));
     let started = std::time::Instant::now();
-    #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
-    wait_for_unit_hold(shared, id);
-    // The job is an activity of its own at its lane, even helped inside
-    // another's wait.
-    let root = shared.lanes.enter_root();
     let analysis = view.analyze(id, None);
-    drop(root);
-    // A task-local native failure can finish this VM without terminating
-    // the shared control. Keep other consumers alive, but retire this view.
-    let reusable = !view.host.native_macro_backend() || analysis.is_ok();
     if let Err(error) = analysis {
         shared.fail_unstarted(id, error);
         shared.note_job(id);
@@ -6772,33 +6371,11 @@ fn execute_pool_job(
     }
     if plain {
         slot.plain = Some(view);
-    } else if reusable
-        && slot.engines != PoolEngines::Fresh
+    } else if slot.engines != PoolEngines::Fresh
         && !view.terminal()
         && !view.holds_excess_headroom()
     {
         slot.view = Some(view);
-    }
-}
-
-/// The forced job order used by scheduling tests, whoever claims the unit.
-#[cfg(any(debug_assertions, feature = "scheduling-stress"))]
-fn wait_for_unit_hold(shared: &SharedCatalog, id: usize) {
-    if let Some(perturbation) = shared.perturbation.get() {
-        let name = shared.unit_name(id);
-        let limit = std::time::Duration::from_secs(10);
-        if perturbation.lane_hold.contains(&name) {
-            shared.lanes.wait_parked(limit);
-        }
-        if perturbation.lane_hold_any.contains(&name) {
-            shared.lanes.wait_parked_any(limit);
-        }
-        for (_, until) in (perturbation.hold_until.iter()).filter(|(held, _)| *held == name) {
-            let unit = (shared.lock().units.iter()).position(|u| &u.name == until);
-            if let Some(unit) = unit {
-                shared.lanes.wait_finished(unit, limit);
-            }
-        }
     }
 }
 
@@ -6814,9 +6391,6 @@ fn serve_pool(
     use crate::scheduler::{Config, Next};
     let started = std::time::Instant::now();
     let counters = &shared.counters;
-    // A lane that waits for an earliest unit no free thread will start has
-    // it analyzed on a thread of its own (light-cljs-480).
-    // (A test's lane hold keeps units back on purpose, in debug builds.)
     let relaxed = std::sync::atomic::Ordering::Relaxed;
     (counters.workers).store(slots.workers(), relaxed);
     (counters.engine_workers).store(engine_workers, relaxed);
@@ -6900,10 +6474,6 @@ fn serve_pool(
     }
 }
 impl CatalogView for WorkerView {
-    fn help(&self) -> Result<bool, String> {
-        let help = self.help.borrow().clone();
-        help.map_or(Ok(false), |help| help())
-    }
     fn compile_unit(&self, active: &dyn MacroEvaluator, id: usize) -> Result<String, String> {
         let active_ns = self.active_namespace.borrow().clone();
         if let Some((ns_session, _)) = active_ns {
@@ -6917,17 +6487,13 @@ impl CatalogView for WorkerView {
             (self.shared.counters.initializations)
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return compile_unit_in(&self.shared, active, id, || {
-                let help = || self.help();
                 analyze_unit(
                     &self.shared,
                     self.thread,
                     id,
                     Some(active),
                     Demand {
-                        help: self
-                            .host
-                            .native_macro_backend()
-                            .then_some(&help as &dyn Fn() -> Result<bool, String>),
+                        help: None,
                         queued: false,
                         on_worker: true,
                         held: false,
@@ -6997,34 +6563,6 @@ pub(crate) fn install_catalog_services(
     build: crate::build_services::SharedBuild,
     log: Rc<RefCell<Option<crate::dependency_manifest::ObservationLog>>>,
 ) -> Result<(), String> {
-    let waiting = view.clone();
-    let wait_build = build.clone();
-    let wait_log = log.clone();
-    evaluator.install_wait_service(Rc::new(move || {
-        let view = waiting.upgrade().ok_or("compilation session expired")?;
-        let serve =
-            |text: &str, analysis: Vec<u32>| {
-                let log = wait_log.borrow().as_ref().map(|log| {
-                    crate::dependency_manifest::ObservationLog {
-                        window: analysis.first().copied().unwrap_or(log.window),
-                        ..Default::default()
-                    }
-                });
-                let log = Rc::new(RefCell::new(log));
-                let reply = crate::build_services::serve_request(
-                    &wait_build,
-                    &log,
-                    text,
-                    |unit| view.unit_source(unit),
-                    analysis,
-                );
-                (reply, log.take().map(Box::new))
-            };
-        if view.service_build(&serve) {
-            return Ok(true);
-        }
-        view.help()
-    }));
     // `light.build`: a request names the units whose initializers run; the
     // catalog knows the units being analyzed. The runtime also reports on it
     // the first extension environment data could reach, which is this
@@ -7206,7 +6744,6 @@ mod environment_bundle_tests {
     /// native, core or unknown type or on any instance, whose type is not
     /// asked for, but not of a source protocol or on a user type
     /// (light-cljs-433).
-    // The V8 build and QuickJS reference journal per-heap extensions; Pants uses shared declaration bundles.
     #[cfg(any(feature = "quickjs", feature = "v8-macros"))]
     #[test]
     fn compile_time_extensions_that_environment_data_could_reach_are_noted() {
@@ -7281,117 +6818,6 @@ mod retention_tests {
         }
         assert!(released > 0);
     }
-
-    #[test]
-    fn native_unit_capture_does_not_root_namespace_wrappers() {
-        use crate::evaluator::{EvalError, ExecutionControl, MacroEvaluator, ValueId};
-        use std::cell::Cell;
-
-        struct NativeStub {
-            evaluations: Cell<usize>,
-            calls: Cell<usize>,
-        }
-
-        impl MacroEvaluator for NativeStub {
-            fn has_native_bridge(&self) -> bool {
-                true
-            }
-            fn control(&self) -> ExecutionControl {
-                ExecutionControl::new(&crate::evaluator::EvaluatorOptions::default()).unwrap()
-            }
-            fn evaluate_unit(&self, _source: &str) -> Result<ValueId, EvalError> {
-                self.evaluations.set(self.evaluations.get() + 1);
-                Err(EvalError(
-                    "native stub must not evaluate JS wrappers".into(),
-                ))
-            }
-            fn call(
-                &self,
-                _function: ValueId,
-                _arguments: &[ValueId],
-            ) -> Result<ValueId, EvalError> {
-                self.calls.set(self.calls.get() + 1);
-                Err(EvalError("native stub must not call JS wrappers".into()))
-            }
-            fn import_form(
-                &self,
-                _form: &Form,
-                _limits: crate::form_bridge::ConversionLimits,
-            ) -> Result<ValueId, EvalError> {
-                unreachable!()
-            }
-            fn import_data(
-                &self,
-                _data: &Datum,
-                _limits: crate::form_bridge::ConversionLimits,
-            ) -> Result<ValueId, EvalError> {
-                unreachable!()
-            }
-            fn export_form(
-                &self,
-                _id: ValueId,
-                _call: &Form,
-                _origin: crate::compiler_data::ExpansionOrigin,
-                _limits: crate::form_bridge::ConversionLimits,
-            ) -> Result<Form, EvalError> {
-                unreachable!()
-            }
-            fn release(&self, _id: ValueId) -> Result<(), EvalError> {
-                Ok(())
-            }
-        }
-
-        let host = MacroHost::new();
-        for handoff in 0..4 {
-            let stub = NativeStub {
-                evaluations: Cell::new(0),
-                calls: Cell::new(0),
-            };
-            let pooled = handoff % 2 == 0;
-            let entries = CompilationSession::take_namespaces_from_cached(
-                &stub,
-                pooled,
-                host.engine.work_cache.take_namespaces_handle(pooled),
-            )
-            .unwrap();
-            assert!(entries.is_empty());
-            let guard = crate::macro_host::PendingCaptureGuard::install(
-                host.engine.work_cache.clone(),
-                crate::macro_host::PendingUnitCapture {
-                    on_worker: true,
-                    logs_gensyms: true,
-                    logs_namespaces: true,
-                    pooled,
-                    session: None,
-                    gensym_error: false,
-                    namespace_error: false,
-                    entered: false,
-                },
-            );
-            host.engine.on_engine_entry(&stub);
-            let pending = guard.finish().expect("pending capture completed");
-            assert!(pending.entered);
-            assert!(!pending.gensym_error);
-            assert!(!pending.namespace_error);
-            assert_eq!(stub.evaluations.get(), 0);
-            assert_eq!(stub.calls.get(), 0);
-            assert!(host.engine.work_cache.gensym_log_enabled.get());
-            assert!(
-                host.engine
-                    .work_cache
-                    .take_namespaces_handle(true)
-                    .get()
-                    .is_none()
-            );
-            assert!(
-                host.engine
-                    .work_cache
-                    .take_namespaces_handle(false)
-                    .get()
-                    .is_none()
-            );
-        }
-    }
 }
 
 #[cfg(test)]
@@ -7464,7 +6890,6 @@ mod worker_tests {
         )
         .unwrap();
         let jobs = RETAINED.take().unwrap();
-        let native = host.native_macro_backend();
         let session = host.session_handle().unwrap();
         let name = |id: usize| session.shared.unit_name(id);
         let mut expected: Vec<_> = jobs
@@ -7473,12 +6898,9 @@ mod worker_tests {
             .collect();
         expected.sort();
         assert!(
-            expected.iter().any(|(name, code)| name == "cljs.user/plain"
-                && if native {
-                    code.contains("__rt.formValue(l0) + __rt.formValue(1)")
-                } else {
-                    code.contains("rt.core.add")
-                }),
+            expected
+                .iter()
+                .any(|(name, code)| name == "cljs.user/plain" && code.contains("rt.core.add")),
             "{expected:?}"
         );
         // The core macros expanded: no call of them is left.
@@ -7487,11 +6909,8 @@ mod worker_tests {
                 .iter()
                 .any(|(name, code)| name == "cljs.user/expanded"
                     && !code.contains("when")
-                    && if native {
-                        code.contains("core.isPositive") && code.contains("* __rt.formValue(2)")
-                    } else {
-                        code.contains("rt.core.isPositive") && code.contains("rt.core.multiply")
-                    }),
+                    && code.contains("rt.core.isPositive")
+                    && code.contains("rt.core.multiply")),
             "{expected:?}"
         );
         let names: HashMap<usize, String> = jobs.iter().map(|(id, ..)| (*id, name(*id))).collect();
@@ -7917,7 +7336,6 @@ mod worker_tests {
         assert_eq!(c.waiting, 0);
     }
 
-    // These engines install registrations in a callback's caller heap; Pants installs them in its producer task.
     #[cfg(any(feature = "quickjs", feature = "v8-macros"))]
     #[test]
     fn a_worker_engine_installs_the_registrations_and_evaluates_what_the_catalog_prepared() {
@@ -7955,7 +7373,6 @@ mod worker_tests {
         assert_eq!(shared.lock().units[id].analyses, analyses);
     }
 
-    // The Pants build shares initialized roots across tasks rather than initializing once per isolate.
     #[cfg(any(feature = "quickjs", feature = "v8-macros"))]
     #[test]
     fn roots_initialize_once_per_isolate() {

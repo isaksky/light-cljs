@@ -3,7 +3,6 @@
 #[ignore = "explicit namespace report audit; Python checks the complete raw outcome"]
 fn complete_namespace_observation_executes_in_quickjs() {
     let source = std::fs::read(std::env::var("LIGHT_CLJS_NAMESPACE_SCRIPT").unwrap()).unwrap();
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let runtime = rquickjs::Runtime::new().unwrap();

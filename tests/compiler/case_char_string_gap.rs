@@ -61,7 +61,6 @@ fn original_case_char_string_rejection_and_actual_macro_recovery() {
             fs::write(folder.join("recovery.cljs"), control).unwrap();
             let js = light_cljs::compile_with_macros(control, host).unwrap();
             fs::write(folder.join("recovery.js"), &js).unwrap();
-            // The Pants build embeds no QuickJS to run this half of the check.
             #[cfg(feature = "quickjs")]
             {
                 let runtime = rquickjs::Runtime::new().unwrap();

@@ -12,7 +12,6 @@ fn both(source: &str) {
             source.to_owned()
         };
         let js = light_cljs::compile_with_macros(&text, &mut host).unwrap();
-        // The Pants build embeds no QuickJS to run this half of the check.
         #[cfg(feature = "quickjs")]
         {
             let rt = rquickjs::Runtime::new().unwrap();

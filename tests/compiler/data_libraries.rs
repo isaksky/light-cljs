@@ -27,7 +27,6 @@ impl Sources {
 fn both(body: &str, expected: &str) {
     let sources = Sources::new();
     let js = sources.compile(body);
-    // The Pants build embeds no QuickJS; Node still runs the program below.
     #[cfg(feature = "quickjs")]
     {
         let evaluator = Evaluator::new(Default::default()).unwrap();
@@ -117,7 +116,6 @@ fn macros_use_libraries_without_native_registration() {
         "true\n",
         "Node"
     );
-    // The Pants build embeds no QuickJS; Node ran the program above.
     #[cfg(feature = "quickjs")]
     {
         let e = Evaluator::new(Default::default()).unwrap();
@@ -274,7 +272,6 @@ fn all_supported_native_set_and_walk_fixtures_migrate_with_values_and_effects() 
         e.string(e.evaluate_js(&format!("JSON.stringify({js})")).unwrap())
             .unwrap()
     };
-    // The Pants build embeds no QuickJS; Node's observations are checked instead.
     #[cfg(not(feature = "quickjs"))]
     let observations =
         crate::canonical_json::node_stdout(&format!("console.log(JSON.stringify({js}));"))
@@ -333,7 +330,6 @@ fn compiler_owned_data_readers_keep_source_order_origins_and_typed_results() {
     .unwrap();
     let source = "#_ #test/tag 1 (let [x #test/tag 2] (if false #test/tag 3 x)) #_ #test/tag 4";
     let js = compile_with_macros(&format!("(pr-str (do {source}))"), &mut host).unwrap();
-    // The Pants build embeds no QuickJS to run the programs; it still compiles them.
     #[cfg(feature = "quickjs")]
     let e = Evaluator::new(Default::default()).unwrap();
     // Every read occurs, including a discarded form and an untaken branch.
@@ -402,7 +398,6 @@ fn compiler_owned_data_readers_keep_source_order_origins_and_typed_results() {
 fn upstream_set_and_walk_witnesses_execute_with_full_setup() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/compiler-libraries");
     let js = compile_namespace("library.upstream", &[root]).unwrap();
-    // The Pants build embeds no QuickJS; Node still runs the program below.
     #[cfg(feature = "quickjs")]
     {
         let e = Evaluator::new(Default::default()).unwrap();

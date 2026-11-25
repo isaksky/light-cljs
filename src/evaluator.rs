@@ -1395,31 +1395,8 @@ pub enum EnvironmentExtensions {
 pub type EnvironmentTracking = std::rc::Rc<std::cell::Cell<EnvironmentExtensions>>;
 /// Common macro operations at either an outer boundary or an active callback.
 pub trait MacroEvaluator {
-    /// Cumulative native bridge work; absent for descriptor-based engines.
-    fn native_bridge_stats(&self) -> Option<crate::compile_stats::NativeBridgeCall> {
-        None
-    }
-    /// Whether calls use the native form bridge. Engines with an inexpensive
-    /// capability flag can override this without collecting heap statistics.
-    /// The default preserves detection for embedders that supply native stats.
-    fn has_native_bridge(&self) -> bool {
-        self.native_bridge_stats().is_some()
-    }
     fn control(&self) -> ExecutionControl;
     fn evaluate_unit(&self, source: &str) -> Result<ValueId, EvalError>;
-    /// A source macro already materialized in the current native task, so
-    /// callers can skip its reader registration and declaration construction.
-    /// The handle stays owned by that task, as with `source_macro_function`.
-    fn cached_source_macro_function(&self, _identity: usize) -> Option<ValueId> {
-        None
-    }
-    /// Evaluate a source macro's declaration in this evaluator. Native
-    /// tasks retain their own function by code identity, including tasks
-    /// analyzing a helper while the declaring task is suspended. The
-    /// returned handle stays owned by the evaluator, not the caller.
-    fn source_macro_function(&self, _identity: usize, source: &str) -> Result<ValueId, EvalError> {
-        self.evaluate_unit(source)
-    }
     fn register_compiler_root(
         &self,
         name: &str,
@@ -1439,14 +1416,6 @@ pub trait MacroEvaluator {
         let value = self.evaluate_unit(source)?;
         self.release(value)
     }
-    /// For a native producer task, how many of its catalog's registrations
-    /// it holds, once a worker view installed some in it; `None` before.
-    fn catalog_cursor(&self) -> Option<usize> {
-        None
-    }
-    /// Record that the producer task holds the catalog's first `end`
-    /// registrations ([`Self::catalog_cursor`]).
-    fn set_catalog_cursor(&self, _end: usize) {}
     /// Advance the engine's view of the compiler-owned [`crate::compilation_session::RootIndex`]
     /// to `cursor` registrations, `bundles` bundles, and any `new_protocols` extended since its
     /// last sync, without replaying individual root or bundle registrations.

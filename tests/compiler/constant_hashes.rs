@@ -165,7 +165,6 @@ fn checks(js: &str) -> Vec<Checks> {
         }
     };
     let mut seen = vec![parse(&node(&format!("console.log({expression});")))];
-    // The Pants build embeds no QuickJS; Node's check above still runs.
     #[cfg(feature = "quickjs")]
     seen.push(parse(&quickjs(&expression)));
     seen

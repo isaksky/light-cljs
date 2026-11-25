@@ -83,7 +83,6 @@ fn retained_sci_sources_execute_in_node_and_quickjs() {
                 String::from_utf8_lossy(&result.stderr).replace(['\n', '\t'], " ")
             )
         };
-        // The Pants build embeds no QuickJS to run this half of the check.
         #[cfg(feature = "quickjs")]
         {
             let runtime = rquickjs::Runtime::new().unwrap();

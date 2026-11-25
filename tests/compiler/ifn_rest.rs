@@ -10,7 +10,6 @@ fn both(source: &str, expected: &str) {
     let mut host = MacroHost::new();
     let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host)
         .unwrap_or_else(|error| panic!("{source}\n{error}"));
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
@@ -70,7 +69,6 @@ fn callable_rest_sequences_receivers_effects_and_lazy_values_match_references() 
 
 #[test]
 fn invalid_rest_forms_and_failed_invocations_leave_reused_sessions_usable() {
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let mut session = light_cljs::EvalSession::new(Default::default()).unwrap();
@@ -108,7 +106,6 @@ fn invalid_rest_forms_and_failed_invocations_leave_reused_sessions_usable() {
     let js =
         light_cljs::compile_with_macros(&format!("{source} (pr-str (restored-rest))"), &mut host)
             .unwrap();
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();

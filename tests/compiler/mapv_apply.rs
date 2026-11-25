@@ -14,7 +14,6 @@ fn execute(unit: &str, expected: &str, directory: &Path) {
         light_cljs::evaluator::RUNTIME_SOURCE,
         unit
     );
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let runtime = rquickjs::Runtime::new().unwrap();

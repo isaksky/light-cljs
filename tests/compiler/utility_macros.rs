@@ -49,7 +49,6 @@ fn every_level(source: &str, expected: &str) -> Vec<String> {
                 format!("{expected}\n"),
                 "Node at {level}: {source}"
             );
-            // The Pants build embeds no QuickJS; Node ran the program above.
             #[cfg(feature = "quickjs")]
             assert_eq!(quickjs(&js), expected, "QuickJS at {level}: {source}");
             js

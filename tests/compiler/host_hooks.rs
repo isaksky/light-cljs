@@ -136,7 +136,6 @@ fn runtime_scheduler_admission_bounded_reentrancy_and_arities() {
       return true;
     }})()"#
     );
-    // The Pants build embeds no QuickJS; Node ran the same checks above.
     #[cfg(feature = "quickjs")]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
@@ -188,7 +187,6 @@ fn host_hooks_have_macro_application_phase_witnesses() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), expected);
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let mut denied = EvalSession::new(EvalOptions {

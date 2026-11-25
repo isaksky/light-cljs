@@ -60,7 +60,6 @@ fn execute(script: &str) -> Vec<(String, String)> {
         )
     };
     let mut observed = Vec::new();
-    // The Pants build embeds no QuickJS; Node still runs the script above.
     #[cfg(feature = "quickjs")]
     observed.push(("QuickJS".into(), quickjs));
     observed.push(("Node".into(), node));

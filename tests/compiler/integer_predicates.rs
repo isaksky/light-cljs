@@ -5,7 +5,6 @@ use std::process::Command;
 
 fn both(host: &mut MacroHost, source: &str, expected: &str) {
     let program = analyze_with_macros(source, &parse(source).unwrap(), host).unwrap();
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
@@ -110,7 +109,6 @@ mod original_table {
         String::from_utf8(out.stdout).unwrap()
     }
     fn assert_complete_table(packet: &str) {
-        // The Pants build embeds no QuickJS to run this half of the check.
         #[cfg(feature = "quickjs")]
         {
             let runtime = rquickjs::Runtime::new().unwrap();
@@ -178,7 +176,6 @@ mod original_table {
                 fs::write(folder.join("script.js"), &script).unwrap();
                 let input = format!("(0, eval)({script:?})");
                 fs::write(folder.join("quickjs.stdin"), &input).unwrap();
-                // The Pants build embeds no QuickJS to run this half of the check.
                 #[cfg(feature = "quickjs")]
                 {
                     let runtime = rquickjs::Runtime::new().unwrap();

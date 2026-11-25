@@ -2501,8 +2501,6 @@ struct DeferredKeying {
     source_name: Option<String>,
     forms: Vec<std::ops::Range<usize>>,
     globals_end: usize,
-    /// When `core_write` skipped lookup for this namespace.
-    core_write: Option<String>,
     /// Whether `cache.lookup` already ran (and missed or was refused), leaving
     /// its miss reason in `cache.pending`.
     looked_up: bool,
@@ -2548,20 +2546,16 @@ fn key_pending_capture(
 ) -> Result<Option<crate::compile_cache::Publication>, NamespaceCompileError> {
     let file = &ordered[capture.index];
     if !deferred.looked_up {
-        if let Some(core) = deferred.core_write {
-            cache.core_write(core);
-        } else {
-            let cancelled = || macros.halted(control).is_some();
-            let cached = cache
-                .lookup(record, &file.source, sources, &cancelled)
-                .map_err(|message| {
-                    NamespaceCompileError::new(format!("loading {}: {message}", file.name))
-                })?;
-            debug_assert!(
-                cached.is_none(),
-                "deferred lookup ran only for a namespace with no snapshot candidates"
-            );
-        }
+        let cancelled = || macros.halted(control).is_some();
+        let cached = cache
+            .lookup(record, &file.source, sources, &cancelled)
+            .map_err(|message| {
+                NamespaceCompileError::new(format!("loading {}: {message}", file.name))
+            })?;
+        debug_assert!(
+            cached.is_none(),
+            "deferred lookup ran only for a namespace with no snapshot candidates"
+        );
     }
     let declarations = {
         let source = crate::compile_cache::DeclarationSource {
@@ -3159,9 +3153,6 @@ fn analyze_entry(
             // Past the last source, the namespaces still waiting reach
             // their drain points, whose lazy references may load more.
             if index >= loader.ordered.len() {
-                if let Some(session) = macros.session_handle() {
-                    session.end_top_level_passes();
-                }
                 if !drain_front!() {
                     break;
                 }
@@ -3199,15 +3190,6 @@ fn analyze_entry(
                     file.source.len(),
                     &file.requires,
                 );
-                // Its require closure, which bounds what its effect lanes wait
-                // for (light-cljs-672).
-                if let Some(session) = macros.session_handle() {
-                    (session.shared().lanes()).register_namespace(
-                        index,
-                        &file.name,
-                        &file.requires,
-                    );
-                }
                 macros.observe(|log| log.window = index as u32);
                 build.analyze(index, &file.name, file.path.to_str());
                 // A cancelled compilation stops at the next namespace.
@@ -3222,21 +3204,13 @@ fn analyze_entry(
             let calls_before = macros.executed_expansions();
             // An artifact installs at the frontier its analysis would have run.
             let started = compile_stats::start(timed);
-            // Prepared native factories can have cached core functions under
-            // an earlier compilation's replacement set. Reanalyze their source
-            // when this compilation writes a cacheable core function, rather
-            // than installing code specialized for that earlier context.
-            let core_write: Option<&str> = None;
-            let native_core_writes = core_write.is_some();
             // Soundness barrier for mixed miss->hit builds (light-cljs-1103):
             // only flush & key queued unkeyed earlier namespaces when the next
             // namespace actually has cache candidates in the snapshot.
-            let mut deferred_core_write: Option<String> = None;
             let mut looked_up = false;
-            let has_candidates = core_write.is_none()
-                && cache
-                    .as_deref()
-                    .is_some_and(|c| c.has_candidates(&loader.ordered[index].name));
+            let has_candidates = cache
+                .as_deref()
+                .is_some_and(|c| c.has_candidates(&loader.ordered[index].name));
             if has_candidates
                 && let (Some(cache_mut), Some(record)) = (cache.as_deref_mut(), &loader.record)
             {
@@ -3286,12 +3260,6 @@ fn analyze_entry(
                 )
             };
             let cached = match (cache.as_deref_mut(), &loader.record) {
-                (Some(_), Some(_)) if let Some(core) = core_write => {
-                    deferred_core_write = Some(format!(
-                        "the build may write the core function {core}, which cached macro code may call directly"
-                    ));
-                    None
-                }
                 (Some(cache), Some(record)) if has_candidates => {
                     looked_up = true;
                     let build_control = control.cloned();
@@ -3318,10 +3286,7 @@ fn analyze_entry(
             };
             compile_stats::add(&mut cache_time, started);
             let mut mutated_foreign = false;
-            let installed = if native_core_writes {
-                drop(cached);
-                false
-            } else if let Some(artifact) = cached {
+            let installed = if let Some(artifact) = cached {
                 let started = compile_stats::start(timed);
                 let path = file.path.to_string_lossy();
                 let globals_before = analysis.globals_len();
@@ -3478,7 +3443,6 @@ fn analyze_entry(
                                 overlay,
                                 macros,
                                 &dispatched_local,
-                                analysis.unit_slots.get() == 1,
                                 analysis.unit_slots.get() > 1 && !analysis.main_isolate,
                                 snap_globals_len,
                                 canonical_globals_len,
@@ -3560,20 +3524,17 @@ fn analyze_entry(
                             aliases: &file.aliases,
                             requires: &file.requires,
                         };
-                        let published = false;
                         let globals_before = analysis.globals_len();
-                        if !published {
-                            analysis
-                                .analyze(
-                                    &input,
-                                    resolution,
-                                    index == entry_index,
-                                    macros,
-                                    options,
-                                    warnings,
-                                )
-                                .map_err(at)?;
-                        }
+                        analysis
+                            .analyze(
+                                &input,
+                                resolution,
+                                index == entry_index,
+                                macros,
+                                options,
+                                warnings,
+                            )
+                            .map_err(at)?;
                         let globals_end = analysis.globals_len();
                         if parallel_top.is_some() {
                             mutated_foreign = analysis
@@ -3641,7 +3602,6 @@ fn analyze_entry(
                             source_name: resolution.source_name,
                             forms,
                             globals_end,
-                            core_write: deferred_core_write,
                             looked_up,
                         })
                     } else {
@@ -3792,11 +3752,9 @@ fn analyze_entry(
             stats.install = Some(install_counts);
         }
         stats.macro_calls = macros.executed_expansions();
-        stats.native_macro_calls = macros.native_macro_calls();
         stats.peak_macro_nodes = macros.engine.generated_nodes.get();
         stats.trace = recording.and_then(crate::compile_trace::Recording::finish);
         if let Some(session) = macros.session_handle() {
-            stats.lanes = session.shared().lanes().counts();
             stats.deferred_units = if stopped {
                 session.failed_unit_counts()
             } else {

@@ -268,10 +268,7 @@ fn dynamic_core_bindings_reuse_cached_artifacts() {
 }
 
 /// `set!` and `binding` at the head of an anonymous function literal are
-/// calls like any other, not first-class uses of the operator, so on the
-/// Pants build they must not mark every core function written and turn off
-/// every lookup (light-cljs-571: the 200k generated project's rebuild with
-/// nothing changed hit nothing).
+/// ordinary calls. Their presence must preserve cache hits for the namespace.
 #[test]
 fn mutations_in_anonymous_functions_reuse_cached_artifacts() {
     let project = Project::new(&[

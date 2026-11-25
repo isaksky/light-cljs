@@ -6,7 +6,6 @@ pub(crate) type UnitService = Rc<dyn Fn(&dyn MacroEvaluator, u64) -> Result<Stri
 /// A string-to-string service: its answers, errors included, are ordinary
 /// strings, so only a panic poisons the session.
 pub(crate) type StringService = Rc<dyn Fn(&str) -> String>;
-pub(crate) type WaitService = Rc<dyn Fn() -> Result<bool, String>>;
 pub(crate) trait CompilerEvaluator: MacroEvaluator {
     /// A data reader exports finite data without a macro call's provenance.
     fn export_data(
@@ -15,12 +14,6 @@ pub(crate) trait CompilerEvaluator: MacroEvaluator {
         _limits: crate::form_bridge::ConversionLimits,
     ) -> Result<crate::compiler_data::Datum, EvalError> {
         Err(EvalError("this engine does not export reader data".into()))
-    }
-    /// Useful compiler work while a native task waits. The callback must
-    /// construct independent nested analyzer state, never reuse the caller.
-    fn install_wait_service(&self, _callback: WaitService) {}
-    fn native_forms(&self) -> bool {
-        false
     }
     fn evaluate_js(&self, expression: &str) -> Result<ValueId, EvalError>;
     fn install_compiler_service(

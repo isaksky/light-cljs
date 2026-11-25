@@ -387,7 +387,6 @@ fn signatures_hold_on_sample_arguments() {
         let report = evaluator.evaluate_js(&script).unwrap();
         evaluator.string(report).unwrap()
     };
-    // The Pants build embeds no QuickJS; Node runs the same check over the
     // runtime. Sampled printing functions write to Node's stdout too, so the
     // report follows a marker line.
     #[cfg(not(feature = "quickjs"))]

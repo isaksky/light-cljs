@@ -87,7 +87,6 @@ fn execute(script: &str) -> (String, String) {
         Ok(value) => value,
         Err(error) => format!("HARNESS:{error:?}: {:?}", ctx.catch()).replace(['\n', '\t'], " "),
     });
-    // The Pants build embeds no QuickJS; its column stays empty there.
     #[cfg(not(feature = "quickjs"))]
     let quickjs = String::new();
     (node, quickjs)

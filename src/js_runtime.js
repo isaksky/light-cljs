@@ -39,15 +39,10 @@
   // build are equal (docs/value-layout.md, section 3). One made by
   // reflection from a keyword's prototype has no `fqn` field, and is no
   // keyword; the public constructor may give the field an undefined `fqn`.
-  // The Pants build's profile swaps it for one that also reads engine
-  // keyword forms, whose fields it gives in a fresh object: a caller reads
-  // the fields of what it returns and never hands that on as a value.
   function keywordOf(value) {
     return value != null && value.cljs$lang$kind$$LKEY === 20 && "fqn$LKEY" in value ? value : undefined;
   }
   //@unit keywordCells requires: keywordOf
-  // `keywordOf` as an entry of the Pants build's profile's store
-  // inventories, as `vectorCells`.
   const keywordCells = Object.freeze({has: value => keywordOf(value) !== undefined});
   //@unit KeywordCell
   // A keyword (see `keywordOf`) with `KeywordValue`'s prototype. Nothing in
@@ -56,8 +51,7 @@
   //@unit symbolOf
   // A symbol, the class of kind 21 (`SymbolCell`), as `keywordOf`: its own
   // keyed fields are upstream's `ns`, `name`, `str`, `hash` and `meta` (its
-  // metadata, light-cljs-1031). The Pants build's profile swaps it as
-  // `keywordOf`.
+  // metadata, light-cljs-1031).
   function symbolOf(value) {
     return value != null && value.cljs$lang$kind$$LKEY === 21 && "str$LKEY" in value ? value : undefined;
   }
@@ -142,8 +136,7 @@
   // a var, a function with metadata and a `reify` value from their
   // construction, null for none; a value of another runtime class once it
   // is given metadata, which a public constructor gives it as given, an
-  // undefined one too (so the field's presence counts). No engine form of
-  // the Pants build's profile and no host value holds one. Its bytecode
+  // undefined one too (so the field's presence counts). Its bytecode
   // stays under 53 bytes, or a vector's `conj` loses an inlining
   // (docs/value-layout.md, light-cljs-1031). A cached hash is likewise the
   // value's own keyed field `hash` (`heldHash`); side stores held both
@@ -160,9 +153,6 @@
   // Whether a value is a map entry of the runtime's class (`EntryCell`).
   const isEntryCell = value => value != null && value.cljs$lang$kind$$LKEY === 3 && (value.cnt$LKEY !== undefined || "cnt$LKEY" in value);
   //@unit vectorCells requires: holdsVector
-  // `holdsVector` as an entry of the store inventories that the Pants
-  // build's profile probes in turn (its `storesPredicate`, `protocolStores`;
-  // the V8 profile's test the keyed kind, `kindIn`, light-cljs-1079).
   const vectorCells = Object.freeze({has: holdsVector});
   //@unit vectorCellCopy
   // A new value of a vector cell's prototype with its fields, its metadata
@@ -238,8 +228,7 @@
   // ("hash-map") over the map's frozen traversal array of `{key, value}` leaf
   // objects (`nodes`), making each `MapEntry` lazily on `-first` or `-reduce`
   // and caching realized entries by index in a prototype-free map on `root`
-  // (light-cljs-1081). It holds no `arr`, so is no view (`viewOf`). The
-  // shared-heap profile swaps these for views over pre-built engine entries.
+  // (light-cljs-1081). It holds no `arr` field (`viewOf`).
   function NodeSeqCell(nodes, i, root) { this.cell$LKEY = "hash-map"; this.nodes$LKEY = nodes; this.i$LKEY = i; this.root$LKEY = root ?? this; this.entries$LKEY = null; /*@brand*/ }
   //@unit ArrayNodeSeqCell
   function ArrayNodeSeqCell(nodes, i, root) { this.cell$LKEY = "hash-map"; this.nodes$LKEY = nodes; this.i$LKEY = i; this.root$LKEY = root ?? this; this.entries$LKEY = null; /*@brand*/ }
@@ -268,9 +257,7 @@
   // A lazy seq, kind 16 (`kinds`): the value itself, whose own keyed fields
   // are its state (`LazySeqCell`), else undefined. As `viewOf`, one made by
   // reflection from the prototype has no such own field, and is no lazy seq
-  // (a test of the field's presence, as any of them can be undefined). The
-  // shared-heap profile's also answers the engine's lazy seqs, with a view
-  // of the same fields.
+  // (a test of the field's presence, as any of them can be undefined).
   function lazyOf(value) {
     if (value == null) return undefined;
     return value.cljs$lang$kind$$LKEY === 16 && "fn$LKEY" in value ? value : undefined;
@@ -296,7 +283,7 @@
   function ChunkedConsCell(chunk, more, hash) { this.chunk$LKEY = chunk; this.more$LKEY = more; this.hash$LKEY = hash; /*@brand*/ }
   //@unit chunkedConsOf
   // A chunked cons, kind 17: the value itself (`ChunkedConsCell`), else
-  // undefined; the shared-heap profile's also answers the engine's.
+  // undefined.
   function chunkedConsOf(value) {
     if (value == null) return undefined;
     return value.cljs$lang$kind$$LKEY === 17 && "chunk$LKEY" in value ? value : undefined;
@@ -337,9 +324,7 @@
   // Each class reads `first` and `rest` under keyed names, its own fields
   // where they are data, getters of its prototype where a step computes
   // them. As `viewOf`, one made by reflection from a prototype has no own
-  // `cell`, and copying the fields onto a host object copies no kind. The
-  // shared-heap profile's also answers the engine's lists and conses, with
-  // a view of the same fields.
+  // `cell`. Copying the fields onto a host object leaves its kind unchanged.
   function cellOf(value) {
     if (value == null) return undefined;
     return value.cljs$lang$kind$$LKEY !== undefined && value.cell$LKEY !== undefined ? value : undefined;
@@ -353,12 +338,9 @@
   // A cell's copy (`cellOf`), for its metadata: a value of its prototype
   // with its own keyed fields, in their order, and none of the slots or
   // fields a program gave the value itself.
-  // The names are a frozen array, which the Pants build's shared heap can
-  // publish, where a `Set` stays its task's.
   const cellFields = Object.freeze(["cell$LKEY", "first$LKEY", "rest$LKEY", "count$LKEY", "end$LKEY", "step$LKEY", "integer$LKEY", "remaining$LKEY", "next$LKEY",
     "f$LKEY", "prev$LKEY", "seed$LKEY", "realized$LKEY", "all$LKEY", "current$LKEY", "mseq$LKEY", "stack$LKEY", "ascending$LKEY", "cnt$LKEY",
     "pairs$LKEY", "nodes$LKEY", "i$LKEY", "root$LKEY", "entries$LKEY"]);
-  // The shared-heap profile's copies engine lists and conses too.
   function cellCopy(value) {
     const Type = function () {};
     Type.prototype = Object.getPrototypeOf(value);
@@ -501,8 +483,7 @@
   // A map of the class of `value`'s kind with its fields (an array map's
   // count and keys and values, another's entries and comparator), for
   // `with-meta` and `clone` of a map, which copy the rest (metadata, hashes,
-  // a public constructor's slots) from the stores. The Pants build's
-  // profile has its own, which also copies an engine map.
+  // a public constructor's slots) from the stores.
   function mapCellCopy(value) {
     const Cell = mapTypes[mapKinds.get(value)].prototype.cljs$lang$cell$$LKEY, kind = value.cljs$lang$kind$$LKEY;
     return kind === 28 ? new Cell(value.cnt$LKEY, value.arr$LKEY)
@@ -796,16 +777,14 @@
   // The vars (`VarCell`): `has` tells one by its kind and own `sym` field
   // (by its presence where a public constructor gave it undefined), `get`
   // gives it, whose `val` and `sym` its
-  // readers read. The Pants build's profile swaps it for one that also
-  // reads the engine's vars, whose fields it gives in a fresh object.
+  // readers read.
   const vars = {
     has: value => value != null && value.cljs$lang$kind$$LKEY === 45 && (value.sym$LKEY !== undefined || "sym$LKEY" in value),
     get(value) { if (vars.has(value)) return value; }
   };
   //@unit isAtomCell
   // Whether a value is an atom of this runtime's class (`Atom`, kind 38,
-  // with its own `state` field, upstream's); the Pants build's engine atoms
-  // are not.
+  // with its own `state` field).
   const isAtomCell = value => value != null && value.cljs$lang$kind$$LKEY === 38 && "state" in value;
   //@unit atoms requires: isAtomCell
   // The atoms and the volatiles (light-cljs-1013): instances of `Atom` and
@@ -908,17 +887,14 @@
   // Whether the operations call a value's keyed slot first: `off` where a
   // compiler session demands declarations (`setDeclarationDemand`), as there
   // the operations' own paths demand each protocol before they read a slot.
-  // A method, not an assignment, so that the shared-heap profile, which
-  // seals this object, keeps the switch on the task's cells. Declared before
-  // the operations, which read it.
+  // Declared before the operations that read it.
   const slotFirst = {on: true, off() { slotFirst.on = false; }};
   //@unit operationPaths
   // The operations' own paths over the runtime's classes (`seqPath`,
   // `firstPath`, `restPath`, `nextPath`), which a value without the
   // operation's slot takes where they are set: a compiler session that
-  // demands declarations (`setDeclarationDemand`), whose `slotFirst` is off,
-  // and the shared-heap profile, whose engine forms hold no slots. Release
-  // and dev builds set none: there a runtime class's value answers from its
+  // demands declarations (`setDeclarationDemand`), whose `slotFirst` is off.
+  // Release and dev builds set none: there a runtime class's value answers from its
   // slot, and the operation's own path is upstream's, for nil and host
   // values (light-cljs-1054). The upstream-shaped paths (`countOf` and the
   // others) do not read them: effects kept with `setDeclarationDemand` wrap
@@ -948,8 +924,7 @@
   // `extend-type` of `Object` or of a type that had a kind table number, or
   // a `specify!` of its value, empties the kind tables did, as a program's
   // `ICounted`, `ISeqable` or `ILookup` method could then answer differently
-  // from the fields (`tabledKind`). The shared-heap profile seals it, so
-  // such an extension throws there, as before.
+  // from the fields (`tabledKind`).
   const fieldComparisons = {on: true};
   //@unit ownSeqs
   // Whether `extend-type` gave a runtime class, or `specify!` a value of
@@ -957,8 +932,7 @@
   // without `-first` or `-rest` read the first and the rest of its seq by
   // the seq's own fields (`firstSeq`, `restSeq`), as they did before
   // light-cljs-1054, where the seq's slot could now hold a program's
-  // method. The shared-heap profile, which takes the old paths, has its
-  // own (src/js_shared_profile.js).
+  // method.
   const ownSeqs = {on: false};
   //@unit hostExt requires: runtimeKey
   // Bitmasks of core protocols (`protocolMasks`) extended by `extend-type` to
@@ -1455,8 +1429,7 @@
   //@ sequencePrototype, viewType
   // The seq of an array map, upstream's PersistentArrayMapSeq, kind 9: its
   // values are `ArrayMapIndexCell` cells (light-cljs-1081), as a sorted map's
-  // seqs are `TreeMapStackCell` cells. The shared-heap profile swaps this
-  // unit for `ArrayMapSeqCell` views over pre-built engine entries.
+  // seqs are `TreeMapStackCell` cells.
   const PersistentArrayMapSeqType = viewType(builtinType(function () {}, sequencePrototype), ArrayMapIndexCell, 9);
   //@unit ArrayMapIndexCell.type effect: ArrayMapIndexCell requires: arrayMapSeqFirst,
   //@ arrayMapSeqNext, emptyList, PersistentArrayMapSeqType
@@ -3205,8 +3178,7 @@
   const reduceOwn = reducePath;
   //@unit reduceOwnPath requires: operationPaths
   // What a `-reduce` slot gives where a compiler session demands
-  // declarations (`slotFirst` is off), or the shared-heap profile's tasks
-  // take the old paths: `reduce`'s own path (`reduceOwn`), whose
+  // declarations (`slotFirst` is off): `reduce`'s own path (`reduceOwn`), whose
   // operations demand.
   function reduceOwnPath(self, rf, init, arity) {
     const own = operationPaths.reduceOwn;
@@ -3377,8 +3349,7 @@
   // kind calls its keyed `-kv-reduce` slot, read and called once; every
   // other value, and a value whose slot holds no method, takes the
   // operation's own path (`reduceKvOf`). The old path (`reduceKvPath`)
-  // serves the compile-time runtime and the shared-heap profile
-  // (`operationPaths`).
+  // serves the compile-time runtime (`operationPaths`).
   //@unit reduceKv requires: reduceKvOf, slotFirst
   function reduceKv(rf, init, collection) {
     if (collection != null && slotFirst.on && collection.cljs$lang$kind$$LKEY !== undefined) {
@@ -3531,7 +3502,7 @@
   // recognising them have slots (the lists' `-conj` and `-pop`, the sorted
   // set's `-conj`, the sets' `-disjoin`, the vectors' and the queue's
   // `-pop`). The old paths (`conjPath` and the others) serve the
-  // compile-time runtime and the shared-heap profile (`operationPaths`).
+  // compile-time runtime (`operationPaths`).
   // The arity with a slot is a function of its own, so that each stays
   // under the 100 bytes of bytecode that V8's Maglev inlines
   // (light-cljs-1033): `conj` 42 and `conj2` 61, `assoc` 51 and `assoc3` 73,
@@ -4150,12 +4121,7 @@
   // (`keyword-identical?`), as `arrayIndex` searches an array map, with no
   // call of its `-equiv` slot; a keyword whose program gave it an `IEquiv`
   // method (`keywordProgramEquiv`, read once per comparison, as `equalPair`
-  // read the slot) by that method; any other key by `equalPair`
-  // (light-cljs-1057), whose identity test the Pants build's profile makes
-  // after reading a boxed scalar, so that an occurrence of NaN equals
-  // nothing, itself included. The spelling is read first, as in
-  // `arrayIndex`; a value without the field (another kind, or the Pants
-  // profile's engine keyword) is read through `keywordOf`.
+  // read the slot) by that method. Other keys compare by `equalPair`.
   function hashKeyTest(key, other) {
     const keyword = keywordOf(key);
     if (keyword === undefined) return equalPair(key, other);
@@ -4437,9 +4403,7 @@
       }
       // Its `fqn` first: the keys and values of `arr` tell V8 nothing of a
       // key's class, so the kind test runs only where the spelling matches
-      // (upstream's `array-index-of-keyword?`); a value without the field
-      // (another kind, or the Pants profile's engine keyword) is read
-      // through `keywordOf`.
+      // (upstream's `array-index-of-keyword?`).
       if (other != null) {
         const spelling = other.fqn$LKEY;
         if (spelling === fqn ? keywordOf(other) !== undefined : spelling === undefined && keywordOf(other)?.fqn$LKEY === fqn) return i;
@@ -4479,9 +4443,8 @@
   // (`keywordEquiv`, light-cljs-1040) is none. Where no session demands
   // declarations (`slotFirst`), so that no demand comes before the read, the
   // slot is read here, once, and not through the lookup, whose test of the
-  // runtime's own slots (`builtinSlots`) is a WeakSet probe in the V8
-  // profile and a linear search in the Pants build's; a session that demands
-  // takes the lookup, which at compile time (build.rs, light-cljs-439)
+  // runtime's own slots (`builtinSlots`) is a WeakSet probe. A session that
+  // demands declarations takes the lookup, which at compile time (build.rs, light-cljs-439)
   // answers the class's own slot too. Both lookups are
   // `keywordLookupEquiv`'s, so that a search inlines the slot's read alone
   // (light-cljs-1041), and need the protocol lookup (`protocolHooks.builtin`);
@@ -5238,9 +5201,7 @@
   // A map transient of a map's fields (`TransientArrayMapCell`,
   // `TransientHashMapCell`): a copy of an array map's keys and values, and a
   // hash map's root, of whose nodes a fresh edit owns none, so that its first
-  // change of each copies it once (`hashNodeAssoc`). A map without these
-  // fields (the Pants build's engine maps) gives its entries (`maps`), of
-  // its kind.
+  // change of each copies it once (`hashNodeAssoc`).
   kindHooks.transientMap = value => {
     const kind = value.cljs$lang$kind$$LKEY;
     if (kind === 28 && value.arr$LKEY !== undefined) {
@@ -5795,8 +5756,7 @@
 
   //@unit makeVector requires: vectorTrie
   // A vector of the new array `items`, or the vector an operation built,
-  // which is its own store (`vectorConj`, `vectorAssoc`, `vectorPop`); the
-  // Pants build's profile swaps it for one that builds an engine vector.
+  // which is its own store (`vectorConj`, `vectorAssoc`, `vectorPop`).
   function makeVector(items, store) {
     return store === undefined ? vectorTrie(items) : store;
   }
@@ -6142,8 +6102,7 @@
   // paths answered by recognising them have slots (chunked, node and
   // reversed seqs, a sorted map's seq and set, chunk buffers, transients,
   // integer ranges, lists and queues). The old paths (`countPath` and the
-  // others) serve the compile-time runtime and the shared-heap profile
-  // (`operationPaths`).
+  // others) serve the compile-time runtime (`operationPaths`).
   //@unit count requires: countOf, slotFirst
   function count(value) {
     if (value != null && slotFirst.on && value.cljs$lang$kind$$LKEY !== undefined) {
@@ -7082,8 +7041,7 @@
   // threshold probe or coalesce during trie insertion, so they promote
   // directly through `hashNodeAssoc` with a persistent (`edit = null`) insert
   // for the incoming ninth key; custom/composite keys and host `IEquiv`/`IHash`
-  // extensions delegate to `mapAssocEntries`. The shared-heap profile overrides
-  // this unit to delegate to `mapAssocEntries` so engine-map allocation holds.
+  // extensions delegate to `mapAssocEntries`.
   function arrayMapPromote(self, arr, key, item) {
     const plain = k => k == null || typeof k === "string" || typeof k === "number" || typeof k === "boolean"
       || (keywordOf(k) !== undefined && !keywordProgramEquiv(k));
@@ -7686,7 +7644,7 @@
   // lazily materializing `MapEntry` objects only when `-first` or `-reduce`
   // asks for one and caching realized entries in a prototype-free map on
   // `root` so repeated traversals share identity (light-cljs-1064,
-  // light-cljs-1081). The shared-heap profile swaps these for view slots.
+  // light-cljs-1081).
   //@unit hashMapSeqFirst requires: builtinSlot, mapEntry
   const hashMapSeqFirst = builtinSlot(function (self) {
     const i = self.i$LKEY, nodes = self.nodes$LKEY;
@@ -7746,7 +7704,6 @@
   // upstream's PersistentArrayMapSeq: `-first` the entry of the key and
   // value at its index, made as it is asked for, `-next` the seq from the
   // next key, `-count` its keys from its index, each from its own fields.
-  // The shared-heap profile swaps these for the view slots.
   //@unit arrayMapSeqFirst requires: builtinSlot, mapEntry
   const arrayMapSeqFirst = builtinSlot(function (self) {
     const i = self.i$LKEY, pairs = self.pairs$LKEY;
@@ -9127,7 +9084,7 @@
   // host type, `object` or `default`, a program type's), dates, and the
   // runtime's seqs and queue without a slot of their own, told by their
   // keyed kind. The old path (`equalPairPath`) serves the compile-time
-  // runtime and the shared-heap profile (`operationPaths`). The function
+  // runtime (`operationPaths`). The function
   // stays under the 100 bytes of bytecode that V8's Maglev inlines
   // (light-cljs-1033).
   //@unit equalPair requires: equalPairOf, slotFirst
@@ -9428,7 +9385,7 @@
   // symbol's, a map's and a set's in its `hash` field); every other value,
   // and a value whose slot holds no method, takes the operation's own path
   // (`hashOf`), upstream's. The old path (`hashPath`) serves the
-  // compile-time runtime and the shared-heap profile (`operationPaths`).
+  // compile-time runtime (`operationPaths`).
   // The function stays under the 100 bytes of bytecode that V8's Maglev
   // inlines (light-cljs-1033).
   //@unit hash requires: hashOf, slotFirst
@@ -9512,8 +9469,7 @@
   }
   //@unit heldHash
   // A value's cached hash, its own `hash` field (light-cljs-1053), else
-  // undefined. The Pants build's profile swaps it and `holdHash` for ones
-  // that keep an engine form's in the task's cache.
+  // undefined.
   function heldHash(value) { return value.hash$LKEY; }
   //@unit holdHash
   // Caches `hash` as a value's hash in its own field, and gives it.
@@ -10532,8 +10488,7 @@
   // type has no `-key` or `-val` slot that a program gave it, and its own
   // `-nth` (light-cljs-1081). A key seq then reads the key or value
   // without the entry. The slots are read from an unstamped object whose
-  // prototype is `MapEntryType.prototype` (so the Pants build's shared heap
-  // can seal it), rather than from the prototype directly, whose many slots
+  // prototype is `MapEntryType.prototype`. The prototype's many slots
   // make reading them from the prototype itself slow in V8.
   function ownEntryItems(keyed) {
     const entry = entryWitness;
@@ -11618,7 +11573,7 @@
   function setDeclarationDemand(demand) {
     // A session that demands declarations reads no slot before its demand
     // (`slotFirst`), and takes the operations' own paths, whose lookups
-    // demand (`operationPaths`; the shared-heap profile's, sealed, holds them).
+    // demand (`operationPaths`).
     slotFirst.off();
     if (operationPaths.seq === undefined) {
       operationPaths.seq = seqPath; operationPaths.first = firstPath; operationPaths.rest = restPath; operationPaths.next = nextPath;
@@ -11641,13 +11596,12 @@
     demandMulti = mf => { if (demand) demand("multifn:" + print(mf.name, false), mf); };
   }
   // The operations' own paths where `operationPaths` holds them (a compiler
-  // session that demands declarations, the shared-heap profile), in front
+  // session that demands declarations), in front
   // of the upstream-shaped paths (`countOf` and the others), each with the
   // arguments it was given, as each path read them first until
   // light-cljs-1078: effects kept only with `setDeclarationDemand`, which
-  // no `Advanced` slice keeps without reflection. `equalPairOf` and `hashOf` still read theirs themselves: the
-  // shared-heap profile's units of those names are the old paths, which
-  // keep none of the other operations' paths (`operationPaths`).
+  // no `Advanced` slice keeps without reflection. `equalPairOf` and
+  // `hashOf` read their own paths.
   //@unit operationPaths.seq effect: seqOf when: setDeclarationDemand requires: operationPaths,
   //@ seqOf
   seqOf = (operation => function (value) { return (operationPaths.seq ?? operation)(value); })(seqOf);
@@ -11987,8 +11941,7 @@
   // asked the class's store, which also told a value of the class from one
   // made by reflection from its prototype (light-cljs-1046): such a value
   // is in them as its class's are, as it declares its class's mask bits
-  // (docs/value-layout.md, section 5). The Pants build's profile, whose
-  // engine forms have no kind, probes its stores in turn.
+  // (docs/value-layout.md, section 5).
   const kindIn = (kind, low, high, program) => (kind & 127) === kind && ((kind < 32 ? low : kind < 64 ? high : kind < 96 ? program : 0) >>> kind & 1) === 1;
   //@unit kindPredicate requires: canHoldField, kindIn
   // Whether a value's keyed kind is in the set of `kindIn`'s bits: one read
@@ -12019,8 +11972,7 @@
   // it, and any other value, or one of an indexed seq's `view` that differs
   // within its class, by `rest` (light-cljs-1079). A value made by reflection
   // from a class's prototype answers as its class's values, as it does by
-  // kind (`ownedKind`). The Pants build's profile, whose engine forms have no
-  // kind, keeps the tests of the stores.
+  // kind (`ownedKind`).
   function maskNative(name, rest) {
     const [field, bit] = protocolMasks.get(name);
     return value => value != null && value.cljs$lang$kind$$LKEY < 64 && (value[field] & bit) !== 0 || rest !== undefined && !!rest(value);
@@ -12723,8 +12675,7 @@
     // An atom's `swap!` passes `fn` its arguments as they came, or past two
     // the first two and an indexed seq of the others, as upstream's `(apply
     // f state x y more)`, and builds no seq of them all for `swapState` to
-    // walk (light-cljs-1013). Another atom (the Pants build's engine atoms)
-    // takes `swapState`.
+    // walk (light-cljs-1013).
     if (isAtomCell(value)) return resetAtom(value, args.length <= 2 ? fn.call(null, value.state, ...args) : apply(fn, value.state, args[0], args[1], fnRest(args, 2)), false);
     return swapState(value, fn, fnRest(args, 0), false, args.length > 2);
   }
@@ -12793,8 +12744,7 @@
       const cnt = slots.cnt + entries.length - priorLength(original);
       // A map of the classes has its count in its field (`arrayMapCount`,
       // `hashMapCount`), and an array map's slots keep its pairs, for its
-      // public fields; another (the Pants build's engine maps) keeps both
-      // in its slots.
+      // public fields.
       const nil = Array.isArray(entries) ? entries.find(e => e.key == null) : entries.nil;
       if (isHashMap(result)) result.cnt$LKEY = cnt;
       else constructorSlots(result, mapKinds.get(result) === "array-map" ? {cnt, arr: entries.flatMap(e => [e.key, e.value])}
@@ -12828,7 +12778,7 @@
   // (`copyWithMeta`): the vectors, the seqs over an array or a string, the
   // cells, the lazy seqs and chunked conses, the maps, the sets and the
   // queues, by kind (light-cljs-1079), where their stores were probed in
-  // turn; the Pants build's profile still probes them.
+  // turn.
   const withMetaKeeps = kindPredicate(2143551470, 4114, 0);
   //@unit withMetaCopies requires: kindPredicate
   // The values besides the vectors whose copy `copyWithMeta` builds by their
@@ -13599,9 +13549,7 @@
   //@unit protocolStores requires: atoms, chunkedConsCells, delays, keywordCells, lazyCells, maps,
   //@ metaFunctions, multiFns, queues, recordCells, reducedValues, seqCells, sets, symbolCells,
   //@ transientCells, vars, vectorCells, viewCells, volatiles
-  // The stores of the runtime's own values, which the Pants build's profile
-  // probes in turn (its `ownedProtocolValue`); the V8 profile tests their
-  // classes' kinds (`ownedKind`).
+  // The stores of the runtime's own values.
   const protocolStores = [multiFns, transientCells, keywordCells, symbolCells, vectorCells, maps, recordCells, sets, seqCells, chunkedConsCells, viewCells, queues, lazyCells, delays, vars, atoms, volatiles, reducedValues, metaFunctions];
   //@unit ownedKind requires: kindIn
   // Whether a keyed kind is one of the runtime's own values' to the protocol
@@ -13614,8 +13562,7 @@
   const ownedKind = kind => kindIn(kind, -786434, 29663, 2);
   //@unit ownedProtocolValue requires: canHoldField, ownedKind
   // Whether a value is one of the runtime's own (`ownedKind`), by one read of
-  // its keyed kind. The Pants build's profile, whose engine forms have no
-  // kind, probes the stores of `protocolStores` in turn.
+  // its keyed kind.
   const ownedProtocolValue = value => canHoldField(value) && ownedKind(value.cljs$lang$kind$$LKEY);
   //@unit demandKey requires: demandMethod
   // The declaration demand of a method's resolved key (`methodKey`), for an
@@ -14022,8 +13969,7 @@
       if (typeof target !== "function" || target.prototype == null) throw new TypeError("extend-type requires a type constructor");
       // A type that had a kind table number, or `Object`, which every type inherits from.
       // Transient maps (kinds 31, 32) also invalidate `fieldComparisons` when
-      // flat map walks are active (`!hostExt.seq`), leaving sealed Pants boots
-      // untouched (Sol #1, light-cljs-1109).
+      // flat map walks are active (`!hostExt.seq`, light-cljs-1109).
       const targetKind = target.prototype.cljs$lang$kind$$LKEY;
       if ((target === Object || tabledKind(targetKind) || (!hostExt.seq && (targetKind === 31 || targetKind === 32))) && isCoreExtension(methods)) fieldComparisons.on = false;
       if (target === Object || target === String || target === Number || target === Boolean || target === Symbol || target === BigInt) {
@@ -14516,7 +14462,7 @@
   function typeMasks(masks) {
     if (masks == null) return null;
     // A mask map is a literal, built by a builder: an array map's keys and
-    // values (light-cljs-1036), or the Pants build's engine map's entries.
+    // values (light-cljs-1036).
     const name = key => key == 0 ? "cljs$lang$protocol_mask$partition0$$LKEY" : key == 1 ? "cljs$lang$protocol_mask$partition1$$LKEY" : "cljs$lang$protocol_mask$partition" + key + "$$LKEY", entries = [];
     if (isArrayMap(masks)) { const arr = masks.arr$LKEY; for (let i = 0; i < arr.length; i += 2) entries.push([name(arr[i]), arr[i + 1]]); }
     else for (const entry of maps.get(masks) ?? []) entries.push([name(entry.key), entry.value]);
@@ -17303,8 +17249,7 @@
   // program's method from the protocol lookup, else `getMethod` of a
   // multimethod, else the dispatcher, which throws (light-cljs-1083). The
   // key is resolved at boot, where the protocol machinery has loaded, else on
-  // first call, as `coreMethod` does; the shared-heap profile registers it in
-  // `sharedMethodKeys` so boot seals it.
+  // first call, as `coreMethod` does.
   if (multiHooks.getMethodProtocol) {
     let resolved = protocolHooks.methodKey?.("IMultiFn/-get-method");
     multiHooks.getMethodProtocol = (mf, dispatch) => {

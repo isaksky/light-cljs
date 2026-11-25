@@ -22,7 +22,6 @@ fn compile(
 
 fn both(host: &mut MacroHost, source: &str) {
     let js = compile(host, source).unwrap_or_else(|e| panic!("{e}"));
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();

@@ -491,7 +491,6 @@ fn deferred_warning_placeholders_reuse_later_definition_identity() {
             .count(),
         1
     );
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let evaluator = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();

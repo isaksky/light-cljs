@@ -48,7 +48,6 @@ fn node(script: &str) -> String {
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 fn both(javascript: &str, expected: &str) {
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let e = Evaluator::new(EvaluatorOptions::default()).unwrap();

@@ -10,7 +10,6 @@ fn program(source: &str) -> light_cljs::Program {
 }
 fn both(source: &str, expected: &str) {
     let p = program(source);
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
@@ -105,7 +104,6 @@ fn state_and_captures_survive_collection_and_failed_reentrant_completion() {
       aa = a(aa, 2); bb = b(bb);
       return c.vector(c.first(c.first(aa))(), c.nth(c.first(aa), 1), bb);
     })()"#;
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let e = Evaluator::new(EvaluatorOptions::default()).unwrap();

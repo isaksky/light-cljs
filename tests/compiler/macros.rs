@@ -830,9 +830,6 @@ fn recursive_and_growing_expansions_obey_depth_count_size_and_execution_limits()
     h.limits.generated_nodes = 100_000;
     h.limits.expansions = 1024;
     // The poll budget, a count of engine slices, is the limit under test.
-    // On the Pants build a poll is one 10,000-instruction VM step, so the
-    // default 10 s deadline raced it and won on a loaded machine
-    // (light-cljs-687); a deadline far away keeps the outcome deterministic.
     h.evaluator_options.poll_budget = 10_000;
     h.evaluator_options.timeout = std::time::Duration::from_secs(600);
     let spin = compile_with_macros("(spin)", &mut h)
@@ -1175,7 +1172,6 @@ fn generated_map_keys_keep_reader_name_parts_before_runtime_spelling_equality() 
         execute(&compile_with_macros(source, &mut h).unwrap()),
         "1 null a/b a b\n"
     );
-    // The Pants build embeds no QuickJS; Node still runs every program.
     #[cfg(feature = "quickjs")]
     let evaluator = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
     // The exact direct-source fixtures also pass through ordinary source macro
@@ -1531,7 +1527,6 @@ fn imported_macro_environment_keeps_qualified_ids_across_a_long_shadow_chain() {
         assert_eq!(result(&js), format!("{expected}\n"));
         // Application evaluation owns a fresh heap: macro mutation is quoted
         // into the expansion, while the imported application atom stays zero.
-        // The Pants build embeds no QuickJS; Node ran the program above.
         #[cfg(feature = "quickjs")]
         {
             let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
@@ -3594,7 +3589,6 @@ fn ordinary_dual_use_require_executes_exact_tools_example_through_api_and_cli() 
         for host in [&mut h, &mut MacroHost::new()] {
             let js = s.compile_host("app", host).unwrap();
             assert_eq!(inspect(&js), "[42 42 42]\n");
-            // The Pants build embeds no QuickJS; Node ran the program above.
             #[cfg(feature = "quickjs")]
             {
                 let evaluator = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
@@ -3809,7 +3803,6 @@ mod top_level_definition_groups {
     fn checked(source: &str, host: &mut MacroHost) {
         let js = compile_with_macros(source, host).unwrap();
         assert_eq!(result(&js), "true\n");
-        // The Pants build embeds no QuickJS; Node ran the program above.
         #[cfg(feature = "quickjs")]
         {
             let evaluator = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();

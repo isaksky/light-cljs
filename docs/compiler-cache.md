@@ -818,8 +818,7 @@ artifact with its real keys. Penpot's numbers are in
   edit against the uncached build at `--jobs 1` and 4, with and without
   worker engines, and the artifacts' bytes at one job and with worker
   engines. A namespace a macro
-  makes with `create-ns` is added like the others. The Pants build keeps
-  its own registry (light-cljs-589) and installs nothing into it.
+  makes with `create-ns` is added like the others.
 
 #### A narrower view for source-macro users (proposal, light-cljs-1000)
 
@@ -844,17 +843,6 @@ no edge attributes (the audit above):
    `:light-cljs/macros`, which `MacroHost` builds from the whole compilation's
    macro table, not the expanding namespace's requires;
 3. the namespace inventory of `all-ns`, `find-ns` and `the-ns`.
-
-*What the require-closure rule already rules out.* In the Pants build the rule
-(light-cljs-672, README "Require closure (Pants build)") makes 1 and 3
-impossible outside the closure: an extension outside it is not admitted
-(`extension outside require closure`), compile-time state outside it is an
-error naming the missing require, and `find-ns` and `all-ns` do not list it.
-It does not filter 2: the `&env` macro map is the same in both builds. In the
-V8 build, the build that ships, the rule is not built (light-cljs-446 is
-deferred), so none of the three is ruled out there today. Narrowing the view
-to the require closure in the V8 build as it is would let a macro read an
-unrequired namespace's extension and keep a stale expansion.
 
 *Remedies*, each a change to the dependency model, so none is built:
 
@@ -1923,43 +1911,6 @@ persistence remain out of scope.
      The miss reason is the newest candidate's first failure: a key
      component (`source`, `dependencies`, ...) or `no-artifact`, `index`,
      `unreadable`, `undecodable` or `refused` (installation refused it).
-     On the Pants build, `core-write` names the core function the build
-     may write: the build then looks nothing up, since cached macro code
-     may call that function directly, and publishes nothing, since an
-     identical rebuild would not look it up either (light-cljs-571). The
-     build finds writes by spelling, in every source before analysis, in
-     the forms the reader reads: the branch of a reader conditional it
-     selects (`:cljs`, else `:default`), never another branch, nor a `#_`
-     form unless it holds a splicing reader conditional, whose tail the
-     reader may keep (light-cljs-587); renames in top-level namespace
-     directives, `(refer-clojure :rename ...)`, count. A write is a
-     `set!`, `binding`, `with-redefs` or `js*` hole whose place names the
-     function, or an `aset` or `unchecked-set` whose receiver does, in a
-     list or `#(...)`, under metadata, quote or a property access (`.-x`,
-     `.`, `..`, `aget`). A `set!`, `aset` or `unchecked-set` that is the
-     first step of `->` also reads the thread's first operand as its place,
-     since `(-> f (aset "k" v))` is `(aset f "k" v)`, and so does one in
-     `doto`, unless that operand is `(js-obj)`. When the spelling cannot
-     show that a place names no core function, every core function counts
-     as written: an
-     unquoted place or binding vector; a call as a place or receiver, which
-     a macro could expand to a core function's name, unless no macro can
-     make it (a JavaScript or method call, `new`, a constructor) or it fills
-     a `js*` hole, which the analyzer's index never reads; one of
-     those three mutation operators as a later step of `->`, or without its
-     place operand outside `->` and `doto`; a binding form that is not a
-     vector; a tagged literal other than `#js`, `#inst`, `#uuid` or
-     `#queue`; and a mutation operator used as a value (`set!`, `binding`
-     or `with-redefs` anywhere, `aset` or `unchecked-set` under a quote,
-     where a macro may build a write with it as in `(list 'aset o k v)`).
-     Two writes do not count, as in the analyzer's index of resolved
-     writes: one through a receiver such a call computes, `(set! (.-x (.m
-     o)) v)` or `(aset (js/f) k v)`, which leaves unchanged which core
-     functions macro code calls directly, in a build with the cache or one
-     without, so both prepare the same code and emit the same output; and
-     `aset` called as a function value, `(apply aset o [k v])`, which the
-     Pants build's macro runtime does not provide yet (light-cljs-586).
-     Dynamic Vars never count. The V8 build runs no such scan.
    - **Policy.** As `cache_policy::evaluate`, in one forward pass: every
      edge points to an earlier namespace. `^:light-cljs/no-cache` covers
      only its namespace, whose consumers still hit while its key is the
@@ -2297,132 +2248,3 @@ the bootstrap macros live as long as their engine, and a worker's
   "As built (light-cljs-380)"). "RSS flat" in the row means the physical
   footprint and the live counts; `ps` RSS on macOS settles after about 30
   warm Penpot builds, at a level the allocator chooses.
-
-## Pants build cache-suite compatibility
-
-On master `1b4195c0`, with Homebrew Rust/Cargo 1.99.1 on macOS arm64,
-`CARGO_BUILD_JOBS=4 cargo nextest run --locked --no-default-features --features
-bbp-macros --test compiler_cache --test cache_matrix -j 3 --no-fail-fast`
-reproduces eight failures (21 passed, eight failed, one ignored child entry).
-The first failure of each test is:
-
-| Test | First error | Classification |
-| --- | --- | --- |
-| `compiler_cache::persistent_inputs_invalidate_their_readers` | `light.build/resource is only available at compile time` from `inputs/inline` | Pants build gap: build object absent |
-| `compiler_cache::cached_optional_resource_absence_becoming_directory` | Printed `failed` instead of `absent` | Same gap, caught by the fixture's guard |
-| `cache_matrix::resource_change` | `light.build/resource is only available at compile time` from `inputs/inline` | Same gap |
-| `cache_matrix::input_read_through_a_helper_or_a_custom_reader` | Printed ` #0, #0` instead of `rows #1,rows #1` | Same gap: the helper's `exists?` guard skipped its read |
-| `cache_matrix::custom_reader_gensyms_across_processes` | Its `child` fails with `this light-cljs build embeds no QuickJS` at `app/a.cljs:1:19` | Pants build gap: explicit compiler readers required QuickJS |
-| `cache_matrix::timestamp_macro` | `RangeError: no host clock supplied (use Task::run_with)` | Pants build gap: clock not connected |
-| `cache_matrix::repeated_builds_and_teardown` | `LiveCounts { artifacts: 0, engines: 0, engine_handles: 0, bridge_payloads: 0 }` while the macro engine is alive | Harness observability gap: Pants runtime and bridge retention were not counted |
-| `cache_matrix::resolution_and_views` | `unsupported operation: native macro runtime Var reflection` from `reflect/doc-of` at `user.cljs:1:59` | Larger Pants build gap, tracked by **light-cljs-589** |
-
-None of these fixtures assumes behavior exclusive to the V8 build. The Pants
-build now installs the shared build object and serves string requests after
-parking its VM task, on the thread that owns the compiler callback. Initializer
-IDs accompany requests, so helper reads and their cached reuse carry the same
-external-input dependencies. Responses are charged to the shared heap and old
-mailboxes do not retain resource contents. Explicit named and fallback compiler
-readers execute native-form units, with definition identity and gensym counters
-kept consistent with the V8 build's reader heap. The real clock is supplied to
-Pants tasks, and runtime/provenance lifetimes enter the existing live counters.
-No expected values or assertions in the cache suites changed.
-
-`compiler_cache` passes all 19 tests (including the new four-thread resource test); `cache_matrix` passes 10 of its 11 parent
-tests, including its custom-reader child builds. The unchanged
-`resolution_and_views` still stops at Var reflection. Light-cljs-589 carries
-that exact source and failure, plus the namespace inventory case later in the
-same test. It must pass the complete test, including metadata-only edits and
-`all-ns`, without skipping rows. The resource and configuration contract suites
-are also reused directly by `bbp_macros`, so they run on the Pants build without
-requiring the compiler integration binary's QuickJS test dependencies.
-
-### Verification and V8 build comparison
-
-Verified on macOS arm64 with Homebrew Rust/Cargo 1.99.1, Node 26.12.1,
-`CARGO_BUILD_JOBS=4`, and ClojureScript source pin `a5e94c98`:
-
-- `cargo nextest run --locked --no-default-features --features bbp-macros,quickjs --lib --test bbp_macros -j 3 --no-fail-fast`, with `LIGHT_CLJS_STRESS_SEEDS=12`: **574 passed**, two existing ignored tests, on pre-rebase source `cbcddd5c`. After the Object selector and profiling/dependency-log rebases onto `61ace815`, all **396** affected combined library/resource/reader/Object/profiling checks pass on `b64d915d`, as do the **12** dependency-handoff engine tests. Unaffected full-run results are reused.
-- The final Pants cache suites pass **29 of 30**, with only `cache_matrix::resolution_and_views` failing as tracked by light-cljs-589. The new parallel-resource fixture gives both builds a 256 MiB macro budget, enough for four V8 isolates; its worker-use, output and invalidation assertions are unchanged.
-- Full V8 build nextest (`LIGHT_CLJS_V8_CACHE=require`, eight test processes): **2,135 of 2,136** cases pass after the exact new fixture rerun. After the final rebase, the library/CLI/cache subset passes **392 of 393** with the same `playground_crate_checks_for_wasm32` failure: the existing nested-worktree Cargo workspace-discovery error, independently reproduced on untouched source. Unaffected full-run results are reused after the test-budget correction and Pants execution/profiling changes; V8 output/reporting is covered by the final subset and release comparison.
-- Formatting, JavaScript syntax checking and strict V8 all-target Clippy pass. Strict combined Clippy retains eight existing engine-library diagnostics; all-target lint passes allowing only `deprecated`, `clippy::chunks_exact_to_as_chunks` and `clippy::byte_char_slices` after `-D warnings`. Pants library/binary lint passes with those same diagnostic categories isolated. Engine-free library/binary strict lint passes; all-target engine-free lint still cannot compile the existing evaluator-dependent benches/examples and ungated QuickJS integration tests, reproduced on master. The Pants-only compiler integration binary likewise fails to compile unchanged QuickJS-dependent tests. Its library run retains 23 failures whose names and normalized errors match the `1b4195c0` baseline (26 failures there, three fixed by this change); the combined run above passes all library tests.
-
-Fresh V8 release executables of master `61ace815` and production source
-`b64d915d` compile the same fixture generated with
-`bb benchmarks/generated-project/generate.bb target/g200k --seed 42 --lines 200k`
-(199,129 nonblank lines, 450 worker namespaces). After one warm-up per executable,
-five alternating master/branch pairs run `release bench --no-cache --jobs 1`.
-Peer load changes sharply during that series: master ranges from 8.67 to
-20.53 s and this change from 8.60 to 16.56 s (medians 9.89 and 10.51 s).
-Five further pairs, alternating which executable starts each pair, give:
-
-| V8 build | Median clean build, one thread | Range | Peak memory range |
-| --- | ---: | ---: | ---: |
-| Master | 8.07 s | 7.95–8.20 s | 1,065,025,536–1,112,686,592 bytes |
-| This change | 8.13 s | 8.06–8.21 s | 1,050,836,992–1,115,406,336 bytes |
-
-Load averages fall from about 35 to 12 over these measurements. The final
-median ratio is 1.007, with overlapping ranges; V8 build time is unchanged
-within this run's variation. Median CPU time is 8.76 s on master and 8.84 s
-with this change. Every measured and warm-up output is
-byte-identical: the 3,456,905-byte JavaScript has SHA-256
-`1a75bc87b26f312196671d4de9ed73110fc8aef077749fd8b6d5ce352bf4524e`, and
-the 12,049-byte chunk manifest has SHA-256
-`02523f07c6e3773d2f689bb59093464f0193c285543b8ed0fbd24bd1653c203f`.
-`node run-light.mjs 42 3` prints `484264`.
-
-### Reader compatibility follow-up
-
-The review fixes restore unscoped reader gensym reservations, reject JavaScript
-`undefined` recursively at the reader export boundary, and export finite Date
-results as instants through their intrinsic time values. Reader reservations
-and import memos remain private to their task, sharing the runtime's executable
-code, aggregate control and memory budget. A previously compiled namespace's
-symbols therefore do not change a reader's unscoped names.
-
-The three regressions in `bbp_macros` fail before their fixes and compare the
-Pants build with the QuickJS reference afterward:
-`native_reader_unscoped_gensyms_skip_input_symbols`,
-`native_compiler_readers_reject_undefined_results`, and
-`native_compiler_readers_export_dates_like_reference`. Coverage includes a
-namespace-warmed runtime, earlier generated spellings, lazy sequences, metadata,
-valid nil, Date constructors and unquoted `#inst`, invalid Dates, throwing
-getters, intrinsic branding and conversion limits. A Date-valued reader's emitted
-application is byte-identical to the QuickJS reference and prints `0` in Node.
-Two evaluator checks also
-cover literal payloads, including unqualified keyword object keys.
-
-Final production code `40cc92c0`, rebased onto `6d669e3d`, was checked with the
-same Mac/toolchain configuration above and `CARGO_BUILD_JOBS=4`:
-
-- The five focused regressions pass in both the Pants-only and combined
-  Pants/QuickJS configurations. The stronger namespace-warmed gensym check also
-  fails before reader-task isolation and passes afterward.
-- After the rebase, combined reader/resource/compiler checks pass **103/103**,
-  library/session/cache checks pass **121/121**, and the selected effect-lane
-  and pool scheduling tests pass **2/2** with one seed. These use three test
-  processes, or one for the scheduling tests.
-- The final Pants cache suites pass **31/32**, including master's added core-write
-  coverage; only `cache_matrix::resolution_and_views` fails, still tracked by
-  **light-cljs-589**. The final V8 cache/reader/namespace subset passes **130/130**,
-  including all **27** V8 cache cases, with eight test processes.
-- The earlier full combined library/`bbp_macros`/compiler run passes **1,810/1,811**;
-  its 12-seed effect-lane test hits nextest's 600-second timeout, then passes
-  alone with the same 12 seeds in **593.99 seconds**. The full V8 run passes
-  **2,135/2,136**, retaining the documented nested-worktree `wasm32` workspace
-  discovery failure. Unchanged full-run results are reused across reader-task
-  isolation and the rebase; the final subsets cover reader isolation, core-write
-  scanning and the equivalent CLJC selector refactor. Engine-package sources
-  have not changed since their full run: all **2,206** tests across 66 binaries
-  and **seven** doc tests pass.
-- Formatting, JavaScript syntax and strict V8 all-target Clippy pass. Strict
-  combined Clippy retains the same eight engine-library diagnostics; engine
-  all-target lint also reports the ninth existing test diagnostic. Both pass
-  allowing only `deprecated`, `clippy::chunks_exact_to_as_chunks` and
-  `clippy::byte_char_slices` after `-D warnings`. Pants library/binary lint passes
-  with those categories isolated. Engine-free library/binary strict lint passes;
-  its all-target check retains the existing evaluator-dependent bench/example
-  compile errors.
-- A fresh final V8 release executable compiles the same 200k fixture with
-  `release bench --no-cache --jobs 1`. `cmp` confirms both output files retain
-  the master baseline bytes and SHA-256 hashes above; Node again prints `484264`.

@@ -10,7 +10,6 @@ fn both(source: &str, expected: &str) {
     let mut host = MacroHost::new();
     let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host)
         .unwrap_or_else(|error| panic!("{source}\n{error}"));
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
@@ -70,7 +69,6 @@ fn sequence_and_name_equiv_contracts_execute_in_both_phases() {
 
 #[test]
 fn failed_sequence_equiv_leaves_reused_application_and_macro_hosts_usable() {
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let mut session = light_cljs::EvalSession::new(Default::default()).unwrap();
@@ -91,7 +89,6 @@ fn failed_sequence_equiv_leaves_reused_application_and_macro_hosts_usable() {
     let source =
         "(defmacro restored-sequence-equiv [] (.equiv (list 1 2) [1 2])) (restored-sequence-equiv)";
     let js = light_cljs::compile_with_macros(source, &mut host).unwrap();
-    // The Pants build embeds no QuickJS to run this half of the check.
     #[cfg(feature = "quickjs")]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
