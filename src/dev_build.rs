@@ -531,7 +531,7 @@ pub fn runtime_file(key: &RuntimeKey) -> String {
     key.apply(&format!(
         "globalThis.__lightRuntime{} = {};\n",
         crate::runtime_key::KEY_PLACEHOLDER,
-        crate::runtime_manifest::RUNTIME.trim()
+        crate::runtime_manifest::DEV_RUNTIME.trim()
     ))
 }
 

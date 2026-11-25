@@ -1267,3 +1267,112 @@ fn dev_build_and_cached_warning_mode_avoid_single_unit_pool_ping_pong() {
         }
     }
 }
+
+/// Dev builds keep `hostExt` and direct slot-first paths active by default,
+/// yet `extend-type`, `specify!`, direct `(aset ICounted ...)`/`(aset -pr-writer ...)`,
+/// and raw core-method slot clearing must all still take effect both at initial
+/// load and when introduced by a reloaded unit.
+#[test]
+fn dev_fast_paths_observe_later_extensions_direct_host_writes_and_slot_clears() {
+    let dir = TempDir::new("dev-fast-paths");
+    let initial = source_root(
+        &dir.join("v1"),
+        &[
+            (
+                "app/ext.cljs",
+                r#"(ns app.ext)
+(defn snapshot []
+  [(counted? 5)
+   (pr-str 5)
+   (pr-str {:a 1 :b [2 3]})
+   (count [1 2 3])
+   (vector? [1])
+   (map? {:a 1})])
+"#,
+            ),
+            (
+                "app/main.cljs",
+                r##"(ns app.main
+  (:require [app.ext :as ext]))
+(defn ^:dev/after-load report []
+  (js/console.log (pr-str (ext/snapshot))))
+(defn start []
+  (report)
+  (let [o (specify! #js {}
+            IPrintWithWriter (-pr-writer [_ w _] (-write w "#spec"))
+            ICounted (-count [_] 9))]
+    (js/console.log (pr-str o) (count o) (counted? o))))
+start
+"##,
+            ),
+        ],
+    );
+    let out = dir.join("dev");
+    dev_build(&initial, &out);
+
+    // Reload 1: extend-type on host type `number` for ICounted and IPrintWithWriter.
+    let v2 = source_root(
+        &dir.join("v2"),
+        &[
+            (
+                "app/ext.cljs",
+                r#"(ns app.ext)
+(extend-type number
+  ICounted (-count [n] (+ n 10))
+  IPrintWithWriter (-pr-writer [n w _] (-write w (str "N:" n))))
+(defn snapshot []
+  [(counted? 5) (count 5) (pr-str 5) (pr-str {:a 1 :b [2 3]})])
+"#,
+            ),
+            (
+                "app/main.cljs",
+                r#"(ns app.main (:require [app.ext :as ext]))
+(defn ^:dev/after-load report [] (js/console.log (pr-str (ext/snapshot))))
+(defn start [] (report))
+start
+"#,
+            ),
+        ],
+    );
+    let out_v2 = dir.join("dev-v2");
+    dev_build(&v2, &out_v2);
+
+    assert_eq!(
+        run_dev(&out, true, &[out_v2.join("app.ext.js")]).unwrap(),
+        r#"{"id":"program","outcome":{"status":"returned","value":{"$value":"undefined"}},"trace":[],"stdout":"[false \"5\" \"{:a 1, :b [2 3]}\" 3 true true]\n#spec 9 true\n[true N:15 \"N:5\" \"{:a N:1, :b [N:2 N:3]}\"]\n"}"#
+    );
+
+    // Reload 2: direct `(aset ICounted/IPrintWithWriter/-pr-writer "boolean" ...)`
+    // without `extend-type`, plus raw slot clearing on PersistentVector.prototype.
+    let v3 = source_root(
+        &dir.join("v3"),
+        &[
+            (
+                "app/ext.cljs",
+                r#"(ns app.ext)
+(aset ICounted "boolean" true)
+(aset IPrintWithWriter "boolean" true)
+(aset -pr-writer "boolean" (fn [b w _] (-write w (if b "YES" "NO"))))
+(set! (.. PersistentVector -prototype -cljs$core$ICounted$_count$arity$1) nil)
+(defn snapshot []
+  [(counted? true) (pr-str true) (count [1 2 3])])
+"#,
+            ),
+            (
+                "app/main.cljs",
+                r#"(ns app.main (:require [app.ext :as ext]))
+(defn ^:dev/after-load report [] (js/console.log (pr-str (ext/snapshot))))
+(defn start [] (report))
+start
+"#,
+            ),
+        ],
+    );
+    let out_v3 = dir.join("dev-v3");
+    dev_build(&v3, &out_v3);
+
+    assert_eq!(
+        run_dev(&out, true, &[out_v3.join("app.ext.js")]).unwrap(),
+        r#"{"id":"program","outcome":{"status":"returned","value":{"$value":"undefined"}},"trace":[],"stdout":"[false \"5\" \"{:a 1, :b [2 3]}\" 3 true true]\n#spec 9 true\n[YES \"YES\" 3]\n"}"#
+    );
+}

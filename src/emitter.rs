@@ -1221,6 +1221,9 @@ fn emit_js_mode(
         } else {
             runtime.push_str(&registration);
         }
+        if emitter.core_method_write {
+            runtime.push_str("  rt.enableSlotWrites?.();\n");
+        }
         for range in &mut emitter.raw_segments {
             if range.start >= prelude_end {
                 range.start += runtime.len();
@@ -2955,6 +2958,10 @@ struct Emitter<'a, 's> {
     /// ([`Emitter::declared_product`]); `defined_type` takes it, so a type
     /// defined in one of its methods is not.
     declaring_type: bool,
+    /// In an interactive/dev unit (`application_roots`), whether emitted code
+    /// directly writes or deletes a core protocol method slot by name
+    /// (`cljs$core$...$arity$...`), so the dev runtime activates `slotWrites.*`.
+    core_method_write: bool,
 }
 
 /// Saved positions in the emitter's buffers before a region that may need
@@ -3305,6 +3312,7 @@ impl<'a, 's> Emitter<'a, 's> {
             declared_in_place: None,
             top_statement: false,
             declaring_type: false,
+            core_method_write: false,
 
             self_aliases: Vec::new(),
             receivers: Vec::new(),
@@ -6723,6 +6731,7 @@ impl<'a, 's> Emitter<'a, 's> {
                 // Compiler scope saves overlays without demanding the root.
                 // Every initializer still sees the outer environment.
                 for (i, (target, _)) in bindings.iter().enumerate() {
+                    self.note_core_method_write(*target);
                     self.indentation();
                     write!(self.output, "const saved{i} = ").unwrap();
                     if self.compiler_binding(*target) {
@@ -9522,8 +9531,39 @@ impl<'a, 's> Emitter<'a, 's> {
         self.output.push(']');
     }
 
+    fn note_core_method_write(&mut self, target: ExprId) {
+        if !self.application_roots || self.core_method_write {
+            return;
+        }
+        let is_core_method = |name: &str| {
+            name.starts_with("cljs$core$")
+                && name.contains("$arity$")
+                && crate::analyzer::keyed_name(name)
+        };
+        self.core_method_write = match &self.program.exprs[target.0].kind {
+            ExprKind::Property { property, .. } => is_core_method(property),
+            ExprKind::JsGlobal(global) => self.program.js_globals[global.0]
+                .path
+                .iter()
+                .any(|component| is_core_method(component)),
+            _ => false,
+        };
+    }
+
     fn js_template(&mut self, segments: &[String], args: &[ExprId]) {
         self.has_raw_js = true;
+        if self.application_roots && !self.core_method_write {
+            for &arg in args {
+                self.note_core_method_write(arg);
+            }
+            if segments.iter().any(|segment| {
+                segment.contains("cljs$core$")
+                    && segment.contains("$arity$")
+                    && segment.contains(crate::rta::RUNTIME_KEY)
+            }) {
+                self.core_method_write = true;
+            }
+        }
         for (index, segment) in segments.iter().enumerate() {
             let start = self.output.len();
             self.output.push_str(segment);
@@ -10346,6 +10386,15 @@ impl<'a, 's> Emitter<'a, 's> {
                 }
             }
             ExprKind::JsDelete { receiver, key } => {
+                if self.application_roots
+                    && !self.core_method_write
+                    && let ExprKind::String(text) = self.program.exprs[key.0].kind
+                {
+                    let name = String::from_utf16_lossy(&self.program.strings[text.0]);
+                    if name.contains("cljs$core$") && name.contains("$arity$") {
+                        self.core_method_write = true;
+                    }
+                }
                 self.output.push_str("(delete (");
                 self.interop_value(*receiver);
                 self.output.push_str(")[");
@@ -10996,6 +11045,7 @@ impl<'a, 's> Emitter<'a, 's> {
     fn set_global_value(&mut self, id: ExprId) {
         match &self.program.exprs[id.0].kind {
             ExprKind::SetGlobal { target, value } => {
+                self.note_core_method_write(*target);
                 if self.native_forms && self.compiler_binding(*target) {
                     self.output.push_str("globalThis.__lightSetCompilerRoot(");
                     self.binding_name(*target);

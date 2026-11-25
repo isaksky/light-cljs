@@ -93,6 +93,7 @@ fn main() {
     )
     .expect("write the compile-time runtime");
     fs::write(out.join("js_runtime.js"), runtime).expect("write the embedded runtime");
+    fs::write(out.join("js_dev_runtime.js"), dev_runtime(&source)).expect("write the dev runtime");
     fs::write(out.join("terse_runtime.rs"), terse_runtime(&source))
         .expect("write the terse runtime");
 
@@ -266,6 +267,119 @@ fn collect_files(path: &Path, files: &mut Vec<String>) {
 ///   probes, light-cljs-1046.)
 fn compiler_runtime(runtime: &str) -> String {
     compiler_hooks(runtime, false)
+}
+
+/// The dev-build runtime (`src/dev_build.rs::runtime_file`): `src/js_runtime.js`
+/// with the `:advanced`-only `hostExt` disablers (`hostExt.core`,
+/// `hostExtEscaped.on`, `hostExtSeqEscaped.on`, `hostExtPrintEscaped.on`)
+/// omitted, the `slotWrites.*` wrappers deferred behind an idempotent
+/// `enableSlotWrites()` export (called by dev units that write a core
+/// protocol method slot by name), and lazy non-enumerable write-watchers on
+/// core protocol objects and dispatchers so direct `(aset ICounted ...)` or
+/// `(aset -pr-writer ...)` mutations still invalidate the corresponding
+/// `hostExt` flag without disabling fast paths at boot.
+fn dev_runtime(source: &str) -> String {
+    const SKIP_UNITS: &[&str] = &[
+        "hostExt.core",
+        "hostExtEscaped.on",
+        "hostExtSeqEscaped.on",
+        "hostExtPrintEscaped.on",
+    ];
+    const WATCH_HOST_KEYS: &str = concat!(
+        "  {\n",
+        "    const hostKeys = [\"_\", \"null\", \"string\", \"number\", \"boolean\", \"array\", \"object\", \"function\"];\n",
+        "    const watchHostKeys = (obj, proto) => {\n",
+        "      if (obj == null) return;\n",
+        "      const flip = () => {\n",
+        "        if (proto === \"Fn\") hostExt.fn = true;\n",
+        "        if (proto === \"ISeq\" || proto === \"ISeqable\" || proto === \"INext\") hostExt.seq = true;\n",
+        "        if (proto === \"IMeta\") hostExt.imeta.on = true;\n",
+        "        const mask = protocolMasks.get(proto);\n",
+        "        if (mask) hostExt[mask[0] === \"cljs$lang$protocol_mask$partition0$$LKEY\" ? \"p0\" : \"p1\"] |= mask[1];\n",
+        "      };\n",
+        "      for (let i = 0; i < hostKeys.length; i++) {\n",
+        "        const k = hostKeys[i];\n",
+        "        if (k in obj) continue;\n",
+        "        Object.defineProperty(obj, k, {\n",
+        "          configurable: true, enumerable: false,\n",
+        "          get() { return undefined; },\n",
+        "          set(v) { flip(); Object.defineProperty(this, k, {value: v, writable: true, configurable: true, enumerable: true}); }\n",
+        "        });\n",
+        "      }\n",
+        "    };\n",
+        "    for (const [protocol, name] of coreProtocolNames) watchHostKeys(protocol, name);\n",
+        "    for (const [key, cell] of coreDispatchers) {\n",
+        "      const slash = key.indexOf(\"/\");\n",
+        "      if (slash > 0 && cell.dispatcher) watchHostKeys(cell.dispatcher, key.slice(0, slash));\n",
+        "    }\n",
+        "  }\n",
+    );
+
+    let mut out = String::with_capacity(source.len() + 2048);
+    let mut deferred_slot_writes = String::new();
+    let mut current_unit: Option<&str> = None;
+    let mut skipped_count = 0usize;
+    let mut deferred_count = 0usize;
+    let mut exports_patched = false;
+
+    for line in source.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("//@unit ") {
+            let name = rest.split_whitespace().next().unwrap_or("");
+            current_unit = Some(name);
+            if SKIP_UNITS.contains(&name) {
+                skipped_count += 1;
+            } else if name.starts_with("slotWrites.") {
+                deferred_count += 1;
+            }
+            continue;
+        }
+        if trimmed.starts_with("//@exports") {
+            current_unit = None;
+            out.push_str("  let slotWritesEnabled = false;\n");
+            out.push_str("  function enableSlotWrites() {\n");
+            out.push_str("    if (slotWritesEnabled) return;\n");
+            out.push_str("    slotWritesEnabled = true;\n");
+            out.push_str(&deferred_slot_writes);
+            out.push_str("  }\n");
+            out.push_str(WATCH_HOST_KEYS);
+            continue;
+        }
+        if trimmed.starts_with("//@") {
+            continue;
+        }
+        if let Some(unit) = current_unit {
+            if SKIP_UNITS.contains(&unit) {
+                continue;
+            }
+            if unit.starts_with("slotWrites.") {
+                deferred_slot_writes.push_str("  ");
+                deferred_slot_writes.push_str(line);
+                continue;
+            }
+        }
+        if !exports_patched && line.contains("return Object.freeze({") {
+            out.push_str(&line.replacen(
+                "return Object.freeze({",
+                "return Object.freeze({enableSlotWrites, ",
+                1,
+            ));
+            exports_patched = true;
+        } else {
+            out.push_str(line);
+        }
+    }
+    assert_eq!(
+        skipped_count,
+        SKIP_UNITS.len(),
+        "dev_runtime expected all hostExt disabler units"
+    );
+    assert!(
+        deferred_count >= 20,
+        "dev_runtime expected slotWrites.* units, found {deferred_count}"
+    );
+    assert!(exports_patched, "dev_runtime could not patch exports line");
+    out
 }
 
 /// The compile-time hooks inserted into `runtime` (see [`compiler_runtime`]).

@@ -160,6 +160,12 @@ pub const ANNOTATED_RUNTIME: &str = include_str!("js_runtime.js");
 /// without its header lines (written by `build.rs`).
 pub const RUNTIME: &str = include_str!(concat!(env!("OUT_DIR"), "/js_runtime.js"));
 
+/// [`RUNTIME`] as dev builds load it (`src/dev_build.rs::runtime_file`):
+/// keeps `hostExt` and direct slot-first paths active until `extend-type`,
+/// `specify!`, direct protocol/dispatcher host-key writes, or explicit
+/// core-method slot writes invalidate them.
+pub const DEV_RUNTIME: &str = include_str!(concat!(env!("OUT_DIR"), "/js_dev_runtime.js"));
+
 /// [`RUNTIME`] as the compile-time evaluators run it: with hooks only the
 /// compiler uses, which output never embeds (written by `build.rs`; see
 /// `compiler_runtime` there).
