@@ -5,15 +5,12 @@
 ;;                                  wasm-bindgen and assemble playground/dist
 ;;   bb playground/build.bb check   run playground/check.mjs (Node) against dist
 ;;   bb playground/build.bb lint    cargo check playground/crate for wasm32 with
-;;                                  warnings denied: the one build of the
-;;                                  compiler without QuickJS or V8, which no
-;;                                  native test compiles (light-cljs-396)
+;;                                  warnings denied
 ;;   bb playground/build.bb serve   serve playground/dist on http://localhost:8787
 ;;   bb playground/build.bb         build, then serve
 ;;
 ;; Needs: a Rust toolchain with the wasm32-unknown-unknown target and the
-;; wasm-bindgen CLI at the version playground/crate/Cargo.toml pins. No C
-;; compiler: the module embeds no QuickJS (light-cljs-357).
+;; wasm-bindgen CLI at the version playground/crate/Cargo.toml pins.
 ;; See playground/README.md.
 ;;
 ;; Toolchain discovery, each overridable through the environment:

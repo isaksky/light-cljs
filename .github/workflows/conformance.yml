@@ -7,9 +7,8 @@ on:
 permissions:
   contents: read
 
-# Native builds run macros in V8 by default and `--no-default-features --features quickjs` builds
-# in QuickJS. fast-tests and quickjs-tests run strict Clippy and the full suite
-# with each backend; the playground job keeps the WebAssembly (QuickJS) build.
+# fast-tests runs strict Clippy and the V8 suite. The playground job builds
+# and checks the WebAssembly compiler with a browser macro host.
 #
 # V8 is the stock prebuilt engine of the pinned `v8` crate, which its build
 # script downloads; no engine is built from source.
@@ -43,31 +42,6 @@ jobs:
       - run: node tests/support/js_runtime.test.js
       - run: node tests/support/js_core_helpers.test.js
       - run: node tests/support/execution.test.js
-
-  quickjs-tests:
-    name: Rust tests (QuickJS, no default features)
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-nextest
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '26.12.0'
-      - name: Fetch exact compiler source
-        run: |
-          git init research/clojurescript
-          git -C research/clojurescript remote add origin https://github.com/clojure/clojurescript.git
-          git -C research/clojurescript fetch --depth 1 origin a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e
-          git -C research/clojurescript checkout --detach FETCH_HEAD
-      # The macro suites (state, snapshots, redefinition, exceptions and
-      # limits) run here with every macro in QuickJS. Tests whose expectations
-      # differ by engine branch on cfg!(feature = "v8-macros").
-      - run: cargo clippy --locked --all-targets --no-default-features --features quickjs -- -D warnings
-      - run: cargo nextest run --locked --profile ci --no-default-features --features quickjs
 
   conformance:
     name: Pinned ClojureScript comparisons

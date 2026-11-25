@@ -54,10 +54,8 @@ Two things differ from the native build:
 - `std::time::Instant` does not exist on `wasm32-unknown-unknown`, so the
   evaluator's session clock (`src/evaluator.rs`, `host_clock`, which the
   crate's other wasm-reachable timing uses as `crate::evaluator::Instant`) reads a clock
-  the module imports, `__rquickjs_host_now_us` (named for the QuickJS wasm
-  shim, which shared it while the module embedded QuickJS). The crate defines
-  that symbol from `Date.now`, which resolves the import at link time, so the
-  module needs no `env` import object.
+  named `__light_cljs_host_now_us`. The crate defines that symbol from
+  `Date.now`, resolving the import at link time.
 - The emitted program runs in a web worker of its own: a fresh worker
   per run, `console.*` relayed to the page, terminated on completion or after
   10 seconds. Call `(enable-console-print!)` before printing, as in
@@ -67,20 +65,12 @@ Macros run in the compiler worker's own JavaScript engine: the crate hands
 `MacroHost::set_script_host` a host that calls
 `globalThis.lightCljsMacroHost`, which `macro-host.js` provides, and
 `serve_macro_host` is the way back in for the compiler services macros call.
-Until light-cljs-357 the module also embedded QuickJS, behind a "browser
-macros" checkbox; the output is the same, macro-heavy compiles are about three
-times faster, and the module is 1.2 MB (18%) smaller without it. The 10 s deadline
-is not checked inside the browser's JavaScript, so `compiler.js` keeps a
-watchdog: a compile with a macro still running after 10 s has its worker
-terminated and is replayed in a fresh one up to that macro call, which then
-fails with the located diagnostic QuickJS gives (the native compiler's), in
-about 11 s and without Stop. Interactive sessions and compiler data readers,
-which the page does not use, need QuickJS and report that this build has none.
-[docs/browser-macros.md](../docs/browser-macros.md) has the details, the
-isolation differences and the measurements. `check.mjs` compiles programs
-that stress macro semantics at every level and checks what each gives, which
-is what the embedded QuickJS gave, stops a spinning compile, and checks that
-spinning macros end on their own with QuickJS's located diagnostic.
+The browser's JavaScript checks the compiler's 10 s deadline at bridge
+boundaries. When a macro keeps running past it, `compiler.js` terminates
+its worker and replays the compile in a fresh one up to that macro call.
+It then reports the located deadline diagnostic. Interactive sessions and
+compiler data readers require a V8 build.
+[Browser macro implementation and measurements](../docs/browser-macros.md)
 
 The example dropdown replaces all files with one of the programs in
 `examples.js`, from a single namespace up to a calculator spread over several.
@@ -149,11 +139,8 @@ The page must be served over HTTP (modules and workers do not load from
 
 ## Notes
 
-- The module links no C. The root crate depends on `rquickjs` only off
-  wasm32 (`light_quickjs` in `build.rs`), and the playground crate depends on
-  light-cljs without V8 (`default-features = false`). `vendor/rquickjs-sys` still
-  carries the wasm support files (`wasm-shim/shim.c`, `vendor/wasi-libc`)
-  the module's QuickJS used before light-cljs-357, see its `PATCHES.md`.
+- The module links no C. The playground crate depends on light-cljs
+  with `default-features = false` and provides a `ScriptHost` for macros.
 - On macOS, rustup's `rust-lld` loads `libLLVM.dylib` through an rpath that
   rustup's layout does not satisfy (seen with Rust 1.99); the script sets
   `DYLD_LIBRARY_PATH` to the toolchain's `lib` for the build.
@@ -161,10 +148,7 @@ The page must be served over HTTP (modules and workers do not load from
   and `target/`, and `cargo build` at the root does not build it. The Pages
   workflow builds it and runs `check.mjs`. The root suite's
   `cli::playground_crate_checks_for_wasm32` runs `bb playground/build.bb lint`
-  (about 15 s cold, under a second warm) when the toolchain has the wasm32
-  target and skips otherwise: wasm32 is the one build of the library with
-  neither QuickJS nor V8, a cfg path no native build compiles, and until
-  light-cljs-396 a break there showed first in the Pages deploy.
+  when the toolchain has the wasm32 target.
 - `std::time::Instant::now` panics on wasm32-unknown-unknown ("time not
   implemented on this platform"), and `lint` cannot see that. Code the
   playground reaches reads `crate::evaluator::Instant`, the host clock there

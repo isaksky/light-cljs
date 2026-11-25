@@ -1,5 +1,5 @@
 // Checks a built playground/dist from Node: loads the wasm package, checks
-// that it embeds no QuickJS, compiles every example in examples.js at every
+// its imports, compiles every example in examples.js at every
 // optimization level, runs the output and compares the program's value, and
 // checks that `compile_chunks` writes each of them as one file, its `--esm`
 // module. Then it compiles a program
@@ -29,7 +29,8 @@ const driver = path.join(here, "..", "tests", "support", "chunked_execution.mjs"
 const { default: init, compile, compile_chunks, serve_macro_host, version } = await import(path.join(pkg, "light_cljs_playground.js"));
 const { EXAMPLES } = await import(path.join(dist, "examples.js"));
 const wasmBytes = fs.readFileSync(path.join(pkg, "light_cljs_playground_bg.wasm"));
-await init({ module_or_path: wasmBytes });
+const wasmModule = await WebAssembly.compile(wasmBytes);
+await init({ module_or_path: wasmModule });
 // The module runs every macro through the page's macro host, here in Node's
 // engine as compiler-worker.js does in a browser's.
 const { createMacroHost } = await import(path.join(dist, "macro-host.js"));
@@ -43,10 +44,12 @@ function check(condition, message) {
   }
 }
 
-// The module embeds no QuickJS (light-cljs-357): none of the engine's own
-// texts, which its atom table and parser carry, are in it.
+// The host clock is linked by the playground crate. The package needs no
+// ambient `env` imports. Catch accidental interpreter linkage as well.
+check(WebAssembly.Module.imports(wasmModule).every(entry => entry.module !== "env"),
+  "the module needs an env import");
 for (const text of ["InternalError", "out of memory in regexp execution"]) {
-  check(!wasmBytes.includes(text), `the module contains QuickJS's "${text}"`);
+  check(!wasmBytes.includes(text), `the module contains an interpreter diagnostic "${text}"`);
 }
 
 // Runs a compiled program, returning its value and what it logged.
@@ -321,9 +324,7 @@ for (const [name, build] of [
 // lean on macro semantics (a helper the compiler emits on demand, recursion,
 // gensyms, &form and &env, a form returned unchanged keeping its location,
 // special numbers, unpaired surrogates) and a macro's failures give, at
-// every level, what the embedded QuickJS gave before light-cljs-357 (the
-// prototype compared every field of both engines' results, its output
-// included), less the stack trace QuickJS appended to a macro's error.
+// every level, the values and diagnostics asserted below.
 const SEMANTICS = `(ns demo.main)
 (defn helper [x] (list 'inc x))
 (defmacro via-helper [x] (helper x))
@@ -348,8 +349,7 @@ const FAILURES = [
 ];
 // Programs checked by their value: a helper keeps the macro generation and
 // values it was defined against (22, not 112); a compiler service that fails
-// under a JavaScript catch still fails the compile with its own diagnostic
-// (the embedded QuickJS reported only that the session was invalidated); a
+// under a JavaScript catch still fails the compile with its own diagnostic. A
 // literal a macro mutates is not restored from the compiler's original.
 const SNAPSHOTS = `(ns demo.main)
 (def factor 2)
@@ -425,13 +425,13 @@ check(hosted(peeked.js) === "undefined", `macros: a global leaked into the next 
     globalThis.lightCljsMacroHost = pageHost;
   }
   check(
-    hostless.js == null && String(hostless.error).includes("this light-cljs build embeds no QuickJS: run compiler macros through a ScriptHost"),
+    hostless.js == null && String(hostless.error).includes("this light-cljs build embeds no JavaScript engine; use a V8 build or supply a ScriptHost for compiler macros"),
     `macros without a macro host: ${hostless.error ?? hostless.js?.slice(0, 100)}`,
   );
   const again = compile(["demo/main.cljs"], ["(ns demo.main)\n(defmacro one [] 1)\n(one)\n"], "demo.main", "none", true, false, false, false);
   check(hosted(again.js) === "1", `macros after a compile without a macro host: ${again.error ?? hosted(again.js)}`);
 }
-console.log(`macros in this engine: ${macroCompiles} compiles as the embedded QuickJS gave them`);
+console.log(`macros in this engine: ${macroCompiles} compiles checked`);
 
 // The page compiles in compiler-worker.js through compiler.js. Here both run
 // in a worker_threads worker behind an adapter that gives it the web worker
@@ -465,7 +465,6 @@ function spawnWorker(observe) {
   thread.on("error", (error) => handle.onerror?.({ message: String(error) }));
   return handle;
 }
-const wasmModule = await WebAssembly.compile(fs.readFileSync(path.join(pkg, "light_cljs_playground_bg.wasm")));
 const compiler = createCompiler({ spawn: spawnWorker, module: wasmModule });
 const workerVersion = await compiler.ready;
 check(workerVersion === version(), `worker version ${workerVersion}, page ${version()}`);
@@ -540,8 +539,7 @@ let ticks = 0;
 
 // compiler.js's watchdog ends a spinning compile on its own after the 10 s
 // deadline (light-cljs-356), with the located diagnostic an engine that
-// checks the deadline itself gives (the embedded QuickJS gave exactly these
-// before light-cljs-357, and the native compiler's still does): a macro
+// checks the deadline itself gives. The cases exercise a macro
 // that spins, a macro whose helper (a unit the macro's call registers
 // through the compiler) spins, and a newer compile queued behind a spinning
 // one, which then runs. They run at once, each in its own worker, while this

@@ -20,16 +20,14 @@ use std::{
 
 /// The session clock on wasm32-unknown-unknown, where `std::time::Instant`
 /// is unavailable: a host-supplied clock, microseconds since the Unix epoch,
-/// which the embedder defines as `__rquickjs_host_now_us` (named for the
-/// QuickJS wasm shim, `vendor/rquickjs-sys/wasm-shim/shim.c`, which imported
-/// it too while wasm builds embedded QuickJS). The crate's other timing on
-/// paths the playground reaches reads it as `crate::evaluator::Instant`.
+/// which the embedder defines as `__light_cljs_host_now_us`. Other wasm
+/// timing paths use it through `crate::evaluator::Instant`.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod host_clock {
     use std::time::Duration;
 
     unsafe extern "C" {
-        fn __rquickjs_host_now_us() -> f64;
+        fn __light_cljs_host_now_us() -> f64;
     }
 
     #[derive(Clone, Copy, Debug)]
@@ -39,7 +37,7 @@ mod host_clock {
         pub fn now() -> Self {
             // SAFETY: a pure host import with no arguments; the embedder links
             // it or the module fails to instantiate.
-            Self(unsafe { __rquickjs_host_now_us() })
+            Self(unsafe { __light_cljs_host_now_us() })
         }
 
         pub fn elapsed(&self) -> Duration {

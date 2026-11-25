@@ -12,7 +12,7 @@ it measured, and whether to adopt it.
 ## How it works
 
 `src/host_evaluator.rs` is a compiler evaluator (`MacroEvaluator` and
-`CompilerEvaluator`, the traits the QuickJS and V8 evaluators implement) over
+`CompilerEvaluator`, the traits the V8 evaluator implements) over
 an engine the embedder supplies through the public `ScriptHost` trait:
 
 - `open(session, services)` runs one script whose completion value is the
@@ -38,10 +38,10 @@ borrowed compiler data (the V8 bridge wraps the same payload in a cppgc
 object). The table lives until the session closes: a synchronous bridge has
 no finalization it could observe.
 
-`MacroHost::set_script_host` selects the host for clean compilations;
-interactive sessions and data readers keep QuickJS, so a build without it
-(WebAssembly) cannot run them. `cache_key` keys such a compilation's
-artifacts with `host` and the engine's own description.
+`MacroHost::set_script_host` selects the host for clean compilations.
+Interactive sessions and compiler data readers require a V8 build.
+`cache_key` keys hosted compilations with `host` and the engine's own
+description.
 
 In the playground, `playground/macro-host.js` implements `ScriptHost` in the
 compiler worker (`globalThis.lightCljsMacroHost`), and the module exports
@@ -57,26 +57,25 @@ no engine of its own (light-cljs-357, below).
   the elements of `&form` (`importMacroForm` and `macroArguments`, as in V8).
 - **Namespace snapshots.** Every import is followed by the canonical
   snapshot (`exportForm` with `snapshot`), and an export recovers original
-  data only when the canonical value is exact, as in both native bridges: a
+  data only when the canonical value is exact, as in the V8 bridge. A
   `#js` object a macro mutates and returns keeps the new value, and a helper
   keeps the macro generation and values it was defined against.
 - **Compiler callback reentry.** A macro that calls a function defined
   earlier in its namespace makes the runtime call `__lightCompileUnit`,
   which analyzes and registers that unit from inside the macro call. A
   failing service is terminal: the outer operation reports its diagnostic
-  even when JavaScript catches the thrown error: a caught compile dependency
-  cycle still fails the compile with the cycle as its message, where the
-  embedded QuickJS reports only that the session was invalidated.
+  even when JavaScript catches the thrown error. A caught compile dependency
+  cycle still fails the compile with the cycle as its message.
 - **Macro semantics.** `playground/check.mjs` compiles every example at
   every level, and programs built to stress macros (a helper emitted on
   demand, recursion, gensyms, `&form` metadata, `&env` locals, special
-  numbers, unpaired surrogates, a thrown `ex-info`, a non-form result), with
-  both engines, and requires identical results. Besides the caught failure
-  above, the one difference is a
-  macro's error message: QuickJS appends its stack trace, the browser
-  engine does not (the native V8 evaluator also omits it).
+  numbers, unpaired surrogates, a thrown `ex-info`, a non-form result).
+  The check compares emitted programs and located errors against the
+  recorded expectations.
 
 ## Isolation and resource limits
+
+The table records the comparison made before light-cljs-357.
 
 | | Embedded QuickJS | Browser engine |
 |---|---|---|
@@ -89,8 +88,8 @@ no engine of its own (light-cljs-357, below).
 
 For the playground these are acceptable: the person writing the macros is the
 person running the page, and the code is theirs. They rule out the backend
-where untrusted code expands: the CLI, the dev server and any shared
-compile service keep QuickJS or V8.
+where untrusted code expands. The CLI and dev server use the embedded
+[V8 evaluator](evaluator.md).
 
 ## Measurements (October 18, 2026)
 

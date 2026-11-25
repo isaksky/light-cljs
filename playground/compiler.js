@@ -14,7 +14,7 @@
 // DEADLINE_MS with a macro host call still open can only end with the
 // deadline, which the compiler checks when the call returns, so the watchdog
 // terminates its worker. To give the located diagnostic that an engine
-// checking the deadline itself gives (the native compiler's QuickJS), it
+// checking the deadline itself gives, it
 // replays the request in a fresh worker with `stopAt` naming that call,
 // which then fails at once; the worker checks that the replay reached it by
 // the same path (`fingerprint`).

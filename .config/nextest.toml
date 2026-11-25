@@ -3,9 +3,9 @@
 # "Testing" for the commands.
 
 [profile.default]
-# On the 24-vCPU development VM, QuickJS-heavy tests slow down sharply beyond about
-# 16 concurrent processes (and wall-clock macro deadlines start to expire), while 16
-# finishes as fast as 24. Override with `-j N` or NEXTEST_TEST_THREADS.
+# Limit concurrent test processes to reduce contention and keep the
+# wall-clock macro deadline tests reliable. Override with `-j N` or
+# NEXTEST_TEST_THREADS.
 test-threads = 16
 # Report tests still running after 60s; kill any test still running after 10 minutes.
 slow-timeout = { period = "60s", terminate-after = 10 }
@@ -24,7 +24,7 @@ filter = '''
 '''
 priority = 50
 
-# Runs four QuickJS/Node fixture executions on its own threads.
+# Runs four fixture executions on its own threads.
 [[profile.default.overrides]]
 filter = 'binary(compiler) & test(/^sci_library_context::/)'
 threads-required = 4

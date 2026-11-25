@@ -1,6 +1,5 @@
 // The engine side of light-cljs's host evaluator (src/host_evaluator.rs,
-// light-cljs-307): with it the compiler runs macros in this JavaScript engine,
-// the browser's own, instead of in QuickJS inside the WebAssembly module.
+// light-cljs-307): the compiler runs macros in the browser's own JavaScript engine.
 // `createMacroHost(serve)` answers the crate's `ScriptHost` calls; `serve` is
 // the module's `serve_macro_host` export, which compiler services the runtime
 // calls (`__lightCompileUnit`, `__lightBuildService`) reenter synchronously.

@@ -26,7 +26,7 @@ extern "C" {
 
 // The page's macro host (playground/macro-host.js), looked up when a call is
 // made. A compile when the page has installed none has no engine for its
-// macros, and fails with the build's "embeds no QuickJS" diagnostic.
+// macros, and fails with the build's missing-engine diagnostic.
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(catch, js_namespace = lightCljsMacroHost, js_name = engine)]
@@ -85,7 +85,7 @@ pub fn serve_macro_host(
 /// resolves the import at link time, so the module needs no `env` import
 /// object.
 #[unsafe(no_mangle)]
-pub extern "C" fn __rquickjs_host_now_us() -> f64 {
+pub extern "C" fn __light_cljs_host_now_us() -> f64 {
     now() * 1000.0
 }
 
