@@ -145,3 +145,77 @@ master, since the fixture only needs a reader engine. The branch uses
 a dedicated V8 reader isolate with a 16 MiB initial allowance and a
 64 MiB ceiling at the default limit. The user must decide whether to
 accept the higher peak memory for these tagged-literal workloads.
+
+## 2. Clean project compilations
+
+Each run uses `release BUILD --no-cache` with a fresh output directory.
+Each project runs once per revision per round with explicit `--jobs 1`,
+and again with the jobs flag omitted. Both revisions default to one job.
+The generated projects use their checked-in generator settings for macro
+limits, including the 2 GiB macro heap. Their inputs were regenerated
+because the historical `research/shadow-credibility/projects` directory
+was absent. The seed is 42, with 199,129 and 795,693 nonblank lines
+respectively.
+
+```sh
+for size in 200k 800k
+do
+  bb benchmarks/generated-project/generate.bb "$logs/projects/workload-$size" --seed 42 --lines "$size"
+done
+bb benchmarks/remove-quickjs.bb compile "$logs" "$master" "$branch" "$logs/projects/workload-200k" bench 10
+bb benchmarks/remove-quickjs.bb compile "$logs" "$master" "$branch" "$logs/projects/workload-800k" bench 10
+```
+
+TodoMVC is the available `research/todomvc-port`. Simple and Flow were
+regenerated from a copy of the re-frame examples at `1a1bf1d` using the
+local porter and shadow-cljs 3.5.3. Their inputs are shared between the two
+release binaries. The existing porter needed the Flow fixes previously
+described in the re-frame comparison. Treat vector and list namespace
+clauses alike, remove the redundant reader-conditional `:include-macros`
+from rewrite-clj's libspec, expose the SCI `deftime` bodies, replace
+SCI's analyzer-initialization form with `nil`, and have the unused
+self-hosted `copy-ns` branch report its analyzer dependency.
+[re-frame benchmark port notes](re-frame-vs-shadow.md#port-edits-by-cause)
+
+```sh
+mkdir -p "$logs/ported"
+cp -R research/re-frame research/shadow-port-tool "$logs/ported/"
+porter="$logs/ported/shadow-port-tool"
+port_deps="{:aliases {:light-cljs/port {:extra-deps {light-cljs/port {:local/root \"$porter\"}}}}}"
+for app in simple flow
+do
+  (
+    cd "$logs/ported/re-frame/examples/$app" &&
+    npm install --offline --no-audit --no-fund --ignore-scripts &&
+    bb -e '(let [p "deps.edn"] (spit p (clojure.string/replace (slurp p) "\"3.2.0\"" "\"3.5.3\"")))' &&
+    if [ "$app" = flow ]; then
+      bb -e '(let [p (first *command-line-args*)] (spit p (clojure.string/replace (slurp p) "(= :list (z/tag inner))" "(#{:list :vector} (z/tag inner))")))' "$porter/src/light_cljs/port.clj"
+    fi &&
+    clojure -Sdeps "$port_deps" -M:light-cljs/port -m shadow.cljs.devtools.cli run light-cljs.port/main :client "$logs/ported/$app-port"
+  )
+done
+bb benchmarks/remove-quickjs.bb repair-flow "$logs/ported/flow-port"
+for port in "$logs/ported/simple-port" "$logs/ported/flow-port" "$branch/research/todomvc-port"
+do
+  bb benchmarks/remove-quickjs.bb compile "$logs" "$master" "$branch" "$port" client 10
+done
+bb benchmarks/remove-quickjs.bb summary "$logs/compile.edn"
+```
+
+| Project | Jobs flag | Master wall (s) | Branch wall (s) | Master peak (MiB) | Branch peak (MiB) | Load range |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Generated 200k | 1 | 5.104 [4.988–5.277] | 5.096 [4.998–5.229] | 884.65 [859.08–908.31] | 874.09 [863.95–893.38] | 3.71–4.63 |
+| Generated 200k | default | 5.025 [4.986–5.101] | 4.997 [4.951–5.099] | 877.67 [866.17–895.41] | 886.92 [872.70–904.39] | 3.65–4.58 |
+| Generated 800k | 1 | 23.123 [22.783–79.194] | 22.783 [22.410–25.301] | 2764.20 [1976.42–2933.36] | 2820.23 [2508.53–2920.02] | 3.62–16.73 |
+| Generated 800k | default | 22.961 [22.261–66.730] | 22.826 [22.449–23.515] | 2493.41 [2031.52–2877.77] | 2517.41 [2191.19–2857.47] | 3.76–22.88 |
+| TodoMVC | 1 | 0.181 [0.175–0.192] | 0.180 [0.174–0.189] | 86.99 [83.70–90.17] | 86.52 [83.28–90.89] | 7.86–8.11 |
+| TodoMVC | default | 0.180 [0.174–0.186] | 0.178 [0.174–0.198] | 87.05 [82.78–91.91] | 86.95 [83.22–94.52] | 7.86–8.11 |
+| Simple | 1 | 0.159 [0.155–0.241] | 0.158 [0.152–0.242] | 84.26 [80.08–89.03] | 84.20 [77.25–85.33] | 8.11–8.29 |
+| Simple | default | 0.159 [0.155–0.163] | 0.159 [0.154–0.162] | 84.23 [81.59–87.34] | 81.34 [76.72–84.77] | 8.11–8.29 |
+| Flow | 1 | 0.901 [0.879–1.049] | 0.892 [0.879–0.920] | 265.29 [263.92–274.95] | 268.88 [264.67–277.20] | 4.25–4.66 |
+| Flow | default | 0.895 [0.880–0.915] | 0.889 [0.874–0.919] | 271.16 [259.92–274.91] | 268.31 [266.80–273.50] | 4.25–4.53 |
+
+Wall and peak-memory ranges overlap for every project and jobs setting.
+The longest 800k runs occurred during the unreserved series and remain
+in the reported ranges. Typical runs took 23 s, so both 800k settings
+used ten pairs.

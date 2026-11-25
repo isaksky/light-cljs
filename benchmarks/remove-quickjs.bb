@@ -3,7 +3,8 @@
          '[babashka.process :as process]
          '[clojure.edn :as edn]
          '[clojure.java.io :as io]
-         '[clojure.string :as str])
+         '[clojure.string :as str]
+         '[rewrite-clj.zip :as zip])
 
 (defn load-average []
   (-> (process/shell {:out :string} "sysctl" "-n" "vm.loadavg")
@@ -38,10 +39,12 @@
   (spit (fs/file log-dir (str row ".edn")) (str (pr-str sample) "\n") :append true)
   (prn sample))
 
-(defn alternated [runs]
-  (for [run (range 1 (inc runs))
-        side (if (odd? run) [:master :branch] [:branch :master])]
-    [run side]))
+(defn alternated
+  ([runs] (alternated 1 runs))
+  ([first-run runs]
+   (for [run (range first-run (+ first-run runs))
+         side (if (odd? run) [:master :branch] [:branch :master])]
+     [run side])))
 
 (defn release-targets [master branch]
   {:master (fs/path master "target"), :branch (fs/path branch "target/release-comparison")})
@@ -216,11 +219,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
           (throw (ex-info "Unexpected data-reader result" {:filename (str output)})))
         (save! log-dir "readers" (assoc sample :run run :side side :workload workload))))))
 
-(defn compile! [log-dir master branch project build-id runs]
+(defn unwrap-deftime [source]
+  (loop [loc (zip/of-string source)]
+    (if-not loc
+      source
+      (let [loc (if (and (= :list (zip/tag loc))
+                         (contains? '#{macros/deftime deftime} (some-> loc zip/down zip/sexpr)))
+                  (let [body (take-while some? (iterate zip/right (zip/right (zip/down loc))))
+                        text (str "(do " (str/join "\n" (map zip/string body)) ")")]
+                    (zip/replace loc (zip/node (zip/of-string text))))
+                  loc)]
+        (if-let [next (zip/right loc)]
+          (recur next)
+          (zip/root-string loc))))))
+
+(defn repair-flow! [project]
+  (let [file (fs/file project "vendor/rewrite_clj/zip.cljc")]
+    (spit file (str/replace (slurp file) " #?@(:cljs [:include-macros true])" "")))
+  (doseq [p (concat (fs/glob project "vendor/sci/*.cljc")
+                    (fs/glob project "vendor/sci/**/*.cljc"))]
+    (let [file (fs/file p)
+          source (slurp file)
+          text (cond-> (unwrap-deftime source)
+                 (= "core.cljc" (fs/file-name p))
+                 (-> (str/replace "#?(:cljs (require-cljs-analyzer-api))" "nil")
+                     (str/replace "(cljs.analyzer.api/ns-publics ns-sym)"
+                                  "(throw (js/Error. \"sci/copy-ns needs the upstream analyzer\"))")))]
+      (when (not= source text)
+        (spit file text)))))
+
+(defn compile! [log-dir master branch project build-id runs first-run]
   (let [targets (release-targets master branch)
         name (fs/file-name project)
         output (fs/path log-dir "compiled" name)]
-    (doseq [[run side] (alternated runs)
+    (doseq [[run side] (alternated first-run runs)
             jobs ["1" "default"]
             :let [id (str name "-jobs-" jobs "-" (clojure.core/name side) "-" run)
                   cmd [(binary (targets side)) "release" build-id "--no-cache" "--out-dir" output]]]
@@ -369,18 +401,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 (let [[mode log-dir master branch & options] *command-line-args*
       runs (some-> (first options) parse-long)]
-  (when-not (= mode "summary")
+  (when-not (#{"summary" "repair-flow"} mode)
     (fs/create-dirs log-dir))
   (case mode
     "build" (build! log-dir master branch runs)
     "output" (output! log-dir master branch)
     "sessions" (session! log-dir master branch runs)
     "readers" (readers! log-dir master branch runs)
-    "compile" (let [[project build-id runs] options]
-                (compile! log-dir master branch project build-id (parse-long runs)))
+    "repair-flow" (repair-flow! log-dir)
+    "compile" (let [[project build-id runs first-run] options]
+                (compile! log-dir master branch project build-id (parse-long runs)
+                          (parse-long (or first-run "1"))))
     "watch" (watch! log-dir master branch runs)
     "cache" (cache! log-dir master branch runs)
     "suite" (suite! log-dir master branch options)
     "summary" (summarize! log-dir)
-    (throw (ex-info "Expected build|output|sessions|readers|watch|cache LOG_DIR MASTER_WORKTREE BRANCH_WORKTREE [RUNS], compile LOG_DIR MASTER_WORKTREE BRANCH_WORKTREE PROJECT BUILD RUNS, suite LOG_DIR WORKTREE LABEL [FEATURE_FLAGS], or summary FILE"
+    (throw (ex-info "Expected build|output|sessions|readers|watch|cache LOG_DIR MASTER_WORKTREE BRANCH_WORKTREE [RUNS], compile LOG_DIR MASTER_WORKTREE BRANCH_WORKTREE PROJECT BUILD RUNS [FIRST_RUN], suite LOG_DIR WORKTREE LABEL [FEATURE_FLAGS], repair-flow PROJECT, or summary FILE"
                     {:mode mode}))))
