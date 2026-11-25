@@ -251,8 +251,10 @@ pub fn compiler_identity(host: &MacroHost) -> Digest {
     fingerprint
         .digest(&build_identity())
         .number(u64::from(crate::artifact_codec::SCHEMA_VERSION))
-        .digest(&crate::artifact_codec::core_table())
-        .flag(host.tables.interactive);
+        .digest(&crate::artifact_codec::core_table());
+    if host.tables.interactive {
+        fingerprint.text("interactive");
+    }
     if let Some(script) = &host.engine.script_host
         && !host.tables.interactive
     {
@@ -1287,6 +1289,25 @@ pub fn inputs_unchanged<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clean_compilations_keep_the_pre_interactive_cache_key() {
+        // The clean compiler identity from f3ce9409, with the same build
+        // inputs on both sides. The build fingerprint itself covers source
+        // changes independently of the key format.
+        let mut legacy = Fingerprint::new("light-cljs compiler");
+        legacy
+            .digest(&build_identity())
+            .number(u64::from(crate::artifact_codec::SCHEMA_VERSION))
+            .digest(&crate::artifact_codec::core_table());
+        #[cfg(light_v8)]
+        legacy.text("v8").text(v8::V8::get_version());
+        #[cfg(not(light_v8))]
+        legacy.text("quickjs");
+
+        let clean = KeyEnvironment::new(&MacroHost::new(), AnalysisOptions::default());
+        assert_eq!(clean.compiler, legacy.finish());
+    }
 
     #[test]
     fn clean_and_interactive_compilations_have_distinct_compiler_identities() {
