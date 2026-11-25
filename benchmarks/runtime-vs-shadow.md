@@ -7008,3 +7008,47 @@ Ported with `shadow-port-tool-983`; light-cljs's `:advanced` output is bundled w
 | 1-minute load average before the run | 4.93 (4.78-5.01) | 4.93 (4.78-5.01) | | | |
 
 On `add 1,000 todos`, light-cljs is disjointly faster than shadow-cljs on both end-to-end wall time (`0.81x`) and script time (`711.53` vs `893.92 ms`, `0.80x`), and beats shadow-cljs on whole-run wall time (`0.89x`), user CPU (`0.90x`), and peak memory (`0.98x`). `toggle all` (`1.01x`), `edit` (`1.02x`), and `clear completed` (`1.02x`) are at parity: both their wall ranges and their script ranges overlap shadow-cljs's (unlike `light-cljs-1019`, where `toggle all` script was disjoint). `page load to interactive` (`1.23x`, `41.40` vs `33.75 ms`; script `21.07` vs `14.27 ms`) overlaps shadow-cljs's full range only via shadow-cljs's run-0 cold start (`62.40 ms`; runs 1-9 are `32.30-36.00 ms` vs light-cljs `40.30-48.20 ms`). JavaScript heap remains `1.17x` after load and `1.10x` with 1,000 todos.
+
+### Dev-build output speed
+
+#### Generated workload, 200k lines (dev build, Node)
+
+`light-cljs compile bench --no-cache` (CommonJS loader `out/light-dev/index.js` loading per-namespace files + `runtime.js`) against `clojure -M:shadow compile bench` (`out/shadow.js` + `out/shadow-dev/`). 10 runs per iteration count, compilers alternated, unreserved (1-minute load 6.11-9.61, elevated at the start from the shadow-cljs dev compile just before it). Every run matched oracle checksum.
+
+| Iterations | Compiler | First output | Wall time | User CPU | System CPU | Peak memory | 1-minute load before |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | light-cljs | 0.820 s (0.789-1.142) | 0.828 s (0.797-1.150) | 0.90 s (0.87-1.02) | 0.08 s (0.08-0.28) | 0.264 GB (0.262-0.275) | 8.39-9.61 |
+| 1 | shadow-cljs | 0.938 s (0.914-0.985) | 0.949 s (0.923-0.993) | 1.03 s (1.00-1.08) | 0.09 s (0.08-0.10) | 0.307 GB (0.294-0.315) | 8.39-9.61 |
+| 10 | light-cljs | 1.253 s (1.230-1.387) | 1.289 s (1.265-1.426) | 1.71 s (1.68-1.87) | 0.14 s (0.11-0.18) | 0.330 GB (0.327-0.336) | 7.12-8.12 |
+| 10 | shadow-cljs | 1.423 s (1.325-1.506) | 1.434 s (1.336-1.518) | 1.79 s (1.68-1.88) | 0.15 s (0.11-0.17) | 0.375 GB (0.367-0.382) | 7.12-8.12 |
+| 40 | light-cljs | 2.351 s (2.257-2.547) | 2.362 s (2.267-2.559) | 3.06 s (2.98-3.30) | 0.17 s (0.15-0.24) | 0.365 GB (0.353-0.381) | 6.11-6.87 |
+| 40 | shadow-cljs | 2.317 s (2.185-2.588) | 2.330 s (2.198-2.602) | 2.96 s (2.81-3.27) | 0.18 s (0.16-0.28) | 0.438 GB (0.427-0.448) | 6.11-6.87 |
+
+| Iterations | light/shadow first output (`1019`) | light/shadow wall time (`1019`) | light/shadow CPU (`1019`) | light/shadow peak memory (`1019`) |
+| --- | --- | --- | --- | --- |
+| 1 | 0.87 (1.11) | 0.87 (1.10) | 0.88 (1.08) | 0.86 (0.86) |
+| 10 | 0.88 (1.17) | 0.90 (1.18) | 0.95 (1.19) | 0.88 (0.90) |
+| 40 | 1.01 (1.32) | 1.01 (1.31) | 1.03 (1.30) | 0.83 (0.89) |
+
+Steady state, from the median wall times at 1 and 40 iterations: light-cljs 39.3 ms per iteration, shadow-cljs 35.4 ms per iteration (light/shadow **1.11**, down from 1.47 in `light-cljs-1019`; covered by `light-cljs-1124`). At 1 iteration, light-cljs's round-0 cold start was `1.142 s` (rounds 1-9: `0.789-0.845 s`, disjoint below shadow-cljs's `0.914-0.985 s`).
+
+#### re-frame TodoMVC (dev build, headless Chromium)
+
+`light-cljs compile client --no-cache` (served with esbuild development-mode React bundle into `globalThis.lightCljsPackages` and `index.js`) against unmodified upstream `npx shadow-cljs compile client`. Both builds were served over HTTP by `benchmarks/re-frame-browser.mjs`'s static file server (`serve()`), with the same two caveats as `light-cljs-1019`: (1) shadow-cljs's unmodified `:dev` config enables `re-frame.trace.trace-enabled?` and `day8.re-frame.tracing.trace-enabled?` via `:closure-defines`, whereas light-cljs refuses `:closure-defines` in dev so the port keeps `trace-enabled?` at `false`; (2) because the static server does not implement `light-cljs watch`'s dev endpoints, every light-cljs dev run logged two HTTP 404 console errors (20 across 10 runs, vs 0 for shadow-cljs): `/__light_bundle.js` (falling back to per-namespace script loading, included in the `83.05 ms` page-load time) and `/events`. 10 runs per compiler, alternated, unreserved (1-minute load 3.89-4.21).
+
+| Step | shadow-cljs ms | light-cljs ms | light/shadow (`1019`) | shadow-cljs script ms | light-cljs script ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| page load to interactive | 120.45 (116.90-195.60) | 83.05 (80.60-106.90) | 0.69 (0.77) | 96.70 (93.32-128.56) | 45.58 (44.42-50.09) |
+| add 1,000 todos | 1022.65 (1003.90-1057.40) | 1039.15 (1023.70-1081.10) | 1.02 (1.82) | 982.49 (962.63-1014.75) | 997.44 (981.36-1027.42) |
+| toggle all | 54.50 (51.20-62.70) | 67.20 (56.50-72.40) | 1.23 (1.33) | 34.16 (32.15-37.96) | 40.76 (38.06-47.79) |
+| edit one in a list of 1,000 | 66.00 (56.80-71.90) | 61.30 (55.30-65.30) | 0.93 (0.93) | 10.10 (9.25-11.33) | 10.68 (9.69-12.23) |
+| clear completed | 26.45 (25.40-30.20) | 26.00 (22.20-30.20) | 0.98 (0.96) | 8.24 (7.49-8.69) | 8.12 (7.17-9.10) |
+| JavaScript heap after load, MB | 12.86 (12.84-12.93) | 5.42 (5.42-5.42) | 0.42 (0.42) | | |
+| JavaScript heap with 1,000 todos, MB | 24.05 (24.03-24.06) | 12.29 (12.28-12.29) | 0.51 (0.52) | | |
+| whole run (fresh browser, load, every step, close), wall s | 1.71 (1.66-2.47) | 1.69 (1.63-1.71) | 0.98 (1.48) | | |
+| whole run, user CPU s (Node and the browser processes) | 2.06 (1.99-2.11) | 2.08 (2.02-2.17) | 1.01 (1.45) | | |
+| whole run, system CPU s | 0.35 (0.32-0.46) | 0.44 (0.36-0.53) | 1.26 (1.14) | | |
+| whole run, peak memory of the largest process, MB | 295.93 (291.55-303.45) | 269.40 (268.62-272.73) | 0.91 (0.93) | | |
+| 1-minute load average before the run | 4.14 (3.89-4.21) | 4.06 (3.89-4.21) | | | |
+
+`add 1,000 todos` is now at parity (`1.02x`, down from `1.82x` in `light-cljs-1019`; both wall and script ranges overlap shadow-cljs's). `toggle all` (`1.23x`, down from `1.33x`) has overlapping wall ranges (`56.50-72.40` vs `51.20-62.70 ms`) and disjoint script ranges (`40.76` vs `34.16 ms`), covered by `light-cljs-1124`. `page load to interactive` (`0.69x`), `edit` (`0.93x`), `clear completed` (`0.98x`), whole-run wall (`0.98x`), peak memory (`0.91x`), and JS heap (`0.42x`/`0.51x`) are all below shadow-cljs.
