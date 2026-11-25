@@ -7052,3 +7052,52 @@ Steady state, from the median wall times at 1 and 40 iterations: light-cljs 39.3
 | 1-minute load average before the run | 4.14 (3.89-4.21) | 4.06 (3.89-4.21) | | | |
 
 `add 1,000 todos` is now at parity (`1.02x`, down from `1.82x` in `light-cljs-1019`; both wall and script ranges overlap shadow-cljs's). `toggle all` (`1.23x`, down from `1.33x`) has overlapping wall ranges (`56.50-72.40` vs `51.20-62.70 ms`) and disjoint script ranges (`40.76` vs `34.16 ms`), covered by `light-cljs-1124`. `page load to interactive` (`0.69x`), `edit` (`0.93x`), `clear completed` (`0.98x`), whole-run wall (`0.98x`), peak memory (`0.91x`), and JS heap (`0.42x`/`0.51x`) are all below shadow-cljs.
+
+### Release output sizes (`simple`, `todomvc`, `flow`)
+
+Clean release builds (`bb benchmarks/re-frame.bb size simple todomvc flow --light target/light-cljs-d7281fe8`, fresh ports with `shadow-port-tool-983`, esbuild 0.25.10, shadow-cljs 3.5.3), using the same method as `light-cljs-1019`.
+
+#### `simple`
+
+| Output | Raw bytes | gzip -9 | brotli -q 11 |
+| --- | ---: | ---: | ---: |
+| shadow-cljs: whole release file | 372,279 | 101,065 | 85,573 |
+| shadow-cljs: React alone | 143,360 | 47,091 | 40,609 |
+| shadow-cljs: app code (difference) | 228,919 | 53,974 | 44,964 |
+| light-cljs + esbuild: whole bundle | 408,281 | 123,388 | 107,144 |
+| esbuild: React alone | 142,385 | 45,617 | 39,919 |
+| light-cljs: app code (difference) | 265,896 | 77,771 | 67,225 |
+| light-cljs output as written, without React | 287,730 | 77,251 | 66,093 |
+| light-cljs + esbuild `--target=es2015`: whole bundle | 416,729 | 125,614 | 108,847 |
+
+Whole bundle, light-cljs against shadow-cljs: +9.7% raw, **+22.1% gzip -9** (up from +19.2% in `light-cljs-1019`), +25.2% brotli -q 11 (app code difference: +16.2% raw, +44.1% gzip -9). Light-cljs output as written (without React): `287,730` B raw / `77,251` B gzip -9 (vs `275,458` / `74,362` in `light-cljs-1019`, +3.9% gzip).
+
+#### `todomvc`
+
+| Output | Raw bytes | gzip -9 | brotli -q 11 |
+| --- | ---: | ---: | ---: |
+| shadow-cljs: whole release file | 500,588 | 137,105 | 114,618 |
+| shadow-cljs: React alone | 143,360 | 47,091 | 40,609 |
+| shadow-cljs: app code (difference) | 357,228 | 90,014 | 74,009 |
+| light-cljs + esbuild: whole bundle | 519,789 | 155,545 | 134,677 |
+| esbuild: React alone | 142,385 | 45,617 | 39,919 |
+| light-cljs: app code (difference) | 377,404 | 109,928 | 94,758 |
+| light-cljs output as written, without React | 404,935 | 107,568 | 91,793 |
+| light-cljs + esbuild `--target=es2015`: whole bundle | 530,686 | 158,339 | 136,777 |
+
+Whole bundle, light-cljs against shadow-cljs: +3.8% raw, **+13.5% gzip -9** (up from +11.3% in `light-cljs-1019`), +17.5% brotli -q 11 (app code difference: +5.6% raw, +22.1% gzip -9). Light-cljs output as written (without React): `404,935` B raw / `107,568` B gzip -9 (vs `392,669` / `104,594` in `light-cljs-1019`, +2.8% gzip).
+
+#### `flow`
+
+| Output | Raw bytes | gzip -9 | brotli -q 11 |
+| --- | ---: | ---: | ---: |
+| shadow-cljs: whole release file | 1,557,351 | 358,677 | 284,124 |
+| shadow-cljs: React alone | 143,360 | 47,091 | 40,609 |
+| shadow-cljs: app code (difference) | 1,413,991 | 311,586 | 243,515 |
+| light-cljs + esbuild: whole bundle | 1,347,097 | 348,059 | 286,707 |
+| esbuild: React alone | 142,385 | 45,617 | 39,919 |
+| light-cljs: app code (difference) | 1,204,712 | 302,442 | 246,788 |
+| light-cljs output as written, without React | 1,267,063 | 294,888 | 236,455 |
+| light-cljs + esbuild `--target=es2015`: whole bundle | 1,359,463 | 351,267 | 288,918 |
+
+Whole bundle, light-cljs against shadow-cljs: -13.5% raw, **-3.0% gzip -9** (light-cljs smaller; -7.0% at `light-cljs-1049`), +0.9% brotli -q 11 (app code difference: -14.8% raw, -2.9% gzip -9). Light-cljs output as written (without React): `1,267,063` B raw / `294,888` B gzip -9.
