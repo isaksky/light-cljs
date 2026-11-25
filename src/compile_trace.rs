@@ -1056,7 +1056,7 @@ pub(crate) fn recording() -> bool {
 /// counters that `--stats` reports (the Pants build's bridge and task log
 /// counters) are kept only then.
 #[inline]
-#[cfg_attr(not(feature = "bbp-macros"), allow(dead_code))]
+#[allow(dead_code)]
 pub(crate) fn any_recording() -> bool {
     RECORDING.load(Ordering::Relaxed) != 0
 }

@@ -28,7 +28,7 @@ pub const VARIABLE: &str = "LIGHT_CLJS_WAIT_TIMELINE";
 /// one thread; the rest are instants.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
-#[cfg_attr(not(feature = "bbp-macros"), allow(dead_code))]
+#[allow(dead_code)]
 pub(crate) enum Kind {
     /// A `compile_trace` stage frame: `a` the stage's index, `b` its owner
     /// (namespace or unit).

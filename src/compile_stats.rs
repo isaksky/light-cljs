@@ -271,7 +271,6 @@ pub struct CompileStats {
     /// The Pants build's selected core, even when no macro task executes
     /// (a macro-free compilation or a rebuild using cached artifacts).
     /// Other macro engines have no core selection.
-    pub macro_core: Option<crate::evaluator::MacroCore>,
     pub native_macro_calls: Vec<NativeBridgeCall>,
     pub native_helpers: NativeHelperCounts,
     /// The native backend's effect lanes (light-cljs-480).
@@ -733,12 +732,6 @@ impl CompileStats {
                 &call.helper_per_task,
             );
             line(&format!("macro.helpers.{i}.waits"), &call.helper_waits);
-        }
-        if let Some(core) = self.macro_core {
-            line(
-                "native.core.real",
-                &usize::from(core == crate::evaluator::MacroCore::Real),
-            );
         }
         if self.native_helpers.steps > 0 {
             let helpers = &self.native_helpers;

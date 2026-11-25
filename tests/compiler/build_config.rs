@@ -14,8 +14,6 @@ use std::{fs, process::Command};
 fn host() -> MacroHost {
     #[allow(unused_mut)]
     let mut host = MacroHost::new();
-    #[cfg(feature = "bbp-macros")]
-    host.use_native_macros();
     host
 }
 

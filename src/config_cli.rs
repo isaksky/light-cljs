@@ -1031,13 +1031,6 @@ fn apply_flags(
             settings.set_by_flag(setting, integer(value), &format!("{flag} {value}"));
         }
     }
-    if let Some(core) = limits.core {
-        settings.set_by_flag(
-            Setting::MacroCore,
-            ValueKind::Keyword(core.name().into()),
-            &format!("--macro-core {}", core.name()),
-        );
-    }
     if flags.jobs {
         let jobs = user.jobs.get();
         settings.set_by_flag(
@@ -1555,9 +1548,6 @@ fn translate(
         poll_budget: limits
             .poll_budget
             .or_else(|| count(settings, Setting::MacroPollBudget)),
-        core: limits
-            .core
-            .or_else(|| keyword(settings, Setting::MacroCore).and_then(|core| core.parse().ok())),
     };
 
     compile.stats = user.stats;

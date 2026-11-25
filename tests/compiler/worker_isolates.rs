@@ -65,15 +65,7 @@ fn units_expanding_source_and_core_macros_emit_the_one_slot_program() {
     );
     let units = built.stats.deferred_units;
     assert!(units.pooled > 10, "{units:?}");
-    if crate::macro_free_units::PANTS_BUILD {
-        assert_eq!(units.worker_isolates, 0, "{units:?}");
-        assert_eq!(units.pool_engine_workers, 3, "{units:?}");
-        assert!(units.pool_engine_participants > 0, "{units:?}");
-        // Helpers may now be initialized by coordinator help. Require
-        // actual initialization across the shared runtime; forced worker
-        // initialization is checked in compilation_session::worker_tests.
-        assert!(units.executed > 0, "{units:?}");
-    } else {
+    {
         assert!((1..=3).contains(&units.worker_isolates), "{units:?}");
         assert!(units.worker_initializations > 0, "{units:?}");
     }
@@ -183,11 +175,7 @@ fn a_first_pooled_build_compiles_the_bootstrap_before_its_deadline_starts() {
     // (light-cljs-437).
     let built = build_with(&sources, "app.s", 4, false, one_worker_isolate());
     let units = &built.stats.deferred_units;
-    if crate::macro_free_units::PANTS_BUILD {
-        assert_eq!(units.worker_isolates, 0, "{units:?}");
-        assert_eq!(units.pool_engine_workers, 3, "{units:?}");
-        assert!(units.pool_engine_participants > 0, "{units:?}");
-    } else {
+    {
         assert!(units.worker_isolates > 0, "{units:?}");
     }
     assert_eq!(execute(&built.output.unwrap()), "[3 [3 4]]\n");
@@ -425,11 +413,7 @@ fn units_on_workers_keep_the_one_slot_manifest_and_artifacts() {
         let mut isolates = 0;
         for _ in 0..3 {
             let pooled = recorded(&sources, "app.main", slots);
-            isolates = isolates.max(if crate::macro_free_units::PANTS_BUILD {
-                pooled.stats.deferred_units.pool_engine_participants
-            } else {
-                pooled.stats.deferred_units.worker_isolates
-            });
+            isolates = isolates.max(pooled.stats.deferred_units.worker_isolates);
             assert_eq!(pooled.output, serial.output, "{slots} slots");
             assert_eq!(pooled.manifest, serial.manifest, "{slots} slots");
             assert_eq!(pooled.artifacts, serial.artifacts, "{slots} slots");
@@ -440,11 +424,7 @@ fn units_on_workers_keep_the_one_slot_manifest_and_artifacts() {
             // The units that expand macros were the pool's too.
             let units = &pooled.stats.deferred_units;
             assert!(units.pooled > units.macro_free, "{units:?}");
-            if crate::macro_free_units::PANTS_BUILD {
-                assert_eq!(units.worker_isolates, 0, "{units:?}");
-                assert_eq!(units.pool_engine_workers, slots - 1, "{units:?}");
-                assert!(units.pool_engine_participants > 0, "{units:?}");
-            } else {
+            {
                 assert!(units.worker_isolates > 0, "{units:?}");
             }
         }
@@ -538,11 +518,7 @@ fn a_persistent_worker_never_takes_a_released_macro_generation_for_a_later_one()
         let persistent = build_with(&sources, "app.main", 2, false, one_worker_isolate());
         assert_eq!(persistent.output, serial.output);
         let units = &persistent.stats.deferred_units;
-        if crate::macro_free_units::PANTS_BUILD {
-            assert_eq!(units.worker_isolates, 0, "{units:?}");
-            assert_eq!(units.pool_engine_workers, 1, "{units:?}");
-            assert!(units.pool_engine_participants > 0, "{units:?}");
-        } else {
+        {
             assert_eq!(units.worker_isolates, 1, "{units:?}");
         }
         assert!(units.pooled >= 2 * GENERATIONS, "{units:?}");

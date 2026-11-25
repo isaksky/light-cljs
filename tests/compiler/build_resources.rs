@@ -22,8 +22,6 @@ use std::{fs, path::PathBuf, process::Command, rc::Rc};
 fn host() -> MacroHost {
     #[allow(unused_mut)]
     let mut host = MacroHost::new();
-    #[cfg(feature = "bbp-macros")]
-    host.use_native_macros();
     host
 }
 

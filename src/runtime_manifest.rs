@@ -172,30 +172,6 @@ pub const DEV_RUNTIME: &str = include_str!(concat!(env!("OUT_DIR"), "/js_dev_run
 pub const COMPILER_RUNTIME: &str =
     include_str!(concat!(env!("OUT_DIR"), "/js_compiler_runtime.js"));
 
-/// `src/js_shared_profile.js` as written: the shared-heap profile's units,
-/// in the manifest format, which replace the runtime's units of the same
-/// names (docs/real-core-design.md, section 1; `build.rs`, `shared_runtime`).
-pub const SHARED_PROFILE: &str = include_str!("js_shared_profile.js");
-
-/// The shared-heap profile of the runtime with its unit headers: the
-/// annotated runtime with the profile's units swapped in, which parses and
-/// validates as a manifest ([`RuntimeManifest::validate_allowing`] with
-/// [`ENGINE_INTRINSICS`]). Written by `build.rs`.
-pub const SHARED_ANNOTATED_RUNTIME: &str =
-    include_str!(concat!(env!("OUT_DIR"), "/js_shared_annotated.js"));
-
-/// The shared-heap profile as the Pants build boots it once: the units of
-/// [`SHARED_ANNOTATED_RUNTIME`] without headers, every `coreCells.X` and
-/// every per-task binding read through the task's cells
-/// (`globalThis.__lightSharedCells`), with the compile-time hooks of
-/// [`COMPILER_RUNTIME`]. Written by `build.rs`.
-pub const SHARED_RUNTIME: &str = include_str!(concat!(env!("OUT_DIR"), "/js_shared_runtime.js"));
-
-/// The free names the shared-heap profile's units may reference besides
-/// runtime bindings and ECMAScript globals: the engine's reserved intrinsic
-/// binding.
-pub const ENGINE_INTRINSICS: &[&str] = &["__rt"];
-
 /// Dense index of a unit in [`RuntimeManifest::units`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct UnitId(pub usize);
@@ -1324,8 +1300,7 @@ impl<'a> RuntimeManifest<'a> {
     }
 
     /// [`RuntimeManifest::validate`] with `globals` allowed as free names
-    /// besides the ECMAScript globals: [`ENGINE_INTRINSICS`] for the
-    /// shared-heap profile.
+    /// besides the ECMAScript globals.
     pub fn validate_allowing(&self, globals: &[&str]) -> Result<(), Vec<ManifestError>> {
         let mut errors = Vec::new();
         for (index, unit) in self.units.iter().enumerate() {

@@ -379,29 +379,6 @@ pub(crate) fn register(
 mod tests {
     use super::*;
 
-    #[cfg(feature = "bbp-macros")]
-    #[test]
-    fn native_reader_tables_larger_than_the_eval_limit_need_no_evaluation() {
-        let mut tables = ReaderTables::default();
-        for i in 0..256 {
-            let namespace = format!("many.namespaces.namespace_{i}");
-            tables.globals.push(global(&namespace, "value"));
-            tables
-                .reader_contexts
-                .insert(namespace.clone(), context(&[]));
-            tables.namespaces.push(namespace);
-        }
-        let registration = emit_every_namespace(&tables);
-        assert!(registration.source.encode_utf16().count() > 16_384);
-        let runtime = crate::bbp_evaluator::BbpRuntime::new(&Default::default()).unwrap();
-        let engine = runtime.evaluator().unwrap();
-        let before = runtime.helper_counts();
-        register(&engine, &tables).unwrap();
-        let after = runtime.helper_counts();
-        assert_eq!(after.units_evaluated, before.units_evaluated);
-        assert_eq!(after.units_shared, before.units_shared);
-    }
-
     fn global(namespace: &str, name: &str) -> GlobalBinding {
         GlobalBinding {
             type_descriptor: false,

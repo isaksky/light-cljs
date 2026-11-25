@@ -782,11 +782,6 @@ pub(crate) struct MacroEnvironment {
     tables: MacroTables,
 }
 impl MacroEnvironment {
-    #[cfg(feature = "bbp-macros")]
-    pub(crate) fn native_macro_backend(&self) -> bool {
-        (self.tables.native_macros || !cfg!(any(light_quickjs, light_v8)))
-            && !self.tables.interactive
-    }
     /// The options a worker's own engine is made with.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn evaluator_options(&self) -> &crate::evaluator::EvaluatorOptions {
@@ -805,10 +800,6 @@ impl MacroEnvironment {
 /// refuses.
 #[derive(Clone, Default)]
 pub(crate) struct MacroTables {
-    #[cfg(feature = "bbp-macros")]
-    pub(crate) native_macros: bool,
-    #[cfg(feature = "bbp-macros")]
-    pub(crate) native_helpers: std::sync::Arc<Vec<(String, String)>>,
     data_readers: std::sync::Arc<DataReaderSources>,
     imports: crate::layered::Layered<String, Vec<MacroImport>>,
     renames: crate::layered::Layered<String, Vec<(String, String, String)>>,
@@ -1150,10 +1141,6 @@ pub(crate) struct ReaderRegistration {
 struct DataReaderSources {
     units: HashMap<Name, String>,
     default_unit: Option<String>,
-    #[cfg(feature = "bbp-macros")]
-    native_units: HashMap<Name, String>,
-    #[cfg(feature = "bbp-macros")]
-    native_default_unit: Option<String>,
 }
 /// The data-reader heap of one binding and the functions evaluated in it.
 #[derive(Default)]
@@ -1227,37 +1214,6 @@ impl MacroHost {
             ));
         }
         self.engine.entered_engine.set(true);
-        #[cfg(feature = "bbp-macros")]
-        if self.native_macro_backend() {
-            let evaluator = match self.session_handle() {
-                Some(session) => session
-                    .shared()
-                    .native_runtime(&self.evaluator_options)?
-                    .evaluator()?,
-                None => crate::bbp_evaluator::BbpEvaluator::new(self.evaluator_options.clone())?,
-            };
-            for (name, source) in self.tables.native_helpers.iter() {
-                let mut seed = MacroHost::new();
-                seed.use_native_macros();
-                seed.tables.bootstrap_seed = true;
-                let syntax =
-                    crate::parse(source).map_err(|e| crate::evaluator::EvalError(e.to_string()))?;
-                let program = crate::analyze_with_macros(source, &syntax, &mut seed)
-                    .map_err(|e| crate::evaluator::EvalError(e.to_string()))?;
-                evaluator.preload(
-                    name,
-                    &crate::emitter::emit_native_macro_unit(
-                        &program,
-                        false,
-                        &self.session_handle().map_or_else(Vec::new, |session| {
-                            session.shared().native_replaced_core()
-                        }),
-                    ),
-                )?;
-            }
-            self.prepare_compiler_evaluator(&evaluator)?;
-            return Ok(std::rc::Rc::new(evaluator));
-        }
         if let Some(host) = &self.engine.script_host
             && !self.tables.interactive
         {
@@ -1371,25 +1327,6 @@ impl MacroHost {
         origin: crate::compiler_data::ExpansionOrigin,
     ) -> Result<Form, String> {
         self.expand_javascript_arguments::<true, true>(
-            evaluator,
-            function,
-            call,
-            environment,
-            origin,
-        )
-    }
-    /// Native bootstrap builders consume the rooted &form directly. Do not
-    /// also spread its operands into a call frame with a bounded VM stack.
-    #[cfg(feature = "bbp-macros")]
-    pub(crate) fn expand_form_javascript(
-        &mut self,
-        evaluator: &dyn crate::evaluator::MacroEvaluator,
-        function: crate::evaluator::ValueId,
-        call: &Form,
-        environment: &crate::compiler_data::Datum,
-        origin: crate::compiler_data::ExpansionOrigin,
-    ) -> Result<Form, String> {
-        self.expand_javascript_arguments::<false, false>(
             evaluator,
             function,
             call,
@@ -1542,16 +1479,7 @@ impl MacroHost {
         self.engine.native_macro_calls.borrow().clone()
     }
     pub(crate) fn native_macro_backend(&self) -> bool {
-        #[cfg(feature = "bbp-macros")]
-        {
-            (self.tables.native_macros || !cfg!(any(light_quickjs, light_v8)))
-                && !self.tables.interactive
-                && self.engine.script_host.is_none()
-        }
-        #[cfg(not(feature = "bbp-macros"))]
-        {
-            false
-        }
+        false
     }
     /// Run the macros of clean compilations in `host`'s engine instead of
     /// the built-in one (light-cljs-307, a prototype for the browser
@@ -1561,26 +1489,6 @@ impl MacroHost {
         self.engine.script_host = Some(host);
     }
 
-    /// Select the experimental serial native-form macro backend for this host.
-    #[cfg(feature = "bbp-macros")]
-    pub fn use_native_macros(&mut self) {
-        self.tables.native_macros = true;
-        self.engine.script_host = None;
-    }
-
-    /// Preload a self-contained ClojureScript helper expression in each fresh
-    /// native macro session, compiled by the normal analyzer and emitter.
-    /// Declare its qualified binding in source before calling it from a macro.
-    #[cfg(feature = "bbp-macros")]
-    pub fn preload_native_helper(&mut self, name: &str, source: &str) -> Result<(), String> {
-        name.rsplit_once('/')
-            .ok_or("helper name must be qualified")?;
-        crate::parse(source).map_err(|e| e.to_string())?;
-        self.use_native_macros();
-        std::sync::Arc::make_mut(&mut self.tables.native_helpers)
-            .push((name.to_owned(), source.to_owned()));
-        Ok(())
-    }
     /// Control assertion emission for this host (enabled by default). Disabled
     /// assertions omit both condition and message, including function pre/post checks.
     pub fn set_assertions(&mut self, enabled: bool) {
@@ -1668,20 +1576,6 @@ impl MacroHost {
             ));
         }
         self.engine.entered_engine.set(true);
-        #[cfg(feature = "bbp-macros")]
-        if self.native_macro_backend() {
-            // Share the build's budget, with a private reader task and no
-            // macro/helper registrations, just as the other reader heap does.
-            let evaluator = match self.session_handle() {
-                Some(session) => session
-                    .shared()
-                    .native_runtime(&self.evaluator_options)?
-                    .data_reader_evaluator()?,
-                None => crate::bbp_evaluator::BbpEvaluator::new(self.evaluator_options.clone())?,
-            };
-            self.prepare_compiler_evaluator(&evaluator)?;
-            return Ok(std::rc::Rc::new(evaluator));
-        }
         Ok(std::rc::Rc::new(self.new_evaluator()?))
     }
     /// Register an explicit compiler-emitted function over immutable reader data.
@@ -1699,11 +1593,6 @@ impl MacroHost {
         let program = crate::analyze(function_source, &syntax).map_err(|e| e.to_string())?;
         let unit = crate::emitter::emit_js_unit(&program);
         let sources = std::sync::Arc::make_mut(&mut self.tables.data_readers);
-        #[cfg(feature = "bbp-macros")]
-        sources.native_units.insert(
-            tag.clone(),
-            crate::emitter::emit_native_macro_unit(&program, true, &[]),
-        );
         sources.units.insert(tag.clone(), unit);
         let mut readers = self.engine.data_readers.borrow_mut();
         if let Some(id) = readers.functions.remove(&tag)
@@ -1723,11 +1612,6 @@ impl MacroHost {
         let program = crate::analyze(function_source, &syntax).map_err(|e| e.to_string())?;
         let sources = std::sync::Arc::make_mut(&mut self.tables.data_readers);
         sources.default_unit = Some(crate::emitter::emit_js_unit(&program));
-        #[cfg(feature = "bbp-macros")]
-        {
-            sources.native_default_unit =
-                Some(crate::emitter::emit_native_macro_unit(&program, true, &[]));
-        }
         let mut readers = self.engine.data_readers.borrow_mut();
         if let Some(id) = readers.default_function.take()
             && let Some(evaluator) = &readers.evaluator
@@ -1807,16 +1691,6 @@ impl MacroHost {
                         sources.units.get(tag).cloned()
                     };
                     let definition_unit = unit.clone();
-                    #[cfg(feature = "bbp-macros")]
-                    let unit = if self.native_macro_backend() {
-                        if fallback {
-                            sources.native_default_unit.clone()
-                        } else {
-                            sources.native_units.get(tag).cloned()
-                        }
-                    } else {
-                        unit
-                    };
                     let Some(unit) = unit else {
                         return Ok(None);
                     };
@@ -2119,7 +1993,7 @@ impl MacroHost {
             doc: self.tables.namespace_docs.get(namespace),
         }
     }
-    #[cfg_attr(not(any(test, feature = "bbp-macros")), allow(dead_code))]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn namespace_metadata(&self, namespace: &str) -> NamespaceMetadata {
         let declarations = self.namespace_declarations(namespace);
         let prefix = format!("{namespace}/");
@@ -2442,9 +2316,6 @@ impl MacroHost {
         if let Some(evaluator) = evaluator {
             // A native task context another pool slot parked holds these
             // settings already ([`crate::bbp_evaluator::TaskContext`]).
-            #[cfg(feature = "bbp-macros")]
-            let prepared = evaluator.native_shell().is_some_and(|e| e.prepared());
-            #[cfg(not(feature = "bbp-macros"))]
             let prepared = false;
             if !prepared {
                 host.prepare_compiler_evaluator(evaluator.as_ref())
@@ -2608,25 +2479,6 @@ impl MacroHost {
             self.engine.work_cache = Default::default();
             self.tables.source_bindings.clear();
             self.engine.session = Some(crate::compilation_session::CompilationSession::new());
-            #[cfg(feature = "bbp-macros")]
-            if self.native_macro_backend() {
-                self.engine
-                    .session
-                    .as_ref()
-                    .unwrap()
-                    .shared()
-                    .select_native();
-                for (_, source) in self.tables.native_helpers.iter() {
-                    let syntax =
-                        crate::parse(source).expect("preloaded helper syntax was validated");
-                    self.engine
-                        .session
-                        .as_ref()
-                        .unwrap()
-                        .shared()
-                        .index_native_core_writes(source, &syntax);
-                }
-            }
             self.engine.session_ref = std::rc::Weak::new();
         }
         self.engine.expansions = Default::default();

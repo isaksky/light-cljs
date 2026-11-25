@@ -278,50 +278,6 @@ fn next_gensym(counter: &AtomicU64) -> u64 {
         .expect("scoped gensym identities exhausted")
 }
 
-/// Only the generated-name state a native VM step needs. The analyzer keeps
-/// its scopes and capture log; a migrated step shares their counters and log,
-/// never consulting the unrelated analyzer thread that happens to run it.
-#[cfg(feature = "bbp-macros")]
-pub(crate) struct NativeGensyms {
-    scopes: BTreeMap<u64, Arc<AtomicU64>>,
-    log: Option<NameLog>,
-}
-
-#[cfg(feature = "bbp-macros")]
-impl NativeGensyms {
-    pub(crate) fn capture_scope(serial: u64) -> Option<Self> {
-        let scope = installed_scope(serial)?;
-        Some(Self {
-            scopes: [(serial, scope.gensym.clone())].into(),
-            log: LOG.with(|log| log.borrow().clone()),
-        })
-    }
-    pub(crate) fn capture() -> Self {
-        let mut scopes = BTreeMap::new();
-        for scope in ENDED
-            .with(|s| s.borrow().clone())
-            .into_iter()
-            .chain(SCOPES.with(|s| s.borrow().clone()))
-        {
-            scopes.insert(scope.serial, scope.gensym.clone());
-        }
-        Self {
-            scopes,
-            log: LOG.with(|log| log.borrow().clone()),
-        }
-    }
-
-    pub(crate) fn next(&self, serial: u64) -> Option<u64> {
-        self.scopes.get(&serial).map(|count| next_gensym(count))
-    }
-
-    pub(crate) fn log(&self, name: &[u16]) {
-        if let Some(log) = &self.log {
-            log.lock().unwrap().push(name.to_vec());
-        }
-    }
-}
-
 /// How many ended scopes [`ENDED`] keeps.
 const ENDED_BOUND: usize = 64;
 
@@ -411,13 +367,6 @@ pub(crate) fn serve_gensym(request: &str) -> String {
         }
         _ => String::new(),
     }
-}
-
-/// Add `name`, which the compile-time runtime's `gensym` returned outside
-/// every scope, to this thread's log, if the compilation logs them.
-#[cfg(feature = "bbp-macros")]
-pub(crate) fn log_name(name: Vec<u16>) {
-    log(|| name);
 }
 
 /// Add a name to this thread's log, if the compilation logs them.

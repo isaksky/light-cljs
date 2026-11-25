@@ -97,14 +97,6 @@ fn main() {
     fs::write(out.join("terse_runtime.rs"), terse_runtime(&source))
         .expect("write the terse runtime");
 
-    println!("cargo::rerun-if-changed=src/js_shared_profile.js");
-    let profile =
-        fs::read_to_string("src/js_shared_profile.js").expect("read src/js_shared_profile.js");
-    let (annotated, shared) = shared_runtime(&source, &profile);
-    fs::write(out.join("js_shared_annotated.js"), annotated)
-        .expect("write the annotated shared-heap runtime");
-    fs::write(out.join("js_shared_runtime.js"), shared).expect("write the shared-heap runtime");
-
     println!("cargo::rerun-if-changed=src/core_operations.tsv");
     let table =
         fs::read_to_string("src/core_operations.tsv").expect("read src/core_operations.tsv");
@@ -117,15 +109,13 @@ fn main() {
 /// bundled first-party libraries are under `src/`), this script, the
 /// manifest and lock file (which pins the prebuilt V8 crate), and the
 /// vendored QuickJS and V8 headers.
-const IDENTITY_INPUTS: [&str; 8] = [
+const IDENTITY_INPUTS: [&str; 6] = [
     "src",
     "build.rs",
     "Cargo.toml",
     "Cargo.lock",
     "vendor/rquickjs-sys",
     "vendor/v8-headers",
-    "crates/big-boy-pants-js/src",
-    "crates/big-boy-pants-js/Cargo.toml",
 ];
 
 /// The SHA-256 identity of the compiler being built, which every cache key
@@ -266,7 +256,7 @@ fn collect_files(path: &Path, files: &mut Vec<String>) {
 ///   turn, so the QuickJS reference no longer reorders and unrolls its
 ///   probes, light-cljs-1046.)
 fn compiler_runtime(runtime: &str) -> String {
-    compiler_hooks(runtime, false)
+    compiler_hooks(runtime)
 }
 
 /// The dev-build runtime (`src/dev_build.rs::runtime_file`): `src/js_runtime.js`
@@ -559,7 +549,7 @@ fn dev_runtime(source: &str) -> String {
 /// marker itself, the hooks' own per-task `let`s are dropped (their defaults
 /// live on `sharedTaskDefaults`), and their reads go through the task's
 /// cells like every other unit's ([`rewrite_task_state`]).
-fn compiler_hooks(runtime: &str, shared: bool) -> String {
+fn compiler_hooks(runtime: &str) -> String {
     const ENCODE_END: &str = "      return visit(value, \"$\", 0);\n    }\n    return Object.freeze({version: 5, decode, encode,";
     // Every line holds `readerViews`, which tells the hook's lines from the
     // embedded runtime's (tests/compiler/runtime_manifest.rs).
@@ -734,87 +724,57 @@ fn compiler_hooks(runtime: &str, shared: bool) -> String {
     ];
     let mut runtime = runtime.to_owned();
     for (anchor, before, hook) in HOOKS {
-        // In the shared-heap profile an anchor reading task state has been
-        // rewritten like the unit around it (a declaring token has not).
-        let rewritten = (shared && !runtime.contains(anchor))
-            .then(|| (shared_hook(anchor), shared_hook(before)));
-        let (anchor, before) = match &rewritten {
-            Some((anchor, before)) => (anchor.as_str(), before.as_str()),
-            None => (anchor, before),
-        };
-        let matches = runtime.matches(anchor).count();
-        if shared && matches == 0 {
-            // The profile swapped the unit holding the anchor; its unit must
-            // carry the hook (`tests/compiler/runtime_manifest.rs` checks the
-            // markers).
-            let marker = hook
-                .split('\n')
-                .next()
-                .unwrap()
-                .rsplit("// ")
-                .next()
-                .unwrap()
-                .trim();
-            assert!(
-                runtime.contains(marker),
-                "shared-heap profile: the swapped unit at hook anchor {anchor:?} lacks the hook ({marker})"
-            );
-            continue;
-        }
-        assert_eq!(matches, 1, "compile-time runtime hook anchor {anchor:?}");
+        assert_eq!(
+            runtime.matches(anchor).count(),
+            1,
+            "compile-time runtime hook anchor {anchor:?}"
+        );
         let within = if before.is_empty() {
             anchor.len()
         } else {
             anchor.find(before).unwrap()
         };
-        let hook = if shared {
-            shared_hook(hook)
-        } else {
-            hook.to_owned()
-        };
-        runtime.insert_str(runtime.find(anchor).unwrap() + within, &hook);
+        runtime.insert_str(runtime.find(anchor).unwrap() + within, hook);
     }
-    if !shared {
-        const NS_REFLECT_HOOKS: [(&str, &str, &str); 5] = [
-            (
-                "  const namespaces = new Map();\n",
-                "",
-                "  let _regNsDepth = 0, _flushingNs = false; // namespaceLog\n",
-            ),
-            (
-                "    if (!namespaces.has(key)) namespaces.set(key, new Namespace(obj, name));\n",
-                "    if (!namespaces",
-                "    if (!_regNsDepth && !_flushingNs && typeof globalThis.__lightRootService === \"function\") { const _add = globalThis.__lightRootService(\"c\\u0000\" + key); if (_add) { _flushingNs = true; try { for (const _n of JSON.parse(_add)) createNs(symbol(null, _n)); } finally { _flushingNs = false; } } } // namespaceLog\n",
-            ),
-            (
-                "      excludes: new Set(context.excludes ?? []), bindings: new Set(context.bindings ?? [])};\n    return ns;\n  }\n",
-                "",
-                "  const _origRegNs = registerReaderNamespace; registerReaderNamespace = function registerReaderNamespace(name, context, added) { _regNsDepth++; try { return _origRegNs(name, context, added); } finally { _regNsDepth--; } }; // namespaceLog\n",
-            ),
-            (
-                "    return namespaces.get(str(name)) ?? null;\n",
-                "    return",
-                "    if (!_flushingNs && typeof globalThis.__lightRootService === \"function\") { const _add = globalThis.__lightRootService(\"r\\u0000\" + str(name)); if (_add) { _flushingNs = true; try { for (const _n of JSON.parse(_add)) createNs(symbol(null, _n)); } finally { _flushingNs = false; } } } // namespaceLog\n",
-            ),
-            (
-                "  function allNs() { if (arguments.length) return invalidArity(arguments.length); return listFromArray([...namespaces.values()]); }\n",
-                "",
-                "  const _origAllNs = allNs; allNs = function allNs() { if (!_flushingNs && typeof globalThis.__lightRootService === \"function\") { const _add = globalThis.__lightRootService(\"r\\u0000*\"); if (_add) { _flushingNs = true; try { for (const _n of JSON.parse(_add)) createNs(symbol(null, _n)); } finally { _flushingNs = false; } } } return _origAllNs.apply(this, arguments); }; // namespaceLog\n",
-            ),
-        ];
-        for (anchor, before, hook) in NS_REFLECT_HOOKS {
-            assert_eq!(
-                runtime.matches(anchor).count(),
-                1,
-                "compile-time ns-reflect hook anchor {anchor:?}"
-            );
-            let within = if before.is_empty() {
-                anchor.len()
-            } else {
-                anchor.find(before).unwrap()
-            };
-            runtime.insert_str(runtime.find(anchor).unwrap() + within, hook);
-        }
+    const NS_REFLECT_HOOKS: [(&str, &str, &str); 5] = [
+        (
+            "  const namespaces = new Map();\n",
+            "",
+            "  let _regNsDepth = 0, _flushingNs = false; // namespaceLog\n",
+        ),
+        (
+            "    if (!namespaces.has(key)) namespaces.set(key, new Namespace(obj, name));\n",
+            "    if (!namespaces",
+            "    if (!_regNsDepth && !_flushingNs && typeof globalThis.__lightRootService === \"function\") { const _add = globalThis.__lightRootService(\"c\\u0000\" + key); if (_add) { _flushingNs = true; try { for (const _n of JSON.parse(_add)) createNs(symbol(null, _n)); } finally { _flushingNs = false; } } } // namespaceLog\n",
+        ),
+        (
+            "      excludes: new Set(context.excludes ?? []), bindings: new Set(context.bindings ?? [])};\n    return ns;\n  }\n",
+            "",
+            "  const _origRegNs = registerReaderNamespace; registerReaderNamespace = function registerReaderNamespace(name, context, added) { _regNsDepth++; try { return _origRegNs(name, context, added); } finally { _regNsDepth--; } }; // namespaceLog\n",
+        ),
+        (
+            "    return namespaces.get(str(name)) ?? null;\n",
+            "    return",
+            "    if (!_flushingNs && typeof globalThis.__lightRootService === \"function\") { const _add = globalThis.__lightRootService(\"r\\u0000\" + str(name)); if (_add) { _flushingNs = true; try { for (const _n of JSON.parse(_add)) createNs(symbol(null, _n)); } finally { _flushingNs = false; } } } // namespaceLog\n",
+        ),
+        (
+            "  function allNs() { if (arguments.length) return invalidArity(arguments.length); return listFromArray([...namespaces.values()]); }\n",
+            "",
+            "  const _origAllNs = allNs; allNs = function allNs() { if (!_flushingNs && typeof globalThis.__lightRootService === \"function\") { const _add = globalThis.__lightRootService(\"r\\u0000*\"); if (_add) { _flushingNs = true; try { for (const _n of JSON.parse(_add)) createNs(symbol(null, _n)); } finally { _flushingNs = false; } } } return _origAllNs.apply(this, arguments); }; // namespaceLog\n",
+        ),
+    ];
+    for (anchor, before, hook) in NS_REFLECT_HOOKS {
+        assert_eq!(
+            runtime.matches(anchor).count(),
+            1,
+            "compile-time ns-reflect hook anchor {anchor:?}"
+        );
+        let within = if before.is_empty() {
+            anchor.len()
+        } else {
+            anchor.find(before).unwrap()
+        };
+        runtime.insert_str(runtime.find(anchor).unwrap() + within, hook);
     }
     // Each runtime class constructor's brand marker becomes the compile-time
     // stamp (docs/value-layout.md, section 4), which output never has.
@@ -855,754 +815,6 @@ const STAMPED_TEST: &str = "stamped(value) && ";
 const EXCEPTION_MESSAGE_MARKER: &str = "/*@exmsg*/";
 const EXCEPTION_MESSAGE_RECORD: &str =
     "if (typeof message === \"string\") exceptionMessages.set(target, message);";
-
-/// The bindings of the runtime that functions assign after boot, which the
-/// shared-heap profile keeps per task on the task's cells
-/// (`globalThis.__lightSharedCells`, whose prototype chain ends at the
-/// profile's `sharedTaskDefaults`): the module-level `let`s and the
-/// per-task registries next to them, and the `let`s the compile-time hooks
-/// declare. Every read and write of one in a unit body is rewritten to a
-/// property of the task's cells at assembly ([`rewrite_task_state`]); the
-/// declaring statement stays as an unread binding.
-const SHARED_TASK_STATE: &[&str] = &[
-    // gensym (the counter is the compiler's `__lightGensym` once the hooks
-    // run; `generatedNames` and the scopes are the task's).
-    "gensymCounter",
-    "generatedNames",
-    "gensymLog",
-    "gensymScope",
-    "gensymScopes",
-    // Evaluator services and the declaration journal.
-    "macroexpandServices",
-    "declarationJournal",
-    "demandProtocol",
-    "demandMethod",
-    "demandMulti",
-    "demandGate",
-    "demandHost",
-    "patchDeclaration",
-    "setDeclaration",
-    // The identity counter: dead in this profile, where the engine hashes
-    // a host object by its heap identity (`identityHash`); the verbatim
-    // `objectHash` unit still names it in the branch the view never takes.
-    "identityCounter",
-    // The global hierarchy (an engine atom under effect lanes is 649's).
-    "globalHierarchy",
-    // Taps.
-    "tapListeners",
-    "tapQueue",
-    "tapDraining",
-    "tapDelivered",
-    "tapPending",
-    "tapLimit",
-    // The slot-name memo of `protocolSlot`.
-    "protocolSlots",
-    // The dispatch and declaration registries written after boot: each
-    // task's own Map, seeded with the boot's entries (`sharedSnapshots` in
-    // the profile), until light-cljs-649 moves them to engine tables.
-    "coreDispatchers",
-    "nativeMethods",
-    "protocolValues",
-    "protocolFunctions",
-    "protocolVariables",
-    "protocolGetters",
-    "reifySites",
-    // The namespace registry `createNs` writes after boot: each task's own
-    // Map, seeded with the boot's `cljs.user` and `cljs.core`, and the log
-    // of the namespaces it adds while the compiler reads it.
-    "namespaces",
-    "namespaceLog",
-    // Lazy probe of whether native `Error#stack` is an own getter.
-    "lazyErrorStack",
-];
-
-/// The state the `reader` unit keeps at the top of its own function (the
-/// IIFE's scope, scope 1 of the unit's body), which the shared-heap profile
-/// also keeps per task: the stream and reader-map registries (WeakMaps),
-/// the tag tables (Maps, filled while booting and registered into after
-/// boot) and the default-tag and depth `let`s. Rewritten like
-/// [`SHARED_TASK_STATE`] (light-cljs-666); the declaring statements stay as
-/// unread locals.
-const SHARED_READER_STATE: &[&str] = &[
-    "streams",
-    "readerMaps",
-    "tags",
-    "builtinTags",
-    "defaultTag",
-    "activeDepth",
-];
-
-/// The unit whose scope-1 declarations [`SHARED_READER_STATE`] names.
-const SHARED_READER_UNIT: &str = "reader";
-
-/// The objects the reader's functions capture that no binding reaches, so
-/// the boot's walk cannot seal them: the IIFE's argument object (the
-/// runtime services it reads as `rt`), its two frozen sentinels and the
-/// builtin tag parsers' location (captured by the `inst` and `js` parsers,
-/// which the tag tables' boot snapshots hold; light-cljs-688), sealed
-/// where they are built (`__rt.seal` is shallow; the functions the argument
-/// holds are top-level bindings, sealed by the boot).
-const SHARED_READER_REWRITES: &[(&str, &str)] = &[
-    (
-        "  const builtinLocation = {name: '<tag-parser>', line: 1, column: 1, offset: 0};\n",
-        "  const builtinLocation = __rt.seal({name: '<tag-parser>', line: 1, column: 1, offset: 0});\n",
-    ),
-    (
-        "  })({keyword: freshKeyword, ",
-        "  })(__rt.seal({keyword: freshKeyword, ",
-    ),
-    (
-        "value instanceof Date ? 'instant' : null});\n",
-        "value instanceof Date ? 'instant' : null}));\n",
-    ),
-    (
-        "  const absent = Object.freeze({}), discarded = Object.freeze({});\n",
-        "  const absent = __rt.seal({}), discarded = __rt.seal({});\n",
-    ),
-];
-
-/// Where a unit reads the task's cells: `coreCells.X` in the V8 profile.
-const SHARED_CELLS: &str = "globalThis.__lightSharedCells";
-
-/// The immutable vocabularies the runtime keeps in a Set, which never
-/// publishes: in the shared-heap profile their units build them with the
-/// profile's `sharedWords` instead (`const NAME = new Set(` becomes
-/// `const NAME = sharedWords(`), so the words are written once.
-const SHARED_WORDS: &[&str] = &["reservedNames", "readerCoreNames", "specialSymbols"];
-
-/// A compile-time hook's text for the shared-heap profile: its own `let`
-/// declarations dropped and its reads of task state rewritten.
-fn shared_hook(hook: &str) -> String {
-    let mut text = hook
-        .replace("  let gensymLog = null;\n", "")
-        .replace("  let namespaceLog = null; // namespaceLog\n", "")
-        .replace(
-            "  let gensymScope = null; const gensymScopes = new Map();\n",
-            "",
-        )
-        .replace(
-            "  let demandGate = null, demandHost = null; // interpreterDispatch\n",
-            "",
-        );
-    for name in SHARED_TASK_STATE {
-        text = replace_identifier(&text, name, &format!("{SHARED_CELLS}.{name}"));
-    }
-    text.replace("coreCells.", &format!("{SHARED_CELLS}."))
-        .replace("coreCells[", &format!("{SHARED_CELLS}["))
-}
-
-/// `text` with every whole-identifier occurrence of `name` that is not a
-/// property name (`.name`) replaced.
-fn replace_identifier(text: &str, name: &str, replacement: &str) -> String {
-    let is_word = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '$');
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(at) = rest.find(name) {
-        let before = rest[..at].chars().next_back();
-        let after = rest[at + name.len()..].chars().next();
-        // A property key (`gensymScope: (serial, ...) =>`) keeps its name.
-        let key = rest[at + name.len()..].trim_start().starts_with(':');
-        out.push_str(&rest[..at]);
-        if before.is_some_and(|c| is_word(c) || c == '.') || after.is_some_and(is_word) || key {
-            out.push_str(name);
-        } else {
-            out.push_str(replacement);
-        }
-        rest = &rest[at + name.len()..];
-    }
-    out.push_str(rest);
-    out
-}
-
-/// A unit body with its reads and writes of [`SHARED_TASK_STATE`] bindings
-/// rewritten to the task's cells, exactly: an identifier token that resolves
-/// to the unit's own top-level declaration of the name (other than the
-/// declaring token itself) or is free (another unit's binding). Locals of
-/// the same name are untouched. In the unit [`SHARED_READER_UNIT`], the
-/// [`SHARED_READER_STATE`] names declared in a scope directly under the top
-/// level (the reader's own function) are rewritten the same way.
-fn rewrite_task_state(unit: &str, source: &str, body: std::ops::Range<usize>) -> String {
-    let tokens = js_syntax::lex(source, body.clone()).unwrap_or_else(|error| {
-        panic!(
-            "shared-heap runtime byte {}: {}",
-            error.offset, error.message
-        )
-    });
-    let resolution = js_syntax::resolve(source, &tokens)
-        .unwrap_or_else(|(offset, message)| panic!("shared-heap runtime byte {offset}: {message}"));
-    let reader = unit == SHARED_READER_UNIT;
-    let mut out = String::with_capacity(body.len());
-    let mut at = body.start;
-    for (position, token) in tokens.iter().enumerate() {
-        let text = token.text(source);
-        let task_state = SHARED_TASK_STATE.contains(&text);
-        let reader_state = reader && SHARED_READER_STATE.contains(&text);
-        if !task_state && !reader_state {
-            continue;
-        }
-        let Some(occurrence) = resolution.occurrences[position] else {
-            continue;
-        };
-        let rewrite = match occurrence.declaration {
-            None => task_state,
-            Some(declaration) => {
-                let declaration = &resolution.declarations[declaration];
-                declaration.token != Some(position)
-                    && ((task_state && declaration.scope == 0)
-                        || (reader_state
-                            && declaration.scope != 0
-                            && resolution.parents[declaration.scope] == 0))
-            }
-        };
-        if !rewrite {
-            continue;
-        }
-        assert!(
-            !occurrence.shorthand,
-            "shared-heap runtime: `{text}` as a shorthand property at byte {}",
-            token.start
-        );
-        out.push_str(&source[at..token.start as usize]);
-        out.push_str(SHARED_CELLS);
-        out.push('.');
-        out.push_str(text);
-        at = token.start as usize + text.len();
-    }
-    out.push_str(&source[at..body.end]);
-    out
-}
-
-/// One section of an annotated runtime file: a unit (its name, header and
-/// body) or the export section (name `//@exports`).
-struct Section {
-    name: String,
-    header: std::ops::Range<usize>,
-    body: std::ops::Range<usize>,
-}
-
-/// The sections of an annotated runtime, after the prologue (whose end is
-/// returned first): a header is a `//@unit NAME ...` line with its `//@ `
-/// continuation lines, or `//@exports`; a body runs to the next header.
-fn sections(source: &str) -> (usize, Vec<Section>) {
-    let mut prologue_end = None;
-    let mut sections: Vec<Section> = Vec::new();
-    let mut offset = 0;
-    let mut in_header = false;
-    for line in source.split_inclusive('\n') {
-        let start = offset;
-        offset += line.len();
-        let header = line.trim_start();
-        if !header.starts_with("//@") {
-            if let Some(section) = sections.last_mut() {
-                section.body.end = offset;
-            }
-            in_header = false;
-            continue;
-        }
-        prologue_end.get_or_insert(start);
-        if let Some(rest) = header.strip_prefix("//@unit ") {
-            let name = rest
-                .split_whitespace()
-                .next()
-                .unwrap_or_default()
-                .to_owned();
-            sections.push(Section {
-                name,
-                header: start..offset,
-                body: offset..offset,
-            });
-            in_header = true;
-        } else if header.trim_end() == "//@exports" {
-            sections.push(Section {
-                name: "//@exports".to_owned(),
-                header: start..offset,
-                body: offset..offset,
-            });
-            in_header = true;
-        } else if in_header {
-            let section = sections.last_mut().unwrap();
-            section.header.end = offset;
-            section.body = offset..offset;
-        } else {
-            panic!("a `//@` continuation line must follow a `//@unit` header");
-        }
-    }
-    (
-        prologue_end.expect("the runtime has unit headers"),
-        sections,
-    )
-}
-
-/// The shared-heap profile of the runtime (docs/real-core-design.md,
-/// section 1): `src/js_runtime.js` with the units `src/js_shared_profile.js`
-/// names replaced by its units of the same names, its other units placed
-/// first (they declare what the swapped units need), its export section the
-/// profile's (which seals the booted runtime), everything else the V8
-/// profile's text. Returns the annotated result (which
-/// `tests/compiler/runtime_manifest.rs` parses and validates like the
-/// runtime itself) and the runtime to boot: the annotated text without
-/// headers, with `coreCells.X` and the [`SHARED_TASK_STATE`] bindings
-/// rewritten to the task's cells, and with the compile-time hooks.
-fn shared_runtime(base: &str, profile: &str) -> (String, String) {
-    let constructor_base = shared_owned_allocations(base);
-    let update_base = shared_persistent_updates(&constructor_base);
-    let scalar_base = shared_scalar_reads(&update_base);
-    let base = scalar_base.as_str();
-    let (base_prologue, base_sections) = sections(base);
-    let (_, profile_sections) = sections(profile);
-    let mut swapped: HashMap<&str, &Section> = HashMap::new();
-    for section in &profile_sections {
-        assert!(
-            swapped.insert(&section.name, section).is_none(),
-            "src/js_shared_profile.js: duplicate unit `{}`",
-            section.name
-        );
-    }
-    let base_names = base_sections
-        .iter()
-        .map(|section| section.name.as_str())
-        .collect::<HashSet<_>>();
-    assert!(
-        swapped.contains_key("//@exports"),
-        "src/js_shared_profile.js: no `//@exports` section"
-    );
-    // Each part of the annotated text: its source and the ranges within it.
-    let mut parts: Vec<(&str, &Section)> = Vec::new();
-    for section in &profile_sections {
-        if !base_names.contains(section.name.as_str()) && section.name != "//@exports" {
-            parts.push((profile, section));
-        }
-    }
-    for section in &base_sections {
-        match swapped.get(section.name.as_str()) {
-            Some(swap) => parts.push((profile, swap)),
-            None => parts.push((base, section)),
-        }
-    }
-    // The boot unit seals what every top-level binding holds, so it names
-    // them all: its list and its `requires:` header are generated here
-    // (`SHARED_BINDINGS` in the profile's body), in declaration order.
-    let bindings = parts
-        .iter()
-        .filter(|(_, section)| section.name != "//@exports")
-        .flat_map(|(source, section)| top_level_bindings(source, section.body.clone()))
-        .collect::<Vec<_>>();
-    let boot = parts
-        .iter()
-        .find(|(_, section)| section.name == SHARED_BOOT)
-        .map(|(source, section)| {
-            let own = top_level_bindings(source, section.body.clone());
-            let names = bindings
-                .iter()
-                .filter(|name| !own.contains(name) && !SHARED_UNLISTED.contains(name))
-                .copied()
-                .collect::<Vec<_>>();
-            let quoted = names
-                .iter()
-                .map(|name| format!("\"{name}\""))
-                .collect::<Vec<_>>();
-            let body = source[section.body.clone()]
-                .replace(SHARED_BINDINGS, &wrap_list(&names, "      ", 100))
-                .replace(
-                    SHARED_BINDING_NAMES,
-                    &wrap_list(
-                        &quoted.iter().map(String::as_str).collect::<Vec<_>>(),
-                        "        ",
-                        100,
-                    ),
-                );
-            assert!(
-                body != source[section.body.clone()],
-                "src/js_shared_profile.js: unit `{SHARED_BOOT}` has no `{SHARED_BINDINGS}`"
-            );
-            (shared_boot_header(&names), body)
-        })
-        .unwrap_or_else(|| panic!("src/js_shared_profile.js: no unit `{SHARED_BOOT}`"));
-    let mut annotated = String::with_capacity(base.len());
-    let mut runtime = String::with_capacity(base.len());
-    annotated.push_str(&base[..base_prologue]);
-    runtime.push_str(&base[..base_prologue]);
-    for (source, section) in &parts {
-        if section.name == SHARED_BOOT {
-            annotated.push_str(&boot.0);
-            annotated.push_str(&boot.1);
-            runtime.push_str(&boot.1);
-            continue;
-        }
-        annotated.push_str(&source[section.header.clone()]);
-        annotated.push_str(&source[section.body.clone()]);
-        if section.name == "//@exports" {
-            runtime.push_str(&source[section.body.clone()]);
-        } else {
-            let mut body = rewrite_task_state(&section.name, source, section.body.clone())
-                .replace("coreCells.", &format!("{SHARED_CELLS}."))
-                .replace("coreCells[", &format!("{SHARED_CELLS}["));
-            if SHARED_WORDS.contains(&section.name.as_str()) {
-                let set = format!("const {} = new Set(", section.name);
-                assert_eq!(body.matches(&set).count(), 1, "{set}");
-                body = body.replace(&set, &format!("const {} = sharedWords(", section.name));
-            }
-            if section.name == SHARED_READER_UNIT {
-                // The reader's functions capture objects no binding reaches:
-                // sealed where they are built.
-                for (from, to) in SHARED_READER_REWRITES {
-                    assert_eq!(body.matches(from).count(), 1, "{from}");
-                    body = body.replace(from, to);
-                }
-            }
-            runtime.push_str(&body);
-        }
-    }
-    (annotated, compiler_hooks(&runtime, true))
-}
-
-/// Public constructors retain their canonical algorithms. Only their
-/// allocation boundary differs: constructorSlots needs runtime-owned objects
-/// on which it can attach fields. An array map's public constructor builds
-/// its class itself (`ArrayMapCell`, light-cljs-1034), and a sorted map's
-/// nodes are runtime-owned map entries (`TreeNodeCell`, light-cljs-1035).
-fn shared_owned_allocations(base: &str) -> String {
-    let (prologue, units) = sections(base);
-    let mut result = base[..prologue].to_owned();
-    for unit in units {
-        let builder = match unit.name.as_str() {
-            "PersistentHashMapValue" => Some(("makeMap", "sharedOwnedMap")),
-            "publicHashSet" => Some(("makeSet", "sharedOwnedSet")),
-            _ => None,
-        };
-        let header = &base[unit.header];
-        let body = &base[unit.body];
-        if let Some((from, to)) = builder {
-            let call = format!("{from}(");
-            assert_eq!(body.matches(&call).count(), 1, "constructor {}", unit.name);
-            result.push_str(&replace_identifier(header, from, to));
-            result.push_str(&body.replace(
-                &call,
-                &format!("/*public-constructor*/{to}/*public-constructor*/("),
-            ));
-        } else {
-            result.push_str(header);
-            result.push_str(body);
-        }
-    }
-    result
-}
-
-/// Keep canonical protocol dispatch, arity handling and runtime fallbacks.
-/// Only shared engine forms take the persistent leaves, before an entry-array
-/// read. Mark every insertion so the manifest test restores the V8 bytes.
-fn shared_persistent_updates(base: &str) -> String {
-    let (prologue, units) = sections(base);
-    let mut result = base[..prologue].to_owned();
-    for unit in units {
-        let header = &base[unit.header];
-        let body = &base[unit.body];
-        let leaf = match unit.name.as_str() {
-            "assocPath" => Some((
-                "    const mapSlots = value?.slots$LKEY;",
-                "    if (sharedUpdates.accepts(value, [key], \"map\", true)) return sharedUpdates.assoc(value, key, item, pairs);\n",
-            )),
-            "dissocPath" => Some((
-                "    const original = maps.get(value);",
-                "    if (sharedUpdates.accepts(value, keys, \"map\")) return sharedUpdates.dissoc(value, keys);\n",
-            )),
-            "makeSet.conj" => Some((
-                "    if (result.slots$LKEY) {",
-                "    if (sharedUpdates.accepts(result, [item], \"set\", true)) return sharedUpdates.conj(result, item);\n",
-            )),
-            "disjPath" => Some((
-                "    const original = sets.get(value);",
-                "    if (sharedUpdates.accepts(value, keys, \"set\")) return sharedUpdates.disj(value, keys);\n",
-            )),
-            "lookup" => Some((
-                "    const entries = maps.get(value);",
-                "    if (sharedUpdates.accepts(value, [key], \"map\")) return sharedUpdates.lookup(value, key, notFound);\n",
-            )),
-            "lookup.sets" => Some((
-                "    const members = sets.get(value);",
-                "    if (sharedUpdates.accepts(value, [key], \"set\")) return sharedUpdates.lookup(value, key, notFound);\n",
-            )),
-            _ => None,
-        };
-        if let Some((before, leaf)) = leaf {
-            assert_eq!(body.matches(before).count(), 1, "update {}", unit.name);
-            result.push_str(&header.replacen("requires:", "requires: sharedUpdates,", 1));
-            result.push_str(&body.replace(
-                before,
-                &format!("/*persistent-update*/{leaf}/*end-persistent-update*/{before}"),
-            ));
-        } else if unit.name == "updatedMap" {
-            let call = "mapFromEntries(entries,";
-            assert_eq!(body.matches(call).count(), 1, "updatedMap allocation");
-            result.push_str(&replace_identifier(
-                header,
-                "mapFromEntries",
-                "sharedUpdatedMapFromEntries",
-            ));
-            result.push_str(&body.replace(
-                call,
-                "/*updated-map*/sharedUpdatedMapFromEntries(original, entries,/*end-updated-map*/",
-            ));
-        } else {
-            result.push_str(header);
-            result.push_str(body);
-        }
-    }
-    result
-}
-
-/// Imported scalar occurrences retain compiler identity until an operation
-/// reads their primitive. Adapt the canonical units only in the shared profile:
-/// do not fork the algorithms or erase arguments at calls/collection storage.
-/// Mark inserted text so the manifest test can restore every canonical byte.
-fn shared_scalar_reads(base: &str) -> String {
-    let (prologue, units) = sections(base);
-    let mut result = base[..prologue].to_owned();
-    for unit in units {
-        let mut body = base[unit.body.clone()].to_owned();
-        let original = body.clone();
-        let name = unit.name.as_str();
-        let scalar = |value: &str| format!("sharedScalar(/*scalar*/{value}/*scalar*/)");
-        // Scalar predicates and arithmetic always produce a computed result.
-        // The canonical arrow expression stays byte-for-byte inside the body.
-        let parameters = match name {
-            "inc" | "dec" | "uncheckedInc" | "uncheckedIncInt" | "uncheckedDec"
-            | "uncheckedDecInt" | "uncheckedNegate" | "uncheckedNegateInt" | "abs" | "int"
-            | "fix" | "bitNot" | "isZero" | "isPositive" | "isNegative" | "isInteger"
-            | "isPositiveInt" | "isNegativeInt" | "isNaturalInt" | "isNumber" | "isFloat"
-            | "isDouble" | "isInfinite" | "boolean" | "not" | "isBoolean" | "isTrue"
-            | "isFalse" | "isNil" | "isSome" | "isUndefined" | "isString" | "isChar"
-            | "isSeqable" => "x",
-            "mod" | "quot" | "jsMod" | "rem" => "n,d",
-            "bitClear"
-            | "bitFlip"
-            | "bitSet"
-            | "bitTest"
-            | "bitShiftLeft"
-            | "bitShiftRight"
-            | "bitShiftRightZeroFill"
-            | "unsignedBitShiftRight" => "x,n",
-            "truth" => "value",
-            _ => "",
-        };
-        if !parameters.is_empty() {
-            assert_eq!(body.matches(" => ").count(), 1, "scalar arrow {name}");
-            let args = if parameters.contains(',') {
-                format!("({})", parameters.replace(',', ", "))
-            } else {
-                parameters.to_owned()
-            };
-            assert!(
-                body.contains(&format!("const {name} = {args} => ")),
-                "scalar arrow {name}"
-            );
-            let (head, expression) = body.split_once(" => ").expect("scalar arrow");
-            let (expression, tail) = expression.rsplit_once(';').expect("scalar arrow end");
-            let inputs = parameters
-                .split(',')
-                .map(|p| format!("{p} = sharedScalar({p}); "))
-                .collect::<String>();
-            body = format!(
-                "{head} => /*scalar-inputs*/{{ {inputs}return /*end-scalar-inputs*/{expression}/*scalar-inputs*/; }}/*end-scalar-inputs*/;{tail}"
-            );
-        } else {
-            // Read-only receivers, numeric indexes and sizes. Defaults, stored
-            // values, callbacks and collection occurrences remain untouched.
-            let (signature, inputs) = match name {
-                "seq" | "first" | "rest" | "next" | "count" | "hashPath" | "parsingString"
-                | "numberArgument" => (format!("function {name}(value) {{"), "value"),
-                "nth" => (
-                    "function nth(value, index, notFound) {".into(),
-                    "value,index",
-                ),
-                "lookup" | "get" => (format!("function {name}(value, key, notFound) {{"), "value"),
-                // `=`'s identity test reads the scalars too, so that an
-                // occurrence of NaN is not equal to itself.
-                "equalPair" => ("function equalPair(left, right) {".into(), "left,right"),
-                "equalPairPath" => ("function equalPairPath(left, right) {".into(), "left,right"),
-                "compareKeys" => ("function compareKeys(a, b) {".into(), "a,b"),
-                "printWriterImpl" => (
-                    "function printWriterImpl(value, writer, options, skipMetadata = false) {"
-                        .into(),
-                    "value",
-                ),
-                "subs" => (
-                    "function subs(value, start, end) {".into(),
-                    "value,start,end",
-                ),
-                "range" => (
-                    "function range(start, end, step = 1) {".into(),
-                    "start,end,step",
-                ),
-                "take" | "drop" | "takeNth" => (format!("function {name}(n, coll) {{"), "n"),
-                "nthrest" | "nthnext" => (format!("function {name}(value, n) {{"), "n"),
-                "isEven" | "hostRand" | "hostRandInt" => (format!("function {name}(n) {{"), "n"),
-                "bitCount" => ("function bitCount(v) {".into(), "v"),
-                "symbolCore" | "keywordCore" => (
-                    format!("function {name}(namespace, name) {{"),
-                    "namespace,name",
-                ),
-                "partition" | "partitionV" => {
-                    (format!("function {name}(n, step, pad, coll) {{"), "n,step")
-                }
-                _ => (String::new(), ""),
-            };
-            if !inputs.is_empty() {
-                let reads = inputs
-                    .split(',')
-                    .map(|p| format!("{p} = sharedScalar({p}); "))
-                    .collect::<String>();
-                assert_eq!(
-                    body.matches(&signature).count(),
-                    1,
-                    "scalar adapter {name}: {signature}"
-                );
-                body = body.replacen(
-                    &signature,
-                    &format!("{signature}/*scalar-inputs*/{reads}/*end-scalar-inputs*/"),
-                    1,
-                );
-            }
-            // Selectors keep their original operands on every return path.
-            for (from, to) in match name {
-                "add" => vec![("x + y", format!("{} + {}", scalar("x"), scalar("y"))),
-                    ("result + arguments[i]", format!("result + {}", scalar("arguments[i]")))],
-                "subtract" => vec![("return -x;", format!("return -{};", scalar("x"))),
-                    ("x - y", format!("{} - {}", scalar("x"), scalar("y"))),
-                    ("result -= arguments[i]", format!("result -= {}", scalar("arguments[i]")))],
-                "multiply" => vec![("x * y", format!("{} * {}", scalar("x"), scalar("y"))),
-                    ("result *= arguments[i]", format!("result *= {}", scalar("arguments[i]")))],
-                "divide" => vec![("return 1 / x;", format!("return 1 / {};", scalar("x"))),
-                    ("x / y", format!("{} / {}", scalar("x"), scalar("y"))),
-                    ("result /= arguments[i]", format!("result /= {}", scalar("arguments[i]")))],
-                "bitOperation" => vec![("operation(x, y)", format!("operation({}, {})", scalar("x"), scalar("y"))),
-                    ("operation(value, arguments[i])", format!("operation(value, {})", scalar("arguments[i]")))],
-                "foldSeq" => vec![("operation(x, y)", format!("operation({}, {})", scalar("x"), scalar("y"))),
-                    ("operation(result, first(s))", format!("operation(result, {})", scalar("first(s)")))],
-                "variadicFold" => vec![("foldSeq(op, x, y, more), op,", "foldSeq(op, x, y, more), /*scalar-inputs*/(a, b) => /*end-scalar-inputs*/op/*scalar-inputs*/(sharedScalar(a), sharedScalar(b))/*end-scalar-inputs*/,".into())],
-                "subtract.variadic" => vec![("x => -x", format!("x => -{}", scalar("x")))],
-                "divide.variadic" => vec![("x => 1 / x", format!("x => 1 / {}", scalar("x")))],
-                "comparison" => vec![("test(x, y)", format!("test({}, {})", scalar("x"), scalar("y"))),
-                    ("test(y, item)", format!("test({}, {})", scalar("y"), scalar("item")))],
-                "comparisonVariadic" => vec![("test(x, y)", format!("test({}, {})", scalar("x"), scalar("y"))),
-                    ("test(y, item)", format!("test({}, {})", scalar("y"), scalar("item"))),
-                    ("}, test,", "}, /*scalar-inputs*/(a, b) => /*end-scalar-inputs*/test/*scalar-inputs*/(sharedScalar(a), sharedScalar(b))/*end-scalar-inputs*/,".into())],
-                "extrema" | "extremaVariadic" => vec![("isNaN(a)", format!("isNaN({})", scalar("a"))), ("isNaN(b)", format!("isNaN({})", scalar("b"))),
-                    ("test(a, b)", format!("test({}, {})", scalar("a"), scalar("b")))],
-                "char" => vec![("typeof x", format!("typeof {}", scalar("x"))), ("String.fromCharCode(x)", format!("String.fromCharCode({})", scalar("x"))), ("x.length", format!("{}.length", scalar("x")))],
-                "name" => vec![("typeof value", format!("typeof {}", scalar("value")))],
-                "isNaNCore" => vec![("isNaN(x)", format!("isNaN({})", scalar("x")))],
-                "lookup" | "containsPath" => vec![("const store = vectorStore(value);", "/*scalar-inputs*/key = sharedScalar(key); /*end-scalar-inputs*/const store = vectorStore(value);".into())],
-                "getPath" => vec![("if (Array.isArray(value)) {", "if (Array.isArray(value)) {/*scalar-inputs*/key = sharedScalar(key); /*end-scalar-inputs*/".into())],
-                "identical" => vec![("a === b", format!("{} === {}", scalar("a"), scalar("b")))],
-                "fnil" => vec![("x == null", format!("{} == null", scalar("x")))],
-                "indexedSequence" => vec![("value != null", format!("{} != null", scalar("value")))],
-                "indexedTransform" => vec![("value == null", format!("{} == null", scalar("value")))],
-                "bufferedTransform" => vec![("buffer.length === group.n", format!("buffer.length === {}", scalar("group.n")))],
-                "iteration" => vec![("value != null", format!("{} != null", scalar("value"))),
-                    ("key == null", format!("{} == null", scalar("key")))],
-                _ => vec![],
-            } {
-                // A few reads occur twice in the same canonical expression.
-                let expected = match (name, from) {
-                    ("char", "typeof x") | ("indexedSequence", "value != null") | ("iteration", "key == null") => 2,
-                    _ => 1,
-                };
-                assert_eq!(body.matches(from).count(), expected, "scalar adapter {name}: {from}");
-                body = body.replace(from, &to);
-            }
-        }
-        let header = &base[unit.header];
-        if body == original {
-            result.push_str(header);
-        } else if header.contains("requires:") {
-            result.push_str(&header.replacen("requires:", "requires: sharedScalar,", 1));
-        } else {
-            let (first, rest) = header.split_once('\n').expect("unit header");
-            result.push_str(&format!("{first} requires: sharedScalar\n{rest}"));
-        }
-        result.push_str(&body);
-    }
-    result
-}
-
-/// The profile's boot unit, whose body names every top-level binding at
-/// [`SHARED_BINDINGS`].
-const SHARED_BOOT: &str = "sharedProfileBoot";
-const SHARED_BINDINGS: &str = "/* SHARED_BINDINGS */";
-/// Where the boot unit names them, in the same order, for its diagnostic of
-/// the bindings a seal cannot take.
-const SHARED_BINDING_NAMES: &str = "/* SHARED_BINDING_NAMES */";
-/// Bindings the boot unit's list leaves out: `coreMethod`, which the
-/// manifest allows only as `const x = coreMethod(...)` (its load-time
-/// callers hold what it makes; nothing captures the function after boot).
-const SHARED_UNLISTED: &[&str] = &["coreMethod"];
-
-/// The header of the boot unit: `requires:` every other binding, wrapped
-/// like `RuntimeManifest::with_computed_requires` wraps.
-fn shared_boot_header(names: &[&str]) -> String {
-    let mut header = format!("  //@unit {SHARED_BOOT} requires:");
-    let mut column = header.len();
-    for (position, name) in names.iter().enumerate() {
-        let word = if position + 1 < names.len() {
-            format!("{name},")
-        } else {
-            name.to_string()
-        };
-        if column + 1 + word.len() > 100 {
-            header.push_str("\n  //@");
-            column = 5;
-        }
-        header.push(' ');
-        header.push_str(&word);
-        column += 1 + word.len();
-    }
-    header.push('\n');
-    header
-}
-
-/// `names` joined by `, ` on lines of at most `width` columns, each line
-/// after the first indented by `indent`.
-fn wrap_list(names: &[&str], indent: &str, width: usize) -> String {
-    let mut out = String::new();
-    let mut column = 0;
-    for (position, name) in names.iter().enumerate() {
-        let word = if position + 1 < names.len() {
-            format!("{name},")
-        } else {
-            name.to_string()
-        };
-        if column > 0 && column + 1 + word.len() > width {
-            out.push('\n');
-            out.push_str(indent);
-            column = indent.len();
-        } else if column > 0 {
-            out.push(' ');
-            column += 1;
-        }
-        out.push_str(&word);
-        column += word.len();
-    }
-    out
-}
-
-/// The bindings a unit body declares at its top level, in source order.
-fn top_level_bindings(source: &str, body: std::ops::Range<usize>) -> Vec<&str> {
-    let tokens = js_syntax::lex(source, body).unwrap_or_else(|error| {
-        panic!(
-            "shared-heap runtime byte {}: {}",
-            error.offset, error.message
-        )
-    });
-    let resolution = js_syntax::resolve(source, &tokens)
-        .unwrap_or_else(|(offset, message)| panic!("shared-heap runtime byte {offset}: {message}"));
-    resolution
-        .declarations
-        .iter()
-        .filter(|declaration| declaration.scope == 0)
-        .map(|declaration| declaration.name)
-        .collect()
-}
 
 /// The marker that opens a top-level binding's placeholder in a terse unit:
 /// `\u{1}<binding index>\u{2}`, which the slice replaces with the binding's

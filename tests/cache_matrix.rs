@@ -599,10 +599,6 @@ fn child() {
         .unwrap();
     host.register_compiler_data_reader(Name::new(Some("app"), "core-target"), CORE_TARGET_READER)
         .unwrap();
-    #[cfg(feature = "bbp-macros")]
-    if std::env::var_os("NATIVE").is_some() {
-        host.use_native_macros();
-    }
     let mut stats = CompileStats::default();
     let program = match std::env::var_os("CACHE") {
         Some(dir) => {
@@ -771,16 +767,11 @@ fn resolution_and_views() {
         ),
     ]);
     let (_, printed) = project.checked("main", &[]);
-    let pants = cfg!(all(
-        feature = "bbp-macros",
-        not(any(feature = "quickjs", feature = "v8-macros"))
-    ));
-    // The caller does not require doc: Pants resolve sees an unloaded Var.
-    assert_eq!(printed, if pants { "1 \n" } else { "1 one\n" });
+    assert_eq!(printed, "1 one\n");
     project.cached("main", &[]).assert_all_hits(5);
     project.write("doc.cljs", "(ns doc) (def ^{:doc \"two\"} value 1)");
     let (metadata, printed) = project.checked("main", &[]);
-    assert_eq!(printed, if pants { "1 \n" } else { "1 two\n" });
+    assert_eq!(printed, "1 two\n");
     assert_eq!(
         metadata.rows(),
         [
@@ -825,12 +816,7 @@ fn resolution_and_views() {
         "(ns main (:require [plain] [added] [counted])) (js/console.log plain/value counted/value)",
     );
     let (added, after) = project.checked("main", &[]);
-    if pants {
-        // cljs.user, cljs.core, light.build, inventory and counted: the
-        // unrelated added namespace stays outside counted's closure.
-        assert_eq!(before, "1 5\n");
-        assert_eq!(after, before);
-    } else {
+    {
         assert_ne!(before, after, "the inventory grew");
     }
     assert_eq!(
@@ -1036,48 +1022,6 @@ fn custom_reader_gensyms_across_processes() {
 
 /// A custom reader that names a core function.
 const CORE_TARGET_READER: &str = "(fn [_] 'cljs.core/even?)";
-
-/// A custom reader's result as a mutation place, on the Pants build's macro
-/// backend (custom readers need QuickJS): the build's core-write scan cannot
-/// tell what `#app/core-target nil` reads as, so once a consumer rebinds it,
-/// the cached provider whose helper calls `even?` is analyzed again rather
-/// than installed, nothing is published, and the output is the cache-off
-/// build's (light-cljs-588).
-#[cfg(all(feature = "bbp-macros", feature = "quickjs"))]
-#[test]
-fn tagged_core_write_places_reject_cached_providers() {
-    let project = Project::new(&[
-        ("util.cljs", "(ns util) (defn probe [] (even? 2))"),
-        (
-            "macros.cljs",
-            "(ns macros (:require [util])) (defmacro check [] (util/probe))",
-        ),
-        (
-            "main.cljs",
-            "(ns main (:require [util] [macros :refer [check]])) (js/console.log (check))",
-        ),
-    ]);
-    let native = [("NATIVE", "1")];
-    project.child_with("main", true, &native);
-    let warm = project.child_with("main", true, &native);
-    warm.assert_all_hits(3);
-    assert_eq!(warm.run(), "true\n");
-
-    project.write(
-        "main.cljs",
-        "(ns main (:require [util] [macros :refer [check]])) \
-         (defmacro redefined [] (with-redefs [#app/core-target nil (fn [_] false)] (util/probe))) \
-         (js/console.log (check) (redefined))",
-    );
-    let oracle = project.child_with("main", false, &native);
-    assert_eq!(oracle.run(), "true false\n");
-    let edited = project.child_with("main", true, &native);
-    assert_eq!(edited.stat("cache.hits"), 0, "{}", edited.stats);
-    assert_eq!(edited.stat("cache.miss.core-write"), 3, "{}", edited.stats);
-    assert_eq!(edited.stat("cache.published"), 0, "{}", edited.stats);
-    assert_eq!(edited.js, oracle.js);
-    assert_eq!(edited.run(), "true false\n");
-}
 
 // -- Declaration view of source-macro users ----------------------------------
 
@@ -1818,15 +1762,7 @@ fn requested_namespace_views_stay_guarded_in_cached_macro_helpers() {
             "(ns main (:require [x] [a] [b])) (js/console.log (pr-str [a/value b/value]))",
         ),
     ]);
-    let pants = cfg!(all(
-        feature = "bbp-macros",
-        not(any(feature = "quickjs", feature = "v8-macros"))
-    ));
-    let expected = if pants {
-        "[[false false] [true true]]\n"
-    } else {
-        "[[true true] [true true]]\n"
-    };
+    let expected = "[[true true] [true true]]n";
     assert_eq!(project.checked("main", &[]).1, expected);
     project.cached("main", &[]).assert_all_hits(6);
     // Reuse the provider artifact while both consumers invoke its helper

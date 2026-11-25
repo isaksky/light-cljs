@@ -79,65 +79,6 @@ pub(crate) const DEFAULT_MEMORY_LIMIT: usize = 64 * 1024 * 1024;
 /// (light-cljs-441).
 pub(crate) const WORKER_SHARE: usize = 64 << 20;
 
-/// Which `cljs.core` the Pants build's macros run on (`--macro-core`,
-/// `:macro-core`; docs/real-core-design.md, section 5): the hand-written
-/// port in `src/bbp_runtime.js`, or the real runtime's shared-heap profile,
-/// booted once per compilation and published. Other builds have only the
-/// real runtime and reject the option. Part of the cache identity.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum MacroCore {
-    #[default]
-    Port,
-    Real,
-}
-impl MacroCore {
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Port => "port",
-            Self::Real => "real",
-        }
-    }
-    /// Whether this build is the Pants build, whose macros run on
-    /// big-boy-pants-js and so have a core to choose: built with
-    /// `--no-default-features --features bbp-macros`, without V8 or QuickJS
-    /// (which run every compilation's macros when present).
-    pub const AVAILABLE: bool = cfg!(all(
-        feature = "bbp-macros",
-        not(any(light_quickjs, light_v8))
-    ));
-    /// An error naming `option` unless this is the Pants build.
-    pub fn check_available(option: &str) -> Result<(), String> {
-        if Self::AVAILABLE {
-            Ok(())
-        } else {
-            Err(format!(
-                "{option} applies to the Pants build only (built with --no-default-features \
-                 --features bbp-macros); this build runs macros on another engine"
-            ))
-        }
-    }
-    /// What `LIGHT_CLJS_MACRO_CORE` selects when no flag or build file
-    /// does: how a test suite runs whole in either mode
-    /// (`LIGHT_CLJS_MACRO_CORE=real cargo test --features bbp-macros --test
-    /// bbp_macros`). Anything but `real` is the default, `port`.
-    pub fn from_environment() -> Self {
-        match std::env::var("LIGHT_CLJS_MACRO_CORE").as_deref() {
-            Ok("real") => Self::Real,
-            _ => Self::Port,
-        }
-    }
-}
-impl std::str::FromStr for MacroCore {
-    type Err = String;
-    fn from_str(text: &str) -> Result<Self, String> {
-        match text {
-            "port" => Ok(Self::Port),
-            "real" => Ok(Self::Real),
-            other => Err(format!("--macro-core takes port or real, not {other}")),
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct EvaluatorOptions {
     pub memory_limit: usize,
@@ -145,8 +86,6 @@ pub struct EvaluatorOptions {
     /// Shared poll budget, including engine interrupts and Rust bridge work.
     pub poll_budget: u64,
     pub timeout: Duration,
-    /// The Pants build's `cljs.core` ([`MacroCore`]); other engines ignore it.
-    pub macro_core: MacroCore,
 }
 impl Default for EvaluatorOptions {
     fn default() -> Self {
@@ -155,7 +94,6 @@ impl Default for EvaluatorOptions {
             stack_limit: 1024 * 1024,
             poll_budget: 1_000_000,
             timeout: Duration::from_secs(10),
-            macro_core: MacroCore::from_environment(),
         }
     }
 }
@@ -276,13 +214,9 @@ impl ExecutionControl {
         result
     }
     /// What is left of the current operation's poll budget.
-    #[cfg(all(test, any(light_quickjs, feature = "bbp-macros")))]
+    #[cfg(all(test, light_quickjs))]
     pub(crate) fn remaining_polls(&self) -> u64 {
         self.0.remaining.load(Ordering::Relaxed)
-    }
-    #[cfg(all(test, feature = "bbp-macros"))]
-    pub(crate) fn expire_for_test(&self) {
-        self.0.deadline_nanos.store(0, Ordering::Relaxed);
     }
     pub fn cancel(&self) {
         self.0.cancelled.store(true, Ordering::Relaxed);
@@ -1461,11 +1395,6 @@ pub enum EnvironmentExtensions {
 pub type EnvironmentTracking = std::rc::Rc<std::cell::Cell<EnvironmentExtensions>>;
 /// Common macro operations at either an outer boundary or an active callback.
 pub trait MacroEvaluator {
-    /// The native evaluator, including an active helper producer.
-    #[cfg(feature = "bbp-macros")]
-    fn native_shell(&self) -> Option<&crate::bbp_evaluator::BbpEvaluator> {
-        None
-    }
     /// Cumulative native bridge work; absent for descriptor-based engines.
     fn native_bridge_stats(&self) -> Option<crate::compile_stats::NativeBridgeCall> {
         None

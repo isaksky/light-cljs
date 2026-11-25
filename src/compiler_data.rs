@@ -434,8 +434,6 @@ pub struct Form {
     id: FormId,
     // Native values retain exact occurrences. Only compiler import uses the
     // legacy scalar-position view, without replacing a Datum or its span.
-    #[cfg(feature = "bbp-macros")]
-    compiler_spans: Option<Arc<std::collections::HashMap<FormId, SourceSpan>>>,
 }
 
 /// An occurrence in a borrowed semantic arena. Recursive compiler reads do
@@ -462,19 +460,6 @@ impl<'a> FormView<'a> {
     }
     pub(crate) fn span(self) -> SourceSpanView<'a> {
         self.owner.forms.spans.view(self.id.0)
-    }
-    #[cfg(feature = "bbp-macros")]
-    pub(crate) fn compiler_span(self) -> SourceSpanView<'a> {
-        self.compiler_span_override()
-            .map(SourceSpan::view)
-            .unwrap_or_else(|| self.span())
-    }
-    #[cfg(feature = "bbp-macros")]
-    fn compiler_span_override(self) -> Option<&'a SourceSpan> {
-        self.owner
-            .compiler_spans
-            .as_ref()
-            .and_then(|spans| spans.get(&self.id))
     }
     pub(crate) fn children(self) -> impl ExactSizeIterator<Item = Self> + DoubleEndedIterator + 'a {
         let ids: &'a [FormId] = match &self.node().kind {
@@ -514,13 +499,6 @@ impl Form {
             FormId(0),
         );
         Arc::get_mut(&mut leaf.forms).unwrap().expansions = self.expansions().to_vec();
-        #[cfg(feature = "bbp-macros")]
-        if let Some(span) = self.compiler_spans.as_ref().and_then(|s| s.get(&self.id)) {
-            leaf.compiler_spans = Some(Arc::new(std::collections::HashMap::from([(
-                FormId(0),
-                span.clone(),
-            )])));
-        }
         leaf
     }
     pub(crate) fn from_parts(
@@ -547,8 +525,6 @@ impl Form {
                 expansions: vec![],
             }),
             id,
-            #[cfg(feature = "bbp-macros")]
-            compiler_spans: None,
         }
     }
     /// Construct a form directly from owned data, without a host or source reader.
@@ -616,8 +592,6 @@ impl Form {
         self.forms.nodes.get(id.0).map(|_| Self {
             forms: self.forms.clone(),
             id,
-            #[cfg(feature = "bbp-macros")]
-            compiler_spans: self.compiler_spans.clone(),
         })
     }
     pub fn data(&self) -> Datum {
@@ -625,29 +599,6 @@ impl Form {
     }
     pub fn span(&self) -> SourceSpan {
         self.forms.spans.view(self.id.0).to_span()
-    }
-    #[cfg(feature = "bbp-macros")]
-    pub(crate) fn compiler_span(&self) -> SourceSpan {
-        self.compiler_span_override().unwrap_or_else(|| self.span())
-    }
-    #[cfg(feature = "bbp-macros")]
-    pub(crate) fn compiler_span_override(&self) -> Option<SourceSpan> {
-        self.compiler_spans
-            .as_ref()
-            .and_then(|s| s.get(&self.id))
-            .cloned()
-    }
-    #[cfg(feature = "bbp-macros")]
-    pub(crate) fn has_compiler_spans(&self) -> bool {
-        self.compiler_spans.is_some()
-    }
-    #[cfg(feature = "bbp-macros")]
-    pub(crate) fn with_compiler_spans(
-        mut self,
-        spans: std::collections::HashMap<FormId, SourceSpan>,
-    ) -> Self {
-        self.compiler_spans = (!spans.is_empty()).then(|| Arc::new(spans));
-        self
     }
     pub fn children(&self) -> Vec<Self> {
         match &self.node().kind {
@@ -1127,23 +1078,6 @@ impl Form {
         let forms = Arc::get_mut(&mut result.forms).unwrap();
         forms.expansions = original.expansions().to_vec();
         forms.expansions.push(expansion);
-        #[cfg(feature = "bbp-macros")]
-        {
-            // Compiler-owned seed expansions also preserve the native mapping
-            // view of every reused input, without changing its public span.
-            let spans = result
-                .forms
-                .data
-                .iter()
-                .enumerate()
-                .filter_map(|(i, data)| {
-                    original_for(data.identity())
-                        .and_then(FormView::compiler_span_override)
-                        .map(|span| (FormId(i), span.clone()))
-                })
-                .collect();
-            result = result.with_compiler_spans(spans);
-        }
         result
     }
 }
@@ -1325,18 +1259,11 @@ mod tests {
             definition: Some(source.span(5..7).unwrap()),
             helpers: vec![Name::new(None, "helper")],
         });
-        #[cfg(feature = "bbp-macros")]
-        let form = form.with_compiler_spans(std::collections::HashMap::from([
-            (FormId(1), source.span(20..22).unwrap()),
-            (FormId(3), source.span(23..25).unwrap()),
-        ]));
         fn walk(view: FormView<'_>, owned: &Form, retained: &mut Vec<Form>) {
             assert_eq!(view.node(), owned.node());
             assert_eq!(view.data().identity(), owned.data().identity());
             assert_eq!(view.span().source().id(), owned.span().source().id());
             assert_eq!(view.span().bytes(), owned.span().bytes());
-            #[cfg(feature = "bbp-macros")]
-            assert_eq!(view.compiler_span().bytes(), owned.compiler_span().bytes());
             let saved = view.to_form();
             assert_eq!(saved.node(), owned.node());
             assert_eq!(
@@ -1437,12 +1364,6 @@ mod tests {
                 definition: Some(source.span(10..11).unwrap()),
                 helpers: vec![Name::new(None, "helper")],
             });
-        #[cfg(feature = "bbp-macros")]
-        let outer = outer.with_compiler_spans(std::collections::HashMap::from([
-            (FormId(2), source.span(20..21).unwrap()),
-            (FormId(5), source.span(22..23).unwrap()),
-            (FormId(7), source.span(24..25).unwrap()),
-        ]));
         let mut results = Vec::new();
         // For a literal, payload follows metadata. For the containing vector,
         // root metadata follows all children. The later occurrence in the
@@ -1473,15 +1394,6 @@ mod tests {
                     previous
                         .map(|id| outer.forms.nodes[id].origin.clone())
                         .unwrap_or_else(|| Origin::MacroExpansion(Arc::new(name.clone())))
-                );
-                #[cfg(feature = "bbp-macros")]
-                assert_eq!(
-                    form.compiler_span_override().map(|s| s.bytes()),
-                    match previous {
-                        Some(2) => Some(20..21),
-                        Some(5) => Some(22..23),
-                        _ => None,
-                    }
                 );
             }
             assert_eq!(result.expansions().len(), 2);
@@ -1624,14 +1536,6 @@ mod tests {
             let dc = builder.string([0xd800, 120]);
             let fa = Form::from_data(da.clone(), a.span(1..2).unwrap(), Origin::Source);
             let fb = Form::from_data(db.clone(), b.span(3..5).unwrap(), Origin::Quote);
-            #[cfg(feature = "bbp-macros")]
-            let fb = {
-                let id = fb.id();
-                fb.with_compiler_spans(std::collections::HashMap::from([(
-                    id,
-                    b.span(6..8).unwrap(),
-                )]))
-            };
             let fc = Form::from_data(dc.clone(), c.span(2..4).unwrap(), Origin::Deref);
             let originals = std::collections::HashMap::from([
                 (da.identity(), fa.clone()),
@@ -1677,11 +1581,6 @@ mod tests {
                 assert_eq!(occurrence.span().bytes(), bytes);
                 assert_eq!(occurrence.view().span().bytes(), bytes);
                 assert_eq!(occurrence.node().origin, origin);
-                #[cfg(feature = "bbp-macros")]
-                assert_eq!(
-                    occurrence.compiler_span_override().map(|s| s.bytes()),
-                    (identity == db.identity()).then_some(6..8)
-                );
             }
             (result.children()[1].compact_leaf(), weak_a, weak_b, weak_c)
         };

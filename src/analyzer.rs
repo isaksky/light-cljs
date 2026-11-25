@@ -4059,10 +4059,6 @@ fn analyze_input(
         compiler_syntax(source, syntax)
     };
     let mut roots = syntax.roots.clone();
-    #[cfg(feature = "bbp-macros")]
-    if let Some(session) = macro_host.session_handle() {
-        session.shared().index_native_core_writes(source, &syntax);
-    }
     let NamespaceAnalysisView {
         namespace,
         aliases,
@@ -4318,14 +4314,6 @@ pub(crate) fn analyze_namespaces_prepared_with_warnings(
     mut prepare: impl FnMut(&mut MacroHost, usize) -> Result<NamespaceResolution, AnalysisError>,
 ) -> Result<Program, (usize, AnalysisError)> {
     let mut analysis = NamespaceAnalysis::new(macro_host);
-    #[cfg(feature = "bbp-macros")]
-    if let Some(session) = macro_host.session_handle() {
-        for input in inputs {
-            session
-                .shared()
-                .index_native_core_writes(input.source, input.syntax);
-        }
-    }
     // Without artifacts, only a unit can fail a drain point.
     let drained = |outcome: Result<(), DrainError>| match outcome {
         Err(DrainError::Unit(source_index, error)) => Err((source_index, error)),
@@ -5125,12 +5113,6 @@ impl NamespaceTop {
             crate::compiler_reader::select_cljs(input.source, syntax.to_mut(), &mut discards)?;
         }
         let source_roots = syntax.roots.clone();
-        #[cfg(feature = "bbp-macros")]
-        if let Some(session) = macro_host.session_handle() {
-            session
-                .shared()
-                .index_native_core_writes(input.source, &syntax);
-        }
         let namespace_globals = self.members.of(&self.program.globals, input.name);
         let listed = self.members.lists(&self.program.namespaces, input.name);
         let mut analyzer = Analyzer {
@@ -5405,10 +5387,6 @@ mod namespace_top_tests {
         assert_eq!(program.protocols.values().count(), 400);
     }
 }
-
-#[cfg(all(test, feature = "bbp-macros"))]
-#[path = "analyzer_parallel_probe.rs"]
-mod parallel_probe;
 
 #[path = "namespace_publication.rs"]
 pub(crate) mod namespace_publication;
@@ -6105,25 +6083,6 @@ impl Analyzer<'_> {
         // A macro may construct mutation operators and core names without
         // spelling either in source. Publish each resolved write as it is
         // analyzed, before later factories lose access to this unit's IR.
-        #[cfg(feature = "bbp-macros")]
-        if matches!(kind, ExprKind::SetGlobal { .. } | ExprKind::Binding { .. }) {
-            let session = self.macro_host.session_handle();
-            let catalog = self.macro_host.engine.catalog.as_ref();
-            let shared = session.as_ref().map(|session| session.shared()).or(catalog);
-            if let Some(shared) = shared {
-                match &kind {
-                    ExprKind::SetGlobal { target, .. } => {
-                        shared.index_native_core_target(&self.program, *target);
-                    }
-                    ExprKind::Binding { bindings, .. } => {
-                        for &(target, _) in bindings {
-                            shared.index_native_core_target(&self.program, target);
-                        }
-                    }
-                    _ => unreachable!(),
-                }
-            }
-        }
         let id = ExprId(self.program.exprs.len());
         if !self.unchecked_arrays
             && (self.options.checked_arrays || self.options.array_checks != CheckedArrays::Off)
@@ -12139,38 +12098,6 @@ impl Analyzer<'_> {
                 .map_err(|e| error(e.to_string()))?;
             // Outside every scope the V8 build converts the environment
             // first; the Pants build checks what that conversion rejects.
-            #[cfg(feature = "bbp-macros")]
-            if !crate::generated_names::scoped() && self.macro_host.native_macro_backend() {
-                let locals = self
-                    .env
-                    .scopes
-                    .iter()
-                    .flat_map(|s| s.iter())
-                    .map(|id| {
-                        let (kind, argument) =
-                            self.local_kinds.get(id).copied().unwrap_or(("let", None));
-                        (self.program.locals[id.0].name.clone(), id.0, kind, argument)
-                    })
-                    .collect::<Vec<_>>();
-                let location = self
-                    .source_line_column(self.syntax.nodes[call.0].span.start)
-                    .unwrap();
-                let environment = self
-                    .macro_host
-                    .compiler_environment(
-                        self.namespace,
-                        context,
-                        &locals,
-                        self.aliases,
-                        self.requires,
-                        location,
-                    )
-                    .map_err(error)?;
-                let environment = self.array_environment(environment).map_err(error)?;
-                self.macro_host
-                    .check_core_environment(core_name, &form, &environment)
-                    .map_err(error)?;
-            }
             if let Some(expanded) = self
                 .macro_host
                 .expand_core_native(
@@ -12907,9 +12834,6 @@ impl Analyzer<'_> {
         let id = NodeId(self.syntax.nodes.len());
         self.syntax.to_mut().nodes.push(crate::Node {
             kind,
-            #[cfg(feature = "bbp-macros")]
-            span: form.compiler_span().bytes(),
-            #[cfg(not(feature = "bbp-macros"))]
             span: form.span().bytes(),
         });
         self.generated.resize(id.0, None);

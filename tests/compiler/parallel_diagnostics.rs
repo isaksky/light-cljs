@@ -58,11 +58,7 @@ fn exact_boundary_expansion_and_node_limits_name_the_same_unit_at_one_and_four_s
     assert!(unlimited.output.is_ok(), "{:?}", unlimited.output);
     let pooled = build_with(&sources, "app.l", 4, false, limited(100_000, 1_000_000));
     assert_eq!(pooled.stats.deferred_units.pooled, 16);
-    if crate::macro_free_units::PANTS_BUILD {
-        assert_eq!(pooled.stats.deferred_units.worker_isolates, 0);
-        assert_eq!(pooled.stats.deferred_units.pool_engine_workers, 3);
-        assert!(pooled.stats.deferred_units.pool_engine_participants > 0);
-    } else {
+    {
         assert_eq!(pooled.stats.deferred_units.worker_isolates, 3);
     }
     let calls = unlimited.stats.macro_calls;
@@ -445,16 +441,7 @@ fn a_worker_whose_steady_need_exceeds_its_base_keeps_its_isolate() {
     } else {
         48000
     };
-    // Pants shares a persistent steady value and its repeated chunks across
-    // tasks. Its physical footprint follows structural sharing. A mutable JS
-    // array is intentionally rebuilt per task, including the coordinator
-    // when it now helps. The isolate fixtures keep their original input.
-    let (ballast, held) = if crate::macro_free_units::PANTS_BUILD {
-        (
-            format!("(let [chunk (vec (range {length}))] (vec (repeat 70 chunk)))"),
-            "(count ballast)",
-        )
-    } else {
+    let (ballast, held) = {
         (
             format!(
                 "(let [keep #js []] (dotimes [_ 70] (.push keep (.fill (js/Array. {length}) 1.5))) keep)"
@@ -487,12 +474,7 @@ fn a_worker_whose_steady_need_exceeds_its_base_keeps_its_isolate() {
         assert_eq!(built.output, serial.output);
         let units = &built.stats.deferred_units;
         assert!(units.pooled >= 2, "{units:?}");
-        if crate::macro_free_units::PANTS_BUILD {
-            assert_eq!(units.worker_isolates, 0, "{units:?}");
-            assert_eq!(units.pool_engine_workers, 1, "{units:?}");
-            assert!(units.pool_engine_participants > 0, "{units:?}");
-            assert!(built.stats.native_helpers.published > 0);
-        } else {
+        {
             assert_eq!(units.worker_isolates, 1, "{units:?}");
         }
     }

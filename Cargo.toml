@@ -11,16 +11,10 @@ readme = "README.md"
 license = "MIT AND EPL-1.0"
 
 [workspace]
-members = ["crates/big-boy-pants-js"]
-default-members = ["."]
 exclude = ["vendor/rquickjs-sys", "playground/crate"]
 resolver = "3"
 
-[workspace.dependencies]
-big-boy-pants-js = { path = "crates/big-boy-pants-js" }
-
-# QuickJS is the default native interactive and data-reader engine. The optional
-# feature also permits builds containing only big-boy-pants-js or no engine.
+# QuickJS is the default interactive and data-reader engine.
 # WebAssembly builds leave it out: their
 # embedder supplies the engine (`host_evaluator::ScriptHost`, light-cljs-357).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -43,7 +37,6 @@ cc = "=1.7.0"
 [features]
 default = ["v8-macros", "quickjs"]
 quickjs = ["dep:rquickjs"]
-bbp-macros = ["dep:big-boy-pants-js"]
 # Test-only scheduler perturbation in optimized builds of large projects.
 # Ordinary release builds omit it; no engine or production default changes.
 scheduling-stress = []
@@ -52,9 +45,6 @@ scheduling-stress = []
 v8-macros = ["dep:v8"]
 # Benchmark-only allocation instrumentation, absent from normal timing runs.
 count-allocations = []
-
-[dependencies]
-big-boy-pants-js = { workspace = true, optional = true }
 
 [lib]
 # Benchmarks live in benches/. The library's unit-test harness is for cargo test.
@@ -80,7 +70,7 @@ harness = false
 name = "evaluator"
 harness = false
 
-# The evaluator example embeds QuickJS, which the Pants build leaves out.
+# The evaluator example embeds QuickJS.
 [[example]]
 name = "evaluator"
 required-features = ["quickjs"]

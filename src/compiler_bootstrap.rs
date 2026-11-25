@@ -58,10 +58,6 @@ const MACROS: &[(&str, &str)] = &[
     ("unchecked-max", "unchecked-max"),
     ("unchecked-min", "unchecked-min"),
 ];
-/// The names a compile-time runtime's `gensym` returned, one per prefix
-/// ([`MacroHost::unscoped_gensyms`]).
-#[cfg(feature = "bbp-macros")]
-type Names = Result<Vec<String>, String>;
 #[derive(Clone)]
 pub(crate) struct Bootstrap {
     pub(crate) evaluator: Rc<dyn crate::compiler_evaluator::CompilerEvaluator>,
@@ -498,8 +494,6 @@ fn elidable_map_environment(
 static UNITS: std::sync::OnceLock<[BootstrapUnit; 2]> = std::sync::OnceLock::new();
 // Every bootstrap uses the same immutable builder code. A lent task keeps
 // one cached handle even when a new host binds another bootstrap to it.
-#[cfg(feature = "bbp-macros")]
-static NATIVE_JS_OBJ: std::sync::OnceLock<CodeIdentity> = std::sync::OnceLock::new();
 fn compile(source: &str, host: &mut MacroHost) -> Result<BootstrapUnit, String> {
     compile_with(source, host, crate::emitter::emit_js_unit)
 }
@@ -571,134 +565,6 @@ fn definitions(
         }
     }
     Ok(definitions)
-}
-/// The Pants build's core macro definitions: for each core macro, the code
-/// identity under which a task keeps its function, the source a task
-/// evaluates it from, and whether it reads `&env`. They are compiled once
-/// per process, as the other engines' bootstrap units are, and emitted as
-/// the Pants build emits source macros.
-#[cfg(feature = "bbp-macros")]
-type NativeDefinitions = HashMap<&'static str, (CodeIdentity, std::sync::Arc<str>, bool)>;
-#[cfg(feature = "bbp-macros")]
-fn native_definitions() -> Result<&'static NativeDefinitions, String> {
-    static DEFINITIONS: std::sync::OnceLock<NativeDefinitions> = std::sync::OnceLock::new();
-    if let Some(definitions) = DEFINITIONS.get() {
-        return Ok(definitions);
-    }
-    let _names = crate::generated_names::enter_namespace(crate::generated_names::BOOTSTRAP_SCOPE);
-    let _unlogged = crate::generated_names::unlogged();
-    // As the Pants build compiles them, also beside another engine: the
-    // core macros only it expands natively (`hash-map`) stay native.
-    let mut host = MacroHost::new();
-    host.use_native_macros();
-    host.tables.bootstrap_seed = true;
-    let compile = |source: &str, host: &mut MacroHost| {
-        compile_with(source, host, |program| {
-            crate::emitter::emit_native_macro_unit(program, false, &[])
-        })
-    };
-    let getter = compile("(fn* [m k] (get m k))", &mut host)?;
-    let core = compile(&native_core_source()?, &mut host)?;
-    let sequence = compile(
-        &format!("{SEQUENCES}\n{{\"for\" sequence-for \"doseq\" sequence-doseq}}"),
-        &mut host,
-    )?;
-    let mut definitions = HashMap::new();
-    for (name, unit) in MACROS
-        .iter()
-        .map(|(name, _)| (*name, &core))
-        .chain([("for", &sequence), ("doseq", &sequence)])
-    {
-        let declared = if matches!(name, "for" | "doseq") {
-            format!("sequence-{name}")
-        } else {
-            format!("macro-{}", MACROS.iter().find(|p| p.0 == name).unwrap().1)
-        };
-        let source = format!(
-            "rt => ({})(rt)(({})(rt), {name:?})",
-            getter.source, unit.source
-        );
-        definitions.insert(
-            name,
-            (
-                CodeIdentity::next(),
-                std::sync::Arc::from(source),
-                unit.environment_reads
-                    .get(&declared)
-                    .copied()
-                    .unwrap_or(true),
-            ),
-        );
-    }
-    // Another thread may have set them first, from the same text.
-    let _ = DEFINITIONS.set(definitions);
-    Ok(DEFINITIONS.get().unwrap())
-}
-/// The core macro definitions as the Pants build runs them. The V8 build's
-/// engine decodes a macro's map and set arguments into its own maps and
-/// sets: keys equal there merge, and more than eight entries take the
-/// order of their hashes. The Pants build's runtime receives them as
-/// literal forms in reader order. Where a definition computes from them
-/// (`simple-benchmark` printing them, `selector` and `defmulti` merging
-/// into them) it uses them decoded as the engine does (`macro-decoded`);
-/// what it returns of them unchanged stays as it was.
-#[cfg(feature = "bbp-macros")]
-fn native_core_source() -> Result<String, String> {
-    const DECODED: &str = r#"
-(defn macro-decoded [x]
-  (let [decoded (cond
-                  (map? x) (into (if (> (count x) 8) (hash-map) {})
-                             (map (fn [entry] [(macro-decoded (key entry)) (macro-decoded (val entry))]) x))
-                  (set? x) (into #{} (map macro-decoded x))
-                  (vector? x) (mapv macro-decoded x)
-                  (seq? x) (apply list (map macro-decoded x))
-                  :else x)
-        metadata (meta x)]
-    (if (some? metadata) (with-meta decoded (macro-decoded metadata)) decoded)))
-"#;
-    // Where a definition computes from its arguments' maps: what
-    // `simple-benchmark` prints, the map `selector` merges its names into
-    // and the metadata `defmulti` merges.
-    const DECODE: [(&str, &str); 5] = [
-        ("(pr-str bindings)", "(pr-str (macro-decoded bindings))"),
-        ("(pr-str expr)", "(pr-str (macro-decoded expr))"),
-        (
-            "(pr-str (last options))",
-            "(pr-str (macro-decoded (last options)))",
-        ),
-        ("(merge m names)", "(merge (macro-decoded m) names)"),
-        (
-            "(merge (meta name) attributes",
-            "(merge (macro-decoded (meta name)) (macro-decoded attributes)",
-        ),
-    ];
-    let mut core = core_source();
-    for (from, to) in DECODE {
-        if core.matches(from).count() != 1 {
-            return Err(format!("bootstrap definitions no longer spell {from}"));
-        }
-        core = core.replace(from, to);
-    }
-    let start = core
-        .find("(defmacro macro-simple-benchmark")
-        .ok_or("missing bootstrap declaration macro-simple-benchmark")?;
-    Ok(format!("{}{DECODED}{}", &core[..start], &core[start..]))
-}
-/// Where the core macro `name`'s bootstrap definition is.
-#[cfg(feature = "bbp-macros")]
-fn definition_span(name: &str) -> Result<crate::compiler_data::SourceSpan, String> {
-    let (names, declared): (&[&str], _) = if matches!(name, "for" | "doseq") {
-        (&["for"], format!("sequence-{name}"))
-    } else {
-        let declared = MACROS
-            .iter()
-            .find(|p| p.0 == name)
-            .ok_or_else(|| format!("core macro {name} is not a compiler declaration"))?;
-        (&[], format!("macro-{}", declared.1))
-    };
-    definitions(names)?
-        .remove(&declared)
-        .ok_or_else(|| format!("missing bootstrap declaration {declared}"))
 }
 fn install(unit: &BootstrapUnit, bootstrap: &mut Bootstrap, names: &[&str]) -> Result<(), String> {
     let definitions = definitions(names)?;
@@ -843,208 +709,6 @@ fn build_in(
     }
     Ok(bootstrap)
 }
-/// The V8 build's `RegExp` constructor's error for `pattern` (UTF-16 code
-/// units) with `flags`, which the Pants build's parser refuses with
-/// `error`: V8's wording of the reasons the two share, which for some
-/// depends on where in the pattern the parser stopped, and the flags after
-/// the pattern.
-#[cfg(feature = "bbp-macros")]
-fn v8_regex_error(
-    pattern: &[u16],
-    flags: &str,
-    error: &big_boy_pants_js::regexp::parse::SyntaxError,
-) -> String {
-    let message = error.message.as_str();
-    if matches!(
-        message,
-        "unknown regular expression flag" | "duplicate regular expression flag"
-    ) {
-        return format!("SyntaxError: Invalid flags supplied to RegExp constructor '{flags}'");
-    }
-    let at = error.offset.min(pattern.len());
-    let before = &pattern[..at];
-    let unit = |c: u8| u16::from(c);
-    let escaped = |index: usize| {
-        before[..index]
-            .iter()
-            .rev()
-            .take_while(|&&u| u == unit(b'\\'))
-            .count()
-            % 2
-            == 1
-    };
-    let ends = |text: &str| {
-        let suffix = text.encode_utf16().collect::<Vec<_>>();
-        before.ends_with(&suffix) && !escaped(at - suffix.len())
-    };
-    // Where an atom may start: at the start, after `(` or `|`, an assertion
-    // that takes no quantifier, or a group's prefix, a capture's name
-    // included. Escaped syntax characters are completed atoms, including
-    // an escaped `(` followed by text that resembles a group prefix.
-    let atom_start = before.last().is_none_or(|&last| {
-        [b'(', b'|', b'^', b'$'].iter().any(|&c| last == unit(c)) && !escaped(at - 1)
-    }) || before.split_last().is_some_and(|(&last, _)| {
-        // `\b` or `\B`, not an escaped backslash and `b`.
-        (last == unit(b'b') || last == unit(b'B')) && escaped(at - 1)
-    }) || ["(?:", "(?=", "(?!", "(?<=", "(?<!"]
-        .iter()
-        .any(|prefix| ends(prefix))
-        || before.last() == Some(&unit(b'>'))
-            && before
-                .iter()
-                .rposition(|&u| u == unit(b'<'))
-                .is_some_and(|open| {
-                    before[..open].ends_with(&[unit(b'('), unit(b'?')])
-                        && !escaped(open - 2)
-                        && !before[open..].contains(&unit(b')'))
-                });
-    // After a completed quantifier (`a*`, `a*?`, `a{1}`, ...), a malformed
-    // `{` starts a new term. Probe that position with another quantifier so the
-    // parser distinguishes these from escaped characters (`\*`), classes,
-    // and braced escapes (`\u{31}`) that still take a quantifier. Keep later
-    // captures so forward references stay valid. Only this error path needs
-    // a second parse.
-    let quantified_term = || {
-        let mut probe = pattern.to_vec();
-        // An invalid quantifier's offset points at its opening `{`.
-        probe[at] = unit(b'*');
-        big_boy_pants_js::JsString::from_code_units(probe).is_some_and(|probe| {
-            big_boy_pants_js::regexp::parse::validate_syntax(
-                &probe,
-                &big_boy_pants_js::JsString::from(flags),
-            )
-            .is_err_and(|error| error.offset == at && error.message == "nothing to repeat")
-        })
-    };
-    // Whether the parser stopped inside a character class.
-    let in_class = {
-        let (mut class, mut index) = (false, 0);
-        while index < at {
-            match pattern[index] {
-                u if u == unit(b'\\') => index += 1,
-                u if u == unit(b'[') => class = true,
-                u if u == unit(b']') => class = false,
-                _ => {}
-            }
-            index += 1;
-        }
-        class
-    };
-    // A group of modifiers `(?ims-ims:`, from the `(` the parser stopped at.
-    let modifiers = || {
-        let group = &pattern[at..];
-        let mut seen = Vec::new();
-        let mut index = 2;
-        let mut repeated = false;
-        while let Some(&u) = group.get(index) {
-            if u == unit(b'-') {
-            } else if [b'i', b'm', b's'].iter().any(|&flag| u == unit(flag)) {
-                repeated |= seen.contains(&u);
-                seen.push(u);
-            } else {
-                break;
-            }
-            index += 1;
-        }
-        match group.get(index) {
-            Some(&u) if u == unit(b':') && repeated => "Repeated flag in flag group",
-            Some(&u) if u == unit(b':') => "Invalid flag group",
-            _ => "Invalid group",
-        }
-    };
-    let reason = match message {
-        // `^*`, `$+`, `\b?`; a quantified lookaround.
-        "assertion cannot be quantified" if before.last() == Some(&unit(b')')) => {
-            "Invalid quantifier".to_owned()
-        }
-        "assertion cannot be quantified" => "Nothing to repeat".to_owned(),
-        // A `{` that does not end a quantifier with the u flag: after an
-        // atom, or at the start of a new term; or a lone `}` or `]`.
-        "invalid quantifier" if !atom_start && !quantified_term() => {
-            "Incomplete quantifier".to_owned()
-        }
-        "invalid quantifier" | "unexpected syntax character" => {
-            "Lone quantifier brackets".to_owned()
-        }
-        "unmatched closing parenthesis" => "Unmatched ')'".to_owned(),
-        "quantifier range out of order" => "numbers out of order in {} quantifier".to_owned(),
-        "class range out of order" => "Range out of order in character class".to_owned(),
-        "duplicate group name" => "Duplicate capture group name".to_owned(),
-        "invalid group name" => "Invalid capture group name".to_owned(),
-        "invalid group prefix" => "Invalid group".to_owned(),
-        "duplicate group modifier" => "Repeated flag in flag group".to_owned(),
-        "invalid group modifiers" => modifiers().to_owned(),
-        "invalid named backreference" => "Invalid named reference".to_owned(),
-        "unknown named backreference" => "Invalid named capture referenced".to_owned(),
-        "invalid identity escape in u mode"
-        | "invalid hexadecimal escape"
-        | "invalid decimal backreference" => "Invalid escape".to_owned(),
-        "invalid control escape" => "Invalid Unicode escape".to_owned(),
-        "unknown Unicode property"
-        | "unknown or unsupported Unicode property"
-        | "invalid Unicode property escape"
-            if in_class =>
-        {
-            "Invalid property name in character class".to_owned()
-        }
-        "unknown Unicode property"
-        | "unknown or unsupported Unicode property"
-        | "invalid Unicode property escape" => "Invalid property name".to_owned(),
-        "class escape cannot be a range endpoint" => "Invalid character class".to_owned(),
-        // `nothing to repeat`, `unterminated group` and the like.
-        _ => {
-            let mut chars = message.chars();
-            chars
-                .next()
-                .map(|first| first.to_uppercase().chain(chars).collect())
-                .unwrap_or_default()
-        }
-    };
-    let pattern = String::from_utf16_lossy(pattern);
-    format!("SyntaxError: Invalid regular expression: /{pattern}/{flags}: {reason}")
-}
-/// The error of the first regular expression literal in `data` (in the
-/// order the V8 build's engine decodes it: children, then metadata) whose
-/// pattern does not compile, as that engine's `RegExp` constructor reports
-/// it, or `None`. As `rePattern` does, a leading `(?flags)` group gives the
-/// flags; the pattern is validated as its UTF-16 code units, lone
-/// surrogates included.
-#[cfg(feature = "bbp-macros")]
-pub(crate) fn invalid_regex(data: &Datum) -> Option<String> {
-    use crate::compiler_data::{CompilerLiteralKind, DatumKind};
-    match data.kind() {
-        DatumKind::CompilerLiteral {
-            kind: CompilerLiteralKind::Regex,
-            payload,
-        } => {
-            let DatumKind::String(text) = payload.kind() else {
-                return None;
-            };
-            let (flags, pattern) = text
-                .strip_prefix(&[u16::from(b'('), u16::from(b'?')][..])
-                .and_then(|rest| {
-                    let close = rest.iter().position(|&u| u == u16::from(b')'))?;
-                    let flags = &rest[..close];
-                    flags
-                        .iter()
-                        .all(|&u| u8::try_from(u).is_ok_and(|b| b"dgimsuxy".contains(&b)))
-                        .then(|| (flags, &rest[close + 1..]))
-                })
-                .unwrap_or((&[][..], &text[..]));
-            let js = |units: &[u16]| big_boy_pants_js::JsString::from_code_units(units.to_vec());
-            big_boy_pants_js::regexp::parse::validate_syntax(&js(pattern)?, &js(flags)?)
-                .err()
-                .map(|error| v8_regex_error(pattern, &String::from_utf16_lossy(flags), &error))
-        }
-        DatumKind::CompilerLiteral { payload, .. } => invalid_regex(payload),
-        DatumKind::Collection { children, .. } => children.iter().find_map(invalid_regex),
-        _ => None,
-    }
-    .or_else(|| {
-        data.metadata()
-            .and_then(|metadata| invalid_regex(&metadata))
-    })
-}
 impl MacroHost {
     /// Start the compilation's compile-time engine now, as the first
     /// JavaScript macro it expands would: at a namespace's dispatch whose
@@ -1079,101 +743,6 @@ impl MacroHost {
         }
         Ok(())
     }
-    /// The compile-time runtime in which the call `call` of the core macro
-    /// `name`, expanded natively outside every scope of generated names,
-    /// numbers its names: the one its bootstrap definition would run in
-    /// ([`Self::expand_core_javascript`]), `engine` or the bootstrap's.
-    /// Its `gensym` there skips the names that runtime decoded, which the
-    /// call's own join first ([`crate::bbp_evaluator::BbpEvaluator::unscoped_gensyms`]),
-    /// so the names are the ones the V8 build's engine gives (light-cljs-611).
-    #[cfg(feature = "bbp-macros")]
-    pub(crate) fn unscoped_gensyms<'e>(
-        &mut self,
-        name: &str,
-        engine: Option<&'e dyn crate::evaluator::MacroEvaluator>,
-    ) -> Result<impl FnMut(&Datum, &[&str]) -> Names + use<'e>, String> {
-        self.ensure_bootstrap(name)?;
-        let bootstrap = self.engine.bootstrap.as_ref().unwrap().clone();
-        if engine.is_none()
-            && let Some(session) = self.session_handle()
-        {
-            session.attach(&bootstrap, self)?;
-        }
-        let name = name.to_owned();
-        Ok(move |call: &Datum, bases: &[&str]| {
-            engine
-                .unwrap_or(bootstrap.evaluator.as_ref())
-                .native_shell()
-                .ok_or_else(|| {
-                    format!("core macro {name} outside a scope needs the native runtime")
-                })?
-                .unscoped_gensyms(call, bases)
-                .map_err(|e| e.to_string())
-        })
-    }
-    /// The Pants build's diagnostic for the call `call` of the core macro
-    /// `name` that native expansion declines: the one the V8 build's engine
-    /// gives running its definition
-    /// ([`crate::native_core_macros::rejection`]), or, where that cannot
-    /// be told, that the Pants build does not expand the call.
-    #[cfg(feature = "bbp-macros")]
-    fn reject_core_call(&self, name: &str, call: &Form) -> Option<String> {
-        let message = crate::native_core_macros::rejection(
-            name,
-            &call.data(),
-            "cljs.user",
-            self.limits.generated_nodes,
-        )?;
-        let origin = ExpansionOrigin {
-            macro_name: Name::new(Some("cljs.core"), name),
-            call: call.span(),
-            definition: definition_span(name).ok(),
-            helpers: vec![],
-        };
-        Some(crate::macro_host::expansion_failure(&origin, message))
-    }
-    /// Outside every scope of generated names the V8 build's engine runs
-    /// the core macro `name`'s definition, converting the call's
-    /// environment `env` first unless the definition never reads it and it
-    /// can be elided ([`elidable_map_environment`]); a regular expression
-    /// literal there that does not compile fails the call. The Pants build,
-    /// which expands the call natively without the environment, checks the
-    /// same literals with its engine's parser.
-    #[cfg(feature = "bbp-macros")]
-    pub(crate) fn check_core_environment(
-        &mut self,
-        name: &str,
-        call: &Form,
-        env: &Datum,
-    ) -> Result<(), String> {
-        self.ensure_bootstrap(name)?;
-        let control = self.engine.bootstrap.as_ref().unwrap().evaluator.control();
-        let mut remaining = self.limits.generated_nodes / 2;
-        // Only `defmulti`'s definition reads `&env`.
-        if name != "defmulti"
-            && elidable_map_environment(
-                env,
-                &mut remaining,
-                128,
-                &control,
-                &self.engine.elidable_sizes,
-            )
-        {
-            return Ok(());
-        }
-        match invalid_regex(env) {
-            None => Ok(()),
-            Some(message) => Err(crate::macro_host::expansion_failure(
-                &ExpansionOrigin {
-                    macro_name: Name::new(Some("cljs.core"), name),
-                    call: call.span(),
-                    definition: definition_span(name).ok(),
-                    helpers: vec![],
-                },
-                message,
-            )),
-        }
-    }
     pub(crate) fn expand_core_javascript(
         &mut self,
         name: &str,
@@ -1183,67 +752,11 @@ impl MacroHost {
     ) -> Result<Form, String> {
         crate::macro_host::forbid_engine_entry(name);
         self.ensure_bootstrap(name)?;
-        #[cfg(feature = "bbp-macros")]
-        if name == "js-obj" {
-            let bootstrap = self.engine.bootstrap.as_mut().unwrap();
-            if bootstrap.evaluator.native_forms() && !bootstrap.functions.contains_key(name) {
-                // The active helper producer may own a different task from
-                // this bootstrap. Keep code identity here, and resolve its
-                // function only in the selected task below.
-                bootstrap.functions.insert(
-                    name.into(),
-                    CompiledMacro {
-                        function: MacroFunction::NativeJsObj(
-                            *NATIVE_JS_OBJ.get_or_init(CodeIdentity::next),
-                        ),
-                        definition: definitions(&[name])?
-                            .remove("macro-js-obj")
-                            .ok_or("missing bootstrap declaration macro-js-obj")?,
-                        metadata: None,
-                        generation: 0,
-                        reads_environment: false,
-                        environment_keys: None,
-                    },
-                );
-            }
-        }
         // On the Pants build a call native expansion declines that the
         // definition rejects fails as the V8 build's engine reports it, every
         // time, as the Pants runtime's conversions do not refuse what the
         // engine's do; any other runs the definition, installed in the
         // runtime on first use.
-        #[cfg(feature = "bbp-macros")]
-        if name != "js-obj"
-            && self
-                .engine
-                .bootstrap
-                .as_ref()
-                .unwrap()
-                .evaluator
-                .native_forms()
-        {
-            if let Some(rejected) = self.reject_core_call(name, call) {
-                return Err(rejected);
-            }
-            let bootstrap = self.engine.bootstrap.as_mut().unwrap();
-            if !bootstrap.functions.contains_key(name) {
-                let (identity, source, reads_environment) = native_definitions()?
-                    .get(name)
-                    .ok_or_else(|| format!("core macro {name} is not a compiler declaration"))?;
-                let bootstrap = self.engine.bootstrap.as_mut().unwrap();
-                bootstrap.functions.insert(
-                    name.into(),
-                    CompiledMacro {
-                        function: MacroFunction::NativeDefinition(*identity, source.clone()),
-                        definition: definition_span(name)?,
-                        metadata: None,
-                        generation: 0,
-                        reads_environment: *reads_environment,
-                        environment_keys: None,
-                    },
-                );
-            }
-        }
         let bootstrap = self.engine.bootstrap.as_ref().unwrap().clone();
         if engine.is_none()
             && let Some(session) = self.session_handle()
@@ -1307,21 +820,6 @@ impl MacroHost {
         } else {
             env
         };
-        #[cfg(feature = "bbp-macros")]
-        if name == "js-obj" && engine.has_native_bridge() {
-            let result = self.expand_form_javascript(
-                engine,
-                declaration.function(engine, &self.engine)?,
-                call,
-                env,
-                origin,
-            );
-            if result.is_err() {
-                self.engine.bootstrap = None;
-                self.engine.work_cache.clear_engine_state();
-            }
-            return result;
-        }
         let result = self.expand_javascript(
             engine,
             declaration.function(engine, &self.engine)?,
@@ -1352,15 +850,6 @@ pub(crate) struct CompiledMacro {
 /// a macro installed from its namespace's artifact, on its first expansion.
 #[derive(Clone)]
 enum MacroFunction {
-    /// Native bootstrap code whose callable handle belongs to the active
-    /// task, including a producer analyzing while the bootstrap task waits.
-    #[cfg(feature = "bbp-macros")]
-    NativeJsObj(CodeIdentity),
-    /// A core macro's bootstrap definition on the Pants build, which each
-    /// task evaluates from its source (`rt => ...`) once, under the identity
-    /// ([`native_definitions`]).
-    #[cfg(feature = "bbp-macros")]
-    NativeDefinition(CodeIdentity, std::sync::Arc<str>),
     /// Evaluated in the engine that declared it; a source macro's also with
     /// the code that declared it, which a worker's engine evaluates itself.
     Ready(
@@ -1468,10 +957,6 @@ impl CompiledMacro {
             return self.foreign_function(engine, binding);
         }
         let installed = match &self.function {
-            #[cfg(feature = "bbp-macros")]
-            MacroFunction::NativeJsObj(_) => return self.foreign_function(engine, binding),
-            #[cfg(feature = "bbp-macros")]
-            MacroFunction::NativeDefinition(..) => return self.foreign_function(engine, binding),
             MacroFunction::Ready(function, _) => return Ok(function.id),
             MacroFunction::Published(_) => return self.foreign_function(engine, binding),
             MacroFunction::Installed(installed) => installed,
@@ -1506,20 +991,6 @@ impl CompiledMacro {
         binding: &crate::macro_host::EngineBinding,
     ) -> Result<ValueId, String> {
         let key = match &self.function {
-            #[cfg(feature = "bbp-macros")]
-            MacroFunction::NativeJsObj(identity) => {
-                binding.on_engine_entry(engine);
-                return engine
-                    .source_macro_function(identity.0, "rt => rt.compilerForms.jsObj")
-                    .map_err(|e| e.to_string());
-            }
-            #[cfg(feature = "bbp-macros")]
-            MacroFunction::NativeDefinition(identity, source) => {
-                binding.on_engine_entry(engine);
-                return engine
-                    .source_macro_function(identity.0, source)
-                    .map_err(|e| e.to_string());
-            }
             MacroFunction::Ready(_, Some(code)) | MacroFunction::Published(code) => code.identity.0,
             // A bootstrap macro, which the worker's own bootstrap holds.
             MacroFunction::Ready(function, None) => return Ok(function.id),
@@ -1546,10 +1017,6 @@ impl CompiledMacro {
                 (&parts.0, &parts.1)
             }
             MacroFunction::Ready(_, None) => unreachable!("bootstrap macros returned above"),
-            #[cfg(feature = "bbp-macros")]
-            MacroFunction::NativeJsObj(_) => unreachable!("native bootstrap returned above"),
-            #[cfg(feature = "bbp-macros")]
-            MacroFunction::NativeDefinition(..) => unreachable!("native bootstrap returned above"),
         };
         binding.on_engine_entry(engine);
         crate::reader_registration::register(engine, tables).map_err(|e| e.to_string())?;
@@ -1714,15 +1181,6 @@ impl MacroHost {
         let engine = engine.unwrap_or(bootstrap.evaluator.as_ref());
         let environment_keys = source_environment_keys(&program).map(std::sync::Arc::from);
         let unit = crate::emitter::emit_deferred_unit(&program);
-        #[cfg(feature = "bbp-macros")]
-        let unit = if bootstrap.evaluator.native_forms() {
-            let replaced = self
-                .session_handle()
-                .map_or_else(Vec::new, |session| session.shared().native_replaced_core());
-            crate::emitter::emit_native_macro_unit(&program, true, &replaced)
-        } else {
-            unit
-        };
         if let Some(session) = self.session_handle()
             && session.capturing()
         {
@@ -1967,206 +1425,6 @@ impl MacroHost {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "bbp-macros")]
-    #[test]
-    fn native_js_obj_bootstrap_uses_active_producer_context() {
-        use crate::evaluator::MacroEvaluator;
-        let runtime = crate::bbp_evaluator::BbpRuntime::new(&Default::default()).unwrap();
-        let owner = Rc::new(runtime.evaluator().unwrap());
-        let mut seed = MacroHost::new();
-        seed.use_native_macros();
-        let mut host = MacroHost::bind(seed.environment(), Some(owner.clone())).unwrap();
-        let producer = runtime.evaluator().unwrap();
-        assert_ne!(owner.heap(), producer.heap());
-        let call = host
-            .read_compiler_form(&Source::new(
-                "producer.cljs",
-                r#"(js-obj "a" 1 "b" 2 "c" 3 "d" 4 "e" 5 "f" 6 "g" 7 "h" 8 "i" 9)"#,
-            ))
-            .unwrap()
-            .unwrap();
-        let environment = DataBuilder.map(&[]).unwrap();
-        let expand = |host: &mut MacroHost, engine: Option<&dyn MacroEvaluator>| {
-            let _names = crate::generated_names::enter_namespace(7);
-            host.expand_core_javascript("js-obj", &call, &environment, engine)
-                .unwrap()
-        };
-        // The first demand happens in a producer, without entering the
-        // bootstrap's owner. Each task then retains its own callable handle.
-        let expected = expand(&mut host, Some(&producer));
-        let declaration = host.engine.bootstrap.as_ref().unwrap().functions["js-obj"].clone();
-        let MacroFunction::NativeJsObj(identity) = declaration.function else {
-            panic!("native bootstrap code identity");
-        };
-        assert!(owner.cached_source_macro_function(identity.0).is_none());
-        let before = runtime.helper_counts().units_evaluated;
-        let function = declaration.function(&producer, &host.engine).unwrap();
-        assert_eq!(function.session as usize, producer.heap());
-        assert_eq!(runtime.helper_counts().units_evaluated, before);
-        let own_function = declaration.function(owner.as_ref(), &host.engine).unwrap();
-        assert_ne!(own_function.session, function.session);
-        assert_eq!(runtime.helper_counts().units_evaluated, before + 1);
-        assert!(expand(&mut host, None).data().value_eq(&expected.data()));
-        for _ in 0..2 {
-            assert!(
-                expand(&mut host, Some(&producer))
-                    .data()
-                    .value_eq(&expected.data())
-            );
-            assert_eq!(
-                declaration.function(&producer, &host.engine).unwrap(),
-                function
-            );
-        }
-        // Lending preserves the task's cached function, while the host
-        // still carries the bootstrap bound to its original owner.
-        assert!(producer.park(Default::default()));
-        let (borrowed, state) = runtime.lent_evaluator().unwrap();
-        assert!(state.is_some());
-        let before = runtime.helper_counts().units_evaluated;
-        assert_eq!(
-            declaration.function(&borrowed, &host.engine).unwrap(),
-            function
-        );
-        assert_eq!(runtime.helper_counts().units_evaluated, before);
-        assert!(
-            expand(&mut host, Some(&borrowed))
-                .data()
-                .value_eq(&expected.data())
-        );
-    }
-
-    /// The Pants build runs `doseq`'s bootstrap definition where native
-    /// expansion declines a call, and the definition steps through its
-    /// bindings two at a time with `nnext` (light-cljs-611): a call it
-    /// expands gives the native expansion's data, in fresh scopes of
-    /// generated names alike (light-cljs-621).
-    #[cfg(feature = "bbp-macros")]
-    #[test]
-    fn native_doseq_definition_steps_bindings() {
-        let mut host = MacroHost::new();
-        host.use_native_macros();
-        assert!(host.native_macro_backend());
-        let environment = DataBuilder.map(&[]).unwrap();
-        for source in [
-            "(doseq [x xs y ys] (f x y))",
-            "(doseq [x xs :let [a 1] y ys :when a] (f x) (g y))",
-        ] {
-            let call = host
-                .read_compiler_form(&Source::new("doseq.cljs", source))
-                .unwrap()
-                .unwrap();
-            let definition = {
-                let _names = crate::generated_names::enter_namespace(7);
-                host.expand_core_javascript("doseq", &call, &environment, None)
-                    .unwrap_or_else(|error| panic!("{source}: {error}"))
-            };
-            let native = {
-                let _names = crate::generated_names::enter_namespace(7);
-                host.expand_core_native("doseq", &call, "user", ("doseq", &(0..1)), None)
-                    .unwrap()
-                    .unwrap()
-            };
-            assert!(
-                definition.data().value_eq(&native.data()),
-                "{source}: definition {:?}\nnative {:?}",
-                definition.data(),
-                native.data()
-            );
-        }
-    }
-
-    #[cfg(feature = "bbp-macros")]
-    #[test]
-    fn native_macro_cache_hits_skip_reader_registration() {
-        let mut host = crate::MacroHost::new();
-        host.use_native_macros();
-        let source = "(defmacro one [] 1)";
-        crate::analyze_with_macros(source, &crate::parse(source).unwrap(), &mut host).unwrap();
-        let declaration = &host.tables.javascript_macros["cljs.user/one"];
-        let MacroFunction::Ready(_, Some(code)) = &declaration.function else {
-            panic!("source declaration code");
-        };
-        let installed = CompiledMacro::installed(
-            crate::emitter::DeferredUnit::from_parts(
-                code.unit.clone(),
-                code.tables.namespaces.clone(),
-                code.tables.globals.clone(),
-                code.tables.reader_contexts.clone(),
-            ),
-            declaration.definition.clone(),
-            declaration.metadata.clone().unwrap(),
-            declaration.generation,
-        );
-        let runtime = crate::bbp_evaluator::BbpRuntime::new(&Default::default()).unwrap();
-        let evaluations = || {
-            let counts = runtime.helper_counts();
-            counts.units_evaluated + counts.units_shared
-        };
-        // Each fresh task materializes its own function once. Native tasks
-        // skip unused reader tables even on misses; hits also skip function
-        // construction and evaluation.
-        for declaration in [declaration, &installed] {
-            let mut functions = Vec::new();
-            for _ in 0..2 {
-                let engine = runtime.evaluator().unwrap();
-                let before = evaluations();
-                let function = declaration.function(&engine, &host.engine).unwrap();
-                assert_eq!(evaluations(), before + 1);
-                for _ in 0..4 {
-                    assert_eq!(
-                        declaration.function(&engine, &host.engine).unwrap(),
-                        function
-                    );
-                    assert_eq!(evaluations(), before + 1, "cache hit evaluated code");
-                }
-                functions.push(function);
-            }
-            assert_ne!(functions[0].session, functions[1].session);
-        }
-    }
-
-    #[cfg(feature = "bbp-macros")]
-    #[test]
-    fn native_source_macro_preserves_datum_identity_across_expansions() {
-        for (source, call_source) in [
-            (
-                "(defmacro same [x] x)",
-                "(same ^{:m 1} [9007199254740993 \\a])",
-            ),
-            (
-                "(defmacro same [x] (do (js/Math.max x 2) x))",
-                "(same 9007199254740993)",
-            ),
-        ] {
-            let mut host = crate::MacroHost::new();
-            host.use_native_macros();
-            crate::analyze_with_macros(source, &crate::parse(source).unwrap(), &mut host).unwrap();
-            let call = host
-                .read_compiler_form(&crate::compiler_data::Source::new(
-                    "source-identity.cljs",
-                    call_source,
-                ))
-                .unwrap()
-                .unwrap();
-            let original = call.children()[1].clone();
-            let environment =
-                crate::compiler_data::Datum::new(crate::compiler_data::DatumKind::Collection {
-                    kind: crate::CollectionKind::Map,
-                    children: Box::new([]),
-                });
-            for i in 0..2 {
-                let expanded = host
-                    .expand_source_javascript("cljs.user", "same", &call, &environment, None)
-                    .unwrap();
-                assert!(std::ptr::eq(expanded.data().kind(), original.data().kind()));
-                assert_eq!(expanded.span().bytes(), original.span().bytes());
-                assert_eq!(host.native_macro_calls()[i].exported, 0);
-                assert_eq!(host.native_macro_calls()[i].reused, 1);
-            }
-            assert_eq!(host.native_macro_calls()[1].imported, 0);
-        }
-    }
 
     use super::*;
 
@@ -2513,12 +1771,6 @@ mod tests {
         check(MacroHost::new());
         // The Pants build expands `doto` natively and checks the
         // environment's literals itself (light-cljs-611).
-        #[cfg(feature = "bbp-macros")]
-        {
-            let mut host = MacroHost::new();
-            host.use_native_macros();
-            check(host);
-        }
     }
 
     /// A function evaluated through the handle a callback receives, which is
@@ -2842,65 +2094,6 @@ mod tests {
                     assert_eq!(next.len(), 80);
                 }
             }
-        }
-    }
-}
-
-/// How long the Pants build takes to run the `doseq` bootstrap definition
-/// through [`MacroHost::expand_core_javascript`] with raised limits, for
-/// `(doseq [x0 xs ... xN-1 xs] (f x0))` at each N of
-/// `LIGHT_CLJS_DOSEQ_BINDINGS` (default `4,5,6,7`): realizing the
-/// definition's result is linear in its size (light-cljs-622), so the time
-/// should about double per binding. A measurement, not a check:
-/// `cargo test --no-default-features --features bbp-macros --lib
-/// doseq_definition_timing -- --ignored --nocapture`.
-#[cfg(all(test, feature = "bbp-macros"))]
-mod doseq_timing {
-    use super::*;
-
-    #[test]
-    #[ignore = "timing measurement"]
-    fn doseq_definition_timing() {
-        let counts = std::env::var("LIGHT_CLJS_DOSEQ_BINDINGS").unwrap_or("4,5,6,7".into());
-        for n in counts
-            .split(',')
-            .map(|n| n.trim().parse::<usize>().unwrap())
-        {
-            let mut host = MacroHost::new();
-            host.use_native_macros();
-            host.limits.generated_nodes = 100_000_000;
-            host.limits.expansions = 1 << 20;
-            host.evaluator_options.timeout = std::time::Duration::from_secs(3600);
-            host.evaluator_options.memory_limit = 4 << 30;
-            let bindings = (0..n).map(|i| format!("x{i} xs")).collect::<Vec<_>>();
-            let source = format!("(doseq [{}] (f x0))", bindings.join(" "));
-            let call = host
-                .read_compiler_form(&Source::new("doseq.cljs", &source))
-                .unwrap()
-                .unwrap();
-            let environment = DataBuilder.map(&[]).unwrap();
-            let _names = crate::generated_names::enter_namespace(7);
-            // Install the definition first, so the time is the call's.
-            let warm = host
-                .read_compiler_form(&Source::new("warm.cljs", "(doseq [x0 xs] (f x0))"))
-                .unwrap()
-                .unwrap();
-            host.expand_core_javascript("doseq", &warm, &environment, None)
-                .unwrap();
-            let start = std::time::Instant::now();
-            let expanded = host
-                .expand_core_javascript("doseq", &call, &environment, None)
-                .unwrap();
-            let elapsed = start.elapsed();
-            let nodes = crate::macro_host::WorkMarks::nodes(&expanded.data());
-            // A digest of the expansion, to compare builds' outputs.
-            let digest = {
-                use std::hash::{Hash, Hasher};
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                format!("{:?}", expanded.data()).hash(&mut hasher);
-                hasher.finish()
-            };
-            println!("doseq bindings={n} nodes={nodes} time={elapsed:.3?} digest={digest:016x}");
         }
     }
 }

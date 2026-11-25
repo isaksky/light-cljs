@@ -37,7 +37,7 @@
 //! last; a *root* entry starts an activity unrelated to those below it (a
 //! pool job, or one a waiting worker helps with), so inheritance looks no
 //! further down than the topmost root.
-#![cfg_attr(not(feature = "bbp-macros"), allow(dead_code))]
+#![allow(dead_code)]
 use std::{
     cell::RefCell,
     collections::{BTreeMap, HashMap, HashSet},

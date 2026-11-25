@@ -534,7 +534,7 @@ fn warning_mode_uses_parallel_top_level_at_two_slots_without_unit_ping_pong() {
             built.stats.deferred_units.pooled, 0,
             "{slots} slots should not submit 1-unit warning drains"
         );
-        if !crate::macro_free_units::PANTS_BUILD {
+        {
             assert!(
                 built.stats.deferred_units.pool.started > 0,
                 "{slots} slots should run lookahead namespaces via ParallelTopLevel in warning_mode"
@@ -679,7 +679,7 @@ fn warning_mode_reserves_coordinator_work_in_plain_and_engine_waves() {
     assert_eq!(plain_two.spans, plain_serial.spans);
     assert_eq!(plain_two.mapped, plain_serial.mapped);
     assert_eq!(plain_two.stats.deferred_units.pooled, 0);
-    if !crate::macro_free_units::PANTS_BUILD {
+    {
         let started = plain_two.stats.deferred_units.pool.started;
         assert!(
             (1..=5).contains(&started),
@@ -724,7 +724,7 @@ fn warning_mode_reserves_coordinator_work_in_plain_and_engine_waves() {
     assert_eq!(engine_two.spans, engine_serial.spans);
     assert_eq!(engine_two.mapped, engine_serial.mapped);
     assert_eq!(engine_two.stats.deferred_units.pooled, 0);
-    if !crate::macro_free_units::PANTS_BUILD {
+    {
         let started = engine_two.stats.deferred_units.pool.started;
         assert!(
             (1..=5).contains(&started),
@@ -954,7 +954,7 @@ fn parallel_top_level_cache_cross_jobs_reuse_and_byte_identity() {
         assert_eq!(cold_8_counts.hits, 0);
         assert_eq!(cold_8_counts.published, expected_namespaces);
         assert_eq!(execute(cold_8.output.as_ref().unwrap()), expected_run);
-        if !crate::macro_free_units::PANTS_BUILD {
+        {
             assert!(
                 cold_8.stats.deferred_units.pool.started > 0,
                 "cold j=8 should use worker pool (warning_mode={warning_mode})"

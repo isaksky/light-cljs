@@ -709,10 +709,7 @@ fn advanced_map_builders_walk_flat_pairs() {
 }
 
 #[test]
-fn shared_profile_transient_extensions_and_promotion_contracts() {
-    // Sol #1: In the Pants shared-heap profile, `fieldComparisons` is frozen after boot and
-    // `hostExt.seq` is true. `specify!` on fresh TransientArrayMap and TransientHashMap must
-    // not write to `fieldComparisons` and must honor the instance-specific `-conj!`.
+fn transient_extensions_with_frozen_field_comparisons() {
     let source = r#"
       (let [ta (transient {:a 1})
             th (transient (hash-map :a 1))]
@@ -739,20 +736,6 @@ fn shared_profile_transient_extensions_and_promotion_contracts() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), "[1 1]");
-
-    // Sol #1 & Sol #4: Verify the assembled shared-heap runtime keeps `tabledKind` free of
-    // kinds 31/32, gates transient-map invalidation on `!hostExt.seq`, and overrides
-    // `arrayMapPromote` to delegate to `mapAssocEntries` (which allocates engine maps via
-    // `sharedUpdatedMapFromEntries`).
-    let shared = light_cljs::runtime_manifest::SHARED_RUNTIME;
-    assert!(
-        shared.contains("1883361390 >>> kind & 1") && shared.contains("4114 >>> kind - 32 & 1"),
-        "expected shared profile tabledKind to exclude transient map kinds 31 and 32"
-    );
-    assert!(
-        shared.contains("function arrayMapPromote(self, _arr, key, item) {\n    return mapAssocEntries(self, key, item);"),
-        "expected shared profile arrayMapPromote to delegate to mapAssocEntries"
-    );
 }
 
 #[test]

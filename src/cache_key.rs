@@ -257,27 +257,6 @@ pub fn compiler_identity(host: &MacroHost) -> Digest {
         fingerprint.text("host").text(&script.engine());
         return fingerprint.finish();
     }
-    #[cfg(feature = "bbp-macros")]
-    if host.native_macro_backend() {
-        // The native form ABI (sets since light-cljs-477, lazy and cons
-        // sequences since light-cljs-479) and the compile-time emission
-        // mode the backend selects: core operations and literals lowered to
-        // the engine's `__rt` intrinsics.
-        fingerprint
-            .text("big-boy-pants-js")
-            .text("native-forms-4")
-            .text("native-core-intrinsics-2");
-        for (name, source) in host.tables.native_helpers.iter() {
-            fingerprint.text(name).text(source);
-        }
-        // `--macro-core real` runs macros on another cljs.core
-        // (light-cljs-648): never serve the port's artifacts to it, nor
-        // its to the port. The port's identity is unchanged.
-        if host.evaluator_options.macro_core == crate::evaluator::MacroCore::Real {
-            fingerprint.text("macro-core-real");
-        }
-        return fingerprint.finish();
-    }
     #[cfg(light_v8)]
     if !host.tables.interactive {
         fingerprint.text("v8").text(v8::V8::get_version());
@@ -1309,44 +1288,6 @@ pub fn inputs_unchanged<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[cfg(feature = "bbp-macros")]
-    #[test]
-    fn native_helpers_change_the_compiler_identity() {
-        let mut host = MacroHost::new();
-        host.use_native_macros();
-        let empty = compiler_identity(&host);
-        host.preload_native_helper("cljs.user/helper", "(fn [x] x)")
-            .unwrap();
-        let first = compiler_identity(&host);
-        assert_ne!(empty, first);
-        host.preload_native_helper("cljs.user/helper", "(fn [x] (list '+ x 1))")
-            .unwrap();
-        assert_ne!(first, compiler_identity(&host));
-    }
-
-    /// `--macro-core` is part of the Pants build's compiler identity
-    /// (light-cljs-648); the port's is what it was before the option.
-    #[cfg(feature = "bbp-macros")]
-    #[test]
-    fn the_macro_core_changes_the_compiler_identity() {
-        use crate::evaluator::MacroCore;
-        let mut host = MacroHost::new();
-        host.use_native_macros();
-        host.evaluator_options.macro_core = MacroCore::Port;
-        let port = compiler_identity(&host);
-        host.evaluator_options.macro_core = MacroCore::Real;
-        assert_ne!(port, compiler_identity(&host));
-        let mut fingerprint = Fingerprint::new("light-cljs compiler");
-        fingerprint
-            .digest(&build_identity())
-            .number(u64::from(crate::artifact_codec::SCHEMA_VERSION))
-            .digest(&crate::artifact_codec::core_table())
-            .text("big-boy-pants-js")
-            .text("native-forms-4")
-            .text("native-core-intrinsics-2");
-        assert_eq!(port, fingerprint.finish());
-    }
 
     #[test]
     fn the_macro_engine_is_part_of_the_compiler_identity() {

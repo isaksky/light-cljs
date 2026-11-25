@@ -374,13 +374,6 @@ pub(crate) struct DeferredUnit {
 }
 
 impl DeferredUnit {
-    #[cfg(feature = "bbp-macros")]
-    pub(crate) fn prepare_native(program: &Program, replaced: &[&'static str]) -> Self {
-        Self {
-            source: emit_native_macro_unit(program, true, replaced),
-            tables: crate::reader_registration::ReaderTables::of(program),
-        }
-    }
     pub(crate) fn prepare(program: &Program) -> Self {
         Self {
             source: emit_deferred_unit(program),
@@ -432,33 +425,6 @@ pub(crate) fn emit_deferred_unit(program: &Program) -> String {
         ..Default::default()
     };
     emit_unit_parts(program, true, Some(&mut registration))
-}
-
-/// Native input scalars retain occurrence identity in form operations, and
-/// unwrap at truth tests and explicit JavaScript interop boundaries.
-#[cfg(feature = "bbp-macros")]
-pub(crate) fn emit_native_macro_unit(
-    program: &Program,
-    deferred: bool,
-    replaced: &[&'static str],
-) -> String {
-    let mut registration = NamespaceRegistration {
-        deferred,
-        ..Default::default()
-    };
-    emit_js_mode(
-        program,
-        Some(UNIT_RUNTIME),
-        deferred,
-        None,
-        None,
-        false,
-        false,
-        deferred.then_some(&mut registration),
-        true,
-        replaced,
-    )
-    .0
 }
 
 /// The statements registering the namespaces of `tables` that `plan`
@@ -534,10 +500,6 @@ mod deferred_storage_tests {
                         .position(|e| matches!(e.kind, ExprKind::Reify { .. }))
                         .unwrap(),
                 );
-                #[cfg(feature = "bbp-macros")]
-                if engine.native_forms() {
-                    return emit_native_macro_unit(&program, deferred, &[]);
-                }
                 if deferred {
                     emit_deferred_unit(&program)
                 } else {
@@ -594,147 +556,6 @@ mod deferred_storage_tests {
                 )
                 .unwrap();
             engine.release(value).unwrap();
-        }
-    }
-
-    #[cfg(feature = "bbp-macros")]
-    #[test]
-    fn discarded_named_dispatchers_do_not_hoist_or_leak_their_names() {
-        use crate::evaluator::{EvaluatorOptions, MacroEvaluator};
-
-        for function in [
-            "(fn discarded ([] discarded) ([x] x))",
-            "(fn discarded [& xs] discarded)",
-            "(fn discarded ([] discarded) ([x & xs] x))",
-        ] {
-            let source = format!(
-                r#"((fn []
-                  (js* "(() => {{ if (typeof discarded_binding !== 'undefined') throw new Error('hoisted'); }})()")
-                  {function}
-                  (js* "(() => {{ if (typeof discarded_binding !== 'undefined') throw new Error('leaked'); }})()")))"#,
-            );
-            let program = crate::analyze(&source, &crate::parse(&source).unwrap()).unwrap();
-            let name = program
-                .locals
-                .iter()
-                .position(|local| local.name == "discarded")
-                .unwrap();
-            // Install probes after emission, so raw-JS hygiene does not rename
-            // the generated binding away from the name under inspection.
-            let probe = |code: String| {
-                let original = format!("l{name}");
-                let suffix = format!("_{original}");
-                let binding = code
-                    .split(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '$')
-                    .find(|word| *word == original || word.ends_with(&suffix))
-                    .unwrap();
-                code.replace("discarded_binding", binding)
-            };
-            #[cfg(feature = "quickjs")]
-            {
-                let legacy = crate::evaluator::Evaluator::new(EvaluatorOptions::default()).unwrap();
-                let result = legacy
-                    .evaluate_unit(&probe(emit_js_unit(&program)))
-                    .unwrap();
-                legacy.release(result).unwrap();
-            }
-            let native =
-                crate::bbp_evaluator::BbpEvaluator::new(EvaluatorOptions::default()).unwrap();
-            let result = native
-                .evaluate_unit(&probe(emit_native_macro_unit(&program, false, &[])))
-                .unwrap_or_else(|error| panic!("{function}: {error}"));
-            native.release(result).unwrap();
-        }
-    }
-
-    /// A member store demands its receiver's declarations only in a unit with
-    /// demand roots, as a member read does, and evaluates its receiver and
-    /// value once, in that order.
-    #[cfg(feature = "bbp-macros")]
-    #[test]
-    fn native_member_store_demands_only_in_deferred_units() {
-        use crate::evaluator::{EvaluatorOptions, MacroEvaluator};
-
-        let source = r#"(let [seen (array) o (js-obj)]
-          (set! (.-x (do (js* "~{}.push('receiver')" seen) o)) (do (js* "~{}.push('value')" seen) 1))
-          (js* "(() => { if (~{}.join() !== 'receiver,value' || ~{}.x !== 1) throw new Error('store'); })()" seen o))"#;
-        let program = crate::analyze(source, &crate::parse(source).unwrap()).unwrap();
-        let plain = emit_native_macro_unit(&program, false, &[]);
-        let deferred = emit_native_macro_unit(&program, true, &[]);
-        let demands = |unit: &str| unit.matches("declarationReceiver").count();
-        assert_eq!(demands(&plain), 0, "{plain}");
-        assert_eq!(demands(&deferred), 1, "{deferred}");
-        let native = crate::bbp_evaluator::BbpEvaluator::new(EvaluatorOptions::default()).unwrap();
-        let result = native.evaluate_unit(&plain).unwrap();
-        native.release(result).unwrap();
-    }
-
-    #[cfg(feature = "bbp-macros")]
-    #[test]
-    fn native_preparation_reads_only_the_unit_and_its_definition_time_metadata() {
-        let reify_heavy = format!(
-            "(let [x 41] [{}])",
-            std::iter::repeat_n("(reify Object (toString [this] (str x)))", 32)
-                .collect::<Vec<_>>()
-                .join(" ")
-        );
-        for source in [
-            "(var marker)",
-            "(even? 2)",
-            "(-add-method nil :default (fn [x] (even? x)))",
-            "(let [saved even?] (set! (.-call cljs.core/even?) saved)
-               (binding [cljs.core/even? saved] (even? 2)))",
-            "(deftype T [x] Object (toString [this] (str x)))",
-            "(let [x 41] (do x (+ x 1)))",
-            "(let [x 41] (reify Object (toString [this] (str x))))",
-            &reify_heavy,
-        ] {
-            let source = format!("(def ^{{:doc \"definition-time\"}} marker 1) {source}");
-            let mut program = crate::analyze(&source, &crate::parse(&source).unwrap()).unwrap();
-            program.freeze();
-            // A source index may disable core caching because another unit,
-            // including a later one, writes this binding.
-            let replaced = [crate::CoreFnId::IsEven.runtime_name()];
-            let (expected, expected_reads) =
-                crate::arena::count_reads(|| DeferredUnit::prepare_native(&program, &replaced));
-            assert!(expected_reads > 0);
-            assert!(!expected.code().contains("nativeCore$isEven"));
-            for batches in [8, 64] {
-                let mut growing = program.clone();
-                let entry = growing.exprs[0].clone();
-                let binding = growing.globals[0].clone();
-                for batch in 0..batches {
-                    for offset in 0..64 {
-                        let mut unrelated = entry.clone();
-                        unrelated.kind = ExprKind::Number((batch * 64 + offset) as f64);
-                        growing.exprs.push(unrelated);
-                        let mut unrelated = binding.clone();
-                        unrelated.name = format!("unrelated{batch}_{offset}");
-                        growing.globals.push(unrelated);
-                    }
-                    growing.freeze();
-                }
-                // The unit comes after the frozen catalog. Its dependencies
-                // (including metadata) may still live inside that prefix.
-                let root = ExprId(growing.exprs.len());
-                growing.exprs.push(program.exprs[program.root.0].clone());
-                let snapshot = crate::program_fragment::expression_snapshot(&mut growing, root);
-                // Writes after the frontier must not change the unit's metadata
-                // or the reader tables it retains when its IR is released.
-                let metadata = growing.globals[0].metadata.take().unwrap();
-                growing.exprs[metadata.0].kind = ExprKind::Nil;
-                growing.globals[0].name = "later-name".into();
-                let (prepared, reads) = crate::arena::count_reads(|| {
-                    DeferredUnit::prepare_native(&snapshot, &replaced)
-                });
-                assert_eq!(prepared.code(), expected.code(), "{source}");
-                assert_eq!(prepared.tables().globals[0].name, "marker");
-                assert_eq!(prepared.tables().globals[0].metadata, Some(metadata));
-                assert_eq!(
-                    reads, expected_reads,
-                    "preparation revisited an unrelated frozen prefix ({batches} batches): {source}"
-                );
-            }
         }
     }
 
@@ -3825,7 +3646,11 @@ impl<'a, 's> Emitter<'a, 's> {
                 Some("hostExtEscaped")
             } else if matches!(
                 name.binding,
-                "seqProtocol" | "firstProtocol" | "restProtocol" | "nextProtocol" | "reduceProtocol"
+                "seqProtocol"
+                    | "firstProtocol"
+                    | "restProtocol"
+                    | "nextProtocol"
+                    | "reduceProtocol"
             ) {
                 Some("hostExtSeqEscaped")
             } else if name.binding == "prWriter" {

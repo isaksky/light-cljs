@@ -1812,7 +1812,7 @@ fn doseq_pairs(bindings: &Datum) -> Option<&[Datum]> {
 /// form's first item and so the forms that nest deepest before the items
 /// that follow them, so that it refuses the expansion of these pairs, down
 /// to a level past [`DEPTH`], where it refuses the whole.
-#[cfg(any(feature = "bbp-macros", all(test, light_v8)))]
+#[cfg(all(test, light_v8))]
 fn deep_pairs(pairs: &[Datum]) -> &[Datum] {
     &pairs[..pairs.len().min(2 * (DEPTH + 2))]
 }
@@ -1871,7 +1871,7 @@ fn sequence_doseq(
 /// at each binding, which differ only in names, are one shared subtree and
 /// the shape takes room in its pairs rather than in its expansion's size;
 /// and the pieces of its lists that splice.
-#[cfg(any(feature = "bbp-macros", all(test, light_v8)))]
+#[cfg(all(test, light_v8))]
 fn doseq_shape(bindings: &Datum, body: &[Datum]) -> Option<(Datum, Pieces)> {
     let exprs = deep_pairs(doseq_pairs(bindings)?);
     let mut names = Names {
@@ -2125,10 +2125,7 @@ fn within(datum: &Datum, room: usize) -> Option<usize> {
 /// lazy sequences, which the engine's conversion back realizes and
 /// charges, follow from its pieces ([`quoted_steps`]).
 #[derive(Clone, Copy, Debug)]
-#[cfg_attr(
-    not(any(feature = "bbp-macros", all(test, light_v8))),
-    allow(dead_code)
-)]
+#[cfg_attr(not(all(test, light_v8)), allow(dead_code))]
 enum Piece {
     /// `~x`, or a form: one item.
     One,
@@ -2155,7 +2152,7 @@ enum Piece {
 /// a piece after the second behind one more for each piece it passed into
 /// on its way; the end is behind one, and one for each piece after the
 /// last item.
-#[cfg(any(feature = "bbp-macros", all(test, light_v8)))]
+#[cfg(all(test, light_v8))]
 fn quoted_steps(pieces: &[Piece]) -> (Vec<u32>, u32) {
     let length = |piece: &Piece| match *piece {
         Piece::One => 1,
@@ -2194,11 +2191,11 @@ fn quoted_steps(pieces: &[Piece]) -> (Vec<u32>, u32) {
 
 /// How the engine holds the lists of a form it converts back, which
 /// decides what reading them charges beyond their nodes.
-#[cfg(any(feature = "bbp-macros", all(test, light_v8)))]
+#[cfg(all(test, light_v8))]
 #[derive(Clone, Copy)]
 enum Lists<'a> {
     /// Uncounted: what the conversion charges for the nodes alone.
-    #[cfg_attr(not(feature = "bbp-macros"), allow(dead_code))]
+    #[allow(dead_code)]
     Nodes,
     /// Decoded from compiler data, as a call is: each item takes a step,
     /// and the end one more.
@@ -2214,7 +2211,7 @@ enum Lists<'a> {
 }
 
 /// Why an emulated conversion stops.
-#[cfg(any(feature = "bbp-macros", all(test, light_v8)))]
+#[cfg(all(test, light_v8))]
 #[derive(Debug, PartialEq)]
 enum Stop {
     /// What the engine's conversion refuses, and where, as it reports it.
@@ -2234,12 +2231,12 @@ enum Stop {
 /// `lazy realization failure`, at the path of the node or the list), a
 /// node deeper than [`DEPTH`] (`depth limit`), and a missing argument
 /// (`undefined`, [`MISSING`]).
-#[cfg(any(feature = "bbp-macros", all(test, light_v8)))]
+#[cfg(all(test, light_v8))]
 struct Conversion<'a> {
     remaining: usize,
     lists: Lists<'a>,
 }
-#[cfg(any(feature = "bbp-macros", all(test, light_v8)))]
+#[cfg(all(test, light_v8))]
 impl Conversion<'_> {
     /// What converting `datum` refuses under the node limit `nodes`, if
     /// anything.
@@ -2377,7 +2374,7 @@ impl Conversion<'_> {
 /// it compares them by value, or two `NaN`s. Numbers it compares as
 /// numbers (`1` and `1.0`, `0` and `-0.0` are one key), characters and
 /// strings as strings, symbols by name.
-#[cfg(any(feature = "bbp-macros", all(test, light_v8)))]
+#[cfg(all(test, light_v8))]
 fn engine_entries(children: &[Datum], map: bool) -> Option<Vec<(&Datum, Option<&Datum>)>> {
     #[derive(PartialEq, Eq, Hash)]
     enum Key {
@@ -2427,7 +2424,7 @@ fn engine_entries(children: &[Datum], map: bool) -> Option<Vec<(&Datum, Option<&
 /// natively past the name budget ([`expand_wide_doseq`]), byte for byte as
 /// the V8 build does (light-cljs-620). One of more pairs than conversion
 /// levels never converts ([`deep_pairs`]).
-#[cfg(any(feature = "bbp-macros", all(test, light_v8)))]
+#[cfg(all(test, light_v8))]
 fn wide_sequence(name: &str, call: &Datum, nodes: usize) -> Result<(), Stop> {
     let args = children(call).get(1..).unwrap_or_default();
     let Some((bindings, body)) = args.split_first() else {
@@ -2466,27 +2463,6 @@ fn wide_sequence(name: &str, call: &Datum, nodes: usize) -> Result<(), Stop> {
         return Err(Stop::Unknown);
     }
     converted
-}
-
-/// On the Pants build, the expansion of the `doseq` call `call` that
-/// [`expand`] declines for the names it would allocate where
-/// [`wide_sequence`] finds that the V8 build's engine converts it back under
-/// the node limit `nodes`, with no budget of names; `None` otherwise.
-#[cfg(feature = "bbp-macros")]
-fn expand_wide_doseq(
-    call: &Datum,
-    nodes: usize,
-    gensym: Gensym<'_>,
-) -> Result<Option<Datum>, String> {
-    // The engine fails decoding a regular expression that does not
-    // compile ([`rejection`]), before it converts anything back.
-    if crate::compiler_bootstrap::invalid_regex(call).is_some()
-        || wide_sequence("doseq", call, nodes).is_err()
-    {
-        return Ok(None);
-    }
-    let args = &children(call)[1..];
-    sequence_doseq(&args[0], &args[1..], gensym, false)
 }
 
 /// The names the compile-time runtime's `gensym` gives, one for each of
@@ -2533,13 +2509,6 @@ pub(crate) fn native_expansion(
     };
     let expanded = expand(name, call, namespace, &mut stand_ins).ok()?;
     // As [`crate::MacroHost::expand_core_native`] expands it.
-    #[cfg(feature = "bbp-macros")]
-    let expanded = match expanded {
-        None if native_backend && name == "doseq" => {
-            expand_wide_doseq(call, nodes, &mut stand_ins).ok()?
-        }
-        expanded => expanded,
-    };
     let expanded = expanded?;
     within(&expanded, expansion_room(native_backend))?;
     Some(expanded)
@@ -2555,197 +2524,11 @@ fn expansion_room(native_backend: bool) -> usize {
 
 /// What stands for an argument the call of a core macro leaves out, which
 /// its definition receives as `undefined`: a symbol no source spells.
-#[cfg(any(feature = "bbp-macros", all(test, light_v8)))]
+#[cfg(all(test, light_v8))]
 const MISSING: &str = "\u{0}undefined";
-
-/// Why the definition of the core macro `name` fails on the call `call`,
-/// which [`expand`] declines, as the engine running it reports that, or
-/// `None` where this module cannot tell (light-cljs-611). The Pants build,
-/// which runs no definition, reports it instead
-/// ([`crate::MacroHost::expand_core_javascript`]), as the V8 build's engine
-/// does: the engine's conversion of a call deeper than [`DEPTH`] or larger
-/// than `nodes`, a regular expression of the call that does not compile,
-/// and what its snapshot of the call refuses ([`Conversion`]);
-/// a definition's own error, an arity error of `if-not`, the
-/// one of its two arities, or the `pop` of `for` on an empty vector; and
-/// what the engine's conversion of the expansion refuses, a missing
-/// argument (`undefined`), the depth or the node limit, at the path of the
-/// first node it refuses, found in the expansion built with [`MISSING`]
-/// for each missing argument, or, for a `doseq` past the native name
-/// budget, or a `for` or `doseq` of more pairs than conversion levels,
-/// also a step of a sequence ([`wide_sequence`]).
-#[cfg(feature = "bbp-macros")]
-pub(crate) fn rejection(name: &str, call: &Datum, namespace: &str, nodes: usize) -> Option<String> {
-    if within(call, DEPTH).is_none_or(|count| count > nodes) {
-        return Some("compiler input conversion limit".into());
-    }
-    // Decoding the call constructs its regular expressions.
-    if let Some(error) = crate::compiler_bootstrap::invalid_regex(call) {
-        return Some(error);
-    }
-    let refused = |stop| match stop {
-        Err(Stop::Refused(refusal)) => Some(format!("Error: Unsupported macro result {refusal}")),
-        _ => None,
-    };
-    if let Some(refusal) = refused(Conversion::run(call, nodes, Lists::Decoded)) {
-        return Some(refusal);
-    }
-    let args = children(call).get(1..)?;
-    let error = |message: &str| Some(format!("Error: {message}"));
-    let is_map = |datum: &Datum| {
-        matches!(
-            datum.kind(),
-            DatumKind::Collection {
-                kind: CollectionKind::Map,
-                ..
-            }
-        )
-    };
-    let even_bindings = |what: &str| {
-        let valid = args
-            .first()
-            .is_some_and(|b| is_vector(b) && children(b).len().is_multiple_of(2));
-        (!valid).then(|| {
-            format!(
-                "Error: Assert failed: {what} requires an even binding vector\n(and (vector? seq-exprs) (even? (count seq-exprs)))"
-            )
-        })
-    };
-    // The definitions' own checks, in the order they make them.
-    let checked = match name {
-        "js-fn?" if args.len() != 1 => error("js-fn? requires one argument"),
-        "js-comment" if !matches!(args.first().map(Datum::kind), Some(DatumKind::String(_))) => {
-            error("js-comment requires a string")
-        }
-        "if-not" if !matches!(args.len(), 2 | 3) => {
-            error(&format!("Invalid arity: {}", args.len() + 2))
-        }
-        "if-let" | "if-some" | "when-let" | "when-some" | "when-first" => match args.first() {
-            Some(bindings) if is_vector(bindings) && children(bindings).len() == 2 => None,
-            Some(bindings) if is_vector(bindings) => {
-                error("conditional binding requires exactly two forms")
-            }
-            _ => error("conditional binding requires a vector"),
-        },
-        "cond" if args.len() % 2 == 1 => error("cond requires an even number of forms"),
-        "dotimes" => match args.first() {
-            Some(bindings) if is_vector(bindings) && children(bindings).len() == 2 => None,
-            Some(bindings) if is_vector(bindings) => {
-                error("dotimes requires exactly two binding forms")
-            }
-            _ => error("iteration bindings must be a vector"),
-        },
-        "cond->" | "cond->>" if args.len() % 2 == 0 => {
-            error("conditional threading requires test/step pairs")
-        }
-        "selector" => match args.first() {
-            Some(map) if is_map(map) => {
-                let entries = map.entries().ok()?;
-                let present = ["select", "excess", "missing", "all"].iter().any(|d| {
-                    entries.iter().any(|(key, value)| {
-                        is_keyword(key, d)
-                            && !matches!(value.kind(), DatumKind::Nil | DatumKind::Boolean(false))
-                    })
-                });
-                (!present).then(|| {
-                    "Error: form must contain at least one of :select :excess :missing :all"
-                        .to_owned()
-                })
-            }
-            _ => error("expected a map"),
-        },
-        "simple-benchmark" if args.len() > 3 && args.len() % 2 == 0 => {
-            let key = String::from_utf16(&printed(args.last()?)?).ok()?;
-            error(&format!("No value supplied for key: {key}"))
-        }
-        "defmulti" => {
-            let mut rest = args.get(1..).unwrap_or_default();
-            // The engine's `string?` holds for a character too.
-            if matches!(
-                rest.first().map(Datum::kind),
-                Some(DatumKind::String(_) | DatumKind::Character(_))
-            ) {
-                rest = &rest[1..];
-            }
-            if rest.first().is_some_and(is_map) {
-                rest = &rest[1..];
-            }
-            let options = rest.get(1..).unwrap_or_default();
-            if !matches!(args.first().map(Datum::kind), Some(DatumKind::Symbol(_))) {
-                error("defmulti requires a symbol name")
-            } else if rest.is_empty() {
-                error("defmulti requires a dispatch function")
-            } else if options.len() % 2 == 1 {
-                error("defmulti requires keyword/value option pairs")
-            } else if options
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .any(|[key, _]| !is_keyword(key, "default") && !is_keyword(key, "hierarchy"))
-            {
-                error("Unsupported defmulti option")
-            } else {
-                None
-            }
-        }
-        // Both build the innermost binding first and a binding's modifiers
-        // last first, so the last invalid keyword is the one they reject.
-        "for" | "doseq" => even_bindings(name).or_else(|| {
-            let pairs = children(&args[0]).as_chunks::<2>().0;
-            let keyword = |key: &Datum| matches!(key.kind(), DatumKind::Keyword(_));
-            if name == "for" && pairs.first().is_some_and(|[key, _]| keyword(key)) {
-                return error("Can't pop empty vector");
-            }
-            let [key, _] = pairs
-                .iter()
-                .rfind(|[key, _]| keyword(key) && modifier(key).is_none())?;
-            let key = String::from_utf16(&printed(key)?).ok()?;
-            error(&if name == "for" {
-                format!("Invalid 'for' keyword {key}")
-            } else {
-                format!("Invalid 'doseq' keyword{key}")
-            })
-        }),
-        _ => None,
-    };
-    if checked.is_some() {
-        return checked;
-    }
-    // A `doseq` that native expansion declines for its names or pairs, or
-    // a `for` for its pairs.
-    let deep = || children(&args[0]).len() / 2 > DEPTH;
-    if name == "doseq" || name == "for" && deep() {
-        return refused(wide_sequence(name, call, nodes));
-    }
-    // The positional parameters each definition binds before its rest.
-    let positional = match name {
-        "when" | "when-not" | "->" | "->>" | "cond->" | "cond->>" | "some->" | "some->>"
-        | "case" | "while" | "dotimes" | "doto" | "memfn" | "js-comment" | "locking" | "time"
-        | "with-in-str" | "when-let" | "when-some" | "when-first" | "doseq" | "defmulti" => 1,
-        "if-let" | "if-some" | "as->" | "vswap!" | ".." | "defmethod" | "condp" | "for" => 2,
-        "unchecked-max" | "unchecked-min" if args.is_empty() => 2,
-        "simple-benchmark" => 3,
-        "amap" => 4,
-        "areduce" => 5,
-        _ => 0,
-    };
-    let mut padded = children(call).to_vec();
-    padded.resize(padded.len().max(positional + 1), symbol(MISSING));
-    let padded = list(padded);
-    let mut stand_ins = |prefixes: &[&str]| -> Result<Vec<Datum>, String> {
-        Ok(prefixes
-            .iter()
-            .map(|prefix| symbol(&crate::generated_names::stand_in(prefix)))
-            .collect())
-    };
-    let expanded = expand(name, &padded, namespace, &mut stand_ins).ok()??;
-    // The engine's conversion of the expansion, in its order.
-    refused(Conversion::run(&expanded, nodes, Lists::Nodes))
-}
 
 /// How a build without the Pants build's runtime would name what it
 /// allocates outside every scope, which it never does.
-#[cfg(not(feature = "bbp-macros"))]
 type UnscopedGensyms = fn(&Datum, &[&str]) -> Result<Vec<String>, String>;
 
 impl crate::MacroHost {
@@ -2774,7 +2557,6 @@ impl crate::MacroHost {
         if !scoped && !self.native_macro_backend() {
             return Ok(None);
         }
-        #[cfg(not(feature = "bbp-macros"))]
         let _ = engine;
         let call = form.data();
         // A call the engine's conversion refuses, too deep or larger than the
@@ -2794,14 +2576,7 @@ impl crate::MacroHost {
             self.note_node_room(crate::macro_host::WorkMarks::nodes(&call));
         }
         // Outside every scope, the runtime's `gensym` numbers the names.
-        #[cfg(feature = "bbp-macros")]
-        let mut unscoped = if scoped {
-            None
-        } else {
-            Some(self.unscoped_gensyms(name, engine)?)
-        };
         // Other engines expand no call outside every scope here.
-        #[cfg(not(feature = "bbp-macros"))]
         let mut unscoped: Option<UnscopedGensyms> = None;
         let mut decoded = false;
         let expanded = {
@@ -2818,22 +2593,6 @@ impl crate::MacroHost {
             let expanded = expand(name, &call, namespace, &mut gensym)?;
             // Past the name budget the V8 build's engine expands a `doseq`
             // its conversion takes back; the Pants build expands it here.
-            #[cfg(feature = "bbp-macros")]
-            let expanded = match expanded {
-                None if name == "doseq" && self.native_macro_backend() => {
-                    expand_wide_doseq(&call, self.limits.generated_nodes, &mut gensym)?
-                }
-                expanded => expanded,
-            };
-            expanded
-        };
-        #[cfg(feature = "bbp-macros")]
-        let expanded = if expanded.is_none() && name == "defmulti" && self.native_macro_backend() {
-            match children(&call).get(1..).and_then(|args| args.split_first()) {
-                Some((name, declarations)) => defmulti::<true>(name, declarations, namespace)?,
-                None => None,
-            }
-        } else {
             expanded
         };
         // A call that allocated no name still joins its names to those the
@@ -3281,45 +3040,6 @@ mod tests {
         ]);
     }
 
-    #[cfg(all(feature = "bbp-macros", light_quickjs))]
-    #[test]
-    fn wide_js_obj_bootstrap_preserves_forms_names_and_provenance() {
-        let mut legacy = MacroHost::new();
-        let mut native = MacroHost::new();
-        native.use_native_macros();
-        let environment = C.map(&[]).unwrap();
-        for source in [
-            r#"(js-obj ^:first k ^:discarded [0] "a" ^:a [1] "b" [2] "c" [3] "d" [4] "e" [5] "f" [6] "g" [7] "h" [8] ^:last k ^:kept [9])"#,
-            r#"(js-obj ^:first [1 2] :discarded "a" 1 "b" 2 "c" 3 "d" 4 "e" 5 "f" 6 "g" 7 "h" 8 ^:last (1 2) :kept)"#,
-            r#"(js-obj (str "key") ^:value [0] :keyword 1 nil 2 false 3 1 4 1.0 5 "Aa" 6 "BB" 7 "\uD800" 8 "😀" 9)"#,
-        ] {
-            let text = Source::new("wide-js-obj.cljs", source);
-            let call = legacy.read_compiler_form(&text).unwrap().unwrap();
-            let expand = |host: &mut MacroHost| {
-                let _names = crate::generated_names::enter_namespace(7);
-                host.expand_core_javascript("js-obj", &call, &environment, None)
-                    .unwrap()
-            };
-            let expected = expand(&mut legacy);
-            let actual = expand(&mut native);
-            assert!(actual.data().value_eq(&expected.data()), "{source}");
-            // Native occurrences retain the first stored key exactly. The
-            // legacy bridge instead gives repeated primitive children the
-            // last equal primitive's span, so compare their data above and
-            // check native provenance against the input occurrence itself.
-            let key = &call.children()[1];
-            let mut pending = vec![actual];
-            let reused = loop {
-                let form = pending.pop().expect("first key must survive");
-                if form.data().identity() == key.data().identity() {
-                    break form;
-                }
-                pending.extend(form.children());
-            };
-            assert_eq!(difference(&reused, key, ""), None, "{source}");
-        }
-    }
-
     // Compares with the core macro's bootstrap definition, which only QuickJS or V8 runs.
     #[cfg(any(light_quickjs, light_v8))]
     #[test]
@@ -3345,153 +3065,6 @@ mod tests {
             "(defmulti area \\a :default :x)",
             "~(defmulti area \\a :shape)",
         ]);
-    }
-
-    #[cfg(all(feature = "bbp-macros", light_quickjs))]
-    #[test]
-    fn native_defmulti_merges_small_keyword_metadata_as_its_definition() {
-        let mut legacy = MacroHost::new();
-        let mut native = MacroHost::new();
-        native.use_native_macros();
-        let environment = C
-            .map(&[(
-                C.keyword(Name::new(None, "ns")),
-                C.map(&[(C.keyword(Name::new(None, "name")), symbol("user"))])
-                    .unwrap(),
-            )])
-            .unwrap();
-        for (source, nested_metadata) in [
-            (
-                r#"(defmulti ^:private render-at-rule "Render a CSS at-rule" :identifier)"#,
-                false,
-            ),
-            (
-                r#"(defmulti ^{:doc "old" :private true} area "new" {:doc "attributes" :tag Result} :shape)"#,
-                false,
-            ),
-            (
-                r#"(defmulti ^{:private true :tag First} area {:private false :tag Second} :shape :default :none)"#,
-                false,
-            ),
-            (r#"(defmulti ^{:private true} area "doc" identity)"#, true),
-            (r#"(defmulti ^{} area {:private true} identity)"#, true),
-            (
-                r#"(defmulti ^{:private true :doc "old"} area ^{:ignored true} {:private false} identity)"#,
-                true,
-            ),
-        ] {
-            let text = Source::new("defmulti.cljs", source);
-            let mut call = legacy.read_compiler_form(&text).unwrap().unwrap();
-            if nested_metadata {
-                // Macro-generated metadata maps can carry metadata of their
-                // own even though the reader rejects this nested ^ syntax.
-                let mut parts = call.data().elements().unwrap();
-                let marker = C
-                    .map(&[(C.keyword(Name::new(None, "marker")), C.boolean(true))])
-                    .unwrap();
-                let metadata = parts[1].metadata().unwrap().with_metadata(marker);
-                parts[1] = parts[1].with_metadata(metadata);
-                call = Form::from_data(
-                    list(parts),
-                    call.span(),
-                    crate::compiler_data::Origin::Source,
-                );
-            }
-            let expected = legacy
-                .expand_core_javascript("defmulti", &call, &environment, None)
-                .unwrap();
-            let _names = crate::generated_names::enter_namespace(7);
-            let actual = native
-                .expand_core_native(
-                    "defmulti",
-                    &call,
-                    "user",
-                    ("defmulti", &(0..source.len())),
-                    None,
-                )
-                .unwrap()
-                .expect("native metadata merge");
-            assert_eq!(difference(&actual, &expected, ""), None, "{source}");
-        }
-    }
-
-    #[cfg(feature = "bbp-macros")]
-    #[test]
-    fn native_defmulti_declines_wide_name_metadata() {
-        for width in [8, 9, 10, 20_000] {
-            let metadata = C
-                .map(
-                    &(0..width)
-                        .map(|i| {
-                            (
-                                C.keyword(Name::new(None, &format!("k{i}"))),
-                                C.integer(i as i64),
-                            )
-                        })
-                        .collect::<Vec<_>>(),
-                )
-                .unwrap();
-            let name = symbol("area").with_metadata(metadata);
-            // Updating a key in an eight-entry map stays native; inserting
-            // a ninth key (including :doc) must leave promotion to bootstrap.
-            let override_key = C
-                .map(&[(C.keyword(Name::new(None, "k0")), C.boolean(true))])
-                .unwrap();
-            let override_call = [override_key, symbol("identity")];
-            let doc_call = [
-                C.string("doc".encode_utf16().collect::<Vec<_>>()),
-                symbol("identity"),
-            ];
-            let actual = defmulti::<true>(&name, &override_call, "user").unwrap();
-            assert_eq!(actual.is_some(), width == 8, "{width} keys, override");
-            assert!(
-                defmulti::<true>(&name, &doc_call, "user")
-                    .unwrap()
-                    .is_none(),
-                "{width} keys, insert"
-            );
-            #[cfg(light_quickjs)]
-            if width <= 10 {
-                let mut legacy = MacroHost::new();
-                let environment = C
-                    .map(&[(
-                        C.keyword(Name::new(None, "ns")),
-                        C.map(&[(C.keyword(Name::new(None, "name")), symbol("user"))])
-                            .unwrap(),
-                    )])
-                    .unwrap();
-                for (declarations, native) in [(&override_call, actual), (&doc_call, None)] {
-                    let mut parts = vec![symbol("defmulti"), name.clone()];
-                    parts.extend_from_slice(declarations);
-                    let call = Form::from_data(
-                        list(parts),
-                        Source::new("wide-meta.cljs", "").span(0..0).unwrap(),
-                        crate::compiler_data::Origin::Source,
-                    );
-                    let expected = legacy
-                        .expand_core_javascript("defmulti", &call, &environment, None)
-                        .unwrap();
-                    if let Some(native) = native {
-                        let actual = Form::from_expansion(
-                            native,
-                            &call,
-                            Name::new(Some("cljs.core"), "defmulti"),
-                        );
-                        assert_eq!(difference(&actual, &expected, ""), None, "{width} keys");
-                    } else {
-                        assert!(
-                            expected.data().elements().unwrap()[1]
-                                .metadata()
-                                .unwrap()
-                                .entries()
-                                .unwrap()
-                                .len()
-                                >= width
-                        );
-                    }
-                }
-            }
-        }
     }
 
     #[test]
@@ -3603,97 +3176,6 @@ mod tests {
         compare_all(&readable);
     }
 
-    /// The failures of `sources`, core macro calls the native expansion
-    /// expands, through their bootstrap definitions
-    /// (src/compiler_core_macros.cljs, src/compiler_sequence_macros.cljs) on
-    /// the Pants build's real cljs.core (`--macro-core real`,
-    /// light-cljs-648): an error, or an expansion whose data is not the
-    /// native expansion's.
-    #[cfg(feature = "bbp-macros")]
-    fn real_core_definition_failures(sources: &[&str]) -> Vec<String> {
-        let mut host = MacroHost::new();
-        // The Pants build's engine in every feature combination: with V8 or
-        // QuickJS built in, the host would otherwise pick that engine, which
-        // ignores the core selection.
-        host.use_native_macros();
-        assert!(host.native_macro_backend());
-        host.evaluator_options.macro_core = crate::evaluator::MacroCore::Real;
-        // The real core boots in the session: seconds in a debug build.
-        host.evaluator_options.timeout = std::time::Duration::from_secs(600);
-        let environment = {
-            let key = |name| C.keyword(Name::new(None, name));
-            let namespace = C
-                .map(&[(key("name"), C.symbol(Name::new(None, "user")))])
-                .unwrap();
-            C.map(&[(key("ns"), namespace)]).unwrap()
-        };
-        let mut failures = Vec::new();
-        for source in sources {
-            let call = host
-                .read_compiler_form(&Source::new("native.cljs", *source))
-                .unwrap()
-                .unwrap();
-            let operator = call.children()[0].data();
-            let DatumKind::Symbol(operator) = operator.kind() else {
-                unreachable!()
-            };
-            let name = String::from_utf16_lossy(operator.name());
-            let script = {
-                let _names = crate::generated_names::enter_namespace(7);
-                host.expand_core_javascript(&name, &call, &environment, None)
-            };
-            let native = {
-                let _names = crate::generated_names::enter_namespace(7);
-                host.expand_core_native(&name, &call, "user", (&name, &(0..source.len())), None)
-                    .unwrap()
-                    .expect("a call the native expansion expands")
-            };
-            match script {
-                Err(e) => failures.push(format!("{source}: {e}")),
-                Ok(script) if !native.data().value_eq(&script.data()) => failures.push(format!(
-                    "{source}: native {:?}\nengine {:?}",
-                    native.data(),
-                    script.data()
-                )),
-                Ok(_) => {}
-            }
-        }
-        failures
-    }
-
-    /// With `--macro-core real` the Pants build runs the bootstrap
-    /// definitions of `doseq`, `when` and `lazy-cat` on the real cljs.core,
-    /// where the port lacked what they use (light-cljs-611's "bootstrap
-    /// macro" route), and they expand as the native expansion does.
-    #[cfg(feature = "bbp-macros")]
-    #[test]
-    fn bootstrap_definitions_expand_on_the_real_core() {
-        let failures = real_core_definition_failures(&[
-            "(doseq [x xs] (f x))",
-            "(doseq [x xs y ys :let [a 1] :when a :while b] (f x) (g y))",
-            "(when x a b)",
-            "(lazy-cat xs ys)",
-        ]);
-        assert!(failures.is_empty(), "{}", failures.join("\n"));
-    }
-
-    /// `for`'s definition partitions its binding vector, a form the bridge
-    /// imported, with the real `partition`, which reads the vector through
-    /// its occurrence and its count as a plain number (light-cljs-666, the
-    /// view of imported forms): `(defmacro m [xs] (count (partition 2 xs)))`
-    /// threw "cannot convert object to primitive value" on the real core
-    /// for `(m [1 2])` before it.
-    #[cfg(feature = "bbp-macros")]
-    #[test]
-    fn bootstrap_for_expands_on_the_real_core() {
-        let failures = real_core_definition_failures(&[
-            "(for [x xs] x)",
-            "(for [x xs y ys] [x y])",
-            "(for [x xs :let [a 1] :when (odd? x) :while (< x 9)] x)",
-        ]);
-        assert!(failures.is_empty(), "{}", failures.join("\n"));
-    }
-
     #[test]
     fn sequence_macros_expand_as_their_definitions() {
         compare_all(&[
@@ -3730,7 +3212,7 @@ mod tests {
     /// The keys a map decodes into are indexed, so a map of many keys
     /// takes time in proportion to them: 100,000 keys compared with each
     /// other one by one would take billions of comparisons.
-    #[cfg(any(feature = "bbp-macros", light_v8))]
+    #[cfg(light_v8)]
     #[test]
     fn engine_entries_large_primitive_maps_scale_linearly() {
         let keys = 100_000;

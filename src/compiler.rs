@@ -2772,9 +2772,6 @@ fn merge_namespace(
     Ok(Some(point))
 }
 
-#[cfg(feature = "bbp-macros")]
-#[path = "compiler_namespace_workers.rs"]
-mod namespace_workers;
 #[path = "parallel_top_level.rs"]
 mod parallel_top_level;
 
@@ -2799,11 +2796,6 @@ fn analyze_entry(
         #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
         perturbation,
     } = recorders;
-    if let Some(stats) = stats.as_deref_mut() {
-        stats.macro_core = macros
-            .native_macro_backend()
-            .then_some(macros.evaluator_options.macro_core);
-    }
     // V8 is initialized before this compilation starts a thread: the load
     // pool's now, the analysis workers' later.
     #[cfg(light_v8)]
@@ -2815,15 +2807,6 @@ fn analyze_entry(
     let reserve = reserve.or(cache_reservation.as_ref());
     // The cache captures each namespace it analyzes, to publish it.
     let capturing = capture.is_some() || cache.is_some();
-    // Investigative path until namespace metadata, failures, budgets and
-    // compiler services have passed the same production conformance tests.
-    let namespace_workers = cfg!(feature = "bbp-macros")
-        && macros.native_macro_backend()
-        && std::env::var_os("LIGHT_CLJS_NAMESPACE_WORKERS").is_some()
-        && !capturing
-        && manifest.is_none()
-        && install.is_none()
-        && blockers.is_empty();
     if let Some(reservation) = reserve {
         crate::generated_names::reserve(&reservation.to);
     }
@@ -2880,34 +2863,11 @@ fn analyze_entry(
     // The persistent cache's lookups and publications, outside `analysis`.
     let mut cache_time = Duration::ZERO;
     let mut analysis = NamespaceAnalysis::new(macros);
-    #[cfg(feature = "bbp-macros")]
-    if namespace_workers {
-        macros
-            .session_handle()
-            .unwrap()
-            .enable_namespace_publication()
-            .map_err(NamespaceCompileError::new)?;
-    }
-    #[cfg(feature = "bbp-macros")]
-    if let Some(session) = macros.session_handle() {
-        for file in &loader.ordered {
-            session
-                .shared()
-                .index_native_core_writes(&file.source, &file.syntax);
-        }
-    }
     analysis.begin_generated_names(names_start);
     // Each namespace's macro-free units may be analyzed on the pool.
     analysis.unit_slots = parse_slots(slots);
     if let Some(cache) = cache.as_deref_mut() {
         cache.set_slots(analysis.unit_slots);
-    }
-    // On the native backend, compile-time atom effects keep their `--jobs
-    // 1` order at every `--jobs` (light-cljs-480).
-    if macros.native_macro_backend()
-        && let Some(session) = macros.session_handle()
-    {
-        session.shared().lanes().enable();
     }
     #[cfg(any(debug_assertions, feature = "scheduling-stress"))]
     let fresh_isolates = perturbation.as_ref().is_some_and(|p| p.fresh_isolates);
@@ -2975,17 +2935,14 @@ fn analyze_entry(
     // adds them where it charges the unit, in unit order
     // (docs/compiler-concurrency.md, "As built (light-cljs-374)").
     let memory_limit = macros.evaluator_options.memory_limit;
-    let mut initial_environment =
-        (!namespace_workers && analysis.unit_slots.get() > 1).then(|| macros.environment());
+    let mut initial_environment = (analysis.unit_slots.get() > 1).then(|| macros.environment());
     let mut pool_started = false;
     let mut parallel_top: Option<parallel_top_level::ParallelTopLevel> = None;
     let parallel_recording = crate::macro_host::UnitRecording {
         observe: observations.is_some(),
         capture: capturing,
     };
-    let parallel_top_eligible = !namespace_workers
-        && !macros.native_macro_backend()
-        && !macros.tables.interactive
+    let parallel_top_eligible = !macros.tables.interactive
         && macros.engine.script_host.is_none()
         && install.is_none()
         && blockers.is_empty()
@@ -3003,15 +2960,13 @@ fn analyze_entry(
         ($at_index:expr) => {{
             if !pool_started {
                 pool_started = true;
-                if !namespace_workers
-                    && analysis.unit_slots.get() > 1
+                if analysis.unit_slots.get() > 1
                     && let Some(session) = macros.session_handle()
                 {
                     use crate::compilation_session::PoolEngines;
                     // V8 isolates, or in QuickJS-only builds QuickJS runtimes
                     // (light-cljs-436).
-                    let engines = if (macros.native_macro_backend()
-                        || cfg!(any(light_v8, light_quickjs)))
+                    let engines = if cfg!(any(light_v8, light_quickjs))
                         && macros.engine.script_host.is_none()
                         && !macros.tables.interactive
                     {
@@ -3028,21 +2983,17 @@ fn analyze_entry(
                     // The main isolate's reservation and as many workers' as the rest
                     // of the limit gives `WORKER_SHARE` each; with none, no worker has an
                     // engine.
-                    let isolates = if macros.native_macro_backend() {
-                        analysis.unit_slots.get()
-                    } else {
-                        crate::compilation_session::pool_isolate_count(
-                            memory_limit,
-                            analysis.unit_slots,
-                        )
-                    };
+                    let isolates = crate::compilation_session::pool_isolate_count(
+                        memory_limit,
+                        analysis.unit_slots,
+                    );
                     let engines = if isolates < 2 {
                         PoolEngines::None
                     } else {
                         engines
                     };
                     let mut resources = None;
-                    if engines != PoolEngines::None && !macros.native_macro_backend() {
+                    if engines != PoolEngines::None {
                         // Every isolate installs the bootstrap units: they are compiled
                         // before the build's deadline starts (light-cljs-378).
                         crate::compiler_bootstrap::prepare(macros)
@@ -3098,7 +3049,7 @@ fn analyze_entry(
     }
     if cache.is_none() && install.is_none() {
         ensure_pool_started!(0);
-    } else if !namespace_workers && analysis.unit_slots.get() > 1 && !macros.tables.interactive {
+    } else if analysis.unit_slots.get() > 1 && !macros.tables.interactive {
         analysis.set_defer_registry(true);
     }
     // A cache blocker and its consumers keep their units on this thread's
@@ -3203,8 +3154,6 @@ fn analyze_entry(
             }
         }};
     }
-    #[cfg(feature = "bbp-macros")]
-    let mut namespace_results = std::collections::VecDeque::new();
     let looped = (|| -> Result<(), NamespaceCompileError> {
         loop {
             // Past the last source, the namespaces still waiting reach
@@ -3232,20 +3181,6 @@ fn analyze_entry(
                     parallel_recording,
                     |name| cache_ref.is_some_and(|c| c.has_candidates(name)),
                 );
-            }
-            #[cfg(feature = "bbp-macros")]
-            if namespace_workers && namespace_results.is_empty() && analysis.unit_slots.get() > 1 {
-                let end = namespace_workers::end(&loader.ordered, index, analysis.unit_slots.get());
-                if end > index + 1 {
-                    namespace_results = namespace_workers::run(
-                        &mut analysis,
-                        macros,
-                        &loader.ordered[index..end],
-                        index,
-                        entry_index,
-                        options,
-                    );
-                }
             }
             let mark = loader.ordered.len();
             {
@@ -3291,13 +3226,6 @@ fn analyze_entry(
             // an earlier compilation's replacement set. Reanalyze their source
             // when this compilation writes a cacheable core function, rather
             // than installing code specialized for that earlier context.
-            #[cfg(feature = "bbp-macros")]
-            let core_write = macros
-                .native_macro_backend()
-                .then(|| macros.session_handle())
-                .flatten()
-                .and_then(|session| session.shared().native_core_function_write());
-            #[cfg(not(feature = "bbp-macros"))]
             let core_write: Option<&str> = None;
             let native_core_writes = core_write.is_some();
             // Soundness barrier for mixed miss->hit builds (light-cljs-1103):
@@ -3632,29 +3560,6 @@ fn analyze_entry(
                             aliases: &file.aliases,
                             requires: &file.requires,
                         };
-                        #[cfg(feature = "bbp-macros")]
-                        let published = if let Some(result) = namespace_results.pop_front() {
-                            let mut completed = result?;
-                            let session = macros.session_handle().unwrap();
-                            session
-                                .publish_namespace_registrations(completed.registrations)
-                                .map_err(NamespaceCompileError::new)?;
-                            completed.publication.charge(macros).map_err(at)?;
-                            session
-                                .adopt_completed_namespace_units(
-                                    completed.publication.deferred_units(),
-                                    macros,
-                                )
-                                .map_err(NamespaceCompileError::new)?;
-                            macros
-                                .publish_namespace_metadata(&completed.metadata)
-                                .map_err(NamespaceCompileError::new)?;
-                            analysis.publish_namespace(completed.publication);
-                            true
-                        } else {
-                            false
-                        };
-                        #[cfg(not(feature = "bbp-macros"))]
                         let published = false;
                         let globals_before = analysis.globals_len();
                         if !published {
@@ -3891,10 +3796,6 @@ fn analyze_entry(
         stats.peak_macro_nodes = macros.engine.generated_nodes.get();
         stats.trace = recording.and_then(crate::compile_trace::Recording::finish);
         if let Some(session) = macros.session_handle() {
-            #[cfg(feature = "bbp-macros")]
-            {
-                stats.native_helpers = session.shared().native_counts();
-            }
             stats.lanes = session.shared().lanes().counts();
             stats.deferred_units = if stopped {
                 session.failed_unit_counts()
