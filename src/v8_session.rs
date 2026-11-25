@@ -3,7 +3,7 @@
 //! top of the macro evaluator's isolate, with QuickJS's interactive contract.
 use super::{Active, INITIAL_HEAP_LIMIT, State, V8Evaluator, bridge, invoke};
 use crate::{
-    compiler_data::{Datum, DatumKind},
+    compiler_data::{Datum, DatumKind, ExpansionOrigin, Form},
     eval_session::{HostCallback, Input},
     evaluator::{
         EvalError, EvaluatorOptions, ExecutionControl, HostArity, HostCall, HostScope,
@@ -20,6 +20,16 @@ pub(super) struct HostEntry {
     name: String,
     arity: HostArity,
     callback: HostCallback,
+}
+
+type ExpandForm = dyn Fn(ExecutionControl, Form, bool) -> Result<Form, EvalError>;
+
+#[derive(Clone)]
+pub(super) struct FormService {
+    call: Form,
+    origin: ExpansionOrigin,
+    limits: ConversionLimits,
+    expand: Rc<ExpandForm>,
 }
 
 /// `queueMicrotask` for the session's heap: bare V8 has none, and a job's
@@ -87,6 +97,56 @@ impl V8Evaluator {
 
     pub fn print(&self, id: ValueId) -> Result<String, EvalError> {
         self.with_active(|e| e.print(id))
+    }
+
+    /// Make a collection request callable from JavaScript while the isolate
+    /// is already active.
+    pub fn install_gc_callback(&self, name: &str) -> Result<(), EvalError> {
+        self.with_active(|e| {
+            e.enter(|scope| {
+                let collect = v8::Function::new(scope, collect_garbage)
+                    .ok_or_else(|| bridge::error("V8 callback allocation failed"))?;
+                let name = bridge::string(scope, name)?;
+                let global = scope.get_current_context().global(scope);
+                global
+                    .set(scope, name.into(), collect.into())
+                    .ok_or_else(|| bridge::error("V8 callback installation failed"))?;
+                Ok(())
+            })
+        })
+    }
+
+    /// Install both macroexpansion callbacks. The Rust service shares this
+    /// heap's control and only receives and returns owned compiler forms.
+    pub fn install_form_services(
+        &self,
+        call: Form,
+        origin: ExpansionOrigin,
+        limits: ConversionLimits,
+        service: impl Fn(ExecutionControl, Form, bool) -> Result<Form, EvalError> + 'static,
+    ) -> Result<(), EvalError> {
+        self.with_active(|e| {
+            e.enter(|scope| {
+                let one = native(scope, expand_form, 0)?;
+                let all = native(scope, expand_form, 1)?;
+                let nodes = v8::Number::new(scope, limits.nodes as f64);
+                let depth = v8::Number::new(scope, limits.depth as f64);
+                invoke(
+                    scope,
+                    e.state,
+                    "formServices",
+                    &[one.into(), all.into(), nodes.into(), depth.into()],
+                )?;
+                Ok(())
+            })
+        })?;
+        self.state.form_service.replace(Some(FormService {
+            call,
+            origin,
+            limits,
+            expand: Rc::new(service),
+        }));
+        Ok(())
     }
 
     /// Create an explicit synchronous input capability. Providers return
@@ -373,6 +433,64 @@ fn throw(scope: &mut PinScope<'_, '_>, message: &str) {
         None => {
             scope.terminate_execution();
         }
+    }
+}
+
+fn collect_garbage(
+    scope: &mut PinScope<'_, '_>,
+    _: v8::FunctionCallbackArguments,
+    _: v8::ReturnValue,
+) {
+    scope.low_memory_notification();
+}
+
+fn expand_form<'s>(
+    scope: &mut PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut result: v8::ReturnValue<'s>,
+) {
+    let Some((state, all)) = entry(scope, args.data()) else {
+        scope.terminate_execution();
+        return;
+    };
+    let Some(service) = state.form_service.borrow().clone() else {
+        return throw(scope, "macroexpansion service is unavailable");
+    };
+    let value = (|| {
+        let descriptor = bridge::array(args.get(0))?;
+        let data = state.bridge.borrow_mut().decode(
+            scope,
+            descriptor,
+            &state.control,
+            service.limits,
+            false,
+        )?;
+        let form = Form::from_bridge_expansion(
+            data,
+            &service.call,
+            service.origin,
+            &state.bridge.borrow().forms,
+        );
+        let expanded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            (service.expand)(state.control.clone(), form, all != 0)
+        }))
+        .unwrap_or_else(|_| {
+            state.control.invalidate();
+            Err(bridge::error("compiler macro service panicked"))
+        })?;
+        let active = Active {
+            scope: RefCell::new(&mut *scope),
+            state: &state,
+        };
+        active.import_form(&expanded, service.limits)
+    })();
+    match value {
+        Ok(id) => result.set(v8::Number::new(scope, id.index as f64).into()),
+        Err(error) if state.control.check().is_err() => {
+            state.remember_error(&error);
+            scope.terminate_execution();
+        }
+        Err(error) => throw(scope, &error.0),
     }
 }
 

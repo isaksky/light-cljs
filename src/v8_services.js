@@ -39,7 +39,13 @@
                 },
                 importEnvironment: (descriptor, nodes, depth) => { const [value, snapshots, published] = bridge.decode(descriptor, [nodes, depth]); return [save(value), snapshots, published]; },
                 exportForm: (id, nodes, depth) => bridge.encode(get(id), nodes, depth),
-                formServices: (one, all, nodes, depth) => rt.setMacroexpandServices({macroexpand1: form => bridge.decode(one(bridge.encode(form, nodes, depth))), macroexpand: form => bridge.decode(all(bridge.encode(form, nodes, depth)))}),
+                formServices: (one, all, nodes, depth) => {
+                  const expand = callback => form => {
+                    const id = callback(bridge.encode(form, nodes, depth));
+                    try { return get(id); } finally { values.delete(id); }
+                  };
+                  rt.setMacroexpandServices({macroexpand1: expand(one), macroexpand: expand(all)});
+                },
                 bridgeVersion: bridge.version,
                 checkBridge: frame => { bridge.check(); if (frame !== undefined) globalThis.__lightRootReadsChecked?.(frame); },
                 errorData: () => { const error = lastError; return save(rt.core.exData(error)); },

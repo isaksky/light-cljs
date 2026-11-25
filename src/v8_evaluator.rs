@@ -61,7 +61,8 @@ struct State {
     bridge: RefCell<BridgeState>,
     services: RefCell<Option<bridge::Root<v8::Object>>>,
     callbacks: RefCell<Vec<UnitService>>,
-    string_services: RefCell<Vec<crate::compiler_evaluator::StringService>>,
+    string_services: RefCell<Vec<StringCallback>>,
+    form_service: RefCell<Option<session::FormService>>,
     interrupt: Arc<watchdog::Task>,
     pending_error: RefCell<Option<EvalError>>,
     source_bytes: Cell<usize>,
@@ -75,6 +76,7 @@ struct State {
     host_functions: RefCell<Vec<session::HostEntry>>,
     input_providers: RefCell<Vec<crate::eval_session::Input>>,
 }
+type StringCallback = Rc<dyn Fn(ExecutionControl, String) -> Result<String, EvalError>>;
 #[derive(Default)]
 struct NamespaceCache {
     entries: HashMap<String, (String, bridge::Root<v8::Function>)>,
@@ -444,6 +446,35 @@ impl V8Evaluator {
         .map(|count| count as usize)
     }
 
+    /// Register a synchronous callback from one string to another. Its
+    /// closure must retain only Rust data and may poll the shared control.
+    pub fn install_callback(
+        &self,
+        name: &str,
+        callback: impl Fn(ExecutionControl, String) -> Result<String, EvalError> + 'static,
+    ) -> Result<(), EvalError> {
+        let index = self.state.string_services.borrow().len();
+        self.state
+            .string_services
+            .borrow_mut()
+            .push(Rc::new(callback));
+        self.with_active(|e| {
+            e.enter(|scope| {
+                let data = v8::Number::new(scope, index as f64);
+                let callback = v8::Function::builder(string_service)
+                    .data(data.into())
+                    .build(scope)
+                    .ok_or_else(|| bridge::error("V8 callback allocation failed"))?;
+                let name = bridge::string(scope, name)?;
+                let global = scope.get_current_context().global(scope);
+                global
+                    .set(scope, name.into(), callback.into())
+                    .ok_or_else(|| bridge::error("V8 callback installation failed"))?;
+                Ok(())
+            })
+        })
+    }
+
     fn startup_source() -> String {
         include_str!("v8_services.js").replace("__LIGHT_RUNTIME_SOURCE__", RUNTIME_SOURCE)
     }
@@ -557,6 +588,7 @@ impl V8Evaluator {
             services: RefCell::new(None),
             callbacks: RefCell::new(Vec::new()),
             string_services: RefCell::new(Vec::new()),
+            form_service: RefCell::default(),
             interrupt: watchdog::Task::new(isolate.thread_safe_handle())?,
             pending_error: RefCell::new(None),
             source_bytes: Cell::new(0),
@@ -1356,8 +1388,7 @@ fn compile_unit(
     state.control.invalidate();
     scope.terminate_execution();
 }
-/// A [`crate::compiler_evaluator::StringService`]: one primitive string in,
-/// one string out. A non-string argument is a TypeError, never coerced.
+/// A non-string argument is a TypeError and is never coerced.
 fn string_service(
     scope: &mut PinScope<'_, '_>,
     args: v8::FunctionCallbackArguments,
@@ -1369,26 +1400,26 @@ fn string_service(
     };
     let request = args.get(0);
     if !request.is_string() {
-        let message = v8::String::new(scope, "compiler service expects a string").unwrap();
-        let error = v8::Exception::type_error(scope, message);
-        scope.throw_exception(error);
+        if let Some(message) = v8::String::new(scope, "string callback expects a string") {
+            let error = v8::Exception::type_error(scope, message);
+            scope.throw_exception(error);
+        } else {
+            scope.terminate_execution();
+        }
         return;
     }
-    let request = request.to_rust_string_lossy(scope);
     let output = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let index = bridge::number(scope, args.data())
-            .map_err(|_| "invalid compiler string service".to_owned())?
-            as usize;
+        let index = bridge::number(scope, args.data())? as usize;
         let callback = state
             .string_services
             .borrow()
             .get(index)
             .cloned()
-            .ok_or("unknown compiler string service")?;
-        state.control.poll().map_err(|e| e.to_string())?;
-        let answer = callback(&request);
-        state.control.poll().map_err(|e| e.to_string())?;
-        Ok::<_, String>(answer)
+            .ok_or_else(|| bridge::error("unknown string callback"))?;
+        state.control.poll()?;
+        let answer = callback(state.control.clone(), request.to_rust_string_lossy(scope));
+        state.control.poll()?;
+        answer
     }));
     let failure = match output {
         Ok(Ok(answer)) => match bridge::string(scope, &answer) {
@@ -1398,8 +1429,8 @@ fn string_service(
             }
             Err(error) => error,
         },
-        Ok(Err(error)) => EvalError(error),
-        Err(_) => bridge::error("compiler string service panicked"),
+        Ok(Err(error)) => error,
+        Err(_) => bridge::error("string callback panicked"),
     };
     state.remember_error(&failure);
     state.control.invalidate();
@@ -1423,23 +1454,7 @@ impl CompilerEvaluator for V8Evaluator {
         name: &str,
         callback: crate::compiler_evaluator::StringService,
     ) -> Result<(), EvalError> {
-        let index = self.state.string_services.borrow().len();
-        self.state.string_services.borrow_mut().push(callback);
-        self.with_active(|e| {
-            e.enter(|scope| {
-                let data = v8::Number::new(scope, index as f64);
-                let callback = v8::Function::builder(string_service)
-                    .data(data.into())
-                    .build(scope)
-                    .ok_or_else(|| bridge::error("V8 callback allocation failed"))?;
-                let name = bridge::string(scope, name)?;
-                let global = scope.get_current_context().global(scope);
-                global
-                    .set(scope, name.into(), callback.into())
-                    .ok_or_else(|| bridge::error("V8 callback installation failed"))?;
-                Ok(())
-            })
-        })
+        self.install_callback(name, move |_, request| Ok(callback(&request)))
     }
     fn evaluate_js(&self, expression: &str) -> Result<ValueId, EvalError> {
         self.evaluate_js(expression)

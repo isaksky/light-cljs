@@ -20,6 +20,18 @@ fn public_evaluator_executes_units_in_v8() {
     assert_eq!(evaluator.string(value).unwrap(), "Hello V8");
 }
 
+#[cfg(light_v8)]
+#[test]
+fn public_macro_host_creates_a_v8_heap_with_host_settings() {
+    let mut host = light_cljs::MacroHost::new();
+    host.set_assertions(false);
+    let evaluator = host.new_evaluator().unwrap();
+    let value = evaluator
+        .evaluate_js("!rt.core.assertions && !globalThis.lightCljsWeakMapStores")
+        .unwrap();
+    assert_eq!(evaluator.print(value).unwrap(), "true");
+}
+
 fn adapted_source(source: &str) -> String {
     let mut adapted = source
         .replace("(catch Exception ", "(catch :default ")

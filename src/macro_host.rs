@@ -1286,22 +1286,22 @@ impl MacroHost {
         }
         Ok(())
     }
-    /// Allocate a fresh synchronous heap for a clean compilation. Its dynamic
+    /// Allocate a fresh synchronous heap, using V8 when available. Its dynamic
     /// `*assert*` follows [`Self::set_assertions`], so the macros, functions and
     /// data readers it runs read the setting, as upstream's `:elide-asserts`
     /// binds `clojure.core/*assert*` while compiling.
     pub fn new_evaluator(
         &self,
     ) -> Result<crate::evaluator::Evaluator, crate::evaluator::EvalError> {
+        use crate::evaluator::Evaluator;
+
+        let options = self.evaluator_options.clone();
         let evaluator = if let Some(control) = &self.engine.interactive_control {
-            crate::evaluator::Evaluator::interactive_with_control(
-                self.evaluator_options.clone(),
-                control.clone(),
-            )
+            Evaluator::interactive_with_control(options, control.clone())
         } else if self.tables.interactive {
-            crate::evaluator::Evaluator::interactive(self.evaluator_options.clone())
+            Evaluator::interactive(options)
         } else {
-            crate::evaluator::Evaluator::new(self.evaluator_options.clone())
+            Evaluator::new(options)
         }?;
         self.prepare_compiler_evaluator(&evaluator)?;
         Ok(evaluator)

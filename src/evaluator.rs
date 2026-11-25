@@ -606,6 +606,7 @@ impl QuickJsEvaluator {
     pub fn interactive(options: EvaluatorOptions) -> Result<Self, EvalError> {
         Self::create(options, true, None, None)
     }
+    #[cfg(not(light_v8))]
     pub(crate) fn interactive_with_control(
         options: EvaluatorOptions,
         control: ExecutionControl,
