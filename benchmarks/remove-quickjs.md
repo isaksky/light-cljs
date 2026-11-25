@@ -89,6 +89,39 @@ SHA-256 was `0bc64c35bdd4b5aaa28cfb755f2fc081ffe8e3ce39131bfd12a23a8870e2b8b3`
 on master and `cc7681507c8a03e5ca5e8785e47172331f0fb6ec9d433fa46036c7223c623a57`
 on the branch.
 
+### Output drift attribution (light-cljs-1152)
+
+The merge criterion allows JavaScript changes from the Pants runtime
+removal, the QuickJS WeakMap switch removal, the live protocol-name fix,
+and the `satisfies?` marker cache and stable-protocol inlining.
+
+The audit compares master `fb7de495` and `remove-quickjs` at `29e8401a`,
+whose compiler sources match `50890488`. Each checkpoint uses
+`cargo build --release --locked --bin light-cljs` with the V8 build features
+enabled by default at that revision. The ratchets use the inputs and
+arguments from `remove-quickjs.bb output`, with `--size-report` for the
+unit names and byte counts. TodoMVC uses a copy of `research/todomvc-port`
+and `release client --no-cache --optimize advanced`.
+
+The readable runtime lost 4,334 bytes of Pants-specific comments per
+ratchet at both `none` and `prepare` (`36a2de8c`, light-cljs-1129). After
+replacing the runtime key and registration hash with their placeholders
+and removing the embedded runtime text, all 72 outputs matched between
+`fb7de495` and `f3ce9409`. The changes fall in these runtime manifest spans.
+
+| Runtime unit spans and individual byte deltas | Subtotal |
+| --- | ---: |
+| `ChunkedSeqValue.next` (-52), `NodeSeqCell` (-91), `PersistentArrayMapSeqType` (-104), `arrayIndex` (-127), `arrayMapPromote` (-114) | -488 |
+| `cellFields` (-188), `cellOf` (-105), `chunkedConsOf` (-53), `equivMap` (-28), `extendType` (-56) | -430 |
+| `fieldComparisons` (-85), `getMethodProtocol` (-82), `hashKeyTest` (-339), `hashMapSeqReduce` (-61), `hashUnorderedColl` (-28) | -595 |
+| `heldHash` (-112), `isAtomCell` (-57), `keywordCells` (-102), `keywordOf` (-218), `keywordProgramEquiv` (-51) | -540 |
+| `kindIn` (-92), `lazyOf` (-105), `makeMap.transient` (-110), `makeVector` (-78), `mapCellCopy` (-77) | -462 |
+| `maskNative` (-96), `namespace` (-33), `objectEquiv` (-28), `operationPaths` (-68), `ownEntryItems` (-83) | -308 |
+| `ownMeta` (-78), `ownSeqs` (-97), `ownedProtocolValue` (-112), `protocolStores` (-142), `randomSample` (-33) | -462 |
+| `reduceOwnPath` (-60), `setDeclarationDemand` (-218), `slotFirst` (-137), `swap` (-72), `symbolOf` (-56) | -543 |
+| `typeMasks` (-43), `updatedMap` (-74), `vars` (-124), `vectorCells` (-220), `withMetaKeeps` (-45) | -506 |
+| Total | -4,334 |
+
 ## 4. Interactive sessions
 
 ```sh
