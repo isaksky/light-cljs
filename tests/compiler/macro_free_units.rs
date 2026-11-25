@@ -526,23 +526,22 @@ fn a_limit_crossed_in_a_macro_free_unit_fails_as_with_one_slot() {
 
 #[test]
 fn a_poll_budget_spent_in_macro_free_units_fails_as_with_one_slot() {
-    // `start`'s `doto` begins an engine operation, which renews the poll
-    // budget; every form the later units analyze polls it, and their polls
-    // alone exceed the small budget. A worker analyzing them polls nothing,
-    // so their polls are spent where they are charged. V8's interrupts poll
-    // on a timer too, so where the budget runs out is not deterministic,
-    // even with one slot; that it runs out is.
+    // `doto` starts the compile-time engine. Give startup and its watchdog
+    // polls room, then exceed the budget with 6,400 form polls within a
+    // single deferred body. The serial build makes V8 calls between units,
+    // so a budget exhausted at a unit boundary could fail in those calls.
     let sources = Sources::new();
-    let mut body = String::from("(ns app.p) (def start (doto 1))\n");
-    for k in 0..40 {
-        let terms = (0..50)
-            .map(|n| format!("(+ x {n})"))
-            .collect::<Vec<_>>()
-            .join(" ");
-        body.push_str(&format!("(defn f{k} [x] [{terms}])\n"));
-    }
-    body.push_str("(js/console.log start (count (f39 1)))");
-    sources.write("app/p.cljs", &body);
+    let startup = "(ns app.p) (def start (doto 1))\n";
+    let terms = (0..50)
+        .map(|n| format!("(+ x {n})"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let unit = format!("(defn f [x] [{}] [{terms}])\n", "x ".repeat(6_400));
+    let unit_span = startup.len()..startup.len() + unit.len();
+    sources.write(
+        "app/p.cljs",
+        &format!("{startup}{unit}(js/console.log start (count (f 1)))"),
+    );
     let budgeted = |budget| {
         let mut host = MacroHost::new();
         host.evaluator_options.poll_budget = budget;
@@ -551,14 +550,31 @@ fn a_poll_budget_spent_in_macro_free_units_fails_as_with_one_slot() {
     let large = build_with(&sources, "app.p", 1, false, budgeted(10_000_000));
     assert_eq!(execute(large.output.as_ref().unwrap()), "1 50\n");
     for slots in [1, 2, 8] {
-        let small = build_with(&sources, "app.p", slots, false, budgeted(3_000));
-        let error = small.output.unwrap_err();
+        let error = analyze_namespace_entry_recorded(
+            "app.p",
+            std::slice::from_ref(sources.root()),
+            &mut budgeted(4_000),
+            AnalysisOptions::default(),
+            &mut Vec::new(),
+            EntryRecorders {
+                slots: Slots::new(slots).unwrap(),
+                ..Default::default()
+            },
+        )
+        .expect_err("the macro-free unit should exhaust the poll budget");
         assert!(
-            error.contains("poll budget exhausted"),
+            error.message.contains("poll budget exhausted")
+                && error
+                    .span
+                    .as_ref()
+                    .is_some_and(|span| unit_span.contains(&span.start)),
             "{slots} slots: {error}"
         );
         let pooled = build_with(&sources, "app.p", slots, false, budgeted(10_000_000));
         assert_eq!(pooled.output, large.output, "{slots} slots");
+        if slots > 1 {
+            assert_eq!(pooled.stats.deferred_units.macro_free, 1, "{slots} slots");
+        }
     }
 }
 
