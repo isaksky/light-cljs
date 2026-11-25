@@ -6698,39 +6698,41 @@ Load `3.76-7.65` before, `3.62-5.50` after; every checksum matched across all 80
 
 ### Changes (dev-only; release `:advanced` output unchanged)
 
-- `build.rs` / `src/runtime_manifest.rs` / `src/dev_build.rs` / `src/emitter.rs`: generate `DEV_RUNTIME` omitting the 4 `hostExt` disabler units, installing non-enumerable host-key write watchers on core protocols/dispatchers (preserving direct `aset` mutations), and deferring `slotWrites.*` behind an idempotent `rt.enableSlotWrites()` called by dev units that directly write or delete a core protocol method slot by name.
-- `src/emitter.rs`: emit `protocol_named_fast_path` (`r0.ns$P$m$arity$N$KEY` LoadIC + `m0` miss closure reading the live Var getter) for dev `defprotocol` methods.
-- `build.rs` / `src/emitter.rs`: cache `coreInfo$LKEY` on core protocols and `slot$LKEY` on user protocols in `DEV_RUNTIME` for `satisfies`/`implementsProtocol`, and inline direct marker checks for dev `ProtocolPredicate`.
+- `build.rs` / `src/runtime_manifest.rs` / `src/dev_build.rs` / `src/emitter.rs`: generate `DEV_RUNTIME` omitting the 5 `:advanced`-only `hostExt` disabler units (`hostExt.core`, `hostExtEscaped.on`, `hostExtSeqEscaped.on`, `hostExtPrintEscaped.on`, `slotWrites.hostExt`) while keeping all 20 cold `slotWrites.<op>` fallback wrappers active at boot (preserving both static and computed/reflected core-slot clears). Export `markHostExt(flags)` from the dev runtime factory and invoke it from dev units that escape a `hostExt`-tracked core protocol/dispatcher as a first-class JS value (`note_dev_host_ext_escape`) or write a core protocol method slot by name. Recheck `protocolHooks.noSeqExt()` after callbacks in dev `printSequential`, `printMapEntries`, and `printValues`.
+- `src/emitter.rs`: emit `protocol_named_fast_path` (single named-slot read `r0.ns$P$m$arity$N$KEY` + `Function.prototype.apply` fast call + `m0` miss closure reading the live Var getter) for dev `defprotocol` methods.
+- `build.rs` / `src/emitter.rs`: cache `coreInfo$LKEY` on core protocols and `slot$LKEY` on user protocols in `DEV_RUNTIME` for `satisfies`/`implementsProtocol` (consulting live host tables on host values with zero placeholder keys), and inline direct marker checks for dev `implements?` (`ProtocolPredicate` with `direct: true`) while keeping `satisfies?` on `rt.protocolPredicate`.
 - `src/emitter.rs`: hoist distinct keyword literals to one `const kN = rt.keyword(...)` per dev unit (`DevKeywordPool`), preserving hot-reload identity, source maps, and `hygienic_js` renaming.
 
 ### Dev measurements (10 runs alternated vs shadow-cljs 3.5.3, unreserved)
 
-Measured on rebased HEAD `6956e4ea` (on top of master `4cb35725`, including `light-cljs-1120`) vs base `f84e7c96` (5 runs) and `confirm-1019` (`4d8d02d5`, 10 runs), Apple M3 Ultra VM (24 CPUs, 32 GiB), Node v26.12.1, Headless Chromium 156.0.8078.4.
+Measured on final post-Sol-fix commit `459707f0` (rebased on master `4cb35725`, including `light-cljs-1120`) vs base `f84e7c96` (5 runs) and `confirm-1019` (`4d8d02d5`, 10 runs), Apple M3 Ultra VM (24 CPUs, 32 GiB), Node v26.12.1, Headless Chromium 156.0.8078.4.
 
-#### TodoMVC dev (`add 1,000 todos` and `toggle all`, load 6.46-7.20)
+#### TodoMVC dev (`add 1,000 todos` and `toggle all`, load 3.41-4.52)
 
-| Step | Base `f84e7c96` light ms (ratio) | After `6956e4ea` shadow ms | After `6956e4ea` light ms | After light/shadow | After script ms (light vs shadow) |
+| Step | Base `f84e7c96` light ms (ratio) | After `459707f0` shadow ms | After `459707f0` light ms | After light/shadow | After script ms (light vs shadow) |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| page load to interactive | 95.90 (0.79x) | 129.35 (120.50-172.10) | 98.70 (95.40-109.30) | 0.76x | 59.65 vs 102.80 |
-| add 1,000 todos | 1,819.00 (1.80x) | 1,060.65 (1,031.80-1,085.10) | 1,061.05 (1,025.90-1,075.80) | 1.00x | 1,011.57 vs 1,015.58 |
-| toggle all | 70.20 (1.12x) | 63.30 (56.80-67.50) | 70.60 (59.70-77.40) | 1.12x | 43.26 vs 36.77 |
-| edit one in 1,000 | 59.80 (0.87x) | 64.40 (61.30-69.70) | 60.95 (57.70-66.90) | 0.95x | 11.31 vs 10.64 |
-| clear completed | 26.00 (1.02x) | 25.85 (22.40-26.90) | 26.30 (25.40-28.10) | 1.02x | 8.34 vs 8.99 |
+| page load to interactive | 95.90 (0.79x) | 121.75 (117.20-209.50) | 94.95 (92.20-101.60) | 0.78x | 58.71 vs 98.67 |
+| add 1,000 todos | 1,819.00 (1.80x) | 1,013.35 (989.60-1,096.20) | 1,052.00 (1,028.00-1,101.40) | 1.04x | 1,013.52 vs 970.69 |
+| toggle all | 70.20 (1.12x) | 61.20 (54.20-64.10) | 60.95 (58.90-67.60) | 1.00x | 41.13 vs 35.16 |
+| edit one in 1,000 | 59.80 (0.87x) | 68.20 (62.00-69.90) | 60.50 (55.30-68.20) | 0.89x | 10.96 vs 9.96 |
+| clear completed | 26.00 (1.02x) | 26.15 (24.10-28.40) | 26.65 (24.70-28.10) | 1.02x | 8.35 vs 8.52 |
 
 TodoMVC dev `add` CPU profile total dropped 40.0% (`2,048.9 ms` -> `1,230.2 ms`): `extendedMethod` (161.1 ms), `protocolHooks.printWriter` (111.6 ms), `dispatch` (89.1 ms), `coreProtocolImplementation` (75.3 ms), `directMethod` (48.4 ms), `satisfies` (37.2 ms), and `builtinCoreImplementation` (37.2 ms) all left the top 15.
 
-#### Generated workload 200k dev (Node, 10 runs alternated, load 5.87-6.71)
+#### Generated workload 200k dev (Node, 10 runs alternated, load 4.80-17.48)
 
 | Iterations | Shadow-cljs wall s | Light-cljs wall s | light/shadow |
 | --- | ---: | ---: | ---: |
-| 1 | 0.97 (0.96-1.46) | 1.08 (1.02-1.40) | 1.11x |
-| 10 | 1.41 (1.38-1.51) | 1.55 (1.49-1.67) | 1.10x |
-| 40 | 2.32 (2.24-2.46) | 2.67 (2.58-2.80) | 1.15x |
+| 1 | 1.08 (0.97-7.49) | 1.33 (1.10-7.33) | 1.23x |
+| 10 | 1.44 (1.36-1.64) | 1.64 (1.50-2.27) | 1.14x |
+| 40 | 2.50 (2.36-3.70) | 2.83 (2.69-3.15) | 1.14x |
 
-Steady state (1->40 iterations): light-cljs `40.79 ms/iter` vs shadow-cljs `34.46 ms/iter` (`1.18x`, down from `1.47x` in `confirm-1019` and `1.31x` on `f84e7c96`). Both `keyword` (68.5 ms self) and `dispatch` (16.0 ms self) left the top 15.
+Steady state (1->40 iterations): light-cljs `38.55 ms/iter` vs shadow-cljs `36.27 ms/iter` (`1.06x`, down from `1.47x` in `confirm-1019` and `1.31x` on `f84e7c96`). Both `keyword` (68.5 ms self) and `dispatch` (16.0 ms self) left the top 15. Remaining steady-state gap is tracked in `light-cljs-1124`.
 
-### Release parity and test checks
+### Release parity, sizes, and test checks
 
-- **Release `:advanced` output:** all changes are strictly dev-only (`build.rs::dev_runtime`, `DEV_RUNTIME`, `dev_build::runtime_file`, and `Emitter` branches gated on `application_roots && !demand_roots`), leaving `src/js_runtime.js`, `RUNTIME`, the 80-op `:advanced` gate, re-frame `:advanced` sizes, and all size ratchet ceilings unchanged from `4cb35725`.
-- **`bb benchmarks/re-frame-tests.bb` (3 runs):** 118/118 tests pass (446 assertions per run) across shadow, `light-compile` (dev), and `light-release`.
-- **Browser checks (`bb benchmarks/re-frame.bb browser todomvc --compiler light --runs 3`):** 10/10 pass (3/3 runs); dev TodoMVC functional checks 9/9 pass.
+- **Release `:advanced` output:** all changes are strictly dev-only (`build.rs::dev_runtime`, `DEV_RUNTIME`, `dev_build::runtime_file`, and `Emitter` branches gated on `application_roots && !demand_roots`), leaving `src/js_runtime.js`, `RUNTIME`, and all size ratchet ceilings unchanged from `4cb35725`.
+- **Re-frame `:advanced` TodoMVC size (`bb benchmarks/re-frame.bb size todomvc --light-only`, without React):** raw `400,439` B, gzip -9 `106,566` B (vs `4cb35725` `400,402` raw / `106,561` gzip; +0.00%).
+- **Core-ops `:advanced` gate (`459707f0`, 5 runs alternated, unreserved, load 14.64-15.04, all checksums match):** `protocol-on-record` `2.41` vs `2.41` ns (`1.00x`, base `2.37`/`1.00x`), `kw-small` `7.77` vs `9.94` ns (`0.78x`, base `7.51`/`0.78x`), `kw-hash100` `16.0` vs `12.9` ns (`1.24x` under load 15), `str-nested-map` `963.3` vs `2,376` ns (`0.41x`, base `893.7`/`0.39x`), `str-concat` `13.8` vs `15.4` ns (`0.90x`, base `13.0`/`0.88x`).
+- **`bb benchmarks/re-frame-tests.bb`:** 118/118 tests pass (446 assertions per run) across shadow, `light-compile` (dev), and `light-release`.
+- **Browser checks:** `bb benchmarks/re-frame.bb browser todomvc --compiler light` 10/10 pass; dev TodoMVC functional browser checks 9/9 pass across 3 runs.
