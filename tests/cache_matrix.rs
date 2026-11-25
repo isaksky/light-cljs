@@ -1742,7 +1742,7 @@ fn repeated_builds_and_teardown() {
 }
 
 #[test]
-fn requested_namespace_views_stay_guarded_in_cached_macro_helpers() {
+fn requested_namespace_views_survive_cached_macro_helpers() {
     let a = "(ns a (:require [p] [m :refer [probe]])) (def value (probe))";
     let b = "(ns b (:require [x] [m :refer [probe]])) (def value (probe))";
     let project = Project::new(&[
@@ -1762,11 +1762,11 @@ fn requested_namespace_views_stay_guarded_in_cached_macro_helpers() {
             "(ns main (:require [x] [a] [b])) (js/console.log (pr-str [a/value b/value]))",
         ),
     ]);
-    let expected = "[[true true] [true true]]n";
+    let expected = "[[true true] [true true]]\n";
     assert_eq!(project.checked("main", &[]).1, expected);
     project.cached("main", &[]).assert_all_hits(6);
     // Reuse the provider artifact while both consumers invoke its helper
-    // again under their distinct closures; cached IR must retain the guard.
+    // again. Each still sees the loaded namespace's refers and imports.
     project.write("a.cljs", &format!("{a}\n; recompile consumer a"));
     project.write("b.cljs", &format!("{b}\n; recompile consumer b"));
     let (reused, printed) = project.checked("main", &[]);

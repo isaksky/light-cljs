@@ -4513,7 +4513,7 @@ impl<'a, 's> Emitter<'a, 's> {
                     .encode_utf16()
                     .collect::<Vec<_>>(),
             );
-            self.output.push_str("]");
+            self.output.push(']');
         } else {
             write!(self.output, "g{}", id.0).unwrap();
         }
@@ -8610,16 +8610,7 @@ impl<'a, 's> Emitter<'a, 's> {
                     self.output.push(')');
                 }
                 self.output.push('(');
-                for (index, arg) in args.iter().enumerate() {
-                    if index > 0 {
-                        self.output.push_str(", ");
-                    }
-                    if host {
-                        self.value(*arg);
-                    } else {
-                        self.value(*arg);
-                    }
-                }
+                self.arguments(args);
                 self.output.push(')');
             }
             _ => unreachable!("construct_value of another kind"),
@@ -9478,20 +9469,10 @@ impl<'a, 's> Emitter<'a, 's> {
         match &self.program.exprs[id.0].kind {
             ExprKind::SetGlobal { target, value } => {
                 self.note_core_method_write(*target);
-                let interop = matches!(
-                    self.program.exprs[target.0].kind,
-                    ExprKind::JsGlobal(_) | ExprKind::Property { .. } | ExprKind::JsIndex { .. }
-                );
                 self.output.push('(');
                 self.assignment(
                     |emitter| emitter.assignable(*target),
-                    |emitter| {
-                        if interop {
-                            emitter.value(*value)
-                        } else {
-                            emitter.value(*value)
-                        }
-                    },
+                    |emitter| emitter.value(*value),
                 );
                 self.output.push(')');
             }
@@ -9708,16 +9689,9 @@ impl<'a, 's> Emitter<'a, 's> {
     /// [`Self::value_expr`] of an `instance?` test.
     fn instance_of_value(&mut self, id: ExprId) {
         match &self.program.exprs[id.0].kind {
-            // A native struct type is not a constructor: `instance?` of one
-            // compares the value's type (light-cljs-478); the value and then
-            // the class are evaluated once, as `x instanceof c` does.
             ExprKind::InstanceOf { class, value } => {
                 self.output.push('(');
-                if matches!(self.program.exprs[class.0].kind, ExprKind::JsGlobal(_)) {
-                    self.value(*value);
-                } else {
-                    self.value(*value);
-                }
+                self.value(*value);
                 self.output.push_str(" instanceof ");
                 self.value(*class);
                 self.output.push(')');
