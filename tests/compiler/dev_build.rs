@@ -1477,3 +1477,85 @@ start
         r#"{"id":"program","outcome":{"status":"returned","value":{"$value":"undefined"}},"trace":[],"stdout":"[10 10 15] [:spec-one :spec-two-1 [:spec-two-2 3]]\n[10 15 20 25 \"S:hi\" \"hi:7\" :nil-one [:nil-2 9] [:def 42] :arity-err]\n"}"#
     );
 }
+
+/// Dev `satisfies?` and `implements?` fast paths (both inline user-protocol
+/// marker checks and cached `coreInfo` mask/hostExt checks) must match
+/// ClojureScript semantics across core protocols, user protocols, `specify!`,
+/// late `extend-type`, and direct `(aset ICounted ...)` mutations on reload.
+#[test]
+fn dev_satisfies_and_implements_fast_paths_preserve_core_user_and_reload_semantics() {
+    let dir = TempDir::new("dev-satisfies-fast");
+    let v1 = source_root(
+        &dir.join("v1"),
+        &[
+            (
+                "app/pred.cljs",
+                r#"(ns app.pred)
+(defprotocol Tag (tag [this]))
+(defrecord Item [x] Tag (tag [_] :item))
+(defonce saved-item (->Item 1))
+(defn check []
+  [(satisfies? Tag saved-item) (implements? Tag saved-item)
+   (satisfies? Tag "abc") (implements? Tag "abc")
+   (satisfies? ICounted [1]) (implements? ICounted [1])
+   (satisfies? ICounted nil) (implements? ICounted nil)
+   (satisfies? ICounted 5) (implements? ICounted 5)
+   (satisfies? IWatchable (atom 1)) (satisfies? IWatchable [1])
+   (satisfies? IDeref (atom 1)) (satisfies? IDeref :k)
+   (satisfies? IMeta (fn [])) (satisfies? Fn (fn []))
+   (satisfies? ISeqable {:a 1}) (satisfies? ISeq {:a 1})])
+"#,
+            ),
+            (
+                "app/main.cljs",
+                r#"(ns app.main (:require [app.pred :as p]))
+(defn ^:dev/after-load after [] (js/console.log (pr-str (p/check))))
+(defn start []
+  (let [s (specify! #js {} p/Tag (tag [_] :s))]
+    (js/console.log (pr-str (p/check)) (satisfies? p/Tag s) (implements? p/Tag s))))
+start
+"#,
+            ),
+        ],
+    );
+    let out = dir.join("dev");
+    dev_build(&v1, &out);
+
+    let v2 = source_root(
+        &dir.join("v2"),
+        &[
+            (
+                "app/pred.cljs",
+                r#"(ns app.pred)
+(defprotocol Tag (tag [this]))
+(defrecord Item [x] Tag (tag [_] :item2))
+(extend-type string Tag (tag [_] :str))
+(extend-type number IWatchable (-add-watch [this _ _] this))
+(aset ICounted "number" true)
+(defonce saved-item (->Item 1))
+(defn check []
+  [(satisfies? Tag saved-item) (implements? Tag saved-item)
+   (satisfies? Tag "abc") (implements? Tag "abc")
+   (satisfies? ICounted 5) (implements? ICounted 5)
+   (satisfies? IWatchable 5) (implements? IWatchable 5)
+   (satisfies? IWatchable [1])])
+"#,
+            ),
+            (
+                "app/main.cljs",
+                r#"(ns app.main (:require [app.pred :as p]))
+(defn ^:dev/after-load after [] (js/console.log (pr-str (p/check))))
+(defn start [] (after))
+start
+"#,
+            ),
+        ],
+    );
+    let out_v2 = dir.join("dev-v2");
+    dev_build(&v2, &out_v2);
+
+    assert_eq!(
+        run_dev(&out, true, &[out_v2.join("app.pred.js")]).unwrap(),
+        r#"{"id":"program","outcome":{"status":"returned","value":{"$value":"undefined"}},"trace":[],"stdout":"[true true false false true true true false false false true false true false true true true false] true true\n[true true true false true false true false false]\n"}"#
+    );
+}

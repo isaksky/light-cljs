@@ -285,6 +285,65 @@ fn dev_runtime(source: &str) -> String {
         "hostExtSeqEscaped.on",
         "hostExtPrintEscaped.on",
     ];
+    const FAST_IMPLEMENTS_PROTOCOL: &str = concat!(
+        "  function implementsProtocol(protocol, value) {\n",
+        "    if (protocol == null) return false;\n",
+        "    const ci = protocol.coreInfo$LKEY;\n",
+        "    if (ci !== undefined) {\n",
+        "      const mask = ci.mask;\n",
+        "      if (value != null) {\n",
+        "        if (mask && (value[mask[0]] & mask[1])) return true;\n",
+        "        if (value[ci.marker] === protocolSentinel) return true;\n",
+        "        if (ci.storeNative && mask && value.cljs$lang$kind$$LKEY < 64 && value[mask[0]]) return false;\n",
+        "      }\n",
+        "      return !!ci.native?.(value);\n",
+        "    }\n",
+        "    let slot = protocol.slot$LKEY;\n",
+        "    if (slot === undefined) {\n",
+        "      const key = protocolNames.get(protocol);\n",
+        "      if (key) slot = protocol.slot$LKEY = protocolSlot(key, 0);\n",
+        "      else return coreProtocolImplementation(protocol, value);\n",
+        "    }\n",
+        "    return value != null && value[slot] === protocolSentinel;\n",
+        "  }\n",
+    );
+    const FAST_SATISFIES: &str = concat!(
+        "  function satisfies(protocol, value) {\n",
+        "    if (protocol == null) return false;\n",
+        "    const ci = protocol.coreInfo$LKEY;\n",
+        "    if (ci !== undefined) {\n",
+        "      const mask = ci.mask;\n",
+        "      if (value != null) {\n",
+        "        if (mask && (value[mask[0]] & mask[1])) return true;\n",
+        "        if (value[ci.marker] === protocolSentinel) return true;\n",
+        "        if (ci.storeNative && mask && value.cljs$lang$kind$$LKEY < 64 && value[mask[0]]) return false;\n",
+        "      }\n",
+        "      if (ci.native?.(value)) return true;\n",
+        "      if (ci.p !== null && !ci.hasDefault && !(hostExt[ci.p] & ci.bit)) return false;\n",
+        "      if (ownedProtocolValue(value)) return false;\n",
+        "      if (mask && value?.[mask[0]]) return false;\n",
+        "      const type = nativeType(value);\n",
+        "      if (protocol[type] || protocol._) return true;\n",
+        "      const natives = nativeMethods.get(ci.name);\n",
+        "      return natives !== undefined && !!(natives.get(type) || natives.get(\"_\"));\n",
+        "    }\n",
+        "    let slot = protocol.slot$LKEY;\n",
+        "    if (slot === undefined) {\n",
+        "      const key = protocolNames.get(protocol);\n",
+        "      if (key) slot = protocol.slot$LKEY = protocolSlot(key, 0);\n",
+        "      else {\n",
+        "        if (coreProtocolImplementation(protocol, value)) return true;\n",
+        "        if (ownedProtocolValue(value)) return false;\n",
+        "        const coreName = coreProtocolNames.get(protocol);\n",
+        "        const mask = protocolMasks.get(coreName);\n",
+        "        if (mask && value?.[mask[0]]) return false;\n",
+        "        return coreName ? !!(protocol[nativeType(value)] || protocol._ || nativeMethods.get(coreName)?.get(nativeType(value)) || nativeMethods.get(coreName)?.get(\"_\")) : false;\n",
+        "      }\n",
+        "    }\n",
+        "    if (value != null && value[slot] === protocolSentinel) return true;\n",
+        "    return !!(protocol[nativeType(value)] || protocol._);\n",
+        "  }\n",
+    );
     const WATCH_HOST_KEYS: &str = concat!(
         "  {\n",
         "    const hostKeys = [\"_\", \"null\", \"string\", \"number\", \"boolean\", \"array\", \"object\", \"function\"];\n",
@@ -307,7 +366,20 @@ fn dev_runtime(source: &str) -> String {
         "        });\n",
         "      }\n",
         "    };\n",
-        "    for (const [protocol, name] of coreProtocolNames) watchHostKeys(protocol, name);\n",
+        "    for (const [protocol, name] of coreProtocolNames) {\n",
+        "      watchHostKeys(protocol, name);\n",
+        "      const mask = protocolMasks.get(name);\n",
+        "      Object.defineProperty(protocol, \"coreInfo$LKEY\", {\n",
+        "        value: {\n",
+        "          name, mask, marker: protocolSlot(name, 0),\n",
+        "          native: nativeImplementations.get(protocol),\n",
+        "          p: mask ? (mask[0] === \"cljs$lang$protocol_mask$partition0$$LKEY\" ? \"p0\" : \"p1\") : null,\n",
+        "          bit: mask ? mask[1] : 0,\n",
+        "          hasDefault: name === \"ICounted\" || name === \"IMeta\" || name === \"Fn\",\n",
+        "          storeNative: storeNativeProtocols.has(name)\n",
+        "        }\n",
+        "      });\n",
+        "    }\n",
         "    for (const [key, cell] of coreDispatchers) {\n",
         "      const slash = key.indexOf(\"/\");\n",
         "      if (slash > 0 && cell.dispatcher) watchHostKeys(cell.dispatcher, key.slice(0, slash));\n",
@@ -315,11 +387,13 @@ fn dev_runtime(source: &str) -> String {
         "  }\n",
     );
 
-    let mut out = String::with_capacity(source.len() + 2048);
+    let mut out = String::with_capacity(source.len() + 4096);
     let mut deferred_slot_writes = String::new();
     let mut current_unit: Option<&str> = None;
     let mut skipped_count = 0usize;
     let mut deferred_count = 0usize;
+    let mut replaced_implements = false;
+    let mut replaced_satisfies = false;
     let mut exports_patched = false;
 
     for line in source.split_inclusive('\n') {
@@ -331,6 +405,12 @@ fn dev_runtime(source: &str) -> String {
                 skipped_count += 1;
             } else if name.starts_with("slotWrites.") {
                 deferred_count += 1;
+            } else if name == "implementsProtocol" {
+                out.push_str(FAST_IMPLEMENTS_PROTOCOL);
+                replaced_implements = true;
+            } else if name == "satisfies" {
+                out.push_str(FAST_SATISFIES);
+                replaced_satisfies = true;
             }
             continue;
         }
@@ -349,7 +429,7 @@ fn dev_runtime(source: &str) -> String {
             continue;
         }
         if let Some(unit) = current_unit {
-            if SKIP_UNITS.contains(&unit) {
+            if SKIP_UNITS.contains(&unit) || unit == "implementsProtocol" || unit == "satisfies" {
                 continue;
             }
             if unit.starts_with("slotWrites.") {
@@ -378,6 +458,11 @@ fn dev_runtime(source: &str) -> String {
         deferred_count >= 20,
         "dev_runtime expected slotWrites.* units, found {deferred_count}"
     );
+    assert!(
+        replaced_implements,
+        "dev_runtime expected implementsProtocol unit"
+    );
+    assert!(replaced_satisfies, "dev_runtime expected satisfies unit");
     assert!(exports_patched, "dev_runtime could not patch exports line");
     out
 }

@@ -10683,6 +10683,37 @@ impl<'a, 's> Emitter<'a, 's> {
                         self.output.push(')');
                     }
                     self.output.push(')');
+                } else if self.application_roots
+                    && !self.demand_roots
+                    && !self.native_forms
+                    && self.repeatable(*value)
+                    && (*direct
+                        || matches!(
+                            self.program.exprs[protocol.0].kind,
+                            ExprKind::Global(_) | ExprKind::Local(_)
+                        ))
+                {
+                    let slot = crate::rta::protocol_slot(key, 0);
+                    self.output.push('(');
+                    self.value(*value);
+                    self.output.push_str(" != null && (");
+                    self.value(*value);
+                    self.output.push(')');
+                    self.keyed_member(&slot);
+                    self.output.push_str(" === ");
+                    self.rt(RuntimeName::core("protocolSentinel"));
+                    if !*direct {
+                        self.output.push_str(" || ");
+                        self.rt(RuntimeName::export("protocolPredicate"));
+                        self.output.push('(');
+                        self.value(*protocol);
+                        self.output.push_str(", ");
+                        self.string_units(&key.encode_utf16().collect::<Vec<_>>());
+                        self.output.push_str(", ");
+                        self.value(*value);
+                        self.output.push_str(", false)");
+                    }
+                    self.output.push(')');
                 } else {
                     self.rt(RuntimeName::export("protocolPredicate"));
                     self.output.push('(');
