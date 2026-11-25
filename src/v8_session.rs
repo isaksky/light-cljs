@@ -1,6 +1,6 @@
 //! The V8 heap of an interactive session (`EvalSession`, `--eval`, `--repl`):
 //! host functions, an input provider, promise jobs and rejection tracking on
-//! top of the macro evaluator's isolate, with QuickJS's interactive contract.
+//! top of the macro evaluator's isolate, with the interactive session contract.
 use super::{Active, INITIAL_HEAP_LIMIT, State, V8Evaluator, bridge, invoke};
 use crate::{
     compiler_data::{Datum, DatumKind, ExpansionOrigin, Form},
@@ -33,8 +33,7 @@ pub(super) struct FormService {
 }
 
 /// `queueMicrotask` for the session's heap: bare V8 has none, and a job's
-/// exception must reach `run_jobs` as QuickJS reports it, not be swallowed by
-/// the microtask checkpoint.
+/// exception must survive the microtask checkpoint and reach `run_jobs`.
 const QUEUE_MICROTASK: &str = r#"rt => {
   const services = __lightEvaluator, resolved = Promise.resolve(), then = Promise.prototype.then;
   const queueMicrotask = function queueMicrotask(callback) {
@@ -689,7 +688,7 @@ fn input_chunk(
 
 /// V8's report of a promise rejected with no handler, or of a handler
 /// attached to one later, for `trackRejection`. A record it cannot make is
-/// dropped, as QuickJS's tracker drops one.
+/// dropped.
 extern "C" fn promise_rejected(message: v8::PromiseRejectMessage) {
     let handled = match message.get_event() {
         v8::PromiseRejectEvent::PromiseRejectWithNoHandler => false,
@@ -715,8 +714,8 @@ extern "C" fn promise_rejected(message: v8::PromiseRejectMessage) {
 }
 
 /// V8's hook before each promise reaction job (a `.then` callback, the rest
-/// of an async function after an `await`): each job costs a poll, as each
-/// QuickJS job does, so the poll budget ends an endless chain of them.
+/// of an async function after an `await`): each job costs a poll, so the
+/// poll budget ends an endless chain of them.
 extern "C" fn promise_hook(
     kind: v8::PromiseHookType,
     promise: Local<'_, v8::Promise>,

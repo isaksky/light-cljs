@@ -429,7 +429,7 @@ struct Catalog {
     bindings: HashMap<String, (VarId, usize)>,
     journal: RegistrationJournal,
     /// Compiler-owned index of registered roots, bundles, :test units and
-    /// protocol extensions so V8/QuickJS isolates resolve on demand instead
+    /// protocol extensions so V8 isolates resolve on demand instead
     /// of replaying the full registration journal (light-cljs-1090).
     roots: RootIndex,
     /// How many direct root reads [`SharedCatalog::resolve_root`] answered.
@@ -527,7 +527,7 @@ impl RootSlot {
 /// `src/compiler_roots.js`.
 ///
 /// Serves both direct name resolution ([`Self::resolve`]) and lazy on-demand
-/// materialization for V8/QuickJS engines (`__lightRootService`), eliminating
+/// materialization for V8 engines (`__lightRootService`), eliminating
 /// eager catalog replay on both the coordinator and worker isolates.
 #[derive(Default)]
 pub(crate) struct RootIndex {
@@ -1729,7 +1729,7 @@ struct InstalledRegistrations {
     bootstrap: Option<Bootstrap>,
     /// How many of the catalog's registrations `bootstrap` holds (or is synced to).
     installed: usize,
-    /// How many bundles `bootstrap` is synced to (V8/QuickJS RootIndex path).
+    /// How many bundles `bootstrap` is synced to (V8 RootIndex path).
     synced_bundles: usize,
     /// How many entries of [`RootIndex::extended_protocols`] `bootstrap` holds.
     synced_ext_protocols: usize,
@@ -1846,10 +1846,10 @@ struct NamespaceOverlay {
     pool_policy: PoolPolicy,
     capturing: bool,
     captured_macros: Vec<CapturedMacro>,
-    /// Set whenever V8/QuickJS actually observed a local root/bundle/unit,
+    /// Set whenever V8 actually observed a local root/bundle/unit,
     /// telling the worker to retire its isolate after this namespace pass.
     touched_local_in_engine: bool,
-    /// Set whenever V8/QuickJS reflected on the compile-time namespace registry
+    /// Set whenever V8 reflected on the compile-time namespace registry
     /// (`find-ns` / `the-ns` / `all-ns`) during this overlay pass, signaling an
     /// immediate fallback to the coordinator's canonical namespace registry.
     reflected_in_engine: bool,
@@ -1857,7 +1857,7 @@ struct NamespaceOverlay {
     /// during this overlay pass, in exact creation order, so the coordinator
     /// can materialize them lazily before any later `createNs`/`findNs`/`allNs`.
     created_namespaces: Vec<String>,
-    /// Whether this overlay synced a temporary overlay window into V8/QuickJS
+    /// Whether this overlay synced a temporary overlay window into V8
     /// (`"\0overlay"`) that must be cleared via `"\0clear"` when reusing the
     /// isolate.
     overlay_synced: bool,
@@ -2378,7 +2378,7 @@ impl CompilationSession {
     pub fn bootstrap(&self) -> Option<Bootstrap> {
         self.engine.borrow().bootstrap.clone()
     }
-    /// Sync the coordinator's V8/QuickJS engine with the latest catalog cursor,
+    /// Sync the coordinator's V8 engine with the latest catalog cursor,
     /// bundle count and newly extended protocols from [`Catalog::roots`],
     /// without replaying individual registrations. Lock-free when nothing new
     /// was registered or no new protocol was extended.
@@ -3007,7 +3007,7 @@ impl CompilationSession {
             })),
         })
     }
-    /// Clear any temporary V8/QuickJS overlay window installed during a parallel
+    /// Clear any temporary V8 overlay window installed during a parallel
     /// top-level pass so the persistent worker isolate remains pristine for
     /// reuse whenever no local root/bundle was actually materialized in V8.
     pub(crate) fn clear_engine_overlay(&self) -> Result<(), String> {
@@ -5535,7 +5535,7 @@ pub(crate) struct WorkerView {
     /// How many of the catalog's registrations the host's engine holds (or is
     /// synced to in [`RootIndex`]).
     installed: Cell<usize>,
-    /// How many bundles and distinct extended protocols this view's V8/QuickJS
+    /// How many bundles and distinct extended protocols this view's V8
     /// engine has synced.
     synced_bundles: Cell<usize>,
     synced_ext_protocols: Cell<usize>,
@@ -5612,7 +5612,7 @@ impl WorkerView {
     pub(crate) fn thread_id(&self) -> usize {
         self.thread
     }
-    /// Sync this worker view's V8/QuickJS engine up to `limit` (exact
+    /// Sync this worker view's V8 engine up to `limit` (exact
     /// `prefix_cursor`) without advancing past `limit`. Returns `Ok(Some(overlay_active))`
     /// when ready to run an overlay rooted at `limit` (including when the
     /// isolate is already at `installed > limit` and `limit..installed` is
@@ -5667,7 +5667,7 @@ impl WorkerView {
         Ok(Some(false))
     }
     /// Advance this thread's engine to the catalog's current registration
-    /// frontier. On V8/QuickJS, updates the lightweight catalog cursor and
+    /// frontier. On V8, updates the lightweight catalog cursor and
     /// extended-protocol set without locking or replaying individual roots or
     /// bundles (`__lightRootService` resolves them on demand from `RootIndex`).
     fn install(&self, active: Option<&dyn MacroEvaluator>) -> Result<(), String> {
@@ -5816,9 +5816,8 @@ pub(crate) enum PoolEngines {
     /// worker isolate ([`isolate_count`]), macros run in a script host, or the
     /// compilation is interactive.
     None,
-    /// Each worker with an engine owns one V8 isolate, or in a QuickJS-only
-    /// build one QuickJS runtime (light-cljs-436), for the whole build; the
-    /// workers beyond the isolates the limit allows have none and take only
+    /// Each worker with an engine owns one V8 isolate for the whole build.
+    /// Workers beyond the isolate limit take only
     /// macro-free units (light-cljs-437).
     Persistent,
     /// Each unit is analyzed in a fresh isolate, the correctness reference
@@ -5988,7 +5987,7 @@ pub(crate) fn release_definition_test(host: &MacroHost, unit: usize) {
 /// slots may run under the macro memory limit `limit`: the main one, and
 /// as many workers' as what the limit leaves beyond the main one's
 /// reservation gives [`crate::evaluator::WORKER_SHARE`] each (64 MiB for a
-/// V8 isolate or a QuickJS runtime). The main isolate reserves what
+/// V8 isolate). The main isolate reserves what
 /// a serial build with the default limit has, or the whole limit when it
 /// is lower, so that a build the default limit fits at `--jobs 1` fits
 /// at every `--jobs` (light-cljs-437): the default 64 MiB leaves no room
@@ -6001,13 +6000,13 @@ pub(crate) fn isolate_count(limit: usize, slots: crate::scheduler::Slots) -> usi
     1 + ((limit - reserved) / crate::evaluator::WORKER_SHARE).min(slots.workers())
 }
 
-/// Default cap on worker V8/QuickJS isolates started for a build's unit pool.
+/// Default cap on worker V8 isolates started for a build's unit pool.
 /// Additional `--jobs` slots run as lightweight engine-less Rust workers taking
 /// macro-free units, while the engine workers serve macro-expanding units first
 /// and fall back to engine-less views for macro-free units (light-cljs-1090).
 pub(crate) const MAX_POOL_WORKER_ISOLATES: usize = 3;
 
-/// How many compile-time isolates (coordinator + workers) a V8/QuickJS unit
+/// How many compile-time isolates (coordinator + workers) a V8 unit
 /// pool sizes for `limit` and `slots`: bounded both by the memory budget
 /// ([`isolate_count`]) and by `1 + MAX_POOL_WORKER_ISOLATES`.
 pub(crate) fn pool_isolate_count(limit: usize, slots: crate::scheduler::Slots) -> usize {
@@ -6047,9 +6046,7 @@ mod share_tests {
         // (light-cljs-437): the other slots run workers without an engine.
         assert_eq!(super::isolate_count(64 << 20, slots(8)), 1);
         assert_eq!(super::isolate_count(64 << 20, slots(2)), 1);
-        // Beyond the main isolate's 64 MiB, a worker isolate, or a QuickJS
-        // runtime in QuickJS-only builds, per 64 MiB (light-cljs-436 and
-        // light-cljs-441).
+        // Beyond the main isolate's 64 MiB, reserve one isolate per 64 MiB.
         let share = crate::evaluator::WORKER_SHARE;
         assert_eq!(share, 64 << 20);
         assert_eq!(super::isolate_count(96 << 20, slots(8)), 1);
@@ -6393,7 +6390,7 @@ fn execute_pool_job(
     }
     // Macro-free units never enter a compile-time engine on any backend
     // (`MacroFreeUnit` enforces this): run them on the slot's engine-less
-    // view so an engine worker does not boot a V8/QuickJS isolate or sync
+    // view so an engine worker does not boot a V8 isolate or sync
     // catalog/frontier/gensym state just to analyze a macro-free unit.
     let plain = macro_free && slot.engines != PoolEngines::None;
     #[allow(unused_mut)]

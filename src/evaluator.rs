@@ -59,14 +59,9 @@ pub(crate) static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
 pub(crate) const DEFAULT_MEMORY_LIMIT: usize = 64 * 1024 * 1024;
 /// What a build's macro memory limit must leave beyond the main engine's
 /// reservation for each worker engine, and the least base a worker engine
-/// is allowed ([`MemoryPool`]): 64 MiB for a V8 isolate and a QuickJS
-/// runtime alike. A worker's QuickJS runtime holds 33 to 48 MiB once it has
-/// the build's macros on Penpot and the 200k generated project, so that at
-/// 32 MiB it took headroom at its first units and failed the build where
-/// none was left (light-cljs-436); a V8 isolate's heap holds 27 to 29 MiB
-/// on the 200k project, so at 32 MiB (light-cljs-339) its collections ran
-/// at the limit and its build took 1.6x as long with twice the isolates
-/// (light-cljs-441).
+/// is allowed ([`MemoryPool`]). At 32 MiB on the 200k project, collections
+/// ran at the limit and the build took 1.6x as long with twice the
+/// isolates (light-cljs-441).
 pub(crate) const WORKER_SHARE: usize = 64 << 20;
 
 #[derive(Clone, Debug)]
@@ -1716,8 +1711,8 @@ impl EvalEngine {
 }
 
 /// The runtime heap of an interactive session: the operations
-/// [`crate::EvalSession`] performs at an outer boundary. Language exceptions are ordinary errors here, and the heap
-/// stays usable after them; resource limits and cancellation stay terminal.
+/// [`crate::EvalSession`] performs at an outer boundary. The heap stays usable
+/// after language exceptions. Resource limits and cancellation are terminal.
 pub(crate) trait SessionEvaluator {
     fn control(&self) -> ExecutionControl;
     fn begin_operation(&self, options: &EvaluatorOptions) -> Result<(), EvalError> {

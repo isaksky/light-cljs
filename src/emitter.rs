@@ -2212,11 +2212,9 @@ impl EmptyCollection {
 /// Constants of at least this many nodes (scalars, keywords, symbols and
 /// collections, counted over the literal) are lazy cells, built on first
 /// read: `let c<n>; const k<n> = () => c<n> ??= <initializer>;`, read as
-/// `k<n>()`. Smaller ones are built while the output loads. A lazy cell saves
-/// QuickJS the construction of a constant that startup does not read, and
-/// costs V8 a second parse of one that it does; below about a thousand nodes
-/// neither engine gains. Measured in benchmarks/compiler.md ("Constant
-/// collection pool").
+/// `k<n>()`. Smaller ones are built while the output loads. A lazy cell
+/// defers construction until first use and can cost V8 a second parse.
+/// See benchmarks/compiler.md ("Constant collection pool").
 const LAZY_CONSTANT_NODES: u32 = 1024;
 
 /// What the pool knows about an expression (indexed by `ExprId`).
@@ -4705,10 +4703,6 @@ impl<'a, 's> Emitter<'a, 's> {
         }
     }
 
-    /// This adapter is emitted only for the native compile-time runtime.
-    /// It unwraps occurrences and converts nothing else (a native form is
-    /// the same object in JavaScript, docs/native-macros.md, light-cljs-558),
-    /// rejecting explicit interop with a non-struct form.
     /// An `if` test: `truth(test)`, or the test itself when it is a
     /// `BooleanHint` or, at `Advanced`, when its inferred type makes JavaScript
     /// truthiness agree with Clojure's (no number, string or host value).

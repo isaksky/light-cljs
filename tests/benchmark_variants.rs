@@ -89,7 +89,15 @@ fn level_benchmark_harness_checks_and_records_every_level() {
         "{samples}"
     );
     let summary = std::fs::read_to_string(output.join("summary.md")).unwrap();
-    assert!(!summary.contains("QuickJS"), "{summary}");
+    assert_eq!(
+        summary
+            .lines()
+            .find(|line| line.starts_with("| Fixture | Level | Bytes |")),
+        Some(
+            "| Fixture | Level | Bytes | Node parse | Node execute | Node parse+execute | Node process |"
+        ),
+        "{summary}"
+    );
     assert!(summary.contains("| rest-fn | prepare |"), "{summary}");
     assert!(
         summary.contains("| record-protocol | 10 | none |"),

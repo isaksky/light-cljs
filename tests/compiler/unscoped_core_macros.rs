@@ -324,7 +324,6 @@ fn snapshots_of_calls_merge_keys_the_engine_finds_equal() {
         let error = analyze_with_macros(source, &parse(source).unwrap(), &mut host)
             .unwrap_err()
             .to_string();
-        // The QuickJS reference names its conversion between the two.
         let error = without_stack(&error);
         assert!(
             error.contains("macro cljs.core/if-not: ")
@@ -486,7 +485,6 @@ fn rejected_core_macro_calls_report_the_definitions_errors() {
     let error = analyze_with_macros(&source, &parse(&source).unwrap(), &mut host)
         .unwrap_err()
         .to_string();
-    // The QuickJS reference names its conversion between the two.
     assert!(
         error.contains("macro cljs.core/when: ")
             && error.contains(
@@ -496,7 +494,7 @@ fn rejected_core_macro_calls_report_the_definitions_errors() {
     );
 }
 
-/// `error` without the stack the QuickJS reference adds to an engine error
+/// `error` without JavaScript stack frames
 /// (`    at call (...)` lines before `; definition`).
 fn without_stack(error: &str) -> String {
     error

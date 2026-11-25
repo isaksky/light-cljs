@@ -175,8 +175,7 @@ impl SharedPrefix {
         }
     }
 
-    // No caller yet: the published-append path that 0041cda4 added for
-    // experimental Pants namespace builds.
+    // Entry point for appending to published program tables.
     #[allow(dead_code)]
     pub(crate) fn published(mut self, publication: std::sync::Arc<Publication>) -> Self {
         self.publication = Some(publication);

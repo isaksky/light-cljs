@@ -548,11 +548,7 @@ fn a_blind_source_macro_still_reports_an_unconvertible_environment() {
         .to_string();
     assert!(error.contains("main.cljs:4:17"), "{error}");
     assert!(error.contains("macro app.main/blind"), "{error}");
-    // V8 and QuickJS word the regular expression's failure differently.
-    assert!(
-        error.contains("Invalid regular expression") || error.contains("at RegExp"),
-        "{error}"
-    );
+    assert!(error.contains("Invalid regular expression"), "{error}");
     s.write(
         "app/main.cljs",
         "(ns app.main)\n(defmacro ignored {:probe #\"\\[\"} [] nil)\n(defmacro blind [] 42)\n(js/console.log (blind))\n",

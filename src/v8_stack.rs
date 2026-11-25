@@ -28,8 +28,7 @@ impl StackLimit {
         if !(floor..self.high).contains(&here) {
             return Err(exhausted());
         }
-        // A zero configured limit means no additional engine cap, as in
-        // QuickJS. The OS stack boundary still cannot safely be crossed.
+        // A zero configured limit uses the OS stack boundary.
         let requested = if self.bytes == 0 {
             floor
         } else {

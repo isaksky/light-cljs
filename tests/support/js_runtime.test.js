@@ -1215,14 +1215,14 @@ for (const nonString of [null, undefined, 42]) {
       RealError.prepareStackTrace = prevPrepare;
     }
   }
-  // Simulated eager engine (own data property `stack`, like QuickJS/JSC).
+  // Simulated eager engine with an own data property `stack`.
   globalThis.Error = EagerError;
   try {
     const eagerRt = (0, eval)(runtimeSrc);
-    const ex = eagerRt.core.exInfo('quickjs-like', null);
+    const ex = eagerRt.core.exInfo('message', null);
     const desc = Object.getOwnPropertyDescriptor(ex, 'stack');
     assert.equal(desc.get, undefined);
-    assert.equal(desc.value, 'eager:quickjs-like');
+    assert.equal(desc.value, 'eager:message');
     assert.equal(desc.enumerable, true);
     assert.equal(desc.writable, true);
   } finally {

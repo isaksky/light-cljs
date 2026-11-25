@@ -1,5 +1,5 @@
 // Test-only typed observation of the pinned numeric fixture bodies. The same
-// helper runs in QuickJS and Node; fixture expectations remain literal TSV data.
+// helper runs in the embedded evaluator and Node. Fixture expectations are literal TSV data.
 // It deliberately supports only the numeric corpus's primitive/vector results.
 (rt => {
   const encode = value => {

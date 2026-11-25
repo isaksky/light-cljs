@@ -9,8 +9,7 @@
 //! `u32` bits, and strings are UTF-16 code units, lone surrogates included.
 //! [`ConstantHashes`] applies them to the constant pool's entries
 //! (`ConstantPart` and `Composite` in `src/emitter.rs`), and
-//! `tests/compiler/constant_hashes.rs` checks them against the runtime in Node
-//! and QuickJS.
+//! `tests/compiler/constant_hashes.rs` checks them against the runtime in Node and the embedded evaluator.
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry::{Occupied, Vacant};

@@ -347,34 +347,13 @@ fn registering_readers_preserves_the_serial_macro_memory_limit() {
 
 #[cfg(light_v8)]
 #[test]
-fn compiler_data_readers_run_without_quickjs() {
+fn compiler_data_readers_run_in_v8() {
     use light_cljs::{
         EvalOptions, EvalSession, MacroHost, compile_with_macros,
         compiler::{EntryRecorders, analyze_namespace_entry_recorded},
         compiler_data::Name,
         scheduler::Slots,
     };
-
-    // The guard is process-wide, so set it in a separate test process.
-    const GUARD: &str = "LIGHT_CLJS_ASSERT_NO_QUICKJS";
-    if std::env::var_os(GUARD).is_none() {
-        let output = Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "data_libraries::compiler_data_readers_run_without_quickjs",
-                "--nocapture",
-            ])
-            .env(GUARD, "1")
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return;
-    }
 
     let tag = Name::new(None, "named");
     let named = "(fn [x] (inc x))";

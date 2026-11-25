@@ -739,7 +739,7 @@ struct ReaderEnvironment {
 }
 
 /// Macro configuration and compiler metadata. Each clean compilation owns a fresh
-/// QuickJS bootstrap session; reusing this host never reuses JavaScript macro roots.
+/// macro bootstrap session; reusing this host never reuses JavaScript macro roots.
 ///
 /// A host has two parts (docs/compiler-concurrency.md, "Thread safety
 /// today"). Its settings and [`MacroTables`] are sendable data, which a
@@ -1300,7 +1300,7 @@ impl MacroHost {
         }
         Ok(())
     }
-    /// Allocate a fresh synchronous heap, using V8 when available. Its dynamic
+    /// Allocate a fresh V8 isolate. Its dynamic
     /// `*assert*` follows [`Self::set_assertions`], so the macros, functions and
     /// data readers it runs read the setting, as upstream's `:elide-asserts`
     /// binds `clojure.core/*assert*` while compiling.
@@ -1478,7 +1478,7 @@ impl MacroHost {
     /// Run the macros of clean compilations in `host`'s engine instead of
     /// the built-in one (light-cljs-307, a prototype for the browser
     /// playground; docs/browser-macros.md). Interactive macros use the
-    /// built-in macro engine, and compiler data readers use QuickJS.
+    /// embedded V8 engine, as do compiler data readers.
     pub fn set_script_host(&mut self, host: std::rc::Rc<dyn crate::host_evaluator::ScriptHost>) {
         self.engine.script_host = Some(host);
     }

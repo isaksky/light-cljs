@@ -1,7 +1,7 @@
 //! Compiler macro sessions in a JavaScript engine that the embedder supplies
 //! (light-cljs-307, a prototype). The browser playground uses it to run
-//! macros in the browser's own engine instead of in QuickJS inside the
-//! WebAssembly module: [`MacroHost::set_script_host`] selects it for clean
+//! macros in the browser's own engine. [`MacroHost::set_script_host`]
+//! selects it for clean
 //! compilations, and docs/browser-macros.md records what it preserves, what
 //! it gives up and what it measured.
 //!

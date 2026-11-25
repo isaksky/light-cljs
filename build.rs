@@ -245,10 +245,8 @@ fn collect_files(path: &Path, files: &mut Vec<String>) {
 ///   protocol its method demands; and `keyMethod`, `builtin`,
 ///   `externalMethod` and `extendedMethod` run with the calls between them
 ///   (`demandMethod`, `keySlot`, `nativeType`, `extendedDeclared` and
-///   `externalMethod` where it is still the hook) inlined. (A
-///   `storesPredicate` tests one store, its class's, where it probed each in
-///   turn, so the QuickJS reference no longer reorders and unrolls its
-///   probes, light-cljs-1046.)
+///   `externalMethod` where it is still the hook) inlined. A
+///   `storesPredicate` tests only its class's store (light-cljs-1046).
 fn compiler_runtime(runtime: &str) -> String {
     compiler_hooks(runtime)
 }

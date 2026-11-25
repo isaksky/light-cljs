@@ -142,8 +142,7 @@ pub(crate) fn execute(js: &str) -> String {
 }
 
 /// What a build's memory budget needs beyond the main engine's 64 MiB for
-/// each worker engine: 64 MiB for a V8 isolate or a QuickJS runtime in
-/// QuickJS-only builds (light-cljs-436, light-cljs-441).
+/// each worker isolate (64 MiB, light-cljs-441).
 pub(crate) const WORKER_SHARE: usize = 64 << 20;
 
 /// A host whose memory budget gives the main isolate its default 64 MiB

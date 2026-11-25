@@ -7,7 +7,7 @@
 ;   You must not remove this notice, or any other, from this software.
 
 ; Adapted from ClojureScript a5e94c988fd0b50ffcff1ce6add12ffbb7839a3e.
-; First-party compiler bootstrap; compiled by light-cljs and executed in QuickJS.
+; First-party compiler bootstrap; compiled by light-cljs and executed at compile time.
 (defmacro sequence-for [seq-exprs body-expr]
   (assert (and (vector? seq-exprs) (even? (count seq-exprs))) "for requires an even binding vector")
   (let [groups (reduce (fn [groups [k v]]

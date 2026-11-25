@@ -2135,34 +2135,19 @@ fn stats_file_traces_exclusive_stages_and_demand_edges() {
         assert_eq!(unit("app.macros/plain")[3], "9");
         // V8 enters the host only for units that run a JavaScript macro.
         let host: Vec<_> = units.iter().map(|row| (row[2], row[11])).collect();
-        if cfg!(light_v8) {
-            assert_eq!(
-                host,
-                [
-                    ("app.macros/inner", "0"),
-                    ("app.macros/outer", "1"),
-                    ("app.macros/bumped", "1"),
-                    ("app.macros/native", "0"),
-                    ("app.macros/plain", "0"),
-                ],
-                "--jobs {jobs}: {trace}"
-            );
-            assert_eq!(value("trace.units.host"), 2.0);
-            assert_eq!(value("trace.units.without-macro-calls"), 1.0);
-        } else {
-            // Pants also enters the runtime to install catalog views. A
-            // reused task may already have the view, depending on its worker.
-            assert_eq!(unit("app.macros/outer")[11], "1");
-            assert_eq!(unit("app.macros/bumped")[11], "1");
-            assert_eq!(
-                value("trace.units.host"),
-                host.iter().filter(|row| row.1 == "1").count() as f64
-            );
-            assert_eq!(
-                value("trace.units.without-macro-calls"),
-                f64::from(unit("app.macros/plain")[11] == "0")
-            );
-        }
+        assert_eq!(
+            host,
+            [
+                ("app.macros/inner", "0"),
+                ("app.macros/outer", "1"),
+                ("app.macros/bumped", "1"),
+                ("app.macros/native", "0"),
+                ("app.macros/plain", "0"),
+            ],
+            "--jobs {jobs}: {trace}"
+        );
+        assert_eq!(value("trace.units.host"), 2.0);
+        assert_eq!(value("trace.units.without-macro-calls"), 1.0);
         assert!(value("trace.engine-ms") > 0.0, "{stderr}");
         assert!(value("trace.engine.entries") > 0.0, "{stderr}");
         // The units that run a macro and the top levels that expand
@@ -2284,8 +2269,7 @@ fn stats_file_traces_prepared_and_bundle_root_reads() {
         row(&square, "top-level", main),
         row(&record, "top-level", main),
     ];
-    // Pants also checks ready roots through the live visibility Proxy, so
-    // the later unit's protocol and constructor reads remain observed.
+    // The later unit observes the already prepared roots too.
     expected.extend([
         row(&protocol, "unit", &later),
         row(&square, "unit", &later),
@@ -2639,27 +2623,13 @@ fn jobs_stats_report_the_unit_pool_scheduler() {
     assert_eq!(stat("pool.workers"), 3.0, "{stderr}");
     assert!(stat("time.pool-ms") > 0.0, "{stderr}");
     assert!((0.0..=1.0).contains(&stat("pool.utilization")), "{stderr}");
-    // Every pooled unit ran as one job, taken by a claim, a steal or from
-    // the worker's own deque. Every unit uses a macro, so only resumable
-    // VM steps can run as helped jobs. Forced helping is covered by
-    // compilation_session's
-    // native_pool_helps_parked_consumers_and_migrates_a_saved_continuation.
     let jobs = stat("pool.jobs");
     let units = stat("deferred-units.pooled");
-    let helped = stat("pool.jobs.helped");
-    if cfg!(light_v8) {
-        assert_eq!(jobs, units, "{stderr}");
-    } else {
-        // A parked step can be taken by an ordinary claim as well as by
-        // a helper. Account for either, including a build with no parks.
-        assert!(jobs >= units + helped, "{stderr}");
-        assert!(jobs - units <= stat("native.tasks.steps"), "{stderr}");
-    }
+    assert_eq!(jobs, units, "{stderr}");
     assert!(units >= 24.0, "{stderr}");
     assert!(stat("pool.claims") >= 1.0, "{stderr}");
     let taken = stat("pool.claimed") + stat("pool.stolen") + stat("pool.jobs.local");
-    // Whole units must be accounted for by ordinary claims; saved VM
-    // steps can also run directly from the urgent queue.
+    // Account for units taken from the workers' queues.
     assert!(taken >= units, "{stderr}");
     assert!(stat("pool.peak-admitted") >= 1.0, "{stderr}");
     let (wait, longest) = (

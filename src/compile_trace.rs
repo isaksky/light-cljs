@@ -9,8 +9,7 @@
 //! so nested work counts once: a unit a macro demands while a namespace's top
 //! level is analyzed counts as that unit, not as the top-level pass, and the
 //! pass records it as a demand edge and as time it waited. Engine time is
-//! taken at the outermost engine service call (`v8_evaluator::invoke` for
-//! V8, `evaluator::traced` for QuickJS) and
+//! taken at the outermost engine service call (`v8_evaluator::invoke`) and
 //! charged to the innermost frame; a unit demanded from inside JavaScript
 //! pauses its demander's engine time while it runs, so engine time is
 //! exclusive too. The time at depth 0, which counts Rust called back from

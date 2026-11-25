@@ -31,11 +31,10 @@ A `gap` row tagged `kind=canonical-dialect-difference` is one where light-cljs
 follows canonical ClojureScript and SCI (on the JVM) differs, for example
 `clojure.string/join` with a nil separator.
 
-Rows listed in `STACK_DEPTH_DEPENDENT` (in the test) end in QuickJS stack
-exhaustion. The number of effects before it depends on native frame sizes and
-therefore on the build profile (16 with unoptimized dependencies, 142 with the
-default test profile on an Apple Silicon Mac). These rows are compared by shape:
-a stack-exhaustion diagnostic after at least two `false` effects, with no output.
+Rows listed in `STACK_DEPTH_DEPENDENT` (in the test) end in stack exhaustion.
+The number of effects before it depends on the engine and its stack frames.
+These rows are compared by shape, with a stack-exhaustion diagnostic after
+at least two `false` effects and no output.
 
 Anonymous function parameters are named `p<n>__<id>#` and `rest__<id>#`, where
 `<id>` comes from a process-wide reader counter. Its value therefore depends on

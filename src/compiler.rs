@@ -1554,7 +1554,7 @@ fn run_parse_job(
 }
 
 /// The slots the parse queue and the unit pool may use: `slots` in a
-/// native build, with V8 or QuickJS-only (light-cljs-436); one, which runs
+/// build with threads, and one, which runs
 /// every job inline on the calling thread, in WebAssembly, which has no
 /// threads (docs/compiler-concurrency.md, after "Engineering inventory").
 fn parse_slots(slots: crate::scheduler::Slots) -> crate::scheduler::Slots {
@@ -2919,8 +2919,7 @@ fn analyze_entry(
     let mut index = 0;
     // With `--jobs N` the build's deferred units are analyzed on one pool
     // for the whole build of N-1 workers, as many as the macro memory limit
-    // allows each in a V8 isolate of its own (a QuickJS runtime in
-    // QuickJS-only builds, light-cljs-436), which share the build's
+    // allows each in a V8 isolate of its own, sharing the build's
     // deadline and macro memory limit, one budget for them all
     // (light-cljs-341), and the others without an engine, which take only
     // macro-free units (light-cljs-437). While artifacts are captured or a
@@ -2970,8 +2969,6 @@ fn analyze_entry(
                     && let Some(session) = macros.session_handle()
                 {
                     use crate::compilation_session::PoolEngines;
-                    // V8 isolates, or in QuickJS-only builds QuickJS runtimes
-                    // (light-cljs-436).
                     let engines = if can_pool_engines {
                         if fresh_isolates
                             || std::env::var_os("LIGHT_CLJS_FRESH_UNIT_ISOLATES").is_some()

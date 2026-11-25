@@ -2,7 +2,7 @@
 //! "Actions"): a [`DevSession`] owns the incremental compiler of a session,
 //! its macro host and the namespaces it has loaded, and no application heap.
 //! Compiling a form or a source yields [`Action`]s, which a runtime
-//! interprets: [`crate::EvalSession`] over its QuickJS heap, or a client that
+//! interprets: [`crate::EvalSession`] over its V8 isolate, or a client that
 //! sends the units to a browser tab or a Node process.
 //!
 //! The compiler works one top-level form at a time and hands each action to
@@ -37,8 +37,7 @@ pub struct Unit {
     pub namespace: String,
     /// The unit's JavaScript.
     pub js: String,
-    /// The unit's source map, when the compiler made one; the QuickJS
-    /// session ignores it.
+    /// The unit's source map, when the compiler made one.
     pub source_map: Option<String>,
     /// The form, at which an error the unit throws is located.
     pub location: SourceSpan,

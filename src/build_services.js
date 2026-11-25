@@ -8,9 +8,8 @@
     if (answer[0] === "n") return null;
     throw new Error(answer.slice(1));
   };
-  // Requests carry text, so both engines' bridges see the same request:
-  // NUL separates its fields, and a lone surrogate has no UTF-8 form (V8
-  // would replace it, QuickJS refuse it), so neither may appear.
+  // Requests use NUL to separate fields and cross the bridge as UTF-8.
+  // Reject NUL in a field and reject lone surrogates before conversion.
   const text = (name, value) => {
     if (typeof value !== "string")
       throw new TypeError("light.build/" + name + ": expected a string, got " + (value === null ? "nil" : typeof value));

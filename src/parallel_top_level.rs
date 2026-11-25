@@ -2,7 +2,7 @@
 //!
 //! Schedules ready namespaces ahead of the coordinator's canonical publication
 //! frontier onto the build's unified `UnitPool` (reusing the Phase 1 capped
-//! V8/QuickJS worker isolates and engine-less Rust workers with zero extra
+//! V8 worker isolates and engine-less Rust workers with zero extra
 //! isolates), using an incremental dependency DAG over `loader.ordered`.
 //!
 //! Correctness & determinism invariants:
@@ -746,7 +746,7 @@ impl ParallelTopLevel {
 }
 
 /// Fast static classifier predicting whether `file`'s top-level pass will
-/// invoke a compile-time JS/QuickJS engine (so macro-expanding top-level files
+/// invoke a compile-time JavaScript engine (so macro-expanding top-level files
 /// route straight to engine workers instead of bouncing off engine-less ones).
 ///
 /// False negatives are 100% sound: an engine-less worker has

@@ -17,7 +17,7 @@
 //! Native sequence cursors (2026-10-16): eight advanced ceilings below increase
 //! to the next 1,000 bytes for first/rest/next paths that avoid redispatching
 //! unrelated protocols. This fixes override behavior and cuts the cold Penpot
-//! render from 30.66 to 27.32 seconds; the representative QuickJS traversal
+//! render from 30.66 to 27.32 seconds; the representative traversal in the former embedded evaluator
 //! falls from 3,862 to 1,853 ms. The readable runtime grows by 767 bytes and
 //! these slices exceed their previous ceilings by 11–362 bytes. Retain this
 //! size/performance rationale in the eventual commit message.
@@ -90,7 +90,7 @@
 
 //! WeakMap stores where the host states them (light-cljs-292, 2026-10-18):
 //! `privateStore` and `kindedStore` return WeakMaps in the evaluator's
-//! QuickJS, which makes its seq and per-operation workloads 10-35% faster.
+//! former interpreter, which made its seq and per-operation workloads 10-35% faster.
 //! The readable runtime grows 387 bytes; the nineteen none/prepare ceiling
 //! pairs it passed move to the next 1,000. Advanced sizes shrink by up to
 //! 61 bytes, as the stores share one test for a value that can hold a field;

@@ -32,7 +32,7 @@ pub(crate) enum Kind {
     /// A `compile_trace` stage frame: `a` the stage's index, `b` its owner
     /// (namespace or unit).
     Stage = 0,
-    /// An outermost engine service call (V8, QuickJS or Pants task command).
+    /// An outermost engine service call.
     Engine = 1,
     /// A pool job: `a` the unit (or the task of a resumed macro step), `b`
     /// 0 for a unit, 1 for a macro-free unit, 2 for a macro step.

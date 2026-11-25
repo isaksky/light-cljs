@@ -252,12 +252,12 @@ pub struct LiveCounts {
     /// [`crate::namespace_artifact::NamespaceArtifact`]s captured, decoded
     /// or cloned and not yet dropped.
     pub artifacts: usize,
-    /// JavaScript engines (V8 isolates and QuickJS runtimes)
+    /// JavaScript engines
     /// made for macros, deferred units or a session and not yet dropped.
     pub engines: usize,
     /// Persistent handles Rust holds into an engine's heap: V8 `Global`s (a
     /// context, its services, cached namespace functions, the bridge's
-    /// provenance template, a failed unit's exception). QuickJS keeps none.
+    /// provenance template, a failed unit's exception).
     pub engine_handles: usize,
     /// Rust data an engine's objects own through the form bridge: the
     /// provenance of each object a macro call imported, freed when the

@@ -769,14 +769,9 @@ fn every_historical_sci_case_has_an_evaluator_disposition() {
 /// nextest.
 const PARTS: usize = 10;
 
-/// QuickJS puts its JavaScript stack before the compiler's definition
-/// location. V8 leaves the location on the first diagnostic line compared
-/// by the corpus. Check the exact location along with the recorded message.
+/// Check the exact macro definition location along with the recorded message.
 fn with_v8_macro_location<'a>(id: &str, expected: &'a str) -> std::borrow::Cow<'a, str> {
     use std::borrow::Cow;
-    if !cfg!(light_v8) {
-        return Cow::Borrowed(expected);
-    }
     let location = match id {
         "sci-control-bad-if-let" => "compiler_core_macros.cljs:49:1",
         "sci-control-bad-if-some" => "compiler_core_macros.cljs:51:1",

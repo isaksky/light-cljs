@@ -20,17 +20,8 @@
     else if (known !== hash) throw new Error(`Two light-cljs builds share the runtime key ${key.slice(1)}: give one a different :runtime-key`);
     return key;
   })("$LKEY", "$LHASH");
-  //@unit weakMapStores
-  // A host whose WeakMap entries cost less than private fields, as the
-  // evaluator's reference-counting QuickJS, states so before the runtime
-  // loads; the compile-time stamp (`stampBrand`) is then a WeakSet, as
-  // unforgeable a brand. The engine is never sniffed (light-cljs-292).
-  // Where it is not, a brand tests that a value can hold a private field
-  // with `canHoldField`, which V8 inlines. No runtime value keeps a
-  // private-field payload (`payloads` and `kindedStore`, deleted in
-  // light-cljs-1038): every one is a class with its own fields.
-  const weakMapStores = globalThis.lightCljsWeakMapStores === true,
-    canHoldField = value => typeof value === "object" ? value !== null : typeof value === "function";
+  //@unit canHoldField
+  const canHoldField = value => typeof value === "object" ? value !== null : typeof value === "function";
   //@unit keywordOf
   // A keyword, the class of kind 20 (`kinds`, `KeywordCell`): the value
   // itself, whose own keyed fields are upstream's `ns`, `name`, `fqn` and
@@ -539,20 +530,18 @@
     Type.prototype.cljs$lang$kind$$LKEY = kind;
     return Type;
   }
-  //@unit stampBrand compile-time requires: canHoldField, weakMapStores
+  //@unit stampBrand compile-time requires: canHoldField
   // The compile-time brand of the runtime's class values (docs/value-layout.md,
   // section 4): the compiler form bridge, `inspect` and the compile-time
   // printer test it (`stamped`) before they read a value's keyed kind, so
   // that rejecting a macro result reads no property of a host value, and
   // runs no getter or Proxy trap. build.rs (`compiler_runtime`) turns each
-  // class constructor's `/*@brand*/` into a `stamp`; output never has it. A
-  // private field in V8, a `WeakSet` where the host states WeakMap stores.
-  const stampBrand = weakMapStores ? (members => ({add(value) { members.add(value); }, has: value => members.has(value)}))(new WeakSet())
-    : class extends (function (value) { return value; }) {
-      #b;
-      static add(value) { new stampBrand(value); }
-      static has(value) { return canHoldField(value) && #b in value; }
-    };
+  // class constructor's `/*@brand*/` into a `stamp` using a private field.
+  const stampBrand = class extends (function (value) { return value; }) {
+    #b;
+    static add(value) { new stampBrand(value); }
+    static has(value) { return canHoldField(value) && #b in value; }
+  };
   //@unit stamp compile-time requires: stampBrand
   function stamp(value) { stampBrand.add(value); }
   //@unit stamped compile-time requires: stampBrand

@@ -496,8 +496,7 @@ fn runtimes_on_one_page_keep_apart_unless_they_share_a_key() {
 /// section 4): they share its fixed key, so each reads the other's values
 /// through their keyed slots, but each stamps its values with its own
 /// brand, so neither's form bridge nor `inspect` takes the other's vector
-/// for a language value. In the evaluator's engine (V8, or QuickJS in the
-/// QuickJS reference) and in Node.
+/// for a language value, in the embedded evaluator and in Node.
 #[test]
 fn compile_time_runtime_loads_keep_their_own_brands() {
     use light_cljs::evaluator::RUNTIME_SOURCE;
