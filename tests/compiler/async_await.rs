@@ -19,7 +19,8 @@ use light_cljs::source_provider::{LoadError, LoadRequest, SourceInput};
 use light_cljs::{
     ApplicationOptions, MacroHost, OptimizationLevel, analyze, parse, prepare_application,
 };
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 
 const UPSTREAM: &str =
     include_str!("../../research/clojurescript/src/test/cljs/cljs/async_await_test.cljs");
@@ -130,10 +131,28 @@ fn namespace_program(entry: &str, files: &[(&str, &str)]) -> light_cljs::Program
 
 /// Run the ES module `module` in Node and return what it prints.
 fn execute_module(module: &str) -> String {
-    let output = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
-        .args(["--input-type=module", "--eval", module])
-        .output()
-        .expect("async tests require Node");
+    let node = std::env::var_os("NODE").unwrap_or_else(|| "node".into());
+    let output = if module.len() > 131_072 {
+        let mut child = Command::new(node)
+            .arg("--input-type=module")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("async tests require Node");
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(module.as_bytes())
+            .expect("failed writing module to Node stdin");
+        child.wait_with_output().expect("async tests require Node")
+    } else {
+        Command::new(node)
+            .args(["--input-type=module", "--eval", module])
+            .output()
+            .expect("async tests require Node")
+    };
     assert!(
         output.status.success(),
         "{}\n{module}",

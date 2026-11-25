@@ -1,25 +1,13 @@
 //! Checkout map destructuring has explicit release/checkout differences (see
 //! docs/compiler.md). These are regression probes,
 //! not a claim that the pinned assertion inventory has executable witnesses.
+use crate::optimization::execute;
 use light_cljs::compile;
-use std::process::Command;
 
 fn check(source: &str) {
     let js = compile(source).unwrap_or_else(|e| panic!("{source}\n{e}"));
-    let output = Command::new("node")
-        .args(["--eval", &format!("console.log({js});")])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{source}\n{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        "true\n",
-        "{source}"
-    );
+    let stdout = execute(&format!("console.log({js});"));
+    assert_eq!(stdout, "true\n", "{source}");
 }
 
 #[test]
@@ -154,16 +142,8 @@ fn complete_pinned_checkout_destructuring_bodies() {
             .replace("destructure.test-macros/is", "cljs.user/is");
         let source = format!("{macros}\n{body}");
         let js = compile_with_macros(&source, &mut host).unwrap_or_else(|e| panic!("{name}: {e}"));
-        let output = Command::new("node")
-            .args(["--eval", &format!("console.log({js});")])
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{name}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert_eq!(String::from_utf8_lossy(&output.stdout), "true\n", "{name}");
+        let stdout = execute(&format!("console.log({js});"));
+        assert_eq!(stdout, "true\n", "{name}");
     }
 }
 

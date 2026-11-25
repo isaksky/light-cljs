@@ -31,17 +31,8 @@ fn both(source: &str, expected: &str) {
         "const rt = {RUNTIME_SOURCE}; console.log(rt.core.prStr(({})(rt)));",
         emit_js_unit(&p)
     );
-    let out = Command::new("node").args(["-e", &script]).output().unwrap();
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert_eq!(
-        String::from_utf8(out.stdout).unwrap().trim(),
-        expected,
-        "Node: {source}"
-    );
+    let stdout = crate::optimization::execute(&script);
+    assert_eq!(stdout.trim(), expected, "Node: {source}");
 }
 
 const FIXTURES: &str = include_str!("../fixtures/compiler-utilities-completion.tsv");

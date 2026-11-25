@@ -1,8 +1,8 @@
 //! Complete pinned promised library bodies in canonical applications and macros.
+use crate::optimization::execute;
 use crate::temp_dir::TempDir;
 use light_cljs::MacroHost;
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
-use std::process::Command;
 
 fn both(source: &str, expected: &str) {
     let root = TempDir::new("library-bodies");
@@ -37,20 +37,8 @@ fn both(source: &str, expected: &str) {
             "QuickJS: {source}"
         );
     }
-    let output = Command::new("node")
-        .args(["-e", &format!("console.log({javascript});")])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(
-        String::from_utf8(output.stdout).unwrap().trim(),
-        expected,
-        "Node: {source}"
-    );
+    let stdout = execute(&format!("console.log({javascript});"));
+    assert_eq!(stdout.trim(), expected, "Node: {source}");
 }
 
 #[test]

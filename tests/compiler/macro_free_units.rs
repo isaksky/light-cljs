@@ -9,7 +9,7 @@ use light_cljs::application::{ApplicationOptions, OptimizationLevel};
 use light_cljs::compiler::{EntryRecorders, analyze_namespace_entry_recorded};
 use light_cljs::scheduler::Slots;
 use light_cljs::{CompileStats, MacroHost, emit_js};
-use std::{fs, process::Command};
+use std::fs;
 
 pub(crate) const PANTS_BUILD: bool = cfg!(all(
     feature = "bbp-macros",
@@ -143,16 +143,7 @@ pub(crate) fn build_configured(
 }
 
 pub(crate) fn execute(js: &str) -> String {
-    let output = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
-        .args(["--eval", js])
-        .output()
-        .expect("compiler integration requires Node");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout).unwrap()
+    crate::optimization::execute(js)
 }
 
 /// What a build's memory budget needs beyond the main engine's 64 MiB for

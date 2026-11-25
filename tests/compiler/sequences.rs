@@ -1,18 +1,37 @@
 //! Compiled sequence checks with literal host results, independent of the shared encoder.
+use crate::optimization::execute;
 use crate::temp_dir::TempDir;
 use light_cljs::{compile, compile_namespace};
-use std::{fs, process::Command};
+use std::{
+    fs,
+    io::Write,
+    process::{Command, Stdio},
+};
 
 fn node(source: &str) -> String {
     let javascript = compile(source).unwrap_or_else(|error| panic!("{source}: {error}"));
-    let output = Command::new("node")
-        .args([
-            "--max-old-space-size=96",
-            "-e",
-            &format!("console.log(JSON.stringify({javascript}));"),
-        ])
-        .output()
-        .unwrap();
+    let script = format!("console.log(JSON.stringify({javascript}));");
+    let output = if script.len() > 131_072 {
+        let mut child = Command::new("node")
+            .arg("--max-old-space-size=96")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(script.as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    } else {
+        Command::new("node")
+            .args(["--max-old-space-size=96", "-e", &script])
+            .output()
+            .unwrap()
+    };
     assert!(
         output.status.success(),
         "{}",
@@ -79,16 +98,8 @@ fn namespaces_aliases_and_compiled_macro_output_use_compiled_comprehensions() {
     .unwrap();
     fs::write(root.join("main.cljs"), "(ns main (:require [cljs.core :as c] [macros :as m])) (let [s (m/squares (c/range 4)) n (atom 0) f c/map-indexed] (c/doseq [x s] (swap! n + x)) (js/console.log @n (c/pr-str (f vector s)) (c/pr-str (c/for [x [1 2]] (inc x)))))").unwrap();
     let javascript = compile_namespace("main", std::slice::from_ref(root.path())).unwrap();
-    let output = Command::new("node")
-        .args(["-e", &javascript])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(output.stdout, b"14 ([0 0] [1 1] [2 4] [3 9]) (2 3)\n");
+    let stdout = execute(&javascript);
+    assert_eq!(stdout, "14 ([0 0] [1 1] [2 4] [3 9]) (2 3)\n");
 }
 
 #[test]

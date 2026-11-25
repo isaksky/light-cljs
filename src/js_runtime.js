@@ -17419,20 +17419,21 @@
   // answer through the generic operations (`hostHooks`).
   protocolHooks.extend = true;
   //@unit protocolHooks.ownMethod effect: installMethods when: SubvecValue, chunkStore, containsOf,
-  //@ containsPath, countOf, countPath, dropFirstChunk, empty, find, firstOf, firstPath, getOf,
-  //@ getPath, makeMap.print, makeVector.print, metaOf, nextOf, nextPath, nthOf, nthPath,
-  //@ printMapEntries, printSequential, printValues, printWriterImpl, reduce, reduceKvOf,
-  //@ reduceKvPath, reduceOf, reducePath, restOf, restPath, rseq, seqOf, seqPath, subvec,
-  //@ vectorReduceSlot requires: ownDeclared, ownMethod, protocolHooks
+  //@ containsPath, countOf, countPath, dropFirstChunk, empty, find, first, firstOf, firstPath,
+  //@ firstSite, getOf, getPath, makeMap.print, makeVector.print, metaOf, next, nextOf, nextPath,
+  //@ nextSite, nthOf, nthPath, printMapEntries, printSequential, printValues, printWriterImpl,
+  //@ reduce, reduceKvOf, reduceKvPath, reduceOf, reducePath, rest, restOf, restPath, restSite,
+  //@ rseq, seqOf, seqPath, subvec, vectorReduceSlot requires: ownDeclared, ownMethod, protocolHooks
   // Every protocol implementation goes through `installMethods`.
   protocolHooks.programMethod = ownMethod;
   protocolHooks.declaredMethod = ownDeclared;
   //@unit protocolHooks.programMethod effect: extendType, extendInstance when: SubvecValue,
-  //@ chunkStore, containsOf, containsPath, countOf, countPath, dropFirstChunk, empty, find,
-  //@ firstOf, firstPath, getOf, getPath, makeMap.print, makeVector.print, metaOf, nextOf, nextPath,
-  //@ nthOf, nthPath, printMapEntries, printSequential, printValues, printWriterImpl, reduce,
-  //@ reduceKvOf, reduceKvPath, reduceOf, reducePath, restOf, restPath, rseq, seqOf, seqPath,
-  //@ subvec, vectorReduceSlot requires: extendedDeclared, extendedMethod, protocolHooks
+  //@ chunkStore, containsOf, containsPath, countOf, countPath, dropFirstChunk, empty, find, first,
+  //@ firstOf, firstPath, firstSite, getOf, getPath, makeMap.print, makeVector.print, metaOf, next,
+  //@ nextOf, nextPath, nextSite, nthOf, nthPath, printMapEntries, printSequential, printValues,
+  //@ printWriterImpl, reduce, reduceKvOf, reduceKvPath, reduceOf, reducePath, rest, restOf,
+  //@ restPath, restSite, rseq, seqOf, seqPath, subvec, vectorReduceSlot requires: extendedDeclared,
+  //@ extendedMethod, protocolHooks
   // ... and only `extend-type` and `specify!` give the runtime's values and
   // host values implementations, which `extendedMethod` finds.
   protocolHooks.programMethod = extendedMethod;

@@ -4,7 +4,11 @@ use light_cljs::{
     MacroHost,
     evaluator::{Evaluator, EvaluatorOptions},
 };
-use std::{fs, process::Command};
+use std::{
+    fs,
+    io::Write,
+    process::{Command, Stdio},
+};
 
 fn compile(
     host: &mut MacroHost,
@@ -33,10 +37,24 @@ fn both(host: &mut MacroHost, source: &str, expected: &str) {
             expected
         );
     }
-    let output = Command::new("node")
-        .args(["-e", &format!("console.log({js});")])
-        .output()
-        .unwrap();
+    let script = format!("console.log({js});");
+    let output = if script.len() > 131_072 {
+        let mut child = Command::new("node")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(script.as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    } else {
+        Command::new("node").args(["-e", &script]).output().unwrap()
+    };
     assert!(
         output.status.success(),
         "{}",
