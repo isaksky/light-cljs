@@ -85,6 +85,8 @@ fn declined_doseq_expands_with_raised_node_limit() {
     let mut host = MacroHost::new();
     host.limits.generated_nodes = 10_000_000;
     host.limits.expansions = 100_000;
+    // Keep the large expansion's node-limit check independent of test load.
+    host.evaluator_options.timeout = std::time::Duration::from_secs(60);
     let js = compile_with_macros(source, &mut host).unwrap_or_else(|error| panic!("{error}"));
     // Too long for a command line.
     let root = crate::temp_dir::TempDir::new("declined-doseq");
