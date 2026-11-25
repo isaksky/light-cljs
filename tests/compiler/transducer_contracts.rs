@@ -1,6 +1,8 @@
 //! Canonical ABI, compile-time execution and engine lifetime contracts for eager
 //! transduction. CLJS value/effect oracle cases live in compiler_transducers.
-use light_cljs::evaluator::{Evaluator, EvaluatorOptions, RUNTIME_SOURCE};
+use light_cljs::evaluator::RUNTIME_SOURCE;
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 use std::process::Command;
 

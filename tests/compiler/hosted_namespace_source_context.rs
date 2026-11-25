@@ -1,6 +1,9 @@
 //! Scoped real goog delegation and exact upstream Error->map source providers.
+#![cfg(any(light_v8, light_quickjs))]
+
 use light_cljs::MacroHost;
-use std::{fs, io::Write, path::PathBuf};
+use std::io::Write;
+use std::{fs, path::PathBuf};
 fn hex(value: &str) -> String {
     value
         .as_bytes()
@@ -110,7 +113,6 @@ fn original_namespace_bodies_execute_in_fresh_and_reused_hosts() {
                 "(() => {{ {loader}; const run = {captured}; return ({})(globalThis.lightRuntime)('{id}',observe => run(observe)); }})()",
                 include_str!("../support/sci_execution_observation.js")
             );
-            #[cfg(any(light_v8, light_quickjs))]
             {
                 let context = crate::embedded_js::EmbeddedJs::new();
                 let observed = context.string(&script).unwrap();

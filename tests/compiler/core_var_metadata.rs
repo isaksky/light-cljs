@@ -1,9 +1,8 @@
 //! Public metadata observations are independent of the generated table.
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{
-    MacroHost, analyze_with_macros,
-    emitter::emit_js_unit,
-    evaluator::{Evaluator, EvaluatorOptions, RUNTIME_SOURCE},
-    parse,
+    MacroHost, analyze_with_macros, emitter::emit_js_unit, evaluator::RUNTIME_SOURCE, parse,
 };
 use std::process::Command;
 

@@ -1,5 +1,7 @@
 //! Number semantics and phase isolation without external Closure initialization.
-use light_cljs::evaluator::{Evaluator, EvaluatorOptions, RUNTIME_SOURCE};
+use light_cljs::evaluator::RUNTIME_SOURCE;
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 use std::process::Command;
 
@@ -108,15 +110,13 @@ mod original_table {
         assert!(out.stderr.is_empty(), "unexpected Node stderr");
         String::from_utf8(out.stdout).unwrap()
     }
+    #[cfg(any(light_v8, light_quickjs))]
     fn assert_complete_table(packet: &str) {
-        #[cfg(any(light_v8, light_quickjs))]
-        {
-            let context = crate::embedded_js::EmbeddedJs::new();
-            let passed = context.boolean(&format!(
+        let context = crate::embedded_js::EmbeddedJs::new();
+        let passed = context.boolean(&format!(
                 "(() => {{const packet=JSON.parse({packet:?}); const rows=packet.outcome.value.$vector[1].$vector; return packet.outcome.status==='returned' && rows.length===112 && rows.every(row=>row.$vector[1]===true);}})()"
             )).unwrap();
-            assert!(passed, "all 112 original comparisons must pass: {packet}");
-        }
+        assert!(passed, "all 112 original comparisons must pass: {packet}");
     }
 
     #[test]
@@ -190,6 +190,7 @@ mod original_table {
                 fs::write(folder.join("node.stdin"), &node_input).unwrap();
                 let raw = node(&node_input);
                 fs::write(folder.join("node.stdout"), &raw).unwrap();
+                #[cfg(any(light_v8, light_quickjs))]
                 assert_complete_table(&raw);
                 println!(
                     "integer-table-observation\t{lifecycle}\t{phase}\tNode\t{}",

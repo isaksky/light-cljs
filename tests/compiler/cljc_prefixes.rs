@@ -1,6 +1,10 @@
 //! Reader prefixes own the next selected form in their original CLJC stream.
 use crate::temp_dir::TempDir;
-use light_cljs::{EvalOptions, EvalSession, MacroHost, source_provider::SourceInput};
+use light_cljs::MacroHost;
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::source_provider::SourceInput;
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::{EvalOptions, EvalSession};
 use std::{fs, process::Command};
 struct Sources(TempDir);
 impl Sources {
@@ -97,10 +101,9 @@ fn scalar_splice_and_nested_prefix_controls_execute_both_phases_and_lifecycles()
 fn located_active_and_missing_target_errors_recover_in_hosts_and_sessions() {
     let sources = Sources::new();
     let mut host = MacroHost::new();
-    // Exercises the embedded engine through EvalSession.
     #[cfg(any(light_v8, light_quickjs))]
     let mut session = EvalSession::new(EvalOptions::default()).unwrap();
-    for (original, location) in [
+    for (original, _location) in [
         ("[0 '#?@(:cljs 1) 2]", "#?@(:cljs 1)"),
         ("[0 ^:private #?@(:cljs 1) z]", "#?@(:cljs 1)"),
         ("[#_ #?@(:cljs 1) 2]", "#?@(:cljs 1)"),
@@ -134,7 +137,7 @@ fn located_active_and_missing_target_errors_recover_in_hosts_and_sessions() {
             let error = session
                 .eval_source(&SourceInput::new("bad.cljc", format!("\n{original}")))
                 .unwrap_err();
-            assert_eq!(error.location.as_ref().unwrap().text(), location);
+            assert_eq!(error.location.as_ref().unwrap().text(), _location);
             assert!(error.to_string().starts_with("bad.cljc:2:"));
             let value = session
                 .eval_source(&SourceInput::new("recovered.cljc", "42"))
@@ -153,7 +156,6 @@ fn located_active_and_missing_target_errors_recover_in_hosts_and_sessions() {
             .is_err()
     );
 }
-// Exercises the embedded engine through EvalSession.
 #[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn selected_targets_keep_metadata_quote_ownership_and_source_locations() {
@@ -177,7 +179,6 @@ fn selected_targets_keep_metadata_quote_ownership_and_source_locations() {
     assert_eq!(selected[0].span().source().name(), "ownership.cljc");
 }
 
-// Exercises the embedded engine through EvalSession.
 #[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn nested_discarded_readers_keep_canonical_effect_order() {

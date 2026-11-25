@@ -1,15 +1,27 @@
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::EvalOptions;
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::EvalSession;
+#[cfg(any(light_v8, light_quickjs))]
 use light_cljs::compiler_data::DatumKind;
+#[cfg(any(light_v8, light_quickjs))]
 use light_cljs::eval_session::{FileLoadRequest, FileProvider};
+#[cfg(any(light_v8, light_quickjs))]
 use light_cljs::evaluator::EvalError;
+#[cfg(any(light_v8, light_quickjs))]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
-use light_cljs::source_provider::{LoadRequest, SourceInput};
-use light_cljs::{EvalOptions, EvalSession};
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::source_provider::LoadRequest;
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::source_provider::SourceInput;
 use light_cljs::{MacroHost, analyze_with_macros, emit_js, parse};
-use std::{
-    cell::{Cell, RefCell},
-    process::Command,
-    rc::Rc,
-};
+#[cfg(any(light_v8, light_quickjs))]
+use std::cell::Cell;
+#[cfg(any(light_v8, light_quickjs))]
+use std::cell::RefCell;
+use std::process::Command;
+#[cfg(any(light_v8, light_quickjs))]
+use std::rc::Rc;
 
 /// Runs `script` with Node from its standard input: a script that embeds the
 /// whole runtime (about 1 MB) overflows Node's stack as a `-e` argument.
@@ -31,6 +43,7 @@ fn node_script(script: &str) -> std::process::Output {
     child.wait_with_output().unwrap()
 }
 
+#[cfg(any(light_v8, light_quickjs))]
 fn printed(session: &mut EvalSession, source: &str) -> String {
     let value = session.eval_string(source).unwrap().value;
     let result = session.print(value).unwrap();
@@ -38,7 +51,6 @@ fn printed(session: &mut EvalSession, source: &str) -> String {
     result
 }
 
-// Exercises the embedded engine through EvalSession.
 #[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn clocks_random_sources_and_taps_are_explicit_session_capabilities() {
@@ -125,6 +137,7 @@ fn runtime_scheduler_admission_bounded_reentrancy_and_arities() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    #[cfg(any(light_v8, light_quickjs))]
     let expression = format!(
         r#"(() => {{
       const c = rt.core, assert = {{
@@ -205,6 +218,7 @@ fn host_hooks_have_macro_application_phase_witnesses() {
     }
 }
 
+#[cfg(any(light_v8, light_quickjs))]
 fn provider(requests: Rc<RefCell<Vec<FileLoadRequest>>>) -> FileProvider {
     Rc::new(move |request| {
         requests.borrow_mut().push(request.clone());
@@ -240,7 +254,6 @@ fn provider(requests: Rc<RefCell<Vec<FileLoadRequest>>>) -> FileProvider {
     })
 }
 
-// Exercises the embedded engine through EvalSession.
 #[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn load_file_uses_one_compiler_and_heap_with_macros_namespaces_and_require() {
@@ -280,7 +293,6 @@ fn load_file_uses_one_compiler_and_heap_with_macros_namespaces_and_require() {
     assert_eq!(requests.borrow()[1].requesting_namespace, "tools");
 }
 
-// Exercises the embedded engine through EvalSession.
 #[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn file_diagnostics_history_recovery_and_capability_denial_are_stable() {

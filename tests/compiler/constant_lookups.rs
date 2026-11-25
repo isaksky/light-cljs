@@ -15,10 +15,12 @@
 //! what `None` gives; the `Advanced` text is checked for what folded and what
 //! stayed.
 use super::optimization::{execute, readable};
+#[cfg(any(light_v8, light_quickjs))]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{
     ApplicationOptions, OptimizationLevel, Program, analyze, parse, prepare_application,
 };
+#[cfg(any(light_v8, light_quickjs))]
 use std::time::Duration;
 
 fn program(source: &str) -> Program {

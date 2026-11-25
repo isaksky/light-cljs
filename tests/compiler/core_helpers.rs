@@ -1,4 +1,5 @@
 //! Core helpers checked with literal host outcomes and independent runtime tests.
+#[cfg(any(light_v8, light_quickjs))]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, analyze_with_macros, compile, emit_js, parse};
 use std::{path::PathBuf, process::Command};

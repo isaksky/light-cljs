@@ -544,6 +544,7 @@ fn a_persistent_worker_never_takes_a_released_macro_generation_for_a_later_one()
 }
 
 /// Units of which half expand a source macro and half are macro-free.
+#[cfg(any(light_v8, light_quickjs))]
 fn mixed_units(sources: &Sources) {
     let mut body = String::from("(ns app.u (:require [app.m :refer [twice]]))\n");
     for k in 0..12 {

@@ -692,6 +692,7 @@ fn a_panic_in_a_nested_demand_callback_fails_the_build_the_same_way_and_retires_
 
 /// Whether, with one worker taking every unit in a seed's random order,
 /// some seed made a second isolate: a unit ran after the first failed.
+#[cfg(any(light_v8, light_quickjs))]
 fn retired_for_some_seed(fixture: &Fixture, base: &Perturbation) {
     let isolates: Vec<_> = (1..=12)
         .map(|seed| {
@@ -708,6 +709,7 @@ fn retired_for_some_seed(fixture: &Fixture, base: &Perturbation) {
 }
 
 /// A macro that holds `mb` MiB of JavaScript heap while it runs.
+#[cfg(any(light_v8, light_quickjs))]
 const HOG: &str = "(ns app.m) (defmacro hog [mb] (let [keep #js []] (dotimes [_ mb] (.push keep (.fill (js/Array. 131072) 1.5))) (.-length keep)))";
 
 // Retires a per-worker engine isolate.

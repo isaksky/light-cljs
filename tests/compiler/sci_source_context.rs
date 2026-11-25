@@ -119,10 +119,10 @@ fn original_source_macro_declarations_execute_phase_and_application_contracts() 
         ),
     ] {
         let script = script(id, source).unwrap();
-        let (node, embedded) = execute(&script);
+        let (node, _embedded) = execute(&script);
         assert_eq!(node, expected, "{id}: Node");
         #[cfg(any(light_v8, light_quickjs))]
-        assert_eq!(embedded, expected, "{id}: embedded engine");
+        assert_eq!(_embedded, expected, "{id}: embedded engine");
     }
 }
 

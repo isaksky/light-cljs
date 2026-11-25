@@ -1,8 +1,7 @@
 //! Canonical declaration values, with complete typed packets in both engines/phases.
-use light_cljs::{
-    MacroHost,
-    evaluator::{Evaluator, EvaluatorOptions},
-};
+use light_cljs::MacroHost;
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use std::{
     io::Write,
     process::{Command, Stdio},
@@ -52,7 +51,7 @@ fn complete_declaration_sources_execute_in_fresh_and_reused_hosts_and_both_phase
     let adapter = include_str!("../support/sci_execution_observation.js");
     let mut node_batch = String::new();
     let mut expected_batch = Vec::new();
-    for cycle in 0..2 {
+    for _cycle in 0..2 {
         for row in include_str!("../fixtures/declare-values.tsv").lines() {
             let fields: Vec<_> = row.split('\t').collect();
             assert_eq!(fields.len(), 3);
@@ -98,7 +97,7 @@ fn complete_declaration_sources_execute_in_fresh_and_reused_hosts_and_both_phase
                         .string(evaluator.evaluate_js(&script).unwrap())
                         .unwrap();
                     #[cfg(any(light_v8, light_quickjs))]
-                    assert_eq!(actual, expected, "{id} {phase} {session} {cycle}");
+                    assert_eq!(actual, expected, "{id} {phase} {session} {_cycle}");
                     #[cfg(any(light_v8, light_quickjs))]
                     {
                         let fresh_engine = Evaluator::new(EvaluatorOptions {
@@ -117,7 +116,7 @@ fn complete_declaration_sources_execute_in_fresh_and_reused_hosts_and_both_phase
                     node_batch.push_str(&format!("console.log({script});\n"));
                     expected_batch.push(expected.to_owned());
                     #[cfg(any(light_v8, light_quickjs))]
-                    println!("declare-value-packet\t{cycle}\t{phase}\t{session}\t{id}\t{actual}");
+                    println!("declare-value-packet\t{_cycle}\t{phase}\t{session}\t{id}\t{actual}");
                 }
             }
         }

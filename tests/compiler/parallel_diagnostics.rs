@@ -281,6 +281,7 @@ fn warnings_are_in_the_same_order_at_every_slot_count() {
 /// A macro that holds `mb` MiB of JavaScript heap while it runs: an array
 /// of 131,072 doubles is 1 MiB in V8, and one of 48,000, as `fill` grows
 /// it, about 1 MiB in QuickJS (measured with a probe of its allocator).
+#[cfg(any(light_v8, light_quickjs))]
 fn hog() -> String {
     let length = if cfg!(feature = "v8-macros") {
         131072
@@ -292,6 +293,7 @@ fn hog() -> String {
     )
 }
 
+#[cfg(any(light_v8, light_quickjs))]
 fn hogs(sources: &Sources, mb: usize) {
     sources.write("app/m.cljs", &hog());
     let mut body = String::from("(ns app.h (:require [app.m :refer [hog]]))\n");

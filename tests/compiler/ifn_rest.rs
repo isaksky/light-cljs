@@ -1,4 +1,5 @@
 //! Variadic callable types bind rest sequences in both engines and phases.
+#[cfg(any(light_v8, light_quickjs))]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 use std::{
@@ -102,12 +103,14 @@ fn invalid_rest_forms_and_failed_invocations_leave_reused_sessions_usable() {
         "(defmacro restored-rest [] (list 'quote ((reify IFn (-invoke [_ & xs] (vec xs))) 1 2))) (restored-rest)",
         "[1 2]",
     );
-    let source = "(defmacro restored-rest [] (list 'quote ((reify IFn (-invoke [_ & xs] (vec xs))) 1 2))) (restored-rest)";
-    let js =
-        light_cljs::compile_with_macros(&format!("{source} (pr-str (restored-rest))"), &mut host)
-            .unwrap();
     #[cfg(any(light_v8, light_quickjs))]
     {
+        let source = "(defmacro restored-rest [] (list 'quote ((reify IFn (-invoke [_ & xs] (vec xs))) 1 2))) (restored-rest)";
+        let js = light_cljs::compile_with_macros(
+            &format!("{source} (pr-str (restored-rest))"),
+            &mut host,
+        )
+        .unwrap();
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let value = evaluator.evaluate_js(&js).unwrap();
         assert_eq!(evaluator.string(value).unwrap(), "[1 2]");

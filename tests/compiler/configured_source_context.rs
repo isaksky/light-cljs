@@ -1,6 +1,9 @@
 //! Explicit configured-reader embedding audit; this does not exercise the CLI.
+#![cfg(any(light_v8, light_quickjs))]
+
 use light_cljs::{MacroHost, compiler_data::Name};
-use std::{fs, io::Write, path::PathBuf};
+use std::io::Write;
+use std::{fs, path::PathBuf};
 
 const ID: &str = "cljs-residual-source-context-tagged-source";
 const ENTRY: &str = "cljs.tagged-literals-test";
@@ -89,7 +92,6 @@ fn configured_original_body_executes_in_fresh_and_reused_hosts() {
             "(() => {{ const run = {captured}; return ({})(globalThis.lightRuntime)('{ID}', observe => run(observe)); }})()",
             include_str!("../support/sci_execution_observation.js")
         );
-        #[cfg(any(light_v8, light_quickjs))]
         {
             let context = crate::embedded_js::EmbeddedJs::new();
             let observed = context.string(&script).unwrap();

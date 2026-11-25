@@ -1,5 +1,7 @@
 //! Public parsing, scalar, random and array contracts in canonical JS phases.
-use light_cljs::evaluator::{Evaluator, EvaluatorOptions, RUNTIME_SOURCE};
+use light_cljs::evaluator::RUNTIME_SOURCE;
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 
 fn both(source: &str, expected: &str) {

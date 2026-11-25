@@ -107,6 +107,7 @@ fn failed_equiv_calls_leave_reused_application_and_macro_hosts_usable() {
     let mut host = MacroHost::new();
     assert!(light_cljs::compile_with_macros("(defmacro broken-equiv [] (.equiv [1] (map (fn [_] (throw (js/Error. \"equiv failure\"))) [1]))) (broken-equiv)", &mut host).is_err());
     let source = "(defmacro restored-equiv [] (.equiv [1 2] '(1 2))) (restored-equiv)";
+    #[cfg(any(light_v8, light_quickjs))]
     let js = light_cljs::compile_with_macros(source, &mut host).unwrap();
     #[cfg(any(light_v8, light_quickjs))]
     {

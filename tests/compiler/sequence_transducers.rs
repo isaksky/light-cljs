@@ -1,9 +1,8 @@
 //! Lazy transducing sequence observations measured against both pinned CLJS references.
 use crate::temp_dir::TempDir;
-use light_cljs::{
-    compile,
-    evaluator::{Evaluator, EvaluatorOptions},
-};
+use light_cljs::compile;
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use std::{
     fs,
     io::Write,
@@ -75,6 +74,7 @@ fn lazy_sequence_values_effects_and_errors_match_in_embedded_and_node() {
         let mut script = String::new();
         let mut compiled = Vec::new();
         for case in group {
+            #[cfg(any(light_v8, light_quickjs))]
             let expected = if case.local == "-" {
                 case.expected
             } else {

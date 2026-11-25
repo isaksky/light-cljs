@@ -1,6 +1,8 @@
 //! Printing controls, writer options and output scopes in both canonical engines.
 use crate::temp_dir::TempDir;
-use light_cljs::evaluator::{Evaluator, EvaluatorOptions, RUNTIME_SOURCE};
+use light_cljs::evaluator::RUNTIME_SOURCE;
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 use std::process::Command;
 
@@ -307,7 +309,6 @@ fn utf16_strings_preserve_code_units_in_printing_and_captured_output() {
     );
 }
 
-// Exercises the embedded engine through EvalSession.
 #[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn configured_host_output_and_error_sinks_remain_independent_after_failure() {

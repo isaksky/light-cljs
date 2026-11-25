@@ -134,9 +134,11 @@ fn original_record_contexts_execute_in_both_phases_and_lifecycles() {
             assert!(result.stderr.is_empty());
             let node = String::from_utf8(result.stdout).unwrap();
             assert_eq!(canonical(&node), canonical(&expected), "{variant} Node");
-            let mut observed = vec![("Node", node)];
-            #[cfg(any(light_v8, light_quickjs))]
-            observed.insert(0, ("embedded engine", embedded));
+            let observed = [
+                #[cfg(any(light_v8, light_quickjs))]
+                ("embedded engine", embedded),
+                ("Node", node),
+            ];
             for (engine, raw) in observed {
                 writeln!(
                     output,

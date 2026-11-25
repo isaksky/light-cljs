@@ -1,13 +1,18 @@
 //! Strict EDN, compiled tag handlers and explicit synchronous reader capabilities.
 use crate::sci_protocol as protocol;
 use crate::temp_dir::TempDir;
-use light_cljs::{
-    MacroHost, analyze_with_macros,
-    evaluator::{EvalError, Evaluator, EvaluatorOptions},
-    parse,
-};
-use std::{cell::RefCell, process::Command, rc::Rc};
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::analyze_with_macros;
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::evaluator::{EvalError, Evaluator, EvaluatorOptions};
+use light_cljs::{MacroHost, parse};
+#[cfg(any(light_v8, light_quickjs))]
+use std::cell::RefCell;
+use std::process::Command;
+#[cfg(any(light_v8, light_quickjs))]
+use std::rc::Rc;
 
+#[cfg(any(light_v8, light_quickjs))]
 fn program(source: &str) -> light_cljs::Program {
     let mut host = MacroHost::new();
     analyze_with_macros(source, &parse(source).unwrap(), &mut host)

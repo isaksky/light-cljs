@@ -1,9 +1,10 @@
 //! Sorted membership, order, saved callbacks, protocols, and macro/runtime parity.
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::EvalSession;
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{
-    EvalSession, MacroHost, analyze_with_macros,
-    emitter::emit_js_unit,
-    evaluator::{Evaluator, EvaluatorOptions, RUNTIME_SOURCE},
-    parse,
+    MacroHost, analyze_with_macros, emitter::emit_js_unit, evaluator::RUNTIME_SOURCE, parse,
 };
 use std::process::Command;
 
@@ -162,7 +163,6 @@ fn sorted_contract_executes_in_application_and_macro_phases() {
         "(defmacro sorted-contract [] {CONTRACT}) (sorted-contract)"
     ));
 }
-// Exercises the embedded engine through EvalSession.
 #[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn sorted_callbacks_survive_reused_sessions_and_custom_protocol_dispatch() {

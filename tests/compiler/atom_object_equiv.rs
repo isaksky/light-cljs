@@ -1,4 +1,5 @@
 //! Atom Object equiv methods in both engines and phases.
+#[cfg(any(light_v8, light_quickjs))]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 use std::{
@@ -109,12 +110,12 @@ fn failed_atom_equiv_leaves_fresh_and_reused_hosts_usable() {
         let error = light_cljs::compile_with_macros(&failing_macro, &mut host).unwrap_err();
         assert!(error.to_string().contains("Atom equiv failure"), "{error}");
         // A subsequent compilation on the same host gets fresh phase roots.
-        let source = format!(
-            "(defmacro restored-atom-equiv [] {SETUP} (pr-str {RECOVERY})) (restored-atom-equiv)"
-        );
-        let js = light_cljs::compile_with_macros(&source, &mut host).unwrap();
         #[cfg(any(light_v8, light_quickjs))]
         {
+            let source = format!(
+                "(defmacro restored-atom-equiv [] {SETUP} (pr-str {RECOVERY})) (restored-atom-equiv)"
+            );
+            let js = light_cljs::compile_with_macros(&source, &mut host).unwrap();
             let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
             let value = evaluator.evaluate_js(&js).unwrap();
             assert_eq!(evaluator.print(value).unwrap(), "\"[true false true 2 2]\"");

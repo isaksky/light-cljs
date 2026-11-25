@@ -1,9 +1,10 @@
 //! Public ns-name preserves the supplied Namespace slot and compiler metadata strings.
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::{EvalOptions, EvalSession};
 use light_cljs::{
-    EvalOptions, EvalSession, MacroHost, analyze_with_macros,
-    emitter::emit_js_unit,
-    evaluator::{Evaluator, EvaluatorOptions, RUNTIME_SOURCE},
-    parse,
+    MacroHost, analyze_with_macros, emitter::emit_js_unit, evaluator::RUNTIME_SOURCE, parse,
 };
 use std::{
     io::Write,
@@ -64,7 +65,6 @@ fn ns_name_result_types_execute_in_both_engines_and_macro_phase() {
     light_cljs::compile_with_macros("(def unavailable (js/unavailable)) (defmacro inspect [] (let [n (:ns (meta #'unavailable))] (assert (symbol? n)) (assert (= \"cljs.user\" (ns-name n))) true)) (inspect)", &mut MacroHost::new()).unwrap();
 }
 
-// Exercises the embedded engine through EvalSession.
 #[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn metadata_names_preserve_qualification_and_session_isolation() {

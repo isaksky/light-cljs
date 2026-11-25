@@ -10,9 +10,10 @@
 //! exactly the identities pinned here.
 use super::optimization::{execute, readable};
 use light_cljs::{
-    ApplicationOptions, EvalOptions, EvalSession, OptimizationLevel, Program, analyze, parse,
-    prepare_application,
+    ApplicationOptions, OptimizationLevel, Program, analyze, parse, prepare_application,
 };
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::{EvalOptions, EvalSession};
 
 fn program(source: &str) -> Program {
     analyze(source, &parse(source).unwrap()).unwrap_or_else(|error| panic!("{source}\n{error}"))
@@ -227,7 +228,6 @@ fn keyword_case_switches_on_the_spelling_without_printing_at_advanced() {
     ));
 }
 
-// Exercises the embedded engine through EvalSession.
 #[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn literal_keyword_identity_holds_across_repl_inputs_and_redefinition() {

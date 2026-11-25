@@ -16,6 +16,7 @@
 use super::generated::{namespace_program, seeds};
 use super::generated_optimization::analyze;
 use super::optimization::{execute, readable};
+#[cfg(any(light_v8, light_quickjs))]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{
     ApplicationOptions, OptimizationLevel, Program, analyze as analyze_source, parse,
@@ -23,6 +24,7 @@ use light_cljs::{
 };
 use std::io::Write as _;
 use std::process::{Command, Stdio};
+#[cfg(any(light_v8, light_quickjs))]
 use std::time::Duration;
 
 fn program(source: &str) -> Program {
@@ -164,10 +166,11 @@ fn checks(js: &str) -> Vec<Checks> {
             mismatches: lines.map(str::to_owned).collect(),
         }
     };
-    let mut seen = vec![parse(&node(&format!("console.log({expression});")))];
-    #[cfg(any(light_v8, light_quickjs))]
-    seen.push(parse(&embedded(&expression)));
-    seen
+    vec![
+        parse(&node(&format!("console.log({expression});"))),
+        #[cfg(any(light_v8, light_quickjs))]
+        parse(&embedded(&expression)),
+    ]
 }
 
 /// Check every embedded hash of `Advanced` output `js` in both engines and

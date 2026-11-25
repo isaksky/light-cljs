@@ -1,9 +1,8 @@
 //! Canonical library values run in both engines; macros demand the same sources.
 use crate::temp_dir::TempDir;
-use light_cljs::{
-    compile_namespace,
-    evaluator::{Evaluator, EvaluatorOptions},
-};
+use light_cljs::compile_namespace;
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use std::{fs, path::PathBuf, process::Command};
 struct Sources(TempDir);
 impl Sources {
@@ -152,11 +151,12 @@ fn traversal_limits_and_session_recovery() {
                  (= (finite 4) 0)]))"#,
         "[true,true,true,true,true,true,true,true,true]",
     );
-    let sources = Sources::new();
-    let bad = sources.compile("(try (w/prewalk (fn [x] [x]) 1) (catch js/Error e (.-message e)))");
     // Exercise the embedded evaluator's limits and recovery.
     #[cfg(any(light_v8, light_quickjs))]
     {
+        let sources = Sources::new();
+        let bad =
+            sources.compile("(try (w/prewalk (fn [x] [x]) 1) (catch js/Error e (.-message e)))");
         let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert!(
             e.string(e.evaluate_js(&bad).unwrap())
@@ -425,6 +425,7 @@ fn compiler_data_readers_run_without_quickjs() {
     session.release(result.value).unwrap();
 }
 
+#[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn compiler_owned_data_readers_keep_source_order_origins_and_typed_results() {
     use light_cljs::{
@@ -439,10 +440,8 @@ fn compiler_owned_data_readers_keep_source_order_origins_and_typed_results() {
     .unwrap();
     let source = "#_ #test/tag 1 (let [x #test/tag 2] (if false #test/tag 3 x)) #_ #test/tag 4";
     let js = compile_with_macros(&format!("(pr-str (do {source}))"), &mut host).unwrap();
-    #[cfg(any(light_v8, light_quickjs))]
     let e = Evaluator::new(Default::default()).unwrap();
     // Every read occurs, including a discarded form and an untaken branch.
-    #[cfg(any(light_v8, light_quickjs))]
     assert_eq!(e.string(e.evaluate_js(&js).unwrap()).unwrap(), "[2 [1 2]]");
     let source = Source::new("owned.cljs", "#test/tag 5");
     let form = host.read_compiler_form(&source).unwrap().unwrap();
@@ -452,7 +451,6 @@ fn compiler_owned_data_readers_keep_source_order_origins_and_typed_results() {
     host.register_compiler_data_reader(Name::new(None, "inst"), "(fn [x] (+ x 10))")
         .unwrap();
     let inst = compile_with_macros("#inst 5", &mut host).unwrap();
-    #[cfg(any(light_v8, light_quickjs))]
     assert_eq!(e.number(e.evaluate_js(&inst).unwrap()).unwrap(), 15.0);
     for handler in [
         "(fn [x] (atom x))",

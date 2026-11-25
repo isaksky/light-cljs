@@ -1,6 +1,9 @@
 //! Explicit genuine Closure library profile, preserving the entire import body.
+#![cfg(any(light_v8, light_quickjs))]
+
 use light_cljs::MacroHost;
-use std::{fs, io::Write, path::PathBuf};
+use std::io::Write;
+use std::{fs, path::PathBuf};
 const ID: &str = "cljs-hosted-original-import-context";
 const ENTRY: &str = "cljs.import-test";
 fn hex(value: &str) -> String {
@@ -85,7 +88,6 @@ fn original_import_body_executes_in_fresh_and_reused_hosts() {
             "(() => {{ {loader}; const run = {captured}; return ({})(globalThis.lightRuntime)('{ID}',observe => run(observe)); }})()",
             include_str!("../support/sci_execution_observation.js")
         );
-        #[cfg(any(light_v8, light_quickjs))]
         {
             let context = crate::embedded_js::EmbeddedJs::new();
             let observed = context.string(&script).unwrap();

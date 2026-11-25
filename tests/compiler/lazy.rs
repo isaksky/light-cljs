@@ -10,12 +10,16 @@ use crate::chunked_execution::run_modules;
 use crate::phase_oracle::{Case, run};
 use light_cljs::analyzer::{AnalysisOptions, LazyTargetId};
 use light_cljs::compiler::{analyze_namespace_entry, analyze_namespace_entry_with_provider};
+#[cfg(any(light_v8, light_quickjs))]
 use light_cljs::eval_session::FileLoadRequest;
 use light_cljs::source_provider::{LoadError, LoadRequest, SourceInput};
 use light_cljs::{
-    ApplicationOptions, EvalOptions, EvalSession, ExprKind, MacroHost, NamespaceCompileError,
-    OptimizationLevel, Program, prepare_application,
+    ApplicationOptions, ExprKind, MacroHost, NamespaceCompileError, OptimizationLevel, Program,
+    prepare_application,
 };
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::{EvalOptions, EvalSession};
+#[cfg(any(light_v8, light_quickjs))]
 use std::rc::Rc;
 
 /// The in-memory source of each namespace by its path, as the browser
@@ -946,6 +950,7 @@ mod phase_oracles {
 
 /// A REPL session over `files`, evaluating source text to its printed value
 /// or its error message after the name of the file the error is in.
+#[cfg(any(light_v8, light_quickjs))]
 fn repl(
     files: &'static [(&'static str, &'static str)],
 ) -> impl FnMut(&str) -> Result<String, String> {
@@ -976,12 +981,14 @@ fn repl(
 }
 
 /// `app.editor` requires `app.main`, which holds a loadable of `app.editor`.
+#[cfg(any(light_v8, light_quickjs))]
 const EDITOR: (&str, &str) = (
     "app/editor.cljs",
     "(ns app.editor (:require [app.main :as main]))\n\
      (def loads (swap! main/loads inc))\n\
      (defn start [] [:started (main/ready)])\n",
 );
+#[cfg(any(light_v8, light_quickjs))]
 const MAIN: (&str, &str) = (
     "app/main.cljs",
     "(ns app.main)\n\
@@ -990,7 +997,6 @@ const MAIN: (&str, &str) = (
      (defn ready [] :ready)\n",
 );
 
-// Exercises the embedded engine through EvalSession.
 #[cfg(any(light_v8, light_quickjs))]
 /// The REPL loads the namespace of a loadable it has not loaded, as a
 /// `require` of it would: before a top-level form runs, and after the
@@ -1043,7 +1049,6 @@ fn the_repl_loads_the_namespace_a_loadable_names() {
     );
 }
 
-// Exercises the embedded engine through EvalSession.
 #[cfg(any(light_v8, light_quickjs))]
 /// A Var target is checked once every namespace the REPL loads for a form is
 /// loaded, at the site that names it.
@@ -1068,7 +1073,6 @@ fn the_repl_checks_lazy_targets_after_their_namespaces_load() {
     assert_eq!(eval(":next"), Ok(":next".into()));
 }
 
-// Exercises the embedded engine through EvalSession.
 #[cfg(any(light_v8, light_quickjs))]
 /// `load-file` evaluates its forms through a runtime callback, which loads
 /// lazy targets the same way.

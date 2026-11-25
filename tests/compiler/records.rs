@@ -236,7 +236,9 @@ mod original_record_tags {
     use light_cljs::compiler_data::Source;
     #[cfg(any(light_v8, light_quickjs))]
     use light_cljs::source_provider::SourceInput;
-    use light_cljs::{EvalOptions, EvalSession, MacroHost, compile, compile_namespace_with_macros};
+    #[cfg(any(light_v8, light_quickjs))]
+    use light_cljs::{EvalOptions, EvalSession};
+    use light_cljs::{MacroHost, compile, compile_namespace_with_macros};
     use std::io::Write;
 
     #[test]
@@ -324,9 +326,9 @@ mod original_record_tags {
         assert_eq!(source.matches(old_namespace).count(), 1);
         let adapted = source.replacen(old_namespace, "(ns data-readers-test.records)", 1);
         std::fs::write(root.join("namespace-adapted-records.cljs"), &adapted).unwrap();
+        #[cfg(any(light_v8, light_quickjs))]
         for reused in [false, true] {
             let lifecycle = if reused { "reused" } else { "fresh" };
-            #[cfg(any(light_v8, light_quickjs))]
             {
                 let mut session = EvalSession::new(EvalOptions {
                     namespace: "data-readers-test.records".into(),

@@ -1,10 +1,11 @@
 //! Canonical receiver shadowing with complete original source and actual macro demand.
 use crate::temp_dir::TempDir;
 use light_cljs::{MacroHost, compile_namespace_with_macros};
+#[cfg(any(light_v8, light_quickjs))]
+use std::path::PathBuf;
 use std::{
     fs,
     io::Write,
-    path::PathBuf,
     process::{Command, Stdio},
 };
 const ORIGINAL: &str = "(defprotocol P (p [x n])) (defrecord R [x] P (p [n n] [x (if (record? n) :receiver n)])) (p (->R 3) 9)";

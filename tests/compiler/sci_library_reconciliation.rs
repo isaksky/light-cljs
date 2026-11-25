@@ -1,13 +1,11 @@
 //! Exact retained library contexts, including their actual MacroHost observations.
 //! The standalone provenance helper supplies complete, source-bound modules and
 //! separate local contracts; historical SCI expectations are never overwritten.
-#[cfg(any(light_v8, light_quickjs))]
+#![cfg(any(light_v8, light_quickjs))]
+
 use light_cljs::MacroHost;
-#[cfg(any(light_v8, light_quickjs))]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
-#[cfg(any(light_v8, light_quickjs))]
 use std::io::Write;
-#[cfg(any(light_v8, light_quickjs))]
 use std::process::{Command, Stdio};
 
 const IDS: [&str; 22] = [
@@ -54,7 +52,6 @@ fn hex(value: &[u8]) -> String {
 }
 
 // Canonicalizes through the embedded evaluator for the audit below.
-#[cfg(any(light_v8, light_quickjs))]
 fn canonical(evaluator: &Evaluator, expression: &str) -> String {
     let source = format!(
         "JSON.stringify((function sort(v) {{ if (Array.isArray(v)) return v.map(sort); \
@@ -68,7 +65,6 @@ fn canonical(evaluator: &Evaluator, expression: &str) -> String {
 }
 
 // This audit compares Node's canonical results with the embedded evaluator's.
-#[cfg(any(light_v8, light_quickjs))]
 #[test]
 #[ignore = "The standalone helper supplies exact 22 contexts and records fresh provenance"]
 fn exact_library_contexts_execute_in_both_phases_and_host_lifecycles() {

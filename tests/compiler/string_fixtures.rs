@@ -1,7 +1,9 @@
 //! Every native string fixture is retained, with explicit JavaScript departures.
 use crate::sci_protocol as native;
 use crate::temp_dir::TempDir;
-use light_cljs::{compile_namespace, evaluator::Evaluator};
+use light_cljs::compile_namespace;
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::evaluator::Evaluator;
 use std::{
     fs,
     io::Write,
@@ -330,9 +332,9 @@ fn all_131_native_string_bodies_execute_with_canonical_printing_evidence() {
     }
     for (group, expected) in scripts.chunks(8).zip(ids.chunks(8)) {
         let observations = node(&group.join("\n"));
-        for ((id, embedded), node) in expected.iter().zip(observations.lines()) {
+        for ((id, _embedded), node) in expected.iter().zip(observations.lines()) {
             #[cfg(any(light_v8, light_quickjs))]
-            assert_eq!(node, embedded, "Node/embedded engine {id}");
+            assert_eq!(node, _embedded, "Node/embedded engine {id}");
             if !node.starts_with("[true,true,") {
                 failures.push(format!("Node {id}: {node}"));
             }

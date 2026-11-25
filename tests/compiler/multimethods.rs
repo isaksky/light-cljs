@@ -1,8 +1,12 @@
 //! Canonical hierarchy/multimethod behavior and phase-owned declaration demand.
-use light_cljs::evaluator::{Evaluator, EvaluatorOptions, RUNTIME_SOURCE};
-use light_cljs::{
-    EvalOptions, EvalSession, MacroHost, analyze_with_macros, emitter::emit_js_unit, parse,
-};
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::EvalOptions;
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::EvalSession;
+use light_cljs::evaluator::RUNTIME_SOURCE;
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
+use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 use std::process::Command;
 
 fn both(source: &str, expected: &str) {
@@ -33,6 +37,7 @@ fn both(source: &str, expected: &str) {
         "Node: {source}"
     );
 }
+#[cfg(any(light_v8, light_quickjs))]
 fn printed(s: &mut EvalSession, source: &str) -> String {
     let value = s.eval_string(source).unwrap().value;
     let result = s.print(value).unwrap();
@@ -194,7 +199,6 @@ fn macro_method_replacements_follow_declaration_frontiers() {
     );
 }
 
-// Exercises the embedded engine through EvalSession.
 #[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn sessions_and_dynamic_hierarchy_roots_invalidate_independently() {

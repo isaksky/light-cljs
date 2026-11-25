@@ -49,7 +49,7 @@ fn execute(unit: &str, expected: &str, directory: &Path) {
     );
 }
 
-fn uncaught_application(failed_unit: &str, recovery_unit: &str, message: &str, directory: &Path) {
+fn uncaught_application(failed_unit: &str, _recovery_unit: &str, message: &str, directory: &Path) {
     let script = format!(
         "var rt = {}; rt.core.prStr(({})(rt));",
         light_cljs::evaluator::RUNTIME_SOURCE,
@@ -64,7 +64,7 @@ fn uncaught_application(failed_unit: &str, recovery_unit: &str, message: &str, d
             format!("Error: {message}")
         );
         fs::write(directory.join("application-embedded-failure.txt"), message).unwrap();
-        let recovery = format!("rt.core.prStr(({})(rt));", recovery_unit);
+        let recovery = format!("rt.core.prStr(({_recovery_unit})(rt));");
         let actual = engine.string(&recovery).unwrap();
         assert_eq!(actual, "42");
         fs::write(directory.join("application-embedded-recovered.txt"), actual).unwrap();

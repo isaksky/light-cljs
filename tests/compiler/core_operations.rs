@@ -16,6 +16,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use light_cljs::CoreFnId;
 use light_cljs::core_operations::{COLUMNS, Calls, Purity, TABLE, Type, operations};
+#[cfg(any(light_v8, light_quickjs))]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::runtime_manifest::{ANNOTATED_RUNTIME, CORE_CELLS, CoreReference, RuntimeManifest};
 

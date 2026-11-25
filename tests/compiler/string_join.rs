@@ -1,9 +1,8 @@
 //! Canonical join conversion and complete SCI source in fresh/reused phases.
 use crate::temp_dir::TempDir;
-use light_cljs::{
-    MacroHost,
-    evaluator::{Evaluator, EvaluatorOptions},
-};
+use light_cljs::MacroHost;
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use std::{
     fs,
     io::Write,

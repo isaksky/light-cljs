@@ -67,12 +67,9 @@ fn audit_original_sci_macroexpand_phase_services() {
     }
 }
 
-use light_cljs::{
-    MacroHost, analyze_with_macros,
-    emitter::emit_js_unit,
-    evaluator::{Evaluator, EvaluatorOptions},
-    parse,
-};
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
+use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 use std::{
     io::Write,
     process::{Command, Stdio},

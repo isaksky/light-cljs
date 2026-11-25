@@ -1,4 +1,5 @@
 //! Core macro expansion preserves bootstrap and user extension demand frontiers.
+#[cfg(any(light_v8, light_quickjs))]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 use std::{

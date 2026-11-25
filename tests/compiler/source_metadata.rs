@@ -1,10 +1,12 @@
 //! Definition provenance is independent of user metadata and execution engine.
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::source_provider::SourceInput;
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::{EvalOptions, EvalSession};
 use light_cljs::{
-    EvalOptions, EvalSession, MacroHost, analyze_with_macros,
-    emitter::emit_js_unit,
-    evaluator::{Evaluator, EvaluatorOptions, RUNTIME_SOURCE},
-    parse,
-    source_provider::SourceInput,
+    MacroHost, analyze_with_macros, emitter::emit_js_unit, evaluator::RUNTIME_SOURCE, parse,
 };
 use std::process::Command;
 fn both(source: &str, host: &mut MacroHost, expected: &str) {
@@ -56,7 +58,6 @@ fn reserved_metadata_and_macro_definitions_keep_source_sites_in_both_engines() {
         "[\"cljs.user\" 2]",
     );
 }
-// Exercises the embedded engine through EvalSession.
 #[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn incremental_files_errors_and_fresh_sessions_preserve_source_identity() {
@@ -113,6 +114,7 @@ fn ordinary_namespace_files_and_macro_generated_definitions_keep_paths() {
     let root =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/source-metadata");
     let js = light_cljs::compile_namespace("metadata.main", std::slice::from_ref(&root)).unwrap();
+    #[cfg(any(light_v8, light_quickjs))]
     let expected = "true";
     #[cfg(any(light_v8, light_quickjs))]
     {

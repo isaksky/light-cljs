@@ -23,10 +23,12 @@ use super::constant_pool::calls;
 use super::generated::{SEEDS, namespace_program};
 use super::generated_optimization::analyze as analyze_generated;
 use super::optimization::{execute, readable};
+#[cfg(any(light_v8, light_quickjs))]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{
     ApplicationOptions, OptimizationLevel, Program, analyze, parse, prepare_application,
 };
+#[cfg(any(light_v8, light_quickjs))]
 use std::time::Duration;
 
 fn program(source: &str) -> Program {

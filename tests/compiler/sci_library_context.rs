@@ -148,10 +148,10 @@ fn library_import_fixture_preserves_values_and_callbacks_in_both_engines() {
                 let root = &root;
                 scope.spawn(move || {
                     let script = script(id, declarations, source, &root.join(id)).unwrap();
-                    let (node, embedded) = execute(&script);
+                    let (node, _embedded) = execute(&script);
                     assert_eq!(node, expected, "Node {id}");
                     #[cfg(any(light_v8, light_quickjs))]
-                    assert_eq!(embedded, expected, "embedded engine {id}");
+                    assert_eq!(_embedded, expected, "embedded engine {id}");
                 })
             })
             .collect();

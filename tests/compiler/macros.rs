@@ -6,12 +6,9 @@ use light_cljs::{
     MacroHost, analyze_with_macros, compile, compile_namespace, compile_namespace_with_macros,
     emit_js, parse,
 };
-use std::{
-    fs,
-    path::PathBuf,
-    process::Command,
-    sync::atomic::{AtomicUsize, Ordering},
-};
+#[cfg(any(light_v8, light_quickjs))]
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{fs, path::PathBuf, process::Command};
 
 #[test]
 fn reader_qualification_preserves_alias_collisions_refers_and_definition_views() {

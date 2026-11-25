@@ -197,7 +197,6 @@ fn parser_acceptance_does_not_hide_contextual_reader_errors_or_numeric_duplicate
     }
 }
 
-// Exercises the embedded engine through EvalSession.
 #[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn cljc_selection_metadata_and_inactive_forms_have_distinct_phase_evidence() {
@@ -627,7 +626,6 @@ fn runtime_reader_leaves_special_forms_a_namespace_binds_unqualified() {
     );
 }
 
-// Exercises the embedded engine through EvalSession.
 #[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn runtime_reader_macro_and_reused_session_contexts_are_explicit() {
@@ -716,6 +714,8 @@ fn runtime_reader_profiles_missing_alias_locations_and_nested_tag_reads() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(any(light_v8, light_quickjs))]
     let script = format!(
         "(() => {{ const rt = {}; const assert = {{equal: (a,b) => {{if (a !== b) throw Error(a+' != '+b);}}, throws: (f,test) => {{try {{f();}} catch(e) {{ if (test === undefined || (typeof test === 'function' ? test(e) : test.test(e.message))) return; throw e;}} throw Error('Expected failure');}} }}; {}; return true; }})()",
         include_str!("../../src/js_runtime.js"),

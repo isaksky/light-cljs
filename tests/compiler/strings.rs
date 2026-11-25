@@ -1,9 +1,8 @@
 //! Compiler-owned clojure.string contracts in the embedded engine, Node, and macro execution.
 use crate::temp_dir::TempDir;
-use light_cljs::{
-    compile_namespace,
-    evaluator::{Evaluator, EvaluatorOptions},
-};
+use light_cljs::compile_namespace;
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use std::{
     fs,
     io::Write,

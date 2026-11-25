@@ -1,5 +1,7 @@
 //! Core macros must expand through compiled source with native evaluation disabled.
-use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::evaluator::Evaluator;
+use light_cljs::evaluator::EvaluatorOptions;
 use light_cljs::{MacroHost, analyze_with_macros, compile_with_macros, parse};
 
 /// The printed value of `source`: in the embedded engine when available, otherwise in Node.
@@ -255,6 +257,7 @@ fn seed_bindings_assertions_and_reflection_remain_native_free() {
 #[test]
 fn default_compile_and_analyze_emit_have_identical_literal_results() {
     let source = "(reduce + (for [x [1 2 3]] (if-some [y x] (-> y inc) 0)))";
+    #[cfg(any(light_v8, light_quickjs))]
     let js = light_cljs::compile(source).unwrap();
     #[cfg(any(light_v8, light_quickjs))]
     {

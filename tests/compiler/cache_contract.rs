@@ -2458,7 +2458,7 @@ fn a_data_readers_conversions_need_the_node_limit_they_took() {
     assert_eq!(failed, 1);
 }
 
-// Takes its execution control from a embedded evaluator.
+// Takes its execution control from the embedded evaluator.
 #[cfg(any(light_v8, light_quickjs))]
 /// Cancelling the compilation while a namespace installs stops it there:
 /// nothing after it is installed, or analyzed in its place, and the

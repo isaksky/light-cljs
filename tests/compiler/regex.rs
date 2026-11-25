@@ -5,12 +5,13 @@ use light_cljs::eval_session::{EvalOptions, EvalSession};
 #[cfg(any(light_v8, light_quickjs))]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, compile_namespace, compile_with_macros};
+#[cfg(any(light_v8, light_quickjs))]
+use std::time::Duration;
 use std::{
     fs,
     io::Write,
     path::PathBuf,
     process::{Command, Stdio},
-    time::Duration,
 };
 const CONTRACT: &str = include_str!("../fixtures/compiler-regex-reference/reference/main.cljs");
 struct Sources(TempDir);
@@ -105,7 +106,6 @@ fn regex_macro_results_preserve_flags_tags_and_diagnose_host_values() {
         "true",
     );
 }
-// Exercises the embedded engine through EvalSession.
 #[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn regex_failures_reuse_sessions_and_reset_clears_state_and_bounds() {

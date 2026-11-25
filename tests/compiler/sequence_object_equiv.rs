@@ -89,6 +89,7 @@ fn failed_sequence_equiv_leaves_reused_application_and_macro_hosts_usable() {
     assert!(light_cljs::compile_with_macros("(defmacro broken-sequence-equiv [] (.equiv (list 1) (map (fn [_] (throw (js/Error. \"sequence equiv failure\"))) [1]))) (broken-sequence-equiv)", &mut host).is_err());
     let source =
         "(defmacro restored-sequence-equiv [] (.equiv (list 1 2) [1 2])) (restored-sequence-equiv)";
+    #[cfg(any(light_v8, light_quickjs))]
     let js = light_cljs::compile_with_macros(source, &mut host).unwrap();
     #[cfg(any(light_v8, light_quickjs))]
     {

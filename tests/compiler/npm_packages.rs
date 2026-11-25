@@ -2,13 +2,17 @@
 //! and diagnostics. Contract rows live in tests/fixtures/contracts.
 use crate::json::Json;
 use crate::temp_dir::TempDir;
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::EvalOptions;
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::EvalSession;
 use light_cljs::analyzer::AnalysisOptions;
 use light_cljs::compiler::{
     analyze_namespace_entry, compile_namespace_esm, compile_namespace_with_warnings,
 };
 use light_cljs::{
-    ApplicationOptions, EvalOptions, EvalSession, MacroHost, OptimizationLevel, PACKAGE_REGISTRY,
-    compile_namespace, prepare_application,
+    ApplicationOptions, MacroHost, OptimizationLevel, PACKAGE_REGISTRY, compile_namespace,
+    prepare_application,
 };
 use std::{
     fs,
@@ -550,6 +554,7 @@ fn package_diagnostics_match_contract_probes() {
     }
 }
 
+#[cfg(any(light_v8, light_quickjs))]
 fn printed(s: &mut EvalSession, source: &str) -> String {
     let value = s.eval_string(source).unwrap().value;
     let text = s.print(value).unwrap();
@@ -557,11 +562,11 @@ fn printed(s: &mut EvalSession, source: &str) -> String {
     text
 }
 
+#[cfg(any(light_v8, light_quickjs))]
 const PRELUDE: &str = r#"(set! js/lightCljsPackages
   (js-obj "react" (js-obj "createElement" (fn [tag] (str "el:" tag)) "default" :react-default)
           "@scope/pkg" (js-obj "default" (fn [x] (str "scoped:" x)))))"#;
 
-// Exercises the embedded engine through EvalSession.
 #[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn repl_requires_bind_packages_and_resolve_them_at_each_use() {
@@ -615,7 +620,6 @@ fn repl_requires_bind_packages_and_resolve_them_at_each_use() {
     assert_eq!(printed(&mut s, "(r/upper-case \"x\")"), "\"X\"");
 }
 
-// Exercises the embedded engine through EvalSession.
 #[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn name_policy_checks_package_lookups_as_the_registry_global() {

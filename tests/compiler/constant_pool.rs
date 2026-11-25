@@ -12,9 +12,11 @@
 //! literals may be `identical?`.
 use super::optimization::{execute, readable};
 use light_cljs::{
-    ApplicationOptions, ConstantPool, EvalOptions, EvalSession, OptimizationLevel, Program,
-    analyze, parse, prepare_application,
+    ApplicationOptions, ConstantPool, OptimizationLevel, Program, analyze, parse,
+    prepare_application,
 };
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::{EvalOptions, EvalSession};
 
 fn program(source: &str) -> Program {
     analyze(source, &parse(source).unwrap()).unwrap_or_else(|error| panic!("{source}\n{error}"))

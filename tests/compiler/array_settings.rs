@@ -1,7 +1,9 @@
 //! File-scoped compiler state is separate from the public runtime Var.
 use crate::temp_dir::TempDir;
 use light_cljs::analyzer::{AnalysisOptions, CheckedArrays, analyze_with_macro_warnings};
-use light_cljs::evaluator::{Evaluator, EvaluatorOptions, RUNTIME_SOURCE};
+use light_cljs::evaluator::RUNTIME_SOURCE;
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, Program, emitter::emit_js_unit, parse};
 use std::{path::PathBuf, process::Command};
 

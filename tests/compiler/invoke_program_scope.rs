@@ -1,4 +1,5 @@
 //! Audit the unchanged upstream emission fixture and its intentional runtime failure.
+#[cfg(any(light_v8, light_quickjs))]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, compile_namespace_with_macros, compile_with_macros};
 use std::io::Write;

@@ -1,7 +1,9 @@
 //! Canonical transient collection ownership, public dispatch and macro parity.
 use super::optimization::execute;
 use crate::temp_dir::TempDir;
-use light_cljs::evaluator::{Evaluator, EvaluatorOptions, RUNTIME_SOURCE};
+use light_cljs::evaluator::RUNTIME_SOURCE;
+#[cfg(any(light_v8, light_quickjs))]
+use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{
     ApplicationOptions, MacroHost, OptimizationLevel, analyze_with_macros, emitter::emit_js_unit,
     parse, prepare_application,
