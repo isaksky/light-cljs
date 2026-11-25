@@ -1526,11 +1526,7 @@ fn connection(stream: TcpStream, site: &Arc<Site>) -> io::Result<()> {
                 return respond_text(&mut writer, "405 Method Not Allowed", "POST a reply");
             }
             (_, "/repl") => {
-                return respond_text(
-                    &mut writer,
-                    "405 Method Not Allowed",
-                    "POST a REPL request",
-                );
+                return respond_text(&mut writer, "405 Method Not Allowed", "POST a REPL request");
             }
             _ => {
                 return respond_text(
@@ -2403,15 +2399,12 @@ fn bundle(
     head_only: bool,
     keep_alive: bool,
 ) -> io::Result<()> {
-    let expected_n = request
-        .target
-        .split_once('?')
-        .and_then(|(_, query)| {
-            query
-                .split('&')
-                .find_map(|pair| pair.strip_prefix("n="))
-                .and_then(|n| n.parse::<usize>().ok())
-        });
+    let expected_n = request.target.split_once('?').and_then(|(_, query)| {
+        query
+            .split('&')
+            .find_map(|pair| pair.strip_prefix("n="))
+            .and_then(|n| n.parse::<usize>().ok())
+    });
     let (cached, step, units) = {
         let state = shared.state();
         if state.build.units.is_empty()
@@ -2444,10 +2437,8 @@ fn bundle(
             let Ok(client) = std::fs::read(out_dir.join("client.js")) else {
                 return respond_text_with(stream, "404 Not Found", "no client.js", keep_alive);
             };
-            let cap = runtime.len()
-                + client.len()
-                + 2
-                + units.iter().map(|u| u.len() + 1).sum::<usize>();
+            let cap =
+                runtime.len() + client.len() + 2 + units.iter().map(|u| u.len() + 1).sum::<usize>();
             let mut combined = Vec::with_capacity(cap);
             combined.extend_from_slice(&runtime);
             combined.push(b'\n');
@@ -2484,7 +2475,14 @@ fn bundle(
         ("Cache-Control", "no-cache"),
     ];
     if matches {
-        respond_with(stream, "304 Not Modified", &headers, &[], head_only, keep_alive)
+        respond_with(
+            stream,
+            "304 Not Modified",
+            &headers,
+            &[],
+            head_only,
+            keep_alive,
+        )
     } else {
         respond_with(stream, "200 OK", &headers, &bytes, head_only, keep_alive)
     }
@@ -2518,11 +2516,28 @@ fn file(
         resolve(site, shared, path, within)
     };
     let Some(found) = found else {
-        return respond_text_with(stream, "404 Not Found", &format!("no file {path}"), keep_alive);
+        return respond_text_with(
+            stream,
+            "404 Not Found",
+            &format!("no file {path}"),
+            keep_alive,
+        );
     };
     match std::fs::read(&found) {
-        Ok(bytes) => send(stream, request, content_type(&found), &bytes, head_only, keep_alive),
-        Err(_) => respond_text_with(stream, "404 Not Found", &format!("no file {path}"), keep_alive),
+        Ok(bytes) => send(
+            stream,
+            request,
+            content_type(&found),
+            &bytes,
+            head_only,
+            keep_alive,
+        ),
+        Err(_) => respond_text_with(
+            stream,
+            "404 Not Found",
+            &format!("no file {path}"),
+            keep_alive,
+        ),
     }
 }
 
@@ -2549,7 +2564,14 @@ fn send(
         ("Cache-Control", "no-cache"),
     ];
     if matches {
-        respond_with(stream, "304 Not Modified", &headers, &[], head_only, keep_alive)
+        respond_with(
+            stream,
+            "304 Not Modified",
+            &headers,
+            &[],
+            head_only,
+            keep_alive,
+        )
     } else {
         respond_with(stream, "200 OK", &headers, bytes, head_only, keep_alive)
     }
