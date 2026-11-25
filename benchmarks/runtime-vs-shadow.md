@@ -6763,7 +6763,10 @@ Controlled experiment on workload 200k dev (1 iteration, Node v26.12.1):
 
 ### Dev measurements (alternated vs shadow-cljs 3.5.3, unreserved)
 
-Measured on Apple M3 Ultra VM (24 CPUs, 32 GiB), Node v26.12.1, Headless Chromium 156.0.8078.4.
+Measured on Apple M3 Ultra VM (24 CPUs, 32 GiB), Node v26.12.1, Headless Chromium 156.0.8078.4, using immutable `cargo build --locked --release` binaries:
+
+- **Before (`713fe449`):** immutable copy `target/light-cljs-base` (`sha256 171c8a222caeb482c221098039e8744fec07f879d886f3c9ab57e027a576e8e2`).
+- **After (`c80ab30d`):** release binary `target/release/light-cljs` (`sha256 93f91548e848e52a54c1da8c6c571dd7e611b9b6148a02dedcf3a86faa2b7a06`).
 
 #### Generated workload 200k dev (Node, 10 runs alternated per iteration count)
 
@@ -6773,23 +6776,23 @@ Measured on Apple M3 Ultra VM (24 CPUs, 32 GiB), Node v26.12.1, Headless Chromiu
 | Before `713fe449` (4.38-4.45) | 1 | shadow-cljs | 0.926 s (0.918-1.198) | 0.935 s (0.928-1.207) | 1.10 s | 0.305 GB (0.297-0.316) | |
 | Before `713fe449` (4.16-4.43) | 40 | light-cljs | 2.608 s (2.552-2.726) | 2.618 s (2.563-2.738) | 3.51 s | 0.362 GB (0.355-0.375) | 1.162x |
 | Before `713fe449` (4.17-4.43) | 40 | shadow-cljs | 2.244 s (2.234-2.394) | 2.257 s (2.247-2.407) | 3.06 s | 0.440 GB (0.426-0.446) | |
-| After (9.17-10.02) | 1 | light-cljs | 0.860 s (0.817-0.936) | 0.868 s (0.824-0.946) | 1.02 s | 0.264 GB (0.263-0.272) | 0.886x |
-| After (9.17-10.02) | 1 | shadow-cljs | 0.970 s (0.942-1.199) | 0.980 s (0.950-1.209) | 1.16 s | 0.305 GB (0.295-0.315) | |
-| After (8.13-9.17) | 40 | light-cljs | 2.661 s (2.352-3.335) | 2.675 s (2.364-3.349) | 3.71 s | 0.367 GB (0.355-0.379) | 1.069x |
-| After (8.23-9.45) | 40 | shadow-cljs | 2.489 s (2.390-2.668) | 2.512 s (2.405-2.693) | 3.44 s | 0.440 GB (0.425-0.448) | |
+| After `c80ab30d` (9.17-10.02) | 1 | light-cljs | 0.860 s (0.817-0.936) | 0.868 s (0.824-0.946) | 1.02 s | 0.264 GB (0.263-0.272) | 0.886x |
+| After `c80ab30d` (9.17-10.02) | 1 | shadow-cljs | 0.970 s (0.942-1.199) | 0.980 s (0.950-1.209) | 1.16 s | 0.305 GB (0.295-0.315) | |
+| After `c80ab30d` (8.13-9.17) | 40 | light-cljs | 2.661 s (2.352-3.335) | 2.675 s (2.364-3.349) | 3.71 s | 0.367 GB (0.355-0.379) | 1.069x |
+| After `c80ab30d` (8.23-9.45) | 40 | shadow-cljs | 2.489 s (2.390-2.668) | 2.512 s (2.405-2.693) | 3.44 s | 0.440 GB (0.425-0.448) | |
 
 1-iteration first output dropped from `1.127x` to `0.886x` shadow-cljs (all 10 light-cljs runs `0.817-0.936 s` beat shadow-cljs's fastest run `0.942 s`). In the 1-iteration CPU profile, total sampled time dropped `17.1%` (`1,212.8 ms` -> `1,005.1 ms`), `define` (`577.7 ms` self, `47.63%`) left the top 15 completely, and `define + wrapSafe` dropped `26.1%` (`895.9 ms` -> `661.7 ms`). Steady state (`1->40` iterations) stayed at `1.18x` (`40.15` vs `33.90` ms/iter before; `46.33` vs `39.27` ms/iter after under load 8-10; tracked separately in `light-cljs-1124`).
 
-#### TodoMVC dev page load (Headless Chromium, 6 runs alternated, unreserved)
+#### TodoMVC dev page load (Headless Chromium, 6 runs alternated, unreserved, 1-minute load 9.17 sampled during run)
 
 | Build | Page load to interactive | Script time | vs shadow-cljs load |
 | --- | ---: | ---: | ---: |
 | Before (`713fe449`) | 109.75 ms (95.60-161.00) | 66.46 ms (60.26-88.96) | 0.79x |
-| After | 88.80 ms (81.70-126.00) | 49.72 ms (46.66-54.20) | 0.64x |
+| After (`c80ab30d`) | 88.80 ms (81.70-126.00) | 49.72 ms (46.66-54.20) | 0.64x |
 | shadow-cljs 3.5.3 | 138.35 ms (136.50-158.70) | 112.09 ms (110.40-119.59) | 1.00x |
 
 ### Release parity and test checks
 
-- **Release `:advanced` output:** `src/emitter.rs` and `src/js_runtime.js` are untouched; workload 200k `:advanced` output (`workload.main.js`) is byte-identical before and after (`sha256 e4ae4d595d7c59af6e3b56f37d220d580833efc827471fff7b7a704c1766d643`), and TodoMVC `:advanced` size is unchanged (`400,439` B raw / `106,573` B gzip -9 without React).
+- **Release `:advanced` output:** `src/emitter.rs` and `src/js_runtime.js` are untouched; workload 200k `:advanced` output (`workload.main.js`) is byte-identical before and after (`sha256 e4ae4d595d7c59af6e3b56f37d220d580833efc827471fff7b7a704c1766d643`), and re-frame `:advanced` output sizes (without React, `bb benchmarks/re-frame.bb size --light-only`) are unchanged: `simple` `282,075` B raw / `75,914` B gzip -9, `todomvc` `400,439` B raw / `106,573` B gzip -9, `flow` `1,170,632` B raw / `272,298` B gzip -9 (+0.00%). Size ratchet ceilings in `tests/support/ratchet_fixtures.rs` are unchanged (note added).
 - **`bb benchmarks/re-frame-tests.bb`:** 118/118 tests pass (446 assertions per run across 3 runs) on shadow, `light-compile` (dev), and `light-release`.
-- **Browser checks:** dev TodoMVC functional browser checks 9/9 pass across 3 runs (zero non-404 errors).
+- **Browser checks:** dev TodoMVC functional browser checks 9/9 pass across 3 runs (zero non-404 errors); release TodoMVC browser checks 10/10 pass across 3 runs.

@@ -2074,10 +2074,10 @@ model of the session (docs/evaluation.md): every definition is
 nothing is sealed in a closure. The unit is wrapped in a registration call,
 
 ```js
-globalThis.__lightDev$KEY.define("app.view", ["app.macros", "app.state"], (__lightInteractiveRuntime) => { globalThis.__lightApplicationRoots$KEY ??= Object.create(null); return (() => {
+globalThis.__lightDev$KEY.define("app.view", ["app.macros", "app.state"], ((__lightInteractiveRuntime) => { globalThis.__lightApplicationRoots$KEY ??= Object.create(null); return (() => {
   /* the namespace's registration and forms */
 })()
-; });
+; }));
 //# sourceMappingURL=app.view.js.map
 ```
 

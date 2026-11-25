@@ -394,8 +394,25 @@ fn units_without_a_heap_reload_a_running_dev_build_in_node() {
     // build's key (docs/value-layout.md, section 1): `--compile --entry
     // app.main` of no build of light-cljs.edn.
     let key = light_cljs::dev_build::dev_key(None, "app.main").units();
+    let load_script = script(&actions);
+    let defines = load_script
+        .lines()
+        .filter(|line| line.starts_with("globalThis.__lightDev$LKEY.define("))
+        .collect::<Vec<_>>();
+    assert_eq!(defines.len(), 4, "{load_script}");
+    assert!(
+        defines
+            .iter()
+            .all(|line| line.ends_with(", [], ((__lightInteractiveRuntime) => {")),
+        "{defines:?}"
+    );
+    assert_eq!(
+        load_script.lines().filter(|line| *line == "}));").count(),
+        4,
+        "{load_script}"
+    );
     let file = dir.join("actions.js");
-    fs::write(&file, key.apply(&script(&actions))).unwrap();
+    fs::write(&file, key.apply(&load_script)).unwrap();
     assert_eq!(
         run_dev(&out, true, &[file]).unwrap(),
         r#"{"id":"program","outcome":{"status":"returned","value":{"$value":"undefined"}},"trace":[],"stdout":"start\nclicks: [1]\nreloading\nprobe app.probe\nafter cljs.user\nrender: clicks: [2]\n"}"#

@@ -1518,6 +1518,14 @@
 //! `features-direct`) to the next 100 above, and `FEATURES_CHUNK_CEILINGS`
 //! `app.main.js` (`8,456` -> `8,500`) and `app.editor+app.reports.js`
 //! (`118,666` -> `118,700`).
+//!
+//! Parenthesizing dev `define` unit functions for V8 eager compilation
+//! (light-cljs-1119): dev-only emission change in `src/dev_build.rs` and
+//! `src/dev_session.rs` (`src/emitter.rs` and `src/js_runtime.js` untouched).
+//! Verified `:advanced` output is byte-identical on workload 200k
+//! (`workload.main.js` sha256 unchanged) and unchanged on re-frame `simple`
+//! (`75,914` B gzip), `todomvc` (`106,573` B gzip), and `flow` (`272,298` B
+//! gzip); all ceilings stay at their current values.
 
 pub struct Fixture {
     pub name: &'static str,
