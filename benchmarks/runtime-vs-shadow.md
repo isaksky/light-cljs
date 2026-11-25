@@ -6945,3 +6945,45 @@ Output sizes: light-cljs 3,735,910 bytes raw (888,670 gzip -9; 455/4,526 waste m
 | 40 | 0.92 (1.10) | 0.93 (1.10) | 0.93 (1.08) | 0.92 (0.97) |
 
 Steady state, from the median wall times at 1 and 40 iterations: light-cljs 22.7 ms per iteration, shadow-cljs 25.2 ms per iteration (light/shadow **0.90**, down from 1.11 in `light-cljs-1019`).
+
+### Generated workload, 800k lines (release, Node)
+
+Output sizes: light-cljs 14,241,788 bytes raw (3,356,512 gzip -9; 1,829/18,131 waste markers retained, 0 removable), shadow-cljs 15,710,764 bytes raw (3,894,325 gzip -9; light/shadow 0.86 gzip). 10 runs per iteration count, compilers alternated, unreserved (1-minute load 4.98-9.19, elevated at the start from the shadow-cljs 800k build just before it). Every run matched oracle checksum.
+
+| Iterations | Compiler | First output | Wall time | User CPU | System CPU | Peak memory | 1-minute load before |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | light-cljs | 1.006 s (0.995-1.139) | 1.015 s (1.003-1.148) | 1.17 s (1.16-1.23) | 0.07 s (0.06-0.10) | 0.381 GB (0.339-0.383) | 7.74-9.19 |
+| 1 | shadow-cljs | 1.023 s (0.997-1.081) | 1.030 s (1.004-1.089) | 1.17 s (1.14-1.22) | 0.06 s (0.06-0.08) | 0.338 GB (0.279-0.340) | 7.74-8.69 |
+| 4 | light-cljs | 1.407 s (1.348-1.643) | 1.419 s (1.358-1.655) | 1.73 s (1.68-1.89) | 0.12 s (0.10-0.35) | 0.407 GB (0.367-0.417) | 6.40-7.44 |
+| 4 | shadow-cljs | 1.443 s (1.379-1.546) | 1.455 s (1.389-1.560) | 1.75 s (1.69-1.82) | 0.13 s (0.10-0.21) | 0.370 GB (0.352-0.408) | 6.44-7.44 |
+| 16 | light-cljs | 2.524 s (2.488-2.613) | 2.537 s (2.502-2.628) | 3.38 s (3.31-3.49) | 0.17 s (0.15-0.18) | 0.503 GB (0.479-0.529) | 4.98-6.05 |
+| 16 | shadow-cljs | 2.663 s (2.613-2.960) | 2.679 s (2.629-2.977) | 3.57 s (3.49-3.82) | 0.19 s (0.17-0.41) | 0.555 GB (0.521-0.581) | 4.98-5.80 |
+
+| Iterations | light/shadow first output (`1019`) | light/shadow wall time (`1019`) | light/shadow CPU (`1019`) | light/shadow peak memory (`1019`) |
+| --- | --- | --- | --- | --- |
+| 1 | 0.98 (1.05) | 0.99 (1.05) | 1.00 (1.07) | 1.13 (1.14) |
+| 4 | 0.98 (1.07) | 0.98 (1.08) | 0.98 (1.11) | 1.10 (1.09) |
+| 16 | 0.95 (1.10) | 0.95 (1.09) | 0.94 (1.08) | 0.90 (0.92) |
+
+Steady state, from the median wall times at 1 and 16 iterations: light-cljs 101.5 ms per iteration, shadow-cljs 109.9 ms per iteration (light/shadow **0.92**, down from 1.12 in `light-cljs-1019`).
+
+### Generated re-frame-shaped app, 200k lines (release, jsdom in Node)
+
+Output sizes: light-cljs 5,734,283 bytes raw (1,070,485 gzip -9; 185/2,515 waste markers retained, 0 removable), shadow-cljs 6,963,426 bytes raw (1,172,411 gzip -9; light/shadow 0.91 gzip). 10 runs per iteration count, compilers alternated, unreserved (1-minute load 4.19-9.84, elevated at the start from the shadow-cljs build just before it). Every run matched oracle checksums for `app-db` and rendered markup.
+
+| Iterations | Compiler | First output | Wall time | User CPU | System CPU | Peak memory | 1-minute load before |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | light-cljs | 1.420 s (1.393-1.621) | 1.433 s (1.406-1.633) | 2.15 s (2.07-2.32) | 0.12 s (0.11-0.15) | 0.474 GB (0.465-0.487) | 8.00-9.84 |
+| 1 | shadow-cljs | 1.374 s (1.333-1.458) | 1.387 s (1.346-1.471) | 2.13 s (2.07-2.23) | 0.11 s (0.11-0.13) | 0.460 GB (0.448-0.468) | 8.35-9.61 |
+| 4 | light-cljs | 2.287 s (2.246-2.395) | 2.303 s (2.261-2.413) | 3.29 s (3.19-3.55) | 0.17 s (0.16-0.19) | 0.572 GB (0.538-0.579) | 6.22-8.00 |
+| 4 | shadow-cljs | 2.154 s (2.116-2.227) | 2.170 s (2.131-2.244) | 3.14 s (3.09-3.25) | 0.16 s (0.15-0.17) | 0.569 GB (0.564-0.574) | 6.41-8.00 |
+| 10 | light-cljs | 3.890 s (3.731-3.946) | 3.920 s (3.808-4.026) | 5.30 s (5.16-5.50) | 0.25 s (0.19-0.25) | 0.739 GB (0.613-0.753) | 4.19-6.22 |
+| 10 | shadow-cljs | 3.630 s (3.566-3.836) | 3.652 s (3.586-3.856) | 4.92 s (4.82-5.19) | 0.23 s (0.22-0.26) | 0.722 GB (0.702-0.731) | 4.29-6.04 |
+
+| Iterations | light/shadow first output (`1019`) | light/shadow wall time (`1019`) | light/shadow CPU (`1019`) | light/shadow peak memory (`1019`) |
+| --- | --- | --- | --- | --- |
+| 1 | 1.03 (1.12) | 1.03 (1.12) | 1.01 (1.07) | 1.03 (1.04) |
+| 4 | 1.06 (1.14) | 1.06 (1.13) | 1.05 (1.13) | 1.01 (1.05) |
+| 10 | 1.07 (1.17) | 1.07 (1.17) | 1.07 (1.18) | 1.02 (1.09) |
+
+Steady state, from the median wall times at 1 and 10 iterations: light-cljs 276.3 ms per iteration, shadow-cljs 251.7 ms per iteration (light/shadow **1.10**, down from 1.20 in `light-cljs-1019`; covered by `light-cljs-1125`).
