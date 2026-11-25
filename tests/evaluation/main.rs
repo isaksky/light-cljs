@@ -2,9 +2,9 @@
 //! linked into a single test binary. Add a suite as `tests/evaluation/<name>.rs` and
 //! register it below.
 
-// Some imports, helpers and inputs are used only by the QuickJS checks.
+// Some imports, helpers and inputs are used only by the V8 checks.
 #![cfg_attr(
-    not(feature = "quickjs"),
+    not(light_v8),
     allow(unused_imports, unused_variables, unused_mut, unused_macros, dead_code)
 )]
 
@@ -28,25 +28,16 @@ mod temp_dir;
 #[allow(dead_code)]
 mod dev_execution;
 
-// Runs session actions in a QuickJS heap.
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 mod dev_session;
 mod eval_cli;
 mod eval_examples;
 mod eval_nsstar;
-// Interactive sessions run in QuickJS.
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 mod eval_sessions;
-// The same session contract on QuickJS, where the default engine is V8.
-#[cfg(all(feature = "v8-macros", feature = "quickjs"))]
-#[allow(clippy::duplicate_mod)]
-#[path = "eval_sessions.rs"]
-mod eval_sessions_quickjs;
-// The QuickJS evaluator is the subject.
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 mod evaluator;
 mod evaluator_conformance;
-// The QuickJS evaluator is the subject.
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 mod evaluator_migration;
 mod sci_reference;

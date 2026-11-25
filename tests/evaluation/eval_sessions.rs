@@ -1,88 +1,8 @@
-use light_cljs::{EvalEngine, EvalOptions};
+use light_cljs::{EvalOptions, EvalSession};
 
-/// The engine this copy of the suite runs its sessions on. main.rs includes
-/// the file once per engine: `eval_sessions` runs on the default engine (V8
-/// where the build has it), and `eval_sessions_quickjs` on QuickJS.
-fn engine() -> EvalEngine {
-    if module_path!().ends_with("_quickjs") {
-        EvalEngine::QuickJs
-    } else {
-        EvalEngine::default()
-    }
-}
-/// A session on [`engine`], whatever engine its options name.
-struct EvalSession {
-    inner: light_cljs::EvalSession,
-    #[cfg(all(light_v8, light_quickjs, debug_assertions))]
-    _no_quickjs: NoQuickJs,
-}
-
-#[cfg(all(light_v8, light_quickjs, debug_assertions))]
-struct NoQuickJs(Option<u64>);
-
-#[cfg(all(light_v8, light_quickjs, debug_assertions))]
-impl Drop for NoQuickJs {
-    fn drop(&mut self) {
-        if let Some(before) = self.0
-            && !std::thread::panicking()
-        {
-            assert_eq!(
-                light_cljs::evaluator::quickjs_runtimes_created_on_thread(),
-                before,
-                "the V8 session created a QuickJS runtime"
-            );
-        }
-    }
-}
-
-impl EvalSession {
-    fn new(mut options: EvalOptions) -> Result<Self, light_cljs::EvalDiagnostic> {
-        options.backend = engine();
-        // Configured compiler data readers still use QuickJS (light-cljs-1131).
-        #[cfg(all(light_v8, light_quickjs, debug_assertions))]
-        let no_quickjs = NoQuickJs(
-            (options.backend == EvalEngine::V8
-                && options.data_readers.is_empty()
-                && options.default_data_reader.is_none())
-            .then(light_cljs::evaluator::quickjs_runtimes_created_on_thread),
-        );
-        Ok(Self {
-            inner: light_cljs::EvalSession::new(options)?,
-            #[cfg(all(light_v8, light_quickjs, debug_assertions))]
-            _no_quickjs: no_quickjs,
-        })
-    }
-}
-impl std::ops::Deref for EvalSession {
-    type Target = light_cljs::EvalSession;
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-impl std::ops::DerefMut for EvalSession {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.inner
-    }
-}
-impl std::fmt::Debug for EvalSession {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "EvalSession({})", self.backend().name())
-    }
-}
-
-/// A heap limit the session's own allocations reach soon: QuickJS peaks at
-/// about 4 MiB while it loads the runtime (light-cljs-358), 5.30 MB since
-/// the classes' own `-equiv` and `-hash` slots (light-cljs-1014; 5.21 MB
-/// before), just over 6 MiB since the transient collection builders
-/// (light-cljs-1108/1109/1110). In the V8 build, the macro heap requires
-/// 16 MiB even when the session evaluates forms with QuickJS.
+// The session runtime fits here, while the allocation probe exceeds the limit.
 fn small_heap() -> usize {
-    if engine() == EvalEngine::QuickJs {
-        let mib = if cfg!(light_v8) { 16 } else { 8 };
-        mib * 1024 * 1024
-    } else {
-        32 * 1024 * 1024
-    }
+    32 * 1024 * 1024
 }
 fn printed(s: &mut light_cljs::EvalSession, source: &str) -> String {
     let v = s.eval_string(source).unwrap().value;
@@ -477,7 +397,9 @@ fn a_small_v8_macro_heap_is_rejected_at_session_configuration() {
         panic!("V8 macro session accepted a 4 MiB heap");
     };
     assert!(error.message.contains("16 MiB"), "{error}");
-    let error = EvalSession::new(options).unwrap_err();
+    let Err(error) = EvalSession::new(options) else {
+        panic!("expected session initialization to fail")
+    };
     assert!(error.message.contains("16 MiB"), "{error}");
 }
 
@@ -774,8 +696,7 @@ fn exception_diagnostics_preserve_original_messages() {
         ),
         "[true \"fmt:fmt-msg\"]"
     );
-    // Lazy own getter on V8, eager own string data property on QuickJS.
-    let expected_lazy = !matches!(engine(), EvalEngine::QuickJs);
+    // V8 exposes the stack as a lazy own getter.
     assert_eq!(
         printed(
             &mut s,
@@ -785,7 +706,7 @@ fn exception_diagnostics_preserve_original_messages() {
                   (.-enumerable d)
                   (if (fn? (.-get d)) true (string? (.-value d)))])"#
         ),
-        format!("[{expected_lazy} true true]")
+        "[true true true]"
     );
 }
 #[test]

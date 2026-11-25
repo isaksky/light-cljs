@@ -32,8 +32,7 @@ fn original(session: &mut EvalSession) {
         "[:clojure.string/name \"1-2\"]"
     );
 }
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 #[test]
 fn unchanged_complete_nsstar_source_executes_in_fresh_and_reused_sessions() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/compiler-nsstar");
@@ -48,8 +47,7 @@ fn unchanged_complete_nsstar_source_executes_in_fresh_and_reused_sessions() {
     original(&mut reused);
 }
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 #[test]
 fn malformed_nsstar_is_located_and_failed_imports_do_not_publish_aliases() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/compiler-nsstar");
@@ -141,8 +139,7 @@ fn source_macros_referrals_imports_and_ordered_effects_keep_the_declared_owner()
         "(ns syntax.library) (defmacro snapshot [] false)",
     )
     .unwrap();
-    // Interactive sessions run in QuickJS; the compiled program runs in Node below.
-    #[cfg(feature = "quickjs")]
+    #[cfg(light_v8)]
     let reused = EvalSession::new(EvalOptions {
         source_provider: Some(Rc::new(FileSourceProvider::new(vec![root.to_path_buf()]))),
         file_provider: Some(Rc::new(|_| {
@@ -171,7 +168,7 @@ fn source_macros_referrals_imports_and_ordered_effects_keep_the_declared_owner()
     std::fs::write(root.join("syntax/owner.cljs"), source).unwrap();
     let javascript =
         light_cljs::compile_namespace("syntax.owner", std::slice::from_ref(root.path())).unwrap();
-    #[cfg(feature = "quickjs")]
+    #[cfg(light_v8)]
     {
         let engine = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
         let value = engine.evaluate_js(&javascript).unwrap();
@@ -194,7 +191,7 @@ fn source_macros_referrals_imports_and_ordered_effects_keep_the_declared_owner()
         String::from_utf8(output.stdout).unwrap(),
         "[true [:before :after] true true true]\n"
     );
-    #[cfg(feature = "quickjs")]
+    #[cfg(light_v8)]
     for mut current in [reused.fresh_session().unwrap(), reused] {
         assert_eq!(
             printed(&mut current, source),

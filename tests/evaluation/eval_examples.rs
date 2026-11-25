@@ -40,8 +40,7 @@ const EXAMPLES: [(&str, &str, &str); 6] = [
         "[[{:price 4} {:rejected 0} {:price 5}] [5 0 4]]\n",
     ),
 ];
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 #[test]
 fn every_compiled_example_runs_fresh_without_java_node_or_project_files() {
     let cases = protocol::cases(include_str!("../fixtures/sci-outcomes.tsv")).unwrap();

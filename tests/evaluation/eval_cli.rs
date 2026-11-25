@@ -16,10 +16,7 @@ fn command() -> Command {
     command
 }
 fn run(args: &[&str], input: &str) -> Output {
-    run_command(command(), args, input)
-}
-fn run_command(mut command: Command, args: &[&str], input: &str) -> Output {
-    let mut child = command
+    let mut child = command()
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -60,8 +57,7 @@ impl Directory {
     }
 }
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 #[test]
 fn eval_text_stdin_empty_and_unicode_need_only_the_embedded_binary() {
     ok(
@@ -81,8 +77,7 @@ fn eval_text_stdin_empty_and_unicode_need_only_the_embedded_binary() {
     );
 }
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 #[test]
 fn script_output_and_final_result_are_distinct() {
     let output = run(
@@ -110,8 +105,7 @@ fn script_output_and_final_result_are_distinct() {
     );
 }
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 #[test]
 fn file_execution_handles_utf8_paths_file_binding_and_runtime_stdin() {
     let dir = Directory::new();
@@ -137,8 +131,7 @@ fn file_execution_handles_utf8_paths_file_binding_and_runtime_stdin() {
     ok(run(&["--eval"], "(read-line)"), "nil\n");
 }
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 #[test]
 fn isolated_copy_loads_only_explicit_cljs_and_cljc_roots() {
     let dir = Directory::new();
@@ -182,8 +175,7 @@ fn isolated_copy_loads_only_explicit_cljs_and_cljc_roots() {
     );
 }
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 #[test]
 fn script_failures_keep_output_and_never_print_a_success_result() {
     for (source, expected) in [
@@ -208,8 +200,7 @@ fn script_failures_keep_output_and_never_print_a_success_result() {
     assert_eq!(output.stdout, b"before\n");
 }
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 #[test]
 fn runtime_and_rendering_limits_fail_without_partial_results() {
     for (args, expected) in [
@@ -267,8 +258,7 @@ fn runtime_and_rendering_limits_fail_without_partial_results() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("render"));
 }
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 #[test]
 fn repl_retains_history_definitions_namespace_and_current_reader_context() {
     ok(
@@ -284,8 +274,7 @@ fn repl_retains_history_definitions_namespace_and_current_reader_context() {
     );
 }
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 #[test]
 fn repl_multiline_uses_parser_rules_and_preserves_single_execution() {
     ok(
@@ -300,8 +289,7 @@ fn repl_multiline_uses_parser_rules_and_preserves_single_execution() {
     ok(run(&["--repl"], "42"), "42\n");
 }
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 #[test]
 fn repl_continues_after_reader_analysis_execution_and_print_errors() {
     let output = run(
@@ -324,8 +312,7 @@ fn repl_continues_after_reader_analysis_execution_and_print_errors() {
     assert!(error.contains("render"));
 }
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 #[test]
 fn repl_shares_the_language_input_cursor_and_recovers_runtime_reads() {
     ok(
@@ -345,8 +332,7 @@ fn repl_shares_the_language_input_cursor_and_recovers_runtime_reads() {
     );
 }
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 #[test]
 fn repl_eof_reports_incomplete_input_once_and_errors_do_not_shift_history() {
     let output = run(&["--repl"], "41\n[1\n");
@@ -401,8 +387,7 @@ fn evaluation_options_are_validated_and_help_lists_both_families() {
     }
 }
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 #[test]
 fn invalid_utf8_repl_input_is_a_fatal_host_read_error() {
     let mut child = command()
@@ -428,8 +413,7 @@ fn invalid_utf8_repl_input_is_a_fatal_host_read_error() {
     );
 }
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 #[test]
 fn repl_compacts_consumed_lines_and_preserves_original_locations() {
     ok(
@@ -447,8 +431,7 @@ fn repl_compacts_consumed_lines_and_preserves_original_locations() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("<stdin>.cljc:21:1"));
     assert!(String::from_utf8_lossy(&output.stdout).ends_with(":after\n"));
 }
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 #[test]
 fn number_js_macros_and_clj_migration_are_explicit() {
     ok(run(&["--eval", "--text", "(/ 1 2)"], ""), "0.5\n");
@@ -478,24 +461,14 @@ fn number_js_macros_and_clj_migration_are_explicit() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("rename/adapt"));
 }
 
-#[cfg(all(light_v8, light_quickjs, debug_assertions))]
+#[cfg(light_v8)]
 #[test]
-fn default_eval_and_repl_expand_macros_without_quickjs() {
-    let guarded = || {
-        let mut command = command();
-        command.env("LIGHT_CLJS_ASSERT_NO_QUICKJS", "1");
-        command
-    };
+fn default_eval_and_repl_expand_macros() {
     let source = "(defmacro answer [] 42)\n(answer)\n";
-    ok(run_command(guarded(), &["--eval"], source), "42\n");
-    ok(run_command(guarded(), &["--repl"], source), "nil\n42\n");
-
-    let output = run_command(guarded(), &["--eval", "--engine", "quickjs"], "42");
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("created QuickJS runtime 1"));
+    ok(run(&["--eval"], source), "42\n");
+    ok(run(&["--repl"], source), "nil\n42\n");
 }
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 #[test]
 fn imported_macro_helpers_run_script_initializers_once() {
     let dir = Directory::new();
@@ -515,8 +488,7 @@ fn imported_macro_helpers_run_script_initializers_once() {
     );
 }
 
-// Evaluates the output in QuickJS and drives `--repl`, which runs on QuickJS.
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 #[test]
 fn definition_metadata_uses_text_file_and_incremental_repl_locations() {
     let probe = "(def ^{:file \"fake\" :line 0 :column 0} x 1) [(:file (meta #'x)) (:line (meta #'x)) (:column (meta #'x))]";
@@ -562,8 +534,7 @@ fn definition_metadata_uses_text_file_and_incremental_repl_locations() {
     assert!(text.contains("[\"<stdin>.cljc\" 5 1]"), "{text}");
 }
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 #[test]
 fn original_raw_nsstar_source_executes_with_explicit_roots() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -590,8 +561,7 @@ fn original_raw_nsstar_source_executes_with_explicit_roots() {
     );
 }
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// `time` prints its line through the session's `*print-fn*`, stdout, before
 /// the result under `--eval` and `--repl` (light-cljs-260). A program clock
 /// for `system-time` makes the line exact; the engine's own clock gives its
@@ -635,8 +605,7 @@ fn time_prints_elapsed_milliseconds_under_eval_and_repl() {
     }
 }
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// `^:async` functions under `--eval` and `--repl` (light-cljs-261). A call's
 /// value is a Promise. The session runs promise jobs after each top-level
 /// form (light-cljs-295), so its reactions and the rest of the body after an
@@ -714,8 +683,7 @@ fn async_functions_return_promises_under_eval_and_repl() {
     );
 }
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// A promise left rejected with no handler attached once a form's jobs ran
 /// out is a warning on stderr after the form's result under `--repl`, which
 /// goes on, as in Node's REPL, and the script's error under `--eval`, as in
@@ -773,8 +741,7 @@ fn unhandled_rejections_warn_in_the_repl_and_fail_a_script() {
     ok(run(&["--eval", "--text", handled], ""), ":handled\n");
 }
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// `--warnings` turns warning mode on for `--eval` and `--repl`: a use of a
 /// Var defined later compiles and runs as upstream's would, and its warning
 /// goes to stderr as `--compile --warnings` prints it, located, before the
@@ -819,8 +786,7 @@ fn warnings_flag_turns_warning_mode_on_and_prints_warnings() {
     );
 }
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 /// The files of examples/dev load through `require` in `--repl`, with every
 /// clause of their `ns` forms, and reload: a `require :reload` of
 /// `app.view` and a `[app.state :reload true]` keep the `defonce` state.
@@ -845,16 +811,11 @@ fn examples_dev_loads_and_reloads_through_require_in_the_repl() {
     );
 }
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
-/// `--engine` chooses the engine the forms run in, V8 by default where the
-/// build has it. Both keep the interactive contract: definitions and history
-/// persist, values print the same, language errors leave the session usable
-/// with `*e` bound, the language reads the REPL's own input, promise jobs run
-/// after each form with unhandled rejections reported, and a deadline is
-/// terminal.
+#[cfg(light_v8)]
+/// V8 sessions retain definitions, recover from language errors, read input,
+/// drain promise jobs after each form and stop after a terminal deadline.
 #[test]
-fn both_engines_keep_the_repl_and_eval_contract() {
+fn v8_keeps_the_repl_and_eval_contract() {
     let transcript = "(def x 41)\n(inc x)\n(+ *1 1)\n\
                       (throw (ex-info \"boom\" {:k 1}))\n(:k (ex-data *e))\n\
                       (read-line)typed\n\
@@ -867,57 +828,49 @@ fn both_engines_keep_the_repl_and_eval_contract() {
     let stdout = "41\n42\n43\n1\n\"typed\"\n#object[cljs.core.Atom {:val nil}]\n\
                   #object[Promise [object Promise]]\n5\n#object[Promise [object Promise]]\n\
                   :after\n#object[Function]\nnil\n2\n#js {:k [1 {:a #{2}}]}\n";
-    let mut engines = vec!["quickjs"];
-    if cfg!(feature = "v8-macros") {
-        engines.push("v8");
-    }
-    for engine in engines {
-        let output = run(
-            &["--repl", "--engine", engine, "--timeout-ms", "2000"],
-            transcript,
-        );
-        let stderr = String::from_utf8(output.stderr).unwrap();
-        assert!(!output.status.success(), "{engine}: {stderr}");
-        assert_eq!(
-            String::from_utf8(output.stdout).unwrap(),
-            stdout,
-            "{engine}: {stderr}"
-        );
-        // QuickJS adds the stack of the error to its diagnostic.
-        let lines: Vec<_> = stderr
-            .lines()
-            .filter(|l| l.starts_with("light-cljs: "))
-            .collect();
-        assert_eq!(lines.len(), 3, "{engine}: {stderr}");
-        assert!(lines[0].contains("boom"), "{engine}: {stderr}");
-        assert_eq!(
-            lines[1],
-            "light-cljs: WARNING: unhandled promise rejection: #error {:message \"lost\", :data {}}",
-            "{engine}"
-        );
-        assert!(
-            lines[2].contains("deadline exceeded; start a fresh --repl command"),
-            "{engine}: {stderr}"
-        );
-        ok(
-            run(
-                &[
-                    "--eval",
-                    "--engine",
-                    engine,
-                    "--text",
-                    "(def a 1) (println :out) (+ a 1)",
-                ],
-                "",
-            ),
-            ":out\n2\n",
-        );
-    }
+    let output = run(
+        &["--repl", "--engine", "v8", "--timeout-ms", "2000"],
+        transcript,
+    );
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(!output.status.success(), "{stderr}");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        stdout,
+        "{stderr}"
+    );
+    let lines: Vec<_> = stderr
+        .lines()
+        .filter(|l| l.starts_with("light-cljs: "))
+        .collect();
+    assert_eq!(lines.len(), 3, "{stderr}");
+    assert!(lines[0].contains("boom"), "{stderr}");
+    assert_eq!(
+        lines[1],
+        "light-cljs: WARNING: unhandled promise rejection: #error {:message \"lost\", :data {}}"
+    );
+    assert!(
+        lines[2].contains("deadline exceeded; start a fresh --repl command"),
+        "{stderr}"
+    );
+    ok(
+        run(
+            &[
+                "--eval",
+                "--engine",
+                "v8",
+                "--text",
+                "(def a 1) (println :out) (+ a 1)",
+            ],
+            "",
+        ),
+        ":out\n2\n",
+    );
     let output = run(&["--eval", "--engine", "spidermonkey", "--text", "1"], "");
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("unknown engine spidermonkey"));
     let output = run(
-        &["--repl", "--connect", "127.0.0.1:1", "--engine", "quickjs"],
+        &["--repl", "--connect", "127.0.0.1:1", "--engine", "v8"],
         "",
     );
     assert!(!output.status.success());

@@ -129,8 +129,7 @@ impl Observation {
 }
 
 pub fn run(id: &str, source: &str, profile: &str) -> Result<Observation, String> {
-    // QuickJS stack frames contain a process-global script counter. Compare the
-    // owned message only; incidental stacks are not semantic observations.
+    // Compare the owned message without engine stack frames.
     let message = |text: &str| {
         Value::String(text.lines().next().unwrap_or("").encode_utf16().collect()).wire()
     };
@@ -144,9 +143,6 @@ pub fn run(id: &str, source: &str, profile: &str) -> Result<Observation, String>
     let err = stderr.clone();
     let mut options = EvalOptions {
         namespace: "user".into(),
-        // The corpus records QuickJS's diagnostics: its wording, and a message
-        // without the error's name. V8 words them differently.
-        backend: light_cljs::EvalEngine::QuickJs,
         functions: vec![HostFunction {
             name: "user/observe".into(),
             arity: HostArity::Exact(1),

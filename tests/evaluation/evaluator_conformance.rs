@@ -13,7 +13,7 @@ fn public_evaluator_executes_units_in_v8() {
 
     let evaluator = Evaluator::new(Default::default()).unwrap();
     let function = evaluator
-        .evaluate_js("text => text + (globalThis.lightCljsWeakMapStores ? ' QuickJS' : ' V8')")
+        .evaluate_js("text => { Error.captureStackTrace({}); return text + ' V8'; }")
         .unwrap();
     let text = evaluator.evaluate_js("'Hello'").unwrap();
     let value = evaluator.call(function, &[text]).unwrap();
@@ -27,7 +27,7 @@ fn public_macro_host_creates_a_v8_heap_with_host_settings() {
     host.set_assertions(false);
     let evaluator = host.new_evaluator().unwrap();
     let value = evaluator
-        .evaluate_js("!rt.core.assertions && !globalThis.lightCljsWeakMapStores")
+        .evaluate_js("!rt.core.assertions && typeof Error.captureStackTrace === 'function'")
         .unwrap();
     assert_eq!(evaluator.print(value).unwrap(), "true");
 }
@@ -284,15 +284,15 @@ fn quoted_macro_diagnostic_receipts_preserve_exact_historical_gap_bodies() {
     }
 }
 
-// Rows whose evaluator observation ends in QuickJS stack exhaustion. How many
-// re-entrant realizations fit in the 1 MiB engine stack, and whether JavaScript
-// or the observe host callback reaches the limit first, depend on native frame
-// sizes and so on the build profile (for example the opt-level of QuickJS). The
-// rows keep a recorded observation but are compared by shape.
+// The number of re-entrant realizations before stack exhaustion and whether
+// JavaScript or the observe callback reaches the limit first depend on native
+// frame sizes. Compare the shape of the recorded and current observations.
 const STACK_DEPTH_DEPENDENT: &[&str] = &["sci-deferred-lazy-reentry"];
-const STACK_EXHAUSTED: [&str; 2] = [
+const STACK_EXHAUSTED: [&str; 4] = [
     "Error: Maximum call stack size exceeded",
     "Error: user/observe: Error: Maximum call stack size exceeded",
+    "RangeError: Maximum call stack size exceeded",
+    "Error: user/observe: RangeError: Maximum call stack size exceeded",
 ];
 const REALIZING: &str = " (bool false)";
 
@@ -812,10 +812,65 @@ fn with_v8_macro_location<'a>(id: &str, expected: &'a str) -> std::borrow::Cow<'
     ))
 }
 
+/// Preserve the recorded effects and output while checking V8's exact wording
+/// for the historical cases that fail in a JavaScript intrinsic.
+#[cfg(light_v8)]
+fn with_v8_runtime_diagnostic<'a>(id: &str, expected: &'a str) -> std::borrow::Cow<'a, str> {
+    use std::borrow::Cow;
+    let message = match id {
+        "sci-control-case-map" | "sci-control-case-set" => "1.call is not a function",
+        "sci-coll-merge-with-invalid" => "combine.call is not a function",
+        "sci-coll-update-invalid"
+        | "sci-into-xf-bad-return-empty"
+        | "sci-into-xf-bad-xf"
+        | "sci-lazy-probe-map-invalid-demand"
+        | "sci-lazy-probe-mapcat-invalid-construction"
+        | "sci-transduce-bad-xf-return-empty"
+        | "sci-xf-cat-bad-mapper" => "fn.call is not a function",
+        "sci-into-xf-bad-return"
+        | "sci-transduce-bad-xf-return"
+        | "sci-xf-basic-bad-downstream"
+        | "sci-xf-bounds-bad-downstream"
+        | "sci-xf-cat-bad-downstream"
+        | "sci-xf-partition-bad-downstream" => "rf.call is not a function",
+        "sci-io-read-string-type" | "sci-io-with-in-type" => {
+            "Expected input string and source name"
+        }
+        "sci-state-swap-arity" => {
+            "Cannot read properties of undefined (reading 'cljs$lang$applyTo')"
+        }
+        "sci-state-validator-get-arity" => {
+            "Cannot read properties of undefined (reading 'validator')"
+        }
+        "sci-state-watch-invalid" => "nth(...).call is not a function",
+        "sci-state-watch-nil" => "Cannot read properties of null (reading 'call')",
+        "sci-string-case-coercion" => "l0.toUpperCase is not a function",
+        "sci-string-escape-arity" => "Cannot read properties of undefined (reading 'call')",
+        "sci-string-replace-arity" | "sci-string-replace-callable-type" => {
+            "literal replacement requires a string"
+        }
+        "sci-string-reverse-type" | "sci-string-trim-type" => {
+            "__light0_l0.replace is not a function"
+        }
+        "sci-string-subs-type" => "value.substring is not a function",
+        "sci-xf-bounds-bad-while" => "pred.call is not a function",
+        _ => return Cow::Borrowed(expected),
+    };
+    let (_, rest) = expected
+        .strip_prefix("(diagnostic ")
+        .and_then(|fields| fields.split_once(")\t"))
+        .expect("recorded runtime diagnostic and observation fields");
+    Cow::Owned(format!(
+        "(diagnostic {})\t{rest}",
+        wire(&format!("TypeError: {message}"))
+    ))
+}
+
 /// Runs every `PARTS`-th historical case from `part` through the evaluator and
 /// compares each observation with the one its disposition requires. Striding
 /// spreads the slow families and the deadline-bound lazy-cycle probes over the
 /// parts.
+#[cfg(light_v8)]
 fn execute_dispositions(part: usize) {
     let mut failures = vec![];
     for Disposition {
@@ -826,6 +881,7 @@ fn execute_dispositions(part: usize) {
     } in dispositions().iter().skip(part).step_by(PARTS)
     {
         let expected = with_v8_macro_location(case.id, expected);
+        let expected = with_v8_runtime_diagnostic(case.id, &expected);
         let actual = evaluator::run(case.id, row[8], case.profile);
         let observed = actual.as_ref().map(evaluator::Observation::fields);
         let matches = observed.as_ref().is_ok_and(|fields| {
@@ -850,8 +906,7 @@ fn execute_dispositions(part: usize) {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-// Executes the historical cases with QuickJS application forms and the build's macro engine.
-#[cfg(feature = "quickjs")]
+#[cfg(light_v8)]
 row_tests!(execute_dispositions;
     historical_sci_cases_execute_their_dispositions_0(0),
     historical_sci_cases_execute_their_dispositions_1(1),

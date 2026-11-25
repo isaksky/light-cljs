@@ -1,7 +1,7 @@
 //! The session compiler as an action producer (docs/dev-workflow.md,
 //! "Actions" and "Phase 1"): a `DevSession` compiles forms, requires and
 //! loaded files into actions without a heap, and the units of those actions
-//! run in any heap: a fresh QuickJS evaluator here, and a Node process running
+//! run in any heap: a fresh V8 evaluator here, and a Node process running
 //! the Phase 0 dev build of examples/dev through its driver.
 use crate::dev_execution::run_dev;
 use crate::temp_dir::TempDir;

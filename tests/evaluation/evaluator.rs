@@ -1,11 +1,12 @@
 use light_cljs::{
     MacroHost, analyze,
     emitter::emit_js_unit,
-    evaluator::{Evaluator, EvaluatorOptions, QuickJsEvaluator},
+    evaluator::{Evaluator, EvaluatorOptions},
     parse,
 };
 use std::{
     process::Command,
+    rc::Rc,
     time::{Duration, Instant},
 };
 
@@ -224,10 +225,9 @@ fn deadline_allocation_and_panics_produce_owned_failures() {
     .unwrap();
     std::thread::sleep(Duration::from_millis(110));
     assert!(e.evaluate_js("42").unwrap_err().0.contains("deadline"));
-    // The runtime starts in these heaps, but the million objects below exceed
-    // the limit. V8 requires at least 16 MiB at startup.
+    // V8 can start in 16 MiB. The million objects below exceed that limit.
     let e = Evaluator::new(EvaluatorOptions {
-        memory_limit: if cfg!(light_v8) { 16 << 20 } else { 8 << 20 },
+        memory_limit: 16 << 20,
         ..Default::default()
     })
     .unwrap();
@@ -241,29 +241,44 @@ fn deadline_allocation_and_panics_produce_owned_failures() {
     );
 }
 #[test]
-fn clean_quickjs_heaps_drop_cycles_callbacks_and_mutable_roots() {
-    // This checks byte-exact QuickJS allocator usage at startup.
-    let options = EvaluatorOptions::default();
-    let mut baseline = None;
+fn fresh_host_heaps_drop_cycles_callbacks_and_mutable_roots() {
+    let host = MacroHost::new();
+    let mut previous_root = None;
     for _ in 0..30 {
-        let e = QuickJsEvaluator::new(options.clone()).unwrap();
-        let bytes = e.memory_usage_bytes();
-        if let Some(baseline) = baseline {
-            assert_eq!(bytes, baseline);
-        } else {
-            baseline = Some(bytes);
+        let e = host.new_evaluator().unwrap();
+        assert_eq!(e.value_roots().unwrap(), 0);
+        if let Some(root) = previous_root {
+            assert!(
+                e.print(root)
+                    .unwrap_err()
+                    .0
+                    .contains("another JavaScript session")
+            );
         }
-        e.install_callback("echo", |_, text| Ok(text)).unwrap();
+        let clean = e
+            .evaluate_js("typeof echo === 'undefined' && typeof counter === 'undefined'")
+            .unwrap();
+        assert_eq!(e.print(clean).unwrap(), "true");
+        e.release(clean).unwrap();
+
+        let callback = Rc::new(String::from("echo:"));
+        let weak = Rc::downgrade(&callback);
+        e.install_callback("echo", move |_, text| Ok(format!("{callback}{text}")))
+            .unwrap();
         assert_eq!(
-            e.number(
-                e.evaluate_js("globalThis.counter = (globalThis.counter || 0) + 1")
-                    .unwrap()
-            )
-            .unwrap(),
+            e.number(e.evaluate_js("globalThis.counter = 1").unwrap())
+                .unwrap(),
             1.0
         );
-        e.evaluate_js("(()=>{const o={callback:echo};o.self=o;return o})()")
-            .unwrap();
+        previous_root = Some(
+            e.evaluate_js("(()=>{const o={callback:echo};o.self=o;return o})()")
+                .unwrap(),
+        );
+        let echoed = e.evaluate_js("echo('ok')").unwrap();
+        assert_eq!(e.string(echoed).unwrap(), "echo:ok");
+        assert!(weak.upgrade().is_some());
+        drop(e);
+        assert!(weak.upgrade().is_none());
     }
 }
 #[test]
@@ -427,25 +442,4 @@ fn quoted_javascript_macro_literals_execute_in_fresh_embedded_and_node_heaps() {
             );
         }
     }
-}
-#[test]
-fn quickjs_sessions_brand_class_values_with_a_weak_set() {
-    // The evaluator states that a WeakMap entry costs its QuickJS less than a
-    // private field (light-cljs-292). A `reduced` marker is a class with its
-    // value in its own field (light-cljs-1013): the session's compile-time
-    // runtime brands it with one `WeakSet` entry (`stamp`,
-    // docs/value-layout.md, section 4) and writes no WeakMap entry, where it
-    // stored its payload with one.
-    let e = QuickJsEvaluator::new(EvaluatorOptions::default()).unwrap();
-    let writes = e
-        .evaluate_unit(
-            "rt => { const set = WeakMap.prototype.set, add = WeakSet.prototype.add; let writes = 0, adds = 0; \
-             WeakMap.prototype.set = function (...args) { writes++; return set.apply(this, args); }; \
-             WeakSet.prototype.add = function (...args) { adds++; return add.apply(this, args); }; \
-             let marker; try { marker = rt.core.reduced(42); } finally { WeakMap.prototype.set = set; WeakSet.prototype.add = add; } \
-             return rt.core.isReduced(marker) && rt.core.deref(marker) === 42 \
-               && globalThis.lightCljsWeakMapStores === true ? writes * 10 + adds : -1; }",
-        )
-        .unwrap();
-    assert_eq!(e.number(writes).unwrap(), 1.0);
 }
