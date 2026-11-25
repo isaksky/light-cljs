@@ -3067,7 +3067,9 @@ impl MacroHost {
                 .collect(),
             excludes: resolution.excludes.clone(),
             generation: self.tables.reader_generation,
-            from: count,
+            // The isolate may have seen newer declarations than this snapshot.
+            // Only this view's prefix counts toward the environment's node budget.
+            from: count.min(visible),
             names,
             visible,
             bindings: globals
@@ -3688,6 +3690,10 @@ mod compiler_pure_tests {
         assert!(ack.is_none());
         assert!(matches!(
             field(&older, "visible").kind(),
+            DatumKind::Integer(1)
+        ));
+        assert!(matches!(
+            field(&field(&older, "declared"), "from").kind(),
             DatumKind::Integer(1)
         ));
         assert_eq!(field(&older, "bindings").elements().unwrap().len(), 2);
