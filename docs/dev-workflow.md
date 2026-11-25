@@ -212,7 +212,7 @@ A unit file is the interactive unit wrapped in a registration call:
 
 ```js
 globalThis.__lightDev$KEY.define("app.view", ["app.macros", "app.state"],
-  (__lightInteractiveRuntime) => { globalThis.__lightApplicationRoots$KEY ??= Object.create(null); /* forms */ return value; });
+  ((__lightInteractiveRuntime) => { globalThis.__lightApplicationRoots$KEY ??= Object.create(null); /* forms */ return value; }));
 //# sourceMappingURL=app.view.js.map
 ```
 

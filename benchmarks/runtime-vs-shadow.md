@@ -6736,3 +6736,60 @@ Steady state (1->40 iterations): light-cljs `38.55 ms/iter` vs shadow-cljs `36.2
 - **Core-ops `:advanced` gate (`459707f0`, 5 runs alternated, unreserved, load 14.64-15.04, all checksums match):** `protocol-on-record` `2.41` vs `2.41` ns (`1.00x`, base `2.37`/`1.00x`), `kw-small` `7.77` vs `9.94` ns (`0.78x`, base `7.51`/`0.78x`), `kw-hash100` `16.0` vs `12.9` ns (`1.24x` under load 15), `str-nested-map` `963.3` vs `2,376` ns (`0.41x`, base `893.7`/`0.39x`), `str-concat` `13.8` vs `15.4` ns (`0.90x`, base `13.0`/`0.88x`).
 - **`bb benchmarks/re-frame-tests.bb`:** 118/118 tests pass (446 assertions per run) across shadow, `light-compile` (dev), and `light-release`.
 - **Browser checks:** `bb benchmarks/re-frame.bb browser todomvc --compiler light` 10/10 pass; dev TodoMVC functional browser checks 9/9 pass across 3 runs.
+
+## 2026-11-24: parenthesize dev define unit functions for V8 eager compilation (light-cljs-1119)
+
+### Cause and double-parse confirmation
+
+On the generated 200k workload in Node, a dev build loads 571 files via `require("./" + file)` (`runtime.js`, `client.js`, and 569 namespace units). On base `713fe449`, each namespace unit passed an unparenthesized arrow function to `define`:
+
+```js
+globalThis.__lightDev$KEY.define("ns", [...], (__lightInteractiveRuntime) => { ... });
+```
+
+Because the arrow function was not parenthesized, V8 pre-parsed its body during Node's CJS loader `wrapSafe` (`318.2 ms` self, `26.24%` of the `1,212.8 ms` 1-iteration CPU profile) and then lazily re-parsed and compiled it on the main thread when `define` invoked `unit(globalThis.__lightRuntime$KEY)` (`577.7 ms` self in `define`, `47.63%`; combined `895.9 ms`, `73.9%`).
+
+Controlled experiment on workload 200k dev (1 iteration, Node v26.12.1):
+
+- Baseline (`require` + unparenthesized arrow): `1,070.4 ms` (`define` `600 ms`, `wrapSafe` `331 ms`).
+- Parenthesized arrow `((__lightInteractiveRuntime) => { ... })`: `853.8 ms` (`define` `0 ms` / gone from top 5, `wrapSafe` `638 ms`, confirming single parse+compile).
+- Alternated 8-round A/B: baseline `1,093.8 ms` (`1,046.6-1,148.8`), parenthesized arrow `832.4 ms` (`783.4-884.9`), parenthesized `function` `821.7 ms` (`762.5-861.9`), shadow-cljs `978.3 ms` (`906.0-1,202.2`). Switching `index.js` from `require` to `vm.runInThisContext` saved only ~22-24 ms.
+
+### Change (dev-only; release output byte-identical)
+
+- `src/dev_build.rs` (`DevBuildContext::emit_namespace`, `namespace_unit`) and `src/dev_session.rs` (`script` `Action::Load`): wrap the unit arrow function argument to `define(...)` in grouping parentheses `((__lightInteractiveRuntime) => { ... })` so V8 compiles the body eagerly on first parse while preserving exact arrow semantics, source map column shifts, per-namespace hot reload, and `dev_client.js` replay matching (`unit.js.includes(String(known.unit))`).
+- `docs/dev-workflow.md`: updated unit wrapper example.
+- `tests/compiler/dev_build.rs`, `tests/dev_watch.rs`: updated wrapper shape assertions and added `dev_unit_parenthesizes_define_function_and_preserves_replay_match`.
+
+### Dev measurements (alternated vs shadow-cljs 3.5.3, unreserved)
+
+Measured on Apple M3 Ultra VM (24 CPUs, 32 GiB), Node v26.12.1, Headless Chromium 156.0.8078.4.
+
+#### Generated workload 200k dev (Node, 10 runs alternated per iteration count)
+
+| State (load 1m) | Iterations | Compiler | First output | Wall time | User + sys CPU | Peak memory | light/shadow first output |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| Before `713fe449` (4.38-4.49) | 1 | light-cljs | 1.043 s (1.023-1.388) | 1.053 s (1.032-1.396) | 1.20 s | 0.263 GB (0.261-0.266) | 1.127x |
+| Before `713fe449` (4.38-4.45) | 1 | shadow-cljs | 0.926 s (0.918-1.198) | 0.935 s (0.928-1.207) | 1.10 s | 0.305 GB (0.297-0.316) | |
+| Before `713fe449` (4.16-4.43) | 40 | light-cljs | 2.608 s (2.552-2.726) | 2.618 s (2.563-2.738) | 3.51 s | 0.362 GB (0.355-0.375) | 1.162x |
+| Before `713fe449` (4.17-4.43) | 40 | shadow-cljs | 2.244 s (2.234-2.394) | 2.257 s (2.247-2.407) | 3.06 s | 0.440 GB (0.426-0.446) | |
+| After (9.17-10.02) | 1 | light-cljs | 0.860 s (0.817-0.936) | 0.868 s (0.824-0.946) | 1.02 s | 0.264 GB (0.263-0.272) | 0.886x |
+| After (9.17-10.02) | 1 | shadow-cljs | 0.970 s (0.942-1.199) | 0.980 s (0.950-1.209) | 1.16 s | 0.305 GB (0.295-0.315) | |
+| After (8.13-9.17) | 40 | light-cljs | 2.661 s (2.352-3.335) | 2.675 s (2.364-3.349) | 3.71 s | 0.367 GB (0.355-0.379) | 1.069x |
+| After (8.23-9.45) | 40 | shadow-cljs | 2.489 s (2.390-2.668) | 2.512 s (2.405-2.693) | 3.44 s | 0.440 GB (0.425-0.448) | |
+
+1-iteration first output dropped from `1.127x` to `0.886x` shadow-cljs (all 10 light-cljs runs `0.817-0.936 s` beat shadow-cljs's fastest run `0.942 s`). In the 1-iteration CPU profile, total sampled time dropped `17.1%` (`1,212.8 ms` -> `1,005.1 ms`), `define` (`577.7 ms` self, `47.63%`) left the top 15 completely, and `define + wrapSafe` dropped `26.1%` (`895.9 ms` -> `661.7 ms`). Steady state (`1->40` iterations) stayed at `1.18x` (`40.15` vs `33.90` ms/iter before; `46.33` vs `39.27` ms/iter after under load 8-10; tracked separately in `light-cljs-1124`).
+
+#### TodoMVC dev page load (Headless Chromium, 6 runs alternated, unreserved)
+
+| Build | Page load to interactive | Script time | vs shadow-cljs load |
+| --- | ---: | ---: | ---: |
+| Before (`713fe449`) | 109.75 ms (95.60-161.00) | 66.46 ms (60.26-88.96) | 0.79x |
+| After | 88.80 ms (81.70-126.00) | 49.72 ms (46.66-54.20) | 0.64x |
+| shadow-cljs 3.5.3 | 138.35 ms (136.50-158.70) | 112.09 ms (110.40-119.59) | 1.00x |
+
+### Release parity and test checks
+
+- **Release `:advanced` output:** `src/emitter.rs` and `src/js_runtime.js` are untouched; workload 200k `:advanced` output (`workload.main.js`) is byte-identical before and after (`sha256 e4ae4d595d7c59af6e3b56f37d220d580833efc827471fff7b7a704c1766d643`), and TodoMVC `:advanced` size is unchanged (`400,439` B raw / `106,573` B gzip -9 without React).
+- **`bb benchmarks/re-frame-tests.bb`:** 118/118 tests pass (446 assertions per run across 3 runs) on shadow, `light-compile` (dev), and `light-release`.
+- **Browser checks:** dev TodoMVC functional browser checks 9/9 pass across 3 runs (zero non-404 errors).

@@ -166,8 +166,8 @@ fn example_dev_build_prints_what_the_none_build_prints() {
     let view = fs::read_to_string(out.join("app.view.js")).unwrap();
     assert!(
         view.starts_with(&format!(
-            "globalThis.__lightDev${key}.define(\"app.view\", [\"app.macros\", \"app.state\"], (__lightInteractiveRuntime) => {{ globalThis.__lightApplicationRoots${key} ??= Object.create(null); return (() => {{\n"
-        )) && view.ends_with("\n; });\n//# sourceMappingURL=app.view.js.map\n"),
+            "globalThis.__lightDev${key}.define(\"app.view\", [\"app.macros\", \"app.state\"], ((__lightInteractiveRuntime) => {{ globalThis.__lightApplicationRoots${key} ??= Object.create(null); return (() => {{\n"
+        )) && view.ends_with("\n; }));\n//# sourceMappingURL=app.view.js.map\n"),
         "{view}"
     );
     // Units read and write the registry; nothing is sealed in a closure.
@@ -758,6 +758,60 @@ fn unit_source_maps_point_node_stack_traces_at_the_sources() {
         .unwrap_or_else(|| panic!("no stack trace in\n{stderr}"));
     let util = light_cljs::canonical_path::canonicalize(root.join("app/util.cljs")).unwrap();
     assert_eq!(frame, format!("    at check ({}:5:12)", util.display()));
+}
+
+/// Dev units parenthesize the function passed to `define` so V8 compiles the
+/// body eagerly during script parse rather than pre-parsing and lazily
+/// re-parsing it when `define` invokes it, while preserving `dev_client.js`'s
+/// replay check (`unit.js.includes(String(known.unit))`).
+#[test]
+fn dev_unit_parenthesizes_define_function_and_preserves_replay_match() {
+    let dir = TempDir::new("dev-eager-unit");
+    let root = source_root(
+        &dir,
+        &[
+            ("app/util.cljs", "(ns app.util)\n(defn f [x] (+ x 1))\n"),
+            (
+                "app/main.cljs",
+                "(ns app.main (:require [app.util :as u]))\n(u/f 41)\n",
+            ),
+        ],
+    );
+    let out = dir.join("dev");
+    dev_build(&root, &out);
+    let util_js = fs::read_to_string(out.join("app.util.js")).unwrap();
+    let key = light_cljs::dev_build::dev_key(None, "app.main");
+    assert!(
+        util_js.starts_with(&format!(
+            "globalThis.__lightDev${}.define(\"app.util\", [], ((__lightInteractiveRuntime) => ",
+            key.key()
+        )),
+        "{util_js}"
+    );
+    assert!(
+        util_js.ends_with("}));\n//# sourceMappingURL=app.util.js.map\n"),
+        "{util_js}"
+    );
+    let output = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
+        .arg("-e")
+        .arg(format!(
+            "const fs = require('fs'); \
+             require({index:?}); \
+             globalThis.__lightDevLoaded.then((v) => {{ \
+               const text = fs.readFileSync({unit:?}, 'utf8'); \
+               const known = globalThis.__lightDev.units['app.util']; \
+               if (!known || !known.loaded || !text.includes(String(known.unit))) {{ \
+                 throw new Error('replay match failed'); \
+               }} \
+               console.log(v); \
+             }});",
+            index = out.join("index.js"),
+            unit = out.join("app.util.js"),
+        ))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), "42");
 }
 
 /// `--reloadable` requires `--out-dir`, and a dev build takes none of the

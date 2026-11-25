@@ -1535,7 +1535,7 @@ pub fn script(actions: &[Action]) -> String {
                 for run in units.chunk_by(|a, b| a.namespace == b.namespace) {
                     script.push_str("globalThis.__lightDev$LKEY.define(");
                     json_string(&mut script, &run[0].namespace);
-                    script.push_str(", [], (__lightInteractiveRuntime) => {\n");
+                    script.push_str(", [], ((__lightInteractiveRuntime) => {\n");
                     for (index, unit) in run.iter().enumerate() {
                         script.push_str(if index + 1 == run.len() {
                             "  return ("
@@ -1545,7 +1545,7 @@ pub fn script(actions: &[Action]) -> String {
                         script.push_str(&unit.js);
                         script.push_str(")(__lightInteractiveRuntime);\n");
                     }
-                    script.push_str("});\n");
+                    script.push_str("}));\n");
                 }
             }
             Action::Invoke(unit) => {

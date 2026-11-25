@@ -376,11 +376,14 @@ impl<'a> DevBuildContext<'a> {
         json_string(&mut define, &namespace.name);
         define.push_str(", ");
         json_list(&mut define, &namespace.requires);
-        define.push_str(", ");
+        // Parenthesizing the unit function triggers V8's eager-compilation
+        // heuristic, avoiding a pre-parse + lazy re-parse on every namespace
+        // file when `define` invokes it immediately.
+        define.push_str(", (");
         let (unit, mut mapping) = self.units.emit(
             self.entries[namespace.name.as_str()],
             index == 0,
-            [&define, ");\n"],
+            [&define, "));\n"],
         );
         let mut unit = self.key.apply_mapped(&unit, &mut mapping);
         writeln!(unit, "//# sourceMappingURL={map}").unwrap();
@@ -851,7 +854,9 @@ pub fn namespace_unit(
     json_string(&mut head, namespace);
     head.push_str(", ");
     json_list(&mut head, requires);
-    head.push_str(", ");
+    // Parenthesizing the unit function triggers V8's eager-compilation
+    // heuristic, matching `emit_namespace`.
+    head.push_str(", (");
     let mut setup = session.registration(registered);
     setup.push_str("  rt.core.currentNs = rt.core.createNs(rt.symbol(null, ");
     json_string(&mut setup, namespace);
@@ -908,9 +913,9 @@ pub fn namespace_unit(
     }
     if statements.is_some() {
         text.push_str(crate::emitter::INTERACTIVE_CLOSE);
-        text.push_str(");\n");
+        text.push_str("));\n");
     } else {
-        text.push_str("});\n");
+        text.push_str("}));\n");
     }
     let urls = sources
         .iter()

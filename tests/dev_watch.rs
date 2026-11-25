@@ -407,9 +407,9 @@ fn a_saved_change_rewrites_the_unit_the_running_build_reloads() {
     );
     assert!(
         unit.starts_with(&format!(
-            "globalThis.__lightDev${}.define(\"app.view\", [\"app.macros\", \"app.state\"], ",
+            "globalThis.__lightDev${}.define(\"app.view\", [\"app.macros\", \"app.state\"], (",
             key.key()
-        )) && unit.ends_with("});\n//# sourceMappingURL=app.view.js.map\n"),
+        )) && unit.ends_with("}));\n//# sourceMappingURL=app.view.js.map\n"),
         "{unit}"
     );
     assert_eq!(
