@@ -696,3 +696,41 @@ fn same_build_copies_honor_first_overrides() {
         );
     }
 }
+
+/// light-cljs-1122 (Change 2): two copies of the same build share keyed kinds
+/// and protocol slots; `rest`, `next`, `Cons.nextSlot`, `ChunkedCons`, and
+/// `LazySeq` fast paths must honor `specify!` overrides across copies.
+#[test]
+fn same_build_copies_honor_next_and_rest_overrides() {
+    let source = "(if (exists? js/sharedNextRestVals)
+                    (let [r rest
+                          nx next
+                          [c-r c-n cc-ac cc-ad cc-r cc-n ls-r ls-n ls-s ls-cr] js/sharedNextRestVals]
+                      (pr-str [(first (r c-r)) (first (nx c-r)) (first (nx c-n))
+                               (first (r cc-ac)) (first (nx cc-ac))
+                               (first (r cc-ad)) (first (nx cc-ad))
+                               (first (r cc-r)) (first (nx cc-r)) (first (nx cc-n))
+                               (first (r ls-r)) (first (nx ls-n)) (nx ls-s) (first (r ls-cr))]))
+                    (let [c-r (specify! (cons 1 '(2)) ISeq (-rest [_] '(:cr)))
+                          c-n (specify! (cons 1 '(2)) INext (-next [_] '(:cn)))
+                          ac-c (specify! (array-chunk #js [1 2]) ICounted (-count [_] 1))
+                          cc-ac (chunk-cons ac-c '(:more))
+                          ac-d (specify! (array-chunk #js [1 2]) IChunk (-drop-first [_] (array-chunk #js [:drop])))
+                          cc-ad (chunk-cons ac-d nil)
+                          cc-r (specify! (chunk-cons (array-chunk #js [1 2]) nil) ISeq (-rest [_] '(:ccr)))
+                          cc-n (specify! (chunk-cons (array-chunk #js [1 2]) nil) INext (-next [_] '(:ccn)))
+                          ls-r (specify! (lazy-seq (cons 1 '(2))) ISeq (-rest [_] '(:lsr)))
+                          ls-n (specify! (lazy-seq (cons 1 '(2))) INext (-next [_] '(:lsn)))
+                          ls-s (specify! (lazy-seq (cons 1 '(2))) ISeqable (-seq [_] nil))
+                          ls-cr (lazy-seq c-r)]
+                      (set! js/sharedNextRestVals #js [c-r c-n cc-ac cc-ad cc-r cc-n ls-r ls-n ls-s ls-cr])
+                      :first))";
+    for level in OptimizationLevel::ALL {
+        let js = release(source, level);
+        assert_eq!(
+            execute(&format!("console.log(String({js})); console.log({js});")),
+            ":first\n[:cr :cr :cn :more :more :drop :drop :ccr :ccr :ccn :lsr :lsn nil :cr]\n",
+            "at {level}"
+        );
+    }
+}

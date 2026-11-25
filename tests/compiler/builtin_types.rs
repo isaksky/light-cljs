@@ -7674,3 +7674,145 @@ fn first_own_field_fast_path_edge_cases() {
         "[:sc :sac :scc :sis :scs :slf nil 5 :sc [:c-seq]]",
     );
 }
+
+/// light-cljs-1122 (Change 2): `next`/`rest` own-field paths for `Cons`,
+/// `ChunkedCons`, `LazySeq`, `IndexedSeq`, and `ChunkedSeq` preserve nil/empty,
+/// integer range chunks, metadata, throwing/side-effecting seqs and chunks,
+/// late `extend-type`, and `specify!` overrides.
+#[test]
+fn next_and_rest_own_field_fast_path_edge_cases() {
+    // 1. Nil, empty, 1-elem and multi-elem Cons/List/ChunkedCons/IndexedSeq/ChunkedSeq/LazySeq,
+    //    range chunks, custom chunks, side effects, throwing thunks/methods, metadata.
+    every_level(
+        r#"(deftype EffectSeq [log]
+             ISeqable (-seq [this] (swap! log conj :seq) this)
+             ISeq (-first [_] :ef)
+                  (-rest [_] (swap! log conj :rest) '(2))
+             INext (-next [_] (swap! log conj :next) '(3)))
+           (deftype ThrowNext []
+             ISeqable (-seq [this] this)
+             ISeq (-first [_] 1)
+                  (-rest [_] (throw (js/Error. "rest-boom")))
+             INext (-next [_] (throw (js/Error. "next-boom"))))
+           (deftype EffectChunk [log n]
+             ICounted (-count [_] (swap! log conj :ccount) n)
+             IIndexed (-nth [_ i] (+ 10 i))
+             IChunk (-drop-first [_] (swap! log conj :cdrop) (EffectChunk. log (dec n))))
+           (let [r rest
+                 nx next
+                 log (atom [])
+                 c1 (cons 1 nil)
+                 c2 (with-meta (cons 1 '(2 3)) {:m :c})
+                 c-empty-tail (Cons. nil 1 '() nil)
+                 c-is-tail (Cons. nil 1 (array-seq #js [8 9]) nil)
+                 c-eff-tail (Cons. nil 1 (EffectSeq. log) nil)
+                 cc1 (chunk-cons (array-chunk #js [10]) nil)
+                 cc1-more (chunk-cons (array-chunk #js [10]) '(20))
+                 cc2 (with-meta (chunk-cons (array-chunk #js [10 20 30] 1 3) '(40)) {:m :cc})
+                 cc-range (chunk-cons (chunk-first (range 5 14 3)) nil)
+                 cc-custom (ChunkedCons. (EffectChunk. log 2) nil nil nil)
+                 is2 (with-meta (array-seq #js [7 8]) {:m :is})
+                 is1 (array-seq #js [7])
+                 cs (with-meta (seq (vec (range 35))) {:m :cs})
+                 ls-nil (lazy-seq nil)
+                 ls-empty (lazy-seq '())
+                 ls-cons (lazy-seq (cons 1 '(2)))
+                 ls-list1 (lazy-seq (list 9))
+                 ls-list2 (lazy-seq (list 9 10))
+                 ls-is (lazy-seq (array-seq #js [3 4]))
+                 ls-cc (lazy-seq (chunk-cons (array-chunk #js [5 6]) nil))
+                 ls-vec (lazy-seq [7 8])
+                 ls-eff (lazy-seq (EffectSeq. log))
+                 ls-throw (lazy-seq (ThrowNext.))
+                 attempts (atom 0)
+                 flaky-r (lazy-seq (if (= 1 (swap! attempts inc))
+                                     (throw (js/Error. "r-thunk"))
+                                     '(4 5)))
+                 flaky-r-err (try (r flaky-r) :ok (catch js/Error _ :r-err))
+                 attempts2 (atom 0)
+                 flaky-n (lazy-seq (if (= 1 (swap! attempts2 inc))
+                                     (throw (js/Error. "n-thunk"))
+                                     '(6 7)))
+                 flaky-n-err (try (nx flaky-n) :ok (catch js/Error _ :n-err))]
+             (pr-str [(r nil) (r js/undefined) (nx nil) (nx js/undefined)
+                      (r '()) (nx '())
+                      (r c1) (nx c1) (vec (r c2)) (vec (nx c2)) (meta c2)
+                      (nx c-empty-tail) (vec (nx c-is-tail)) (first (nx c-eff-tail))
+                      (r cc1) (nx cc1) (vec (r cc1-more)) (vec (nx cc1-more))
+                      (vec (r cc2)) (vec (nx cc2)) (meta cc2)
+                      (vec (r cc-range)) (vec (nx cc-range))
+                      (first (r cc-custom)) (first (nx cc-custom))
+                      (vec (r is2)) (vec (nx is2)) (r is1) (nx is1)
+                      (first (r cs)) (first (nx cs))
+                      (r ls-nil) (nx ls-nil) (r ls-empty) (nx ls-empty)
+                      (vec (r ls-cons)) (vec (nx ls-cons))
+                      (r ls-list1) (nx ls-list1) (vec (r ls-list2)) (vec (nx ls-list2))
+                      (vec (r ls-is)) (vec (nx ls-is))
+                      (vec (r ls-cc)) (vec (nx ls-cc))
+                      (vec (r ls-vec)) (vec (nx ls-vec))
+                      (vec (r ls-eff)) (vec (nx ls-eff))
+                      (try (r ls-throw) :ok (catch js/Error _ :rest-err))
+                      (try (nx ls-throw) :ok (catch js/Error _ :next-err))
+                      flaky-r-err (vec (r flaky-r))
+                      flaky-n-err (vec (nx flaky-n))
+                      @log])) "#,
+        "[() () nil nil () nil () nil [2 3] [2 3] {:m :c} nil [8 9] :ef () nil [20] [20] [30 40] [30 40] {:m :cc} [8 11] [8 11] 10 10 [8] [8] () nil 1 1 () nil () nil [2] [2] () nil [10] [10] [4] [4] [6] [6] [8] [8] [2] [3] :rest-err :next-err :r-err [5] :n-err [7] [:seq :ccount :cdrop :ccount :cdrop :seq :rest :seq :next]]",
+    );
+    // 2. Late extend-type on Cons, List, EmptyList, ArrayChunk, ChunkedCons, LazySeq,
+    //    IndexedSeq, ChunkedSeq after warming up fast paths.
+    every_level(
+        r#"(let [r rest
+                 nx next
+                 c (cons 1 '(2))
+                 c-nil (Cons. nil 1 nil nil)
+                 l (list 3 4)
+                 e '()
+                 cc1 (chunk-cons (array-chunk #js [5]) nil)
+                 cc2 (chunk-cons (array-chunk #js [5 6]) nil)
+                 is (array-seq #js [7 8])
+                 cs (seq (vec (range 70)))
+                 ls-c (lazy-seq (cons 9 '(10)))
+                 ls-l (lazy-seq (list 11 12))
+                 ls-e (lazy-seq '())
+                 warm #js [(first (r c)) (first (nx c)) (first (r cc2)) (first (nx cc2)) (first (r ls-c)) (first (nx ls-c))]]
+             (extend-type Cons ISeq (-rest [_] (list "cr")))
+             (extend-type List ISeq (-rest [_] (list "lr")))
+             (extend-type EmptyList ISeq (-rest [_] (list "er")) INext (-next [_] (list "en")) ISeqable (-seq [_] (list "es")))
+             (extend-type ArrayChunk ICounted (-count [_] 1))
+             (let [a1 #js [(first (r c)) (first (nx c)) (first (r l)) (first (r e)) (first (nx e)) (first (nx cc1)) (first (nx cc2)) (first (r ls-c)) (first (r ls-l)) (first (r ls-e)) (first (nx ls-e))]]
+               (extend-type Cons INext (-next [_] (list "cn")))
+               (extend-type List INext (-next [_] (list "ln")))
+               (extend-type ChunkedCons ISeq (-rest [_] (list "ccr")))
+               (extend-type IndexedSeq ISeq (-rest [_] (list "isr")) INext (-next [_] (list "isn")))
+               (extend-type ChunkedSeq ISeq (-rest [_] (list "csr")) INext (-next [_] (list "csn")))
+               (let [a2 #js [(first (nx c)) (first (nx l)) (first (r cc2)) (first (nx cc2)) (first (r is)) (first (nx is)) (first (r cs)) (first (nx cs)) (first (nx ls-c)) (first (nx ls-l))]]
+                 (extend-type LazySeq ISeq (-rest [_] (list "lsr")) INext (-next [_] (list "lsn")))
+                 (js/JSON.stringify #js [warm a1 a2 (first (r ls-c)) (first (nx ls-c)) (first (nx c-nil))])))) "#,
+        "[[2,2,6,6,10,10],[\"cr\",\"cr\",\"lr\",\"er\",\"en\",\"es\",\"es\",\"cr\",\"lr\",\"er\",\"en\"],[\"cn\",\"ln\",\"ccr\",\"ccr\",\"isr\",\"isn\",\"csr\",\"csn\",\"cn\",\"ln\"],\"lsr\",\"lsn\",\"cn\"]",
+    );
+    // 3. specify! overrides on Cons, ChunkedCons, ArrayChunk, LazySeq, IndexedSeq, ChunkedSeq.
+    every_level(
+        r#"(let [r rest
+                 nx next
+                 c-r (specify! (cons 1 '(2)) ISeq (-rest [_] '(:scr)))
+                 c-n (specify! (cons 1 '(2)) INext (-next [_] '(:scn)))
+                 ac-c (specify! (array-chunk #js [1 2]) ICounted (-count [_] 1))
+                 cc-ac (chunk-cons ac-c '(:more))
+                 ac-d (specify! (array-chunk #js [1 2]) IChunk (-drop-first [_] (array-chunk #js [:dropped])))
+                 cc-ad (chunk-cons ac-d nil)
+                 cc-r (specify! (chunk-cons (array-chunk #js [1 2]) nil) ISeq (-rest [_] '(:sccr)))
+                 cc-n (specify! (chunk-cons (array-chunk #js [1 2]) nil) INext (-next [_] '(:sccn)))
+                 ls-r (specify! (lazy-seq (cons 1 '(2))) ISeq (-rest [_] '(:slr)))
+                 ls-n (specify! (lazy-seq (cons 1 '(2))) INext (-next [_] '(:sln)))
+                 ls-s (specify! (lazy-seq (cons 1 '(2))) ISeqable (-seq [_] nil))
+                 ls-cr (lazy-seq c-r)
+                 ls-cn (lazy-seq c-n)]
+             (pr-str [(first (r c-r)) (first (nx c-r)) (first (nx c-n))
+                      (first (r cc-ac)) (first (nx cc-ac))
+                      (first (r cc-ad)) (first (nx cc-ad))
+                      (first (r cc-r)) (first (nx cc-r)) (first (nx cc-n))
+                      (first (r ls-r)) (first (nx ls-n)) (r ls-s) (nx ls-s)
+                      (first (r ls-cr)) (first (nx ls-cn))])) "#,
+        "[:scr :scr :scn :more :more :dropped :dropped :sccr :sccr :sccn :slr :sln () nil :scr :scn]",
+    );
+}
