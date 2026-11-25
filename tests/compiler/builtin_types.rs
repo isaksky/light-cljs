@@ -1471,6 +1471,31 @@ fn count_walks_the_seqs_of_the_values_that_need_it() {
     every_level(computed, "count not supported on this type");
 }
 
+#[test]
+fn stable_user_protocol_predicate_evaluates_its_receiver_once() {
+    let source = r#"(defprotocol P (f [this]))
+         (defprotocol Q (g [this]))
+         (extend-type string P (f [this] this))
+         (extend-type nil Q (g [_] nil))
+         (defn check []
+           (let [log #js [] item (reify P (f [_] nil))]
+             (array (satisfies? P (do (.push log "marker") item))
+                    (satisfies? P (if (satisfies? Q (do (.push log "host") nil)) "text" nil))
+                    (satisfies? P (do (.push log "miss") nil))
+                    (.-length log))))
+         (check)"#;
+    assert_keeps_none(source, &["protocolPredicate", "ProtocolMarker"]);
+    every_level(source, "[ true, true, false, 3 ]");
+    every_level(
+        "(defprotocol P (f [this])) (defprotocol Q (g [this]))
+         (let [items #js [(reify P (f [_] nil))]]
+           (array (satisfies? P (aget items 0))
+                  (with-redefs [P Q] (satisfies? P (aget items 0)))
+                  (let [P Q] (satisfies? P (aget items 0)))))",
+        "[ true, false, false ]",
+    );
+}
+
 /// light-cljs-251: `satisfies?` and `implements?` only read their protocol
 /// operand, so it does not keep `extendType`, unless the program replaces
 /// them: a replacement may write the protocol's table, which the full

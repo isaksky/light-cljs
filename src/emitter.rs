@@ -8916,6 +8916,48 @@ impl<'a, 's> Emitter<'a, 's> {
         self.protocol_form(id, false);
     }
 
+    /// Emit a marker test when the operand names its protocol declaration.
+    fn stable_protocol_predicate(&mut self, protocol: ExprId, value: ExprId, key: &str) {
+        let temporaries = self.operands.as_mut().map(|operands| {
+            let first = operands.live;
+            operands.live += 2;
+            operands.declared = operands.declared.max(operands.live);
+            first
+        });
+        let (protocol_local, receiver_local) = if let Some(first) = temporaries {
+            let protocol_local = format!("operand{first}");
+            let receiver_local = format!("operand{}", first + 1);
+            write!(self.output, "({protocol_local} = ").unwrap();
+            self.value(protocol);
+            write!(self.output, ", {receiver_local} = ").unwrap();
+            self.value(value);
+            self.output.push_str(", ");
+            (Cow::Owned(protocol_local), Cow::Owned(receiver_local))
+        } else {
+            self.output.push_str("((r0, r1) => ");
+            (Cow::Borrowed("r0"), Cow::Borrowed("r1"))
+        };
+        // A read before the declaration still takes the fallback.
+        write!(
+            self.output,
+            "{protocol_local} != null && {receiver_local} != null && {receiver_local}"
+        )
+        .unwrap();
+        self.keyed_member(&crate::rta::protocol_slot(key, 0));
+        self.output.push_str(" === ");
+        self.rt(RuntimeName::direct("protocolSentinel", None));
+        self.output.push_str(" || ");
+        self.rt(RuntimeName::direct("protocolFallback", None));
+        write!(self.output, "({protocol_local}, {receiver_local})").unwrap();
+        if let Some(first) = temporaries {
+            self.operands.as_mut().unwrap().live = first;
+        } else {
+            self.output.push_str(")(");
+            self.arguments(&[protocol, value]);
+        }
+        self.output.push(')');
+    }
+
     /// [`Emitter::protocol_form_value`], or with `declared` the statement
     /// of a protocol definition that declares the globals it defines
     /// ([`Emitter::declares_protocol`]).
@@ -9075,35 +9117,30 @@ impl<'a, 's> Emitter<'a, 's> {
                 key,
                 direct,
             } => {
-                if self.replaced_core.is_some()
-                    && self.repeatable(*value)
-                    && (*direct
-                        || matches!(self.program.exprs[protocol.0].kind, ExprKind::Global(global)
-                            if self.program.protocols.contains_key(&global))
-                            && self.pure_operand(*protocol))
-                {
-                    let slot = crate::rta::protocol_slot(key, 0);
-                    self.output.push('(');
-                    self.value(*value);
-                    self.output.push_str(" != null && (");
-                    self.value(*value);
-                    self.output.push(')');
-                    self.keyed_member(&slot);
-                    self.output.push_str(" === ");
-                    self.rt(RuntimeName::direct("protocolSentinel", None));
-                    if !*direct {
-                        self.output.push_str(" || ");
-                        self.rt(RuntimeName::direct("protocolFallback", None));
-                        self.output.push('(');
-                        self.value(*protocol);
-                        self.output.push_str(", ");
-                        self.value(*value);
-                        self.output.push(')');
-                    }
-                    self.output.push(')');
-                } else if self.application_roots
+                let advanced = self.replaced_core.is_some();
+                let stable_protocol = advanced
+                    && !*direct
+                    && !self.application_roots
                     && !self.demand_roots
-                    && *direct
+                    && self.inference.is_some_and(|inference| {
+                        use crate::inference::Definition;
+                        let ExprKind::Global(global) = self.program.exprs[protocol.0].kind else {
+                            return false;
+                        };
+                        if self.program.globals[global.0].name.contains('.') {
+                            return false;
+                        }
+                        let Definition::Protocol(definition) = inference.facts().definition(global)
+                        else {
+                            return false;
+                        };
+                        matches!(self.program.exprs[definition.0].kind,
+                            ExprKind::DefProtocol { global: declared, .. } if global == declared)
+                    });
+                if stable_protocol {
+                    self.stable_protocol_predicate(*protocol, *value, key);
+                } else if *direct
+                    && (advanced || self.application_roots && !self.demand_roots)
                     && self.repeatable(*value)
                 {
                     let slot = crate::rta::protocol_slot(key, 0);
@@ -9114,7 +9151,11 @@ impl<'a, 's> Emitter<'a, 's> {
                     self.output.push(')');
                     self.keyed_member(&slot);
                     self.output.push_str(" === ");
-                    self.rt(RuntimeName::core("protocolSentinel"));
+                    self.rt(if advanced {
+                        RuntimeName::direct("protocolSentinel", None)
+                    } else {
+                        RuntimeName::core("protocolSentinel")
+                    });
                     self.output.push(')');
                 } else {
                     self.rt(RuntimeName::export("protocolPredicate"));
