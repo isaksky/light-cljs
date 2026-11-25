@@ -200,6 +200,7 @@ impl DevSession {
     /// [`Self::load_file`] or [`Self::read_forms`] runs under a new deadline
     /// and poll budget of `engine`; one that runs out, or a cancelled
     /// [`Self::control`], leaves the session terminal, as an `EvalSession`.
+    /// The V8 macro heap requires a memory limit of at least 16 MiB.
     ///
     /// Analysis is in warning mode, as dev compilation's is
     /// (docs/dev-workflow.md, "Dev-mode contract"), whatever
@@ -380,6 +381,8 @@ impl DevSession {
         options: &EvalOptions,
         control: Option<ExecutionControl>,
     ) -> Result<Self, EvalDiagnostic> {
+        #[cfg(light_v8)]
+        crate::v8_evaluator::V8Evaluator::validate_memory_limit(options.engine.memory_limit)?;
         let (control, operation) = match control {
             Some(control) => (control, None),
             None => (

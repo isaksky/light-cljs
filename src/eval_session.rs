@@ -67,7 +67,7 @@ pub type FileProvider = Rc<dyn Fn(&FileLoadRequest) -> Result<Option<SourceInput
 pub struct EvalOptions {
     pub namespace: String,
     pub aliases: Vec<(String, String)>,
-    /// The runtime heap's limits.
+    /// Limits for the runtime and macro heaps. A V8 heap needs at least 16 MiB.
     pub engine: EvaluatorOptions,
     /// The JavaScript engine the forms run in: V8 by default where the build
     /// has it, else QuickJS. The compiler's macros use V8 when available
@@ -262,6 +262,8 @@ pub struct EvalSession {
 }
 impl EvalSession {
     pub fn new(options: EvalOptions) -> Result<Self, EvalDiagnostic> {
+        #[cfg(light_v8)]
+        crate::v8_evaluator::V8Evaluator::validate_memory_limit(options.engine.memory_limit)?;
         let engine = crate::evaluator::session_evaluator(options.backend, options.engine.clone())?;
         let namespace_update = engine
             .evaluate_js("name => { rt.core.currentNs = rt.core.createNs(name); return null; }")?;

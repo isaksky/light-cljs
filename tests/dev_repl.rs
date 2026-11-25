@@ -132,7 +132,9 @@ impl Watch {
     /// Watch `dir`'s `src` into its `dev` and serve it on `port`: the
     /// process, its stderr lines after the build, and its address.
     fn spawn(dir: &Path, port: &str, args: &[String]) -> (Process, Receiver<String>, String) {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_light-cljs"));
+        file_watch::guard_no_quickjs(&mut command);
+        let mut child = command
             .args(["--watch", "--entry", "app.main", "--source-root"])
             .arg(dir.join("src"))
             .arg("--out-dir")
@@ -243,6 +245,7 @@ fn cljs_repl(dir: &Path, id: &str, light_cljs: &str) -> Repl {
 fn client(args: &[&str], setup: impl FnOnce(&mut Command)) -> Repl {
     // One pipe for stdout and stderr keeps the client's lines in order.
     let mut command = Command::new("sh");
+    file_watch::guard_no_quickjs(&mut command);
     command
         .args(["-c", "exec \"$0\" \"$@\" 2>&1"])
         .arg(env!("CARGO_BIN_EXE_light-cljs"))
@@ -916,6 +919,7 @@ fn run_in(
     input: &str,
 ) -> (Option<i32>, String, String) {
     let mut command = Command::new(env!("CARGO_BIN_EXE_light-cljs"));
+    file_watch::guard_no_quickjs(&mut command);
     command
         .args(args)
         .current_dir(dir)

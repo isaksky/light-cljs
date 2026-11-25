@@ -63,9 +63,19 @@ mod host_clock {
 /// compiler uses ([`crate::runtime_manifest::COMPILER_RUNTIME`]).
 pub const RUNTIME_SOURCE: &str = crate::runtime_manifest::COMPILER_RUNTIME;
 pub(crate) static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
-/// Number of QuickJS runtimes created, including those already dropped.
 #[cfg(all(light_quickjs, debug_assertions))]
-static QUICKJS_RUNTIMES_CREATED: AtomicU64 = AtomicU64::new(0);
+thread_local! {
+    static QUICKJS_RUNTIMES_CREATED: Cell<u64> = const { Cell::new(0) };
+}
+
+/// QuickJS runtimes created on this thread, including ones already dropped.
+/// Tests use the thread's count so unrelated tests can run in parallel.
+#[cfg(all(light_quickjs, debug_assertions))]
+#[doc(hidden)]
+pub fn quickjs_runtimes_created_on_thread() -> u64 {
+    QUICKJS_RUNTIMES_CREATED.with(Cell::get)
+}
+
 /// The default macro memory limit (`--macro-memory-limit`), which is also
 /// what a build's main isolate is allowed at least when several slots share
 /// a larger limit ([`MemoryPool`]).
@@ -628,7 +638,11 @@ impl Evaluator {
         .map_err(|e| EvalError(e.to_string()))?;
         #[cfg(debug_assertions)]
         {
-            let count = QUICKJS_RUNTIMES_CREATED.fetch_add(1, Ordering::Relaxed) + 1;
+            let count = QUICKJS_RUNTIMES_CREATED.with(|created| {
+                let count = created.get() + 1;
+                created.set(count);
+                count
+            });
             debug_assert!(
                 std::env::var_os("LIGHT_CLJS_ASSERT_NO_QUICKJS").is_none(),
                 "created QuickJS runtime {count}"

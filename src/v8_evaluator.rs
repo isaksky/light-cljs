@@ -19,6 +19,8 @@ use std::{
 use v8::{Local, PinScope};
 
 const INITIAL_HEAP_LIMIT: usize = 256 * 1024 * 1024;
+// V8 allocates its initial heap before it can call the near-limit handler.
+const MINIMUM_HEAP_LIMIT: usize = 16 * 1024 * 1024;
 
 /// Bytes a small integer takes in a V8 array: 4 with the pointer-compressed
 /// engines (macOS and x86_64 Linux, see Cargo.toml) and 8 elsewhere, so
@@ -357,6 +359,15 @@ fn invoke<'s>(
     result.ok_or_else(|| bridge::error("V8 service failed"))
 }
 impl V8Evaluator {
+    pub(crate) fn validate_memory_limit(limit: usize) -> Result<(), EvalError> {
+        if limit < MINIMUM_HEAP_LIMIT {
+            return Err(EvalError(format!(
+                "JavaScript memory limit must be at least {MINIMUM_HEAP_LIMIT} bytes (16 MiB) for V8 startup"
+            )));
+        }
+        Ok(())
+    }
+
     pub(crate) fn new(options: EvaluatorOptions) -> Result<Self, EvalError> {
         Self::new_with_startup(options, Self::startup_source)
     }
@@ -405,22 +416,8 @@ impl V8Evaluator {
         initial_heap_limit: usize,
         source: impl FnOnce() -> String,
     ) -> Result<Self, EvalError> {
-        if options.memory_limit < 1024 * 1024 {
-            control.memory_exhausted();
-            return Err(bridge::error(
-                "JavaScript memory limit must be at least 1048576 bytes for engine startup",
-            ));
-        }
+        Self::validate_memory_limit(options.memory_limit)?;
         crate::generated_names::forget_installed_scopes();
-        // Isolate allocation precedes the near-limit callback. Retain the
-        // conservative startup minimum until that native startup allocation
-        // has a separate failure boundary.
-        if options.memory_limit < 16 * 1024 * 1024 {
-            control.memory_exhausted();
-            return Err(bridge::error(
-                "JavaScript session memory limit exhausted during V8 startup",
-            ));
-        }
         control.poll()?;
         let platform = platform();
         let heap = v8::cppgc::Heap::create(
@@ -434,7 +431,7 @@ impl V8Evaluator {
         // V8 reserves its code range from the heap limit, which must be
         // page aligned: a build's share of the memory limit need not be.
         let heap_limit =
-            initial_heap_limit.clamp(16 * 1024 * 1024, buffers.allowance()) & !((1 << 20) - 1);
+            initial_heap_limit.clamp(MINIMUM_HEAP_LIMIT, buffers.allowance()) & !((1 << 20) - 1);
         let stack = stack::StackLimit::new(options.stack_limit)?;
         // SAFETY: the stack helper verifies a boundary within this thread's
         // stack. Rc state prevents moving the evaluator to another thread.

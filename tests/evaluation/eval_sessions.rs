@@ -11,22 +11,57 @@ fn engine() -> EvalEngine {
     }
 }
 /// A session on [`engine`], whatever engine its options name.
-struct EvalSession(light_cljs::EvalSession);
+struct EvalSession {
+    inner: light_cljs::EvalSession,
+    #[cfg(all(light_v8, light_quickjs, debug_assertions))]
+    _no_quickjs: NoQuickJs,
+}
+
+#[cfg(all(light_v8, light_quickjs, debug_assertions))]
+struct NoQuickJs(Option<u64>);
+
+#[cfg(all(light_v8, light_quickjs, debug_assertions))]
+impl Drop for NoQuickJs {
+    fn drop(&mut self) {
+        if let Some(before) = self.0
+            && !std::thread::panicking()
+        {
+            assert_eq!(
+                light_cljs::evaluator::quickjs_runtimes_created_on_thread(),
+                before,
+                "the V8 session created a QuickJS runtime"
+            );
+        }
+    }
+}
+
 impl EvalSession {
     fn new(mut options: EvalOptions) -> Result<Self, light_cljs::EvalDiagnostic> {
         options.backend = engine();
-        light_cljs::EvalSession::new(options).map(Self)
+        // Configured compiler data readers still use QuickJS (light-cljs-1131).
+        #[cfg(all(light_v8, light_quickjs, debug_assertions))]
+        let no_quickjs = NoQuickJs(
+            (options.backend == EvalEngine::V8
+                && options.data_readers.is_empty()
+                && options.default_data_reader.is_none())
+            .then(light_cljs::evaluator::quickjs_runtimes_created_on_thread),
+        );
+        Ok(Self {
+            inner: light_cljs::EvalSession::new(options)?,
+            #[cfg(all(light_v8, light_quickjs, debug_assertions))]
+            _no_quickjs: no_quickjs,
+        })
     }
 }
 impl std::ops::Deref for EvalSession {
     type Target = light_cljs::EvalSession;
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.inner
     }
 }
 impl std::ops::DerefMut for EvalSession {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+        &mut self.inner
     }
 }
 impl std::fmt::Debug for EvalSession {
@@ -279,6 +314,7 @@ fn cancellation_and_limits_require_reset_but_host_compilation_recovers() {
     );
     s.reset().unwrap();
     assert_eq!(printed(&mut s, "42"), "42");
+    drop(s);
     let mut s = EvalSession::new(EvalOptions {
         engine: light_cljs::evaluator::EvaluatorOptions {
             poll_budget: 2000,
@@ -294,6 +330,9 @@ fn cancellation_and_limits_require_reset_but_host_compilation_recovers() {
     assert!(s.eval_string("42").is_err());
     s.reset().unwrap();
     assert_eq!(printed(&mut s, "42"), "42");
+    drop(s);
+
+    // The separate compiler check runs its output in QuickJS explicitly.
     let mut host = light_cljs::MacroHost::new();
     for _ in 0..2 {
         let source = "(def hits (atom 0)) (defn next-id [] (swap! hits inc)) (defmacro id [] (next-id)) [(id) (id) @hits]";
@@ -399,6 +438,24 @@ fn failed_macro_compile_can_recover_in_same_session() {
     assert_eq!(printed(&mut s, "(defmacro good [] 42) (good)"), "42");
 }
 
+#[cfg(light_v8)]
+#[test]
+fn a_small_v8_macro_heap_is_rejected_at_session_configuration() {
+    let options = EvalOptions {
+        engine: light_cljs::evaluator::EvaluatorOptions {
+            memory_limit: 4 * 1024 * 1024,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let Err(error) = light_cljs::dev_session::DevSession::new(&options) else {
+        panic!("V8 macro session accepted a 4 MiB heap");
+    };
+    assert!(error.message.contains("16 MiB"), "{error}");
+    let error = EvalSession::new(options).unwrap_err();
+    assert!(error.message.contains("16 MiB"), "{error}");
+}
+
 #[test]
 fn macro_limits_are_terminal_until_reset() {
     use light_cljs::evaluator::EvaluatorOptions;
@@ -436,6 +493,29 @@ fn macro_limits_are_terminal_until_reset() {
         s.reset().unwrap();
         assert_eq!(printed(&mut s, "42"), "42");
     }
+}
+
+#[cfg(light_v8)]
+#[test]
+fn macro_polls_are_charged_to_the_session() {
+    let mut s = EvalSession::new(EvalOptions {
+        engine: light_cljs::evaluator::EvaluatorOptions {
+            poll_budget: 1_000,
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .unwrap();
+    printed(&mut s, "(defmacro spin [] (loop [] (recur)))");
+    let error = s.eval_string("(spin)").unwrap_err();
+    assert!(error.message.contains("poll budget exhausted"), "{error}");
+    assert_eq!(
+        s.control().check().unwrap_err().0,
+        "JavaScript session poll budget exhausted"
+    );
+    assert!(s.eval_string("42").is_err());
+    s.reset().unwrap();
+    assert_eq!(printed(&mut s, "42"), "42");
 }
 
 #[test]

@@ -111,7 +111,9 @@ impl Watch {
             let file = format!("app/{name}.cljs");
             fs::copy(Path::new(EXAMPLE).join(&file), src.join(&file)).unwrap();
         }
-        let mut child = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_light-cljs"));
+        file_watch::guard_no_quickjs(&mut command);
+        let mut child = command
             .args([
                 "--watch",
                 "--no-cache",
@@ -512,6 +514,7 @@ fn nrepl_operations_round_trip_through_a_node_runtime() {
         ["1 @ app.view", "status: done"]
     );
     assert_eq!(client.value(&session, "(str *ns*)"), "\"app.view\"");
+    assert_eq!(client.value(&session, "(labeled \"x\" 2)"), "\"x: [2]\"");
     assert_eq!(
         client.eval(&session, "(in-ns 'app.main) (str *ns*)", ""),
         ["nil @ app.main", "\"app.main\" @ app.main", "status: done"]

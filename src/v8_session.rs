@@ -607,6 +607,20 @@ mod tests {
     }
 
     #[test]
+    fn an_invalid_macro_heap_limit_leaves_the_shared_control_usable() {
+        let options = EvaluatorOptions {
+            memory_limit: 4 * 1024 * 1024,
+            ..Default::default()
+        };
+        let control = ExecutionControl::new(&options).unwrap();
+        let Err(error) = V8Evaluator::interactive_with_control(options, control.clone()) else {
+            panic!("V8 macro heap accepted a 4 MiB limit");
+        };
+        assert!(error.0.contains("16 MiB"), "{error}");
+        control.poll().unwrap();
+    }
+
+    #[test]
     fn interactive_heap_exhaustion_is_terminal_even_when_javascript_catches() {
         let evaluator = V8Evaluator::interactive(small()).unwrap();
         let error = SessionEvaluator::evaluate_js(&evaluator, EXHAUST).unwrap_err();

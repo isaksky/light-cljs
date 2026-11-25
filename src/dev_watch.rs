@@ -766,8 +766,8 @@ fn start(
     // host and engine, with the persistent cache, and the session starts
     // from it (`DevSession::compile_entry`). Without it, the build runs
     // with V8 and the session loads the program again below.
-    let (program, seeded) = match &cache {
-        Some(cache) => match DevSession::compile_entry(
+    let compiled = match &cache {
+        Some(cache) => DevSession::compile_entry(
             &session_options,
             EntryStart {
                 entry: &options.entry,
@@ -777,11 +777,9 @@ fn start(
                 manifest: Some(&mut graph),
             },
             &mut warnings,
-        ) {
-            Ok((session, program, sources)) => (Ok((program, sources)), Some(session)),
-            Err(error) => (Err(error), None),
-        },
-        None => (
+        ),
+        None => {
+            let session = DevSession::new(&session_options)?;
             crate::analyze_entry(
                 &options.entry,
                 &options.roots,
@@ -800,13 +798,13 @@ fn start(
                         include_sources: false,
                     })
                 },
-            ),
-            None,
-        ),
+            )
+            .map(|(program, sources)| (session, program, sources))
+        }
     };
     let tag = tag(options);
     crate::print_tagged_warnings(&tag, &warnings);
-    let (mut program, sources) = program?;
+    let (session, mut program, sources) = compiled?;
     // The build's warnings, located for the server, which shows them to the
     // runtimes that connect before the first step.
     let startup = warnings
@@ -839,27 +837,17 @@ fn start(
     let manifest = DevManifest::new(&program);
     drop(program);
     let session_started = stats.is_some().then(Instant::now);
-    let session = match seeded {
-        // The session has the build's program; the provider records the
-        // file each namespace of the source roots was loaded from, as a
-        // load through it would.
-        Some(session) => {
-            // Every namespace a source root provided, at the file the
-            // loader resolved: a symbolic link's target may lie outside
-            // the roots.
-            let mut files = provider.files.borrow_mut();
-            for record in &graph.namespaces {
-                if record.source.origin == SourceOrigin::Provider {
-                    files.insert(record.name.clone(), PathBuf::from(&record.source.file));
-                }
+    if cache.is_some() {
+        // The session has the build's program. Record each namespace's
+        // resolved file as a load through the provider would, including
+        // symbolic link targets outside the roots.
+        let mut files = provider.files.borrow_mut();
+        for record in &graph.namespaces {
+            if record.source.origin == SourceOrigin::Provider {
+                files.insert(record.name.clone(), PathBuf::from(&record.source.file));
             }
-            drop(files);
-            session
         }
-        // The session loads the program again, which is the program its
-        // steps compile against; the build printed the warnings.
-        None => DevSession::new(&session_options)?,
-    };
+    }
     // The build's key, which its runtime.js loaded with: every unit, step
     // and REPL form the session writes for the page has it.
     session.set_page_key(light_cljs::dev_build::dev_key(
