@@ -622,7 +622,7 @@ fn install(unit: &BootstrapUnit, bootstrap: &mut Bootstrap, names: &[&str]) -> R
 /// (including the `*assert*` source macros read) reach every macro it runs.
 pub(crate) fn build(owner: &MacroHost, cache: bool) -> Result<Bootstrap, String> {
     let evaluator = owner.new_compiler_evaluator().map_err(|e| e.to_string())?;
-    build_in(evaluator, cache)
+    build_in(evaluator, cache, SEQUENCES)
 }
 /// The bootstrap of a host bound to `evaluator` on its own thread
 /// ([`MacroHost::bind`]): the process-wide units installed in it, compiled
@@ -631,7 +631,7 @@ pub(crate) fn build(owner: &MacroHost, cache: bool) -> Result<Bootstrap, String>
 pub(crate) fn bind(
     evaluator: Rc<dyn crate::compiler_evaluator::CompilerEvaluator>,
 ) -> Result<Bootstrap, String> {
-    build_in(evaluator, true)
+    build_in(evaluator, true, SEQUENCES)
 }
 /// Compile the process-wide bootstrap units now, unless a thread has, in a
 /// short-lived engine of the kind `owner` makes, with the default limits:
@@ -644,11 +644,12 @@ pub(crate) fn prepare(owner: &MacroHost) -> Result<(), String> {
     let mut host = MacroHost::new();
     host.engine.script_host = owner.engine.script_host.clone();
     let evaluator = host.new_compiler_evaluator().map_err(|e| e.to_string())?;
-    build_in(evaluator, true).map(drop)
+    build_in(evaluator, true, SEQUENCES).map(drop)
 }
 fn build_in(
     evaluator: Rc<dyn crate::compiler_evaluator::CompilerEvaluator>,
     cache: bool,
+    sequence_source: &str,
 ) -> Result<Bootstrap, String> {
     let cached = if cache { UNITS.get() } else { None };
     // Compiling the units is the process's work, not the build's: the
@@ -686,7 +687,9 @@ fn build_in(
         None => {
             compiled_sequence = control.exempt(|| {
                 compile(
-                    &format!("{SEQUENCES}\n{{\"for\" sequence-for \"doseq\" sequence-doseq}}"),
+                    &format!(
+                        "{sequence_source}\n{{\"for\" sequence-for \"doseq\" sequence-doseq}}"
+                    ),
                     &mut host,
                 )
             })?;
@@ -1501,6 +1504,25 @@ mod tests {
             &env, &mut 2051, 128, &control, &sizes
         ));
         assert!(sizes.borrow().recent.is_empty());
+    }
+
+    #[cfg(light_v8)]
+    #[test]
+    fn compiling_uncached_bootstrap_units_is_exempt_from_the_build_poll_budget() {
+        use crate::evaluator::{BuildResources, EvaluatorOptions};
+
+        // The bundled sequence sources can compile without entering V8.
+        // Expand the installed doto macro during their analysis so this build
+        // would spend more than its poll budget before installing the result.
+        let sequence_source = SEQUENCES.to_owned() + &"\n(doto 1)".repeat(256);
+        let options = EvaluatorOptions {
+            poll_budget: 1_500,
+            ..Default::default()
+        };
+        let resources = BuildResources::new(&options, 1, false).unwrap();
+        let evaluator = Rc::new(Evaluator::new_for_build(options, &resources, true).unwrap());
+        build_in(evaluator, false, &sequence_source).unwrap();
+        resources.control.poll().unwrap();
     }
 
     #[test]

@@ -2193,6 +2193,39 @@ mod tests {
     }
 
     #[test]
+    fn build_isolates_enforce_independent_poll_budgets() {
+        use crate::evaluator::{DEFAULT_MEMORY_LIMIT, WORKER_SHARE};
+
+        let options = EvaluatorOptions {
+            memory_limit: DEFAULT_MEMORY_LIMIT + 2 * WORKER_SHARE,
+            ..Default::default()
+        };
+        let resources = BuildResources::new(&options, 3, true).unwrap();
+        let spinning = V8Evaluator::new_for_build(options.clone(), &resources, false).unwrap();
+        let sibling = V8Evaluator::new_for_build(options.clone(), &resources, false).unwrap();
+        let main = V8Evaluator::new_for_build(options.clone(), &resources, true).unwrap();
+
+        spinning
+            .control()
+            .begin(&EvaluatorOptions {
+                poll_budget: 5,
+                ..options
+            })
+            .unwrap();
+        for source in ["(() => { for (;;) {} })()", "1"] {
+            let error = spinning.evaluate_js(source).unwrap_err();
+            assert!(error.0.contains("poll budget exhausted"), "{error}");
+        }
+        for evaluator in [&sibling, &main] {
+            let one = evaluator.evaluate_js("1").unwrap();
+            assert_eq!(evaluator.number(one).unwrap(), 1.0);
+            evaluator.release(one).unwrap();
+        }
+        resources.control.poll().unwrap();
+        resources.workers.poll().unwrap();
+    }
+
+    #[test]
     fn execution_activity_is_released_when_a_host_operation_unwinds() {
         let evaluator = V8Evaluator::new(EvaluatorOptions::default()).unwrap();
         let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
