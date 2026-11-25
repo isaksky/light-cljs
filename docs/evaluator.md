@@ -30,6 +30,25 @@ Cargo.lock pins the engine and build dependencies. Building requires the normal
 Rust toolchain and a C compiler for QuickJS. No Node process is required for
 embedded execution. Node remains an independent runtime in execution tests.
 
+## Evaluator methods used by the compiler and embedders
+
+| Purpose | Methods and options used in this repository |
+| --- | --- |
+| Create a heap | `new`, `MacroHost::new_evaluator`, and the internal `interactive`, `interactive_with_control`, and `new_for_build` constructors |
+| Run code and inspect values | `evaluate`, `evaluate_unit`, `evaluate_js`, `call`, `number`, `string`, `print`, and `release` |
+| Move compiler data across the engine boundary | `import_form`, `import_data`, `export_form`, and `export_data` |
+| Install capabilities | `install_callback`, `install_gc_callback`, `input_provider`, and `install_form_services` |
+| Reenter the compiler from an engine callback | QuickJS's `active` and `install_unit_service` in the QuickJS implementation of `CompilerEvaluator` |
+| Observe heap ownership | `collect_garbage`, `value_roots`, and `memory_usage_bytes` |
+| Configure and control execution | `EvaluatorOptions::{memory_limit, stack_limit, poll_budget, timeout}` and `control` (polling, cancellation and deadline checks) |
+
+The evaluation tests match `another` for foreign value IDs, `Released` for
+released IDs, and the missing global's name on a reference error. The limit
+tests match `budget` or `poll budget exhausted`, `deadline`, `cancelled`, and
+`memory limit`. Compiler bridge tests additionally check conversion limits,
+paths to unsupported values and macro call/definition provenance. Those
+diagnostics come from the shared bridge and compiler.
+
 `emitter::emit_js` retains self-contained application output. `emit_js_unit`
 returns a function accepting a canonical runtime instance; `Evaluator::evaluate`
 uses this form. Each session loads the exact `src/js_runtime.js` factory once
