@@ -638,3 +638,30 @@ fn program_protocol_slots_are_named_by_the_text() {
         );
     }
 }
+
+/// Sol finding #3 (light-cljs-1120): two copies of the same build share keyed
+/// kinds and protocol slots while keeping `hostExt` local; `seq` and
+/// `LazySeq.seqSlot` must check slot identity against this runtime's built-in
+/// slots so `specify!` overrides on `Cons` and `EmptyList` in copy 1 are
+/// honored in copy 2.
+#[test]
+fn same_build_copies_honor_seq_overrides() {
+    let source = "(if (exists? js/sharedCons)
+                    (pr-str [(first (seq (lazy-seq js/sharedCons)))
+                             (first (seq js/sharedEmpty))
+                             (first (seq (lazy-seq js/sharedEmpty)))])
+                    (do
+                      (set! js/sharedCons (specify! (cons 1 (list 2))
+                                            ISeqable (-seq [_] (array-seq #js [42]))))
+                      (set! js/sharedEmpty (specify! '()
+                                             ISeqable (-seq [_] (array-seq #js [99]))))
+                      :first))";
+    for level in OptimizationLevel::ALL {
+        let js = release(source, level);
+        assert_eq!(
+            execute(&format!("console.log(String({js})); console.log({js});")),
+            ":first\n[42 99 99]\n",
+            "at {level}"
+        );
+    }
+}

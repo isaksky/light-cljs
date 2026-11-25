@@ -43,7 +43,7 @@
   // keyword forms, whose fields it gives in a fresh object: a caller reads
   // the fields of what it returns and never hands that on as a value.
   function keywordOf(value) {
-    return value != null && value.cljs$lang$kind$$LKEY === 20 && (value.fqn$LKEY !== undefined || "fqn$LKEY" in value) ? value : undefined;
+    return value != null && value.cljs$lang$kind$$LKEY === 20 && "fqn$LKEY" in value ? value : undefined;
   }
   //@unit keywordCells requires: keywordOf
   // `keywordOf` as an entry of the Pants build's profile's store
@@ -273,7 +273,7 @@
   // of the same fields.
   function lazyOf(value) {
     if (value == null) return undefined;
-    return value.cljs$lang$kind$$LKEY === 16 && (value.fn$LKEY !== undefined || "fn$LKEY" in value) ? value : undefined;
+    return value.cljs$lang$kind$$LKEY === 16 && "fn$LKEY" in value ? value : undefined;
   }
   //@unit isLazy requires: lazyOf
   const isLazy = value => lazyOf(value) !== undefined;
@@ -1716,6 +1716,7 @@
       const getters = (from, to) => {
         const node = [];
         for (let i = from; i < to; i++) Object.defineProperty(node, i - from, {enumerable: true, get: () => nth(source, start + i)});
+        Object.defineProperty(node, "callerArr$LKEY", {value: true});
         return node;
       };
       value = subvecOfTrie(vectorTrie(getters(0, cnt), getters));
@@ -1930,8 +1931,12 @@
   // and the kind.
   function viewAt(slice, offset) {
     const Cell = slice.cljs$lang$cell$$LKEY;
-    return slice.view$LKEY === "chunked" ? new Cell(slice.arr$LKEY, offset, slice.vec$LKEY, slice.base$LKEY)
-      : new Cell(slice.arr$LKEY, offset, slice.indexed$LKEY, slice.view$LKEY);
+    if (slice.view$LKEY === "chunked") {
+      const next = new Cell(slice.arr$LKEY, offset, slice.vec$LKEY, slice.base$LKEY);
+      if (slice.callerArr$LKEY) Object.defineProperty(next, "callerArr$LKEY", {value: true});
+      return next;
+    }
+    return new Cell(slice.arr$LKEY, offset, slice.indexed$LKEY, slice.view$LKEY);
   }
 
   // The seq walk's operations, `seq`, `first`, `rest` and `next`, are
@@ -1946,16 +1951,17 @@
   // takes its slot as any other, whatever it answers. Each operation is
   // small enough for V8 to inline (the 100 bytes of bytecode of
   // light-cljs-1033).
-  //@unit seq requires: hostExt, seqOf, slotFirst
+  //@unit seq requires: emptySeqSlot, seqOf, slotFirst
   // Nil returns null directly; the empty list, kind 13, returns null without
-  // entering `seqOf` when no sequence protocol extension has been installed,
-  // keeping the slot read below monomorphic/polymorphic (light-cljs-1033).
+  // entering `seqOf` when its `-seq` slot is still this runtime's built-in
+  // `emptySeqSlot`, keeping the slot read below monomorphic/polymorphic
+  // (light-cljs-1033) while honoring overrides across copies of the same build.
   function seq(value) {
     if (value == null) return null;
     if (slotFirst.on) {
       const kind = value.cljs$lang$kind$$LKEY;
       if (kind !== undefined) {
-        if (kind === 13) return hostExt.seq ? seqOf(value) : null;
+        if (kind === 13) return value.cljs$core$ISeqable$_seq$arity$1$LKEY === emptySeqSlot ? null : seqOf(value);
         const method = value.cljs$core$ISeqable$_seq$arity$1$LKEY;
         if (method) return method.call(value, value);
       }
@@ -2256,8 +2262,12 @@
   //@unit ChunkedSeqValue.restChunked effect: ChunkedSeqValue when: restSeq requires: ChunkedSeqCell,
   //@ chunkedVectorRest, kindHooks
   // A chunked seq with a vector (`ChunkedSeqCell`) continues past its leaf.
-  kindHooks.restChunkedSeq = slice => slice.i$LKEY + 1 < slice.arr$LKEY.length
-    ? new ChunkedSeqCell(slice.arr$LKEY, slice.i$LKEY + 1, slice.vec$LKEY, slice.base$LKEY) : chunkedVectorRest(slice);
+  kindHooks.restChunkedSeq = slice => {
+    if (slice.i$LKEY + 1 >= slice.arr$LKEY.length) return chunkedVectorRest(slice);
+    const next = new ChunkedSeqCell(slice.arr$LKEY, slice.i$LKEY + 1, slice.vec$LKEY, slice.base$LKEY);
+    if (slice.callerArr$LKEY) Object.defineProperty(next, "callerArr$LKEY", {value: true});
+    return next;
+  };
   //@unit queueFromArray.rest effect: queueFromArray when: restSeq requires: collectionWithMeta,
   //@ kindHooks, meta
   kindHooks.restQueue = (tail, current) => collectionWithMeta(tail, meta(current));
@@ -4136,7 +4146,7 @@
     if (equiv) return equiv.call(key, key, other);
     if (other == null) return false;
     const fqn = keyword.fqn$LKEY, spelling = other.fqn$LKEY;
-    return spelling === fqn ? keywordOf(other) !== undefined : keyword !== key && spelling === undefined && keywordOf(other)?.fqn$LKEY === fqn;
+    return spelling === fqn ? keywordOf(other) !== undefined : spelling === undefined && keywordOf(other)?.fqn$LKEY === fqn;
   }
   //@unit hashNodeFind requires: hashKeyTest
   // The entry of `key` in the trie under `node`, which every caller has
@@ -4397,7 +4407,7 @@
     // reading its own `IEquiv` slot once.
     const keyword = keywordOf(key);
     if (keyword === undefined) return arrayIndexOf(arr, key, from, n);
-    const fqn = keyword.fqn$LKEY, own = keyword === key;
+    const fqn = keyword.fqn$LKEY;
     let read = false;
     for (let i = from; i < n; i += 2) {
       const other = arr[i];
@@ -4411,10 +4421,10 @@
       // key's class, so the kind test runs only where the spelling matches
       // (upstream's `array-index-of-keyword?`); a value without the field
       // (another kind, or the Pants profile's engine keyword) is read
-      // through `keywordOf` only when `!own` (the Pants profile's wrapper).
+      // through `keywordOf`.
       if (other != null) {
         const spelling = other.fqn$LKEY;
-        if (spelling === fqn ? keywordOf(other) !== undefined : !own && spelling === undefined && keywordOf(other)?.fqn$LKEY === fqn) return i;
+        if (spelling === fqn ? keywordOf(other) !== undefined : spelling === undefined && keywordOf(other)?.fqn$LKEY === fqn) return i;
       }
     }
     return -1;
@@ -7622,7 +7632,12 @@
     const vec = self.vec$LKEY, i = self.i$LKEY + 1;
     if (!vec) return restSeq(self);
     if (i > arr.length) return emptyList;
-    return i < arr.length ? new ChunkedSeqCell(arr, i, vec, self.base$LKEY) : chunkedVectorRest(self);
+    if (i < arr.length) {
+      const next = new ChunkedSeqCell(arr, i, vec, self.base$LKEY);
+      if (self.callerArr$LKEY) Object.defineProperty(next, "callerArr$LKEY", {value: true});
+      return next;
+    }
+    return chunkedVectorRest(self);
   });
   //@unit ChunkedSeqValue.seq effect: ChunkedSeqValue when: seq, seqOf, seqSite requires: builtinSlot,
   //@ ChunkedSeqValue
@@ -7645,7 +7660,11 @@
       const vec = self.vec$LKEY;
       if (vec) {
         const arr = self.arr$LKEY, i = self.i$LKEY + 1;
-        if (i < arr.length) return new ChunkedSeqCell(arr, i, vec, self.base$LKEY);
+        if (i < arr.length) {
+          const next = new ChunkedSeqCell(arr, i, vec, self.base$LKEY);
+          if (self.callerArr$LKEY) Object.defineProperty(next, "callerArr$LKEY", {value: true});
+          return next;
+        }
         if (i === arr.length) return seq(chunkedVectorRest(self));
       }
     }
@@ -7967,15 +7986,19 @@
   // `first` and `rest` read its chunk through `nth`, `count` and
   // `-drop-first` where protocol implementations exist, through their
   // wrappers.
+  //@unit selfSeqSlot requires: builtinSlot
+  const selfSeqSlot = builtinSlot(function (self) { return self; });
+  //@unit emptySeqSlot requires: builtinSlot
+  const emptySeqSlot = builtinSlot(function (self) { return null; });
   //@unit LazySeq.seqSlot effect: LazySeq when: seq, seqOf, seqSite requires: builtinSlot,
-  //@ hostExt, lazyRealized, LazySeq, seq, slotFirst
+  //@ emptySeqSlot, lazyRealized, LazySeq, selfSeqSlot, seq, slotFirst
   LazySeq.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
     const s = lazyRealized(self);
     if (s == null) return null;
-    if (slotFirst.on && !hostExt.seq) {
-      const k = s.cljs$lang$kind$$LKEY;
-      if (k === 14 || k === 12 || k === 17) return s;
-      if (k === 13) return null;
+    if (slotFirst.on) {
+      const method = s.cljs$core$ISeqable$_seq$arity$1$LKEY;
+      if (method === selfSeqSlot) return s;
+      if (method === emptySeqSlot) return null;
     }
     return seq(s);
   });
@@ -8012,11 +8035,9 @@
   ChunkedCons.prototype.cljs$core$INext$_next$arity$1$LKEY = builtinSlot(function (self) {
     return seq(rest(self));
   });
-  //@unit ChunkedCons.seq effect: ChunkedCons when: seq, seqOf, seqSite requires: builtinSlot,
-  //@ ChunkedCons
-  ChunkedCons.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
-    return self;
-  });
+  //@unit ChunkedCons.seq effect: ChunkedCons when: seq, seqOf, seqSite requires: ChunkedCons,
+  //@ selfSeqSlot
+  ChunkedCons.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = selfSeqSlot;
   //@unit ChunkedCons.chunkedFirst effect: ChunkedCons when: chunkFirst requires: builtinSlot,
   //@ ChunkedCons, noBranch
   ChunkedCons.prototype.cljs$core$IChunkedSeq$_chunked_first$arity$1$LKEY = builtinSlot(function (self) {
@@ -8113,10 +8134,8 @@
   Cons.prototype.cljs$core$INext$_next$arity$1$LKEY = builtinSlot(function (self) {
     return seq(rest(self));
   });
-  //@unit Cons.seqSlot effect: Cons when: seq, seqOf, seqSite requires: builtinSlot, Cons
-  Cons.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
-    return self;
-  });
+  //@unit Cons.seqSlot effect: Cons when: seq, seqOf, seqSite requires: Cons, selfSeqSlot
+  Cons.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = selfSeqSlot;
   //@unit ListValue.firstSlot effect: ListValue when: first, firstOf, firstSite requires: builtinSlot,
   //@ ListValue
   // A list of count 0 is empty unless a public constructor gave it the
@@ -8135,11 +8154,9 @@
     const count = self.count$LKEY;
     return count === 1 ? null : self.rest$LKEY;
   });
-  //@unit ListValue.seqSlot effect: ListValue when: seq, seqOf, seqSite requires: builtinSlot,
-  //@ ListValue
-  ListValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
-    return self;
-  });
+  //@unit ListValue.seqSlot effect: ListValue when: seq, seqOf, seqSite requires: ListValue,
+  //@ selfSeqSlot
+  ListValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = selfSeqSlot;
   //@unit ListValue.countSlot effect: ListValue when: count, countOf, countSite, countSlot requires: builtinSlot,
   //@ ListValue
   ListValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
@@ -8160,11 +8177,9 @@
   EmptyListValue.prototype.cljs$core$INext$_next$arity$1$LKEY = builtinSlot(function (self) {
     return null;
   });
-  //@unit EmptyListValue.seqSlot effect: EmptyListValue when: seq, seqOf, seqSite requires: builtinSlot,
-  //@ EmptyListValue
-  EmptyListValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
-    return null;
-  });
+  //@unit EmptyListValue.seqSlot effect: EmptyListValue when: seq, seqOf, seqSite requires: EmptyListValue,
+  //@ emptySeqSlot
+  EmptyListValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = emptySeqSlot;
   //@unit EmptyListValue.countSlot effect: EmptyListValue when: count, countOf, countSite, countSlot
   //@ requires: builtinSlot, EmptyListValue
   EmptyListValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
@@ -14631,9 +14646,8 @@
     }
     const slice = viewOf(value);
     if (slice.view$LKEY === "chunked" || value?.slots$LKEY) {
-      const chunk = arrayChunk(slice.arr$LKEY, slice.i$LKEY);
-      const vec = slice.vec$LKEY;
-      if (!slice.callerArr$LKEY && !(vec?.callerTail$LKEY && slice.arr$LKEY === vec.tail$LKEY)) chunk.first$LKEY = 1;
+      const arr = slice.arr$LKEY, chunk = arrayChunk(arr, slice.i$LKEY), vec = slice.vec$LKEY;
+      if (!slice.callerArr$LKEY && !arr?.callerArr$LKEY && !(vec?.callerTail$LKEY && arr === vec.tail$LKEY)) chunk.first$LKEY = 1;
       return chunk;
     }
     const end = Math.min(slice.arr$LKEY.length, slice.i$LKEY + 32 - slice.i$LKEY % 32);
@@ -14758,7 +14772,11 @@
   // A chunked seq with a vector (`ChunkedSeqCell`) drops into later leaves.
   kindHooks.dropChunkedSeq = (slice, n) => {
     const vec = slice.vec$LKEY, offset = slice.i$LKEY + n;
-    if (offset < slice.arr$LKEY.length) return new ChunkedSeqCell(slice.arr$LKEY, offset, vec, slice.base$LKEY);
+    if (offset < slice.arr$LKEY.length) {
+      const next = new ChunkedSeqCell(slice.arr$LKEY, offset, vec, slice.base$LKEY);
+      if (slice.callerArr$LKEY) Object.defineProperty(next, "callerArr$LKEY", {value: true});
+      return next;
+    }
     const i = slice.base$LKEY + offset, newOffset = i % 32;
     return i < count(vec) ? new ChunkedSeqCell(vectorChunk(vec, i), newOffset, vec, i - newOffset) : null;
   };
@@ -16734,9 +16752,9 @@
   publicFields(ChunkedSeqValue, ["vec", "node", "i", "off", "__hash"], (value, field) => {
     const v = viewOf(value);
     if (field === "node") {
-      const vec = v.vec$LKEY;
-      return v.callerArr$LKEY || !Array.isArray(v.arr$LKEY) || (vec?.callerTail$LKEY && v.arr$LKEY === vec.tail$LKEY)
-        ? v.arr$LKEY : v.arr$LKEY.slice();
+      const arr = v.arr$LKEY, vec = v.vec$LKEY;
+      return v.callerArr$LKEY || !Array.isArray(arr) || arr.callerArr$LKEY || (vec?.callerTail$LKEY && arr === vec.tail$LKEY)
+        ? arr : arr.slice();
     }
     return field === "vec" ? v.vec$LKEY : field === "i" ? v.base$LKEY : v.i$LKEY;
   });

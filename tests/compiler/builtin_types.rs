@@ -7443,17 +7443,120 @@ fn unfrozen_vector_leaves_cannot_be_mutated_through_any_public_handle() {
                  cs (ChunkedSeq. v40 a 0 0 nil nil)
                  pv (PersistentVector. nil 3 5 nil a nil)
                  vc (chunk-first (seq v40))
-                 b #js [7 8]]
+                 b #js [7 8]
+                 cs-next (next cs)
+                 cs-rest (rest cs)
+                 cs-drop (-drop cs 1)]
              (set! (.-arr vc) b)
-             (pr-str [(identical? a (.-arr is1))
-                      (identical? a (.-arr (clone is1)))
-                      (identical? a (.-arr is2))
-                      (identical? a (.-arr ac))
-                      (identical? a (.-node cs))
-                      (identical? a (.-node (with-meta cs {:m 1})))
-                      (identical? a (.-arr (chunk-first cs)))
-                      (identical? a (.-arr (seq pv)))
-                      (identical? b (.-arr vc))])) "#,
-        "[true true true true true true true true true]",
+             (aset (.-node cs-next) 1 99)
+             (let [seen-next (aget a 1)]
+               (aset (.-arr (chunk-first cs-rest)) 2 88)
+               (let [seen-rest (aget a 2)]
+                 (aset a 1 2)
+                 (aset a 2 3)
+                 (pr-str [(identical? a (.-arr is1))
+                          (identical? a (.-arr (clone is1)))
+                          (identical? a (.-arr is2))
+                          (identical? a (.-arr ac))
+                          (identical? a (.-node cs))
+                          (identical? a (.-node (with-meta cs {:m 1})))
+                          (identical? a (.-node cs-next))
+                          (identical? a (.-node cs-rest))
+                          (identical? a (.-node cs-drop))
+                          (identical? a (.-arr (chunk-first cs)))
+                          (identical? a (.-arr (chunk-first cs-next)))
+                          (identical? a (.-arr (chunk-first cs-drop)))
+                          (identical? a (.-arr (seq pv)))
+                          (identical? b (.-arr vc))
+                          seen-next
+                          seen-rest])))) "#,
+        "[true true true true true true true true true true true true true true 99 88]",
+    );
+}
+
+/// Sol finding #2 (light-cljs-1120): `SubvecValue` builds frozen accessor leaves
+/// when its source must be read through `nth`; `ChunkedSeq.node` and `ArrayChunk.arr`
+/// must return those leaves directly without eagerly invoking later getters.
+#[test]
+fn subvec_chunk_getters_keep_caller_reads_deferred() {
+    every_level(
+        r#"(let [a (js/Array. 40)
+                 reads (atom 0)]
+             (dotimes [i 40]
+               (if (= i 10)
+                 (js/Object.defineProperty a i #js {:enumerable true :get (fn [] (throw (js/Error. "boom-10")))})
+                 (aset a i (+ 100 i))))
+             (let [sv (Subvec. nil a 0 40 nil)
+                   s (seq sv)
+                   node (.-node s)
+                   arr (.-arr (chunk-first s))
+                   v0 (aget node 0)
+                   v0-chunk (aget arr 0)]
+               (aset a 0 777)
+               (pr-str [v0 v0-chunk (aget node 0) (aget arr 0) (identical? node arr)]))) "#,
+        "[100 100 777 777 true]",
+    );
+}
+
+/// Sol finding #6 (light-cljs-1120): brand checks (`keywordOf` / `lazyOf`) must stay
+/// presence-only (`in`) so Proxies wrapping keywords or lazy seqs do not have their
+/// payload fields read by brand predicates or `with-meta`.
+#[test]
+fn brand_checks_do_not_read_keyword_or_lazy_payloads() {
+    every_level(
+        r#"(let [k :ns/foo
+                 k-own (js/Set. (js/Object.getOwnPropertyNames k))
+                 k-proxy (js/Proxy. k #js {:get (fn [t p r]
+                                                  (when (.has k-own p)
+                                                    (throw (js/Error. (str "read-kw:" p))))
+                                                  (js/Reflect.get t p r))})
+                 ls (lazy-seq (list 1 2))
+                 ls-thunk-key (some (fn [p] (when (instance? js/Function (aget ls p)) p))
+                                    (js/Object.getOwnPropertyNames ls))
+                 ls-proxy (js/Proxy. ls #js {:get (fn [t p r]
+                                                    (when (= p ls-thunk-key)
+                                                      (throw (js/Error. (str "read-ls:" p))))
+                                                    (js/Reflect.get t p r))})
+                 wm (with-meta ls-proxy {:m 1})]
+             (assert (some? ls-thunk-key))
+             (pr-str [(keyword? k-proxy) (meta wm)])) "#,
+        "[true {:m 1}]",
+    );
+}
+
+/// Sol finding #7 (light-cljs-1120): a long public `PersistentVector` preserves
+/// caller-tail identity on `ChunkedSeq.node` and `ArrayChunk.arr` for its tail
+/// chunk (via `chunk-next` and `-drop`), while first-leaf getters stay isolated.
+#[test]
+fn long_public_vector_seq_preserves_only_caller_tail_identity() {
+    every_level(
+        r#"(let [v40 (vec (range 40))
+                 tail #js [320 330 340 350 360 370 380 390]
+                 v (PersistentVector. nil 40 5 (.-root v40) tail nil)
+                 s (seq v)
+                 n0 (.-node s)
+                 cf0 (.-arr (chunk-first s))
+                 s-tail (chunk-next s)
+                 s-drop (-drop v 32)
+                 nt (.-node s-tail)
+                 cft (.-arr (chunk-first s-tail))
+                 nd (.-node s-drop)
+                 cfd (.-arr (chunk-first s-drop))]
+             (aset n0 0 :mut0)
+             (aset cf0 1 :mut1)
+             (aset nt 0 999)
+             (let [after-nt (nth v 32)]
+               (aset cft 1 888)
+               (pr-str [(identical? tail nt)
+                        (identical? tail cft)
+                        (identical? tail nd)
+                        (identical? tail cfd)
+                        after-nt
+                        (nth v 33)
+                        (nth v 0)
+                        (nth v 1)
+                        (nth v40 0)
+                        (nth v40 1)]))) "#,
+        "[true true true true 999 888 0 1 0 1]",
     );
 }
