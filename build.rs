@@ -271,19 +271,19 @@ fn compiler_runtime(runtime: &str) -> String {
 
 /// The dev-build runtime (`src/dev_build.rs::runtime_file`): `src/js_runtime.js`
 /// with the `:advanced`-only `hostExt` disablers (`hostExt.core`,
-/// `hostExtEscaped.on`, `hostExtSeqEscaped.on`, `hostExtPrintEscaped.on`)
-/// omitted, the `slotWrites.*` wrappers deferred behind an idempotent
-/// `enableSlotWrites()` export (called by dev units that write a core
-/// protocol method slot by name), and lazy non-enumerable write-watchers on
-/// core protocol objects and dispatchers so direct `(aset ICounted ...)` or
-/// `(aset -pr-writer ...)` mutations still invalidate the corresponding
-/// `hostExt` flag without disabling fast paths at boot.
+/// `hostExtEscaped.on`, `hostExtSeqEscaped.on`, `hostExtPrintEscaped.on`,
+/// `slotWrites.hostExt`) omitted and replaced by an exported `markHostExt(flags)`
+/// hook invoked by dev units that escape a core protocol/dispatcher as a
+/// first-class value or directly write a core protocol method slot by name.
+/// All 20 cold `slotWrites.<op>` fallback wrappers remain active at boot so
+/// both static and computed/reflected core-slot clears preserve base semantics.
 fn dev_runtime(source: &str) -> String {
     const SKIP_UNITS: &[&str] = &[
         "hostExt.core",
         "hostExtEscaped.on",
         "hostExtSeqEscaped.on",
         "hostExtPrintEscaped.on",
+        "slotWrites.hostExt",
     ];
     const FAST_IMPLEMENTS_PROTOCOL: &str = concat!(
         "  function implementsProtocol(protocol, value) {\n",
@@ -319,7 +319,6 @@ fn dev_runtime(source: &str) -> String {
         "        if (ci.storeNative && mask && value.cljs$lang$kind$$LKEY < 64 && value[mask[0]]) return false;\n",
         "      }\n",
         "      if (ci.native?.(value)) return true;\n",
-        "      if (ci.p !== null && !ci.hasDefault && !(hostExt[ci.p] & ci.bit)) return false;\n",
         "      if (ownedProtocolValue(value)) return false;\n",
         "      if (mask && value?.[mask[0]]) return false;\n",
         "      const type = nativeType(value);\n",
@@ -344,56 +343,130 @@ fn dev_runtime(source: &str) -> String {
         "    return !!(protocol[nativeType(value)] || protocol._);\n",
         "  }\n",
     );
-    const WATCH_HOST_KEYS: &str = concat!(
-        "  {\n",
-        "    const hostKeys = [\"_\", \"null\", \"string\", \"number\", \"boolean\", \"array\", \"object\", \"function\"];\n",
-        "    const watchHostKeys = (obj, proto) => {\n",
-        "      if (obj == null) return;\n",
-        "      const flip = () => {\n",
-        "        if (proto === \"Fn\") hostExt.fn = true;\n",
-        "        if (proto === \"ISeq\" || proto === \"ISeqable\" || proto === \"INext\") hostExt.seq = true;\n",
-        "        if (proto === \"IMeta\") hostExt.imeta.on = true;\n",
-        "        const mask = protocolMasks.get(proto);\n",
-        "        if (mask) hostExt[mask[0] === \"cljs$lang$protocol_mask$partition0$$LKEY\" ? \"p0\" : \"p1\"] |= mask[1];\n",
-        "      };\n",
-        "      for (let i = 0; i < hostKeys.length; i++) {\n",
-        "        const k = hostKeys[i];\n",
-        "        if (k in obj) continue;\n",
-        "        Object.defineProperty(obj, k, {\n",
-        "          configurable: true, enumerable: false,\n",
-        "          get() { return undefined; },\n",
-        "          set(v) { flip(); Object.defineProperty(this, k, {value: v, writable: true, configurable: true, enumerable: true}); }\n",
-        "        });\n",
-        "      }\n",
-        "    };\n",
-        "    for (const [protocol, name] of coreProtocolNames) {\n",
-        "      watchHostKeys(protocol, name);\n",
-        "      const mask = protocolMasks.get(name);\n",
-        "      Object.defineProperty(protocol, \"coreInfo$LKEY\", {\n",
-        "        value: {\n",
-        "          name, mask, marker: protocolSlot(name, 0),\n",
-        "          native: nativeImplementations.get(protocol),\n",
-        "          p: mask ? (mask[0] === \"cljs$lang$protocol_mask$partition0$$LKEY\" ? \"p0\" : \"p1\") : null,\n",
-        "          bit: mask ? mask[1] : 0,\n",
-        "          hasDefault: name === \"ICounted\" || name === \"IMeta\" || name === \"Fn\",\n",
-        "          storeNative: storeNativeProtocols.has(name)\n",
+    const DEV_PRINT_SEQUENTIAL: &str = concat!(
+        "  function printSequential(writer, printOne, begin, separator, end, options, coll, step = 1) {\n",
+        "    const saved = coreCells.printLevel;\n",
+        "    coreCells.printLevel = saved == null ? null : saved - 1;\n",
+        "    try {\n",
+        "      if (coreCells.printLevel != null && coreCells.printLevel < 0) return writeText(writer, \"#\");\n",
+        "      writeText(writer, begin);\n",
+        "      let items = Array.isArray(coll) && (!protocolHooks.programMethod || protocolHooks.noSeqExt());\n",
+        "      let current = items ? (coll.length ? 0 : null) : printHooks.seq(coll), remaining = printOption(options, \"print-length\", \"printLength\"), printed = false;\n",
+        "      while (current != null && (remaining == null || remaining !== 0)) {\n",
+        "        if (printed) writeText(writer, separator);\n",
+        "        if (step === 2) printOne.call(null, coll[current], writer, options, coll[current + 1]);\n",
+        "        else printOne.call(null, items ? coll[current] : printHooks.first(current), writer, options);\n",
+        "        printed = true;\n",
+        "        if (items && protocolHooks.programMethod && !protocolHooks.noSeqExt()) {\n",
+        "          items = false;\n",
+        "          if (step === 2) {\n",
+        "            const objs = [];\n",
+        "            for (let j = 0; j < coll.length; j += 2) objs.push({key: coll[j], value: coll[j + 1]});\n",
+        "            const orig = printOne;\n",
+        "            printOne = (entry, target, opts) => orig.call(null, entry.key, target, opts, entry.value);\n",
+        "            current = printHooks.next(IndexedSeqValue(objs, current >> 1, null));\n",
+        "            step = 1;\n",
+        "          } else {\n",
+        "            current = printHooks.next(IndexedSeqValue(coll, current, null));\n",
+        "          }\n",
+        "        } else {\n",
+        "          current = items ? (current + step < coll.length ? current + step : null) : printHooks.next(current);\n",
         "        }\n",
-        "      });\n",
+        "        if (remaining != null) remaining--;\n",
+        "      }\n",
+        "      if (current != null) {\n",
+        "        if (printed) writeText(writer, separator);\n",
+        "        const marker = options == null ? null : printHooks.option(options, \"more-marker\"); writeText(writer, truth(marker) ? marker : \"...\");\n",
+        "      }\n",
+        "      return writeText(writer, end);\n",
+        "    } finally { coreCells.printLevel = saved; }\n",
+        "  }\n",
+    );
+    const DEV_PRINT_MAP_ENTRIES: &str = concat!(
+        "  function printMapEntries(entries, writer, options, prefix = \"\", printKey = printWriter, pairs = false) {\n",
+        "    const ns = !prefix && kindHooks.namespaceOf?.(entries, pairs);\n",
+        "    if (prefix) writeText(writer, prefix);\n",
+        "    if (pairs && !ns && options == null && coreCells.printLevel == null && coreCells.printLength == null && (!protocolHooks.programMethod || protocolHooks.noSeqExt())) {\n",
+        "      writeText(writer, \"{\");\n",
+        "      for (let i = 0; i < entries.length; i += 2) {\n",
+        "        if (i) writeText(writer, \", \");\n",
+        "        printKey(entries[i], writer, null);\n",
+        "        writeText(writer, \" \");\n",
+        "        printWriterImpl(entries[i + 1], writer, null);\n",
+        "        if (protocolHooks.programMethod && !protocolHooks.noSeqExt()) {\n",
+        "          const objs = [];\n",
+        "          for (let j = 0; j < entries.length; j += 2) objs.push({key: entries[j], value: entries[j + 1]});\n",
+        "          let s = printHooks.next(IndexedSeqValue(objs, i >> 1, null));\n",
+        "          while (s != null) {\n",
+        "            writeText(writer, \", \");\n",
+        "            const e = printHooks.first(s);\n",
+        "            printKey(e.key, writer, null);\n",
+        "            writeText(writer, \" \");\n",
+        "            printWriter(e.value, writer, null);\n",
+        "            s = printHooks.next(s);\n",
+        "          }\n",
+        "          break;\n",
+        "        }\n",
+        "      }\n",
+        "      return writeText(writer, \"}\");\n",
         "    }\n",
-        "    for (const [key, cell] of coreDispatchers) {\n",
-        "      const slash = key.indexOf(\"/\");\n",
-        "      if (slash > 0 && cell.dispatcher) watchHostKeys(cell.dispatcher, key.slice(0, slash));\n",
+        "    const begin = (ns ? \"#:\" + ns : \"\") + \"{\";\n",
+        "    if (pairs) return printSequential(writer, (key, target, opts, value) => {\n",
+        "      printKey(ns ? kindHooks.unqualified(key) : key, target, opts); writeText(target, \" \"); return printWriter(value, target, opts);\n",
+        "    }, begin, \", \", \"}\", options, entries, 2);\n",
+        "    return printSequential(writer, (entry, target, opts) => {\n",
+        "      printKey(ns ? kindHooks.unqualified(entry.key) : entry.key, target, opts); writeText(target, \" \"); return printWriter(entry.value, target, opts);\n",
+        "    }, begin, \", \", \"}\", options, entries);\n",
+        "  }\n",
+    );
+    const DEV_PRINT_VALUES: &str = concat!(
+        "  function printValues(values, options) {\n",
+        "    if (protocolHooks.programMethod && !protocolHooks.noSeqExt()) return printHooks.seqText(values, options);\n",
+        "    if (!values.length) return \"\";\n",
+        "    const {buffer, writer} = stringWriter();\n",
+        "    for (let i = 0; i < values.length; i++) {\n",
+        "      if (i) write(writer, \" \");\n",
+        "      printWriter(values[i], writer, options);\n",
+        "      if (protocolHooks.programMethod && !protocolHooks.noSeqExt()) {\n",
+        "        let s = printHooks.next(IndexedSeqValue(values, i, null));\n",
+        "        while (s != null) {\n",
+        "          write(writer, \" \");\n",
+        "          printWriter(printHooks.first(s), writer, options);\n",
+        "          s = printHooks.next(s);\n",
+        "        }\n",
+        "        break;\n",
+        "      }\n",
         "    }\n",
+        "    flushWriter(writer); return buffer.text;\n",
+        "  }\n",
+    );
+    const DEV_INIT: &str = concat!(
+        "  function markHostExt(flags) {\n",
+        "    if (flags & 1) { hostExt.p0 = hostExt.p1 = -1; hostExt.fn = hostExt.seq = true; hostExt.imeta.on = true; }\n",
+        "    if (flags & 2) hostExt.seq = true;\n",
+        "    if (flags & 4) hostExt.p0 = hostExt.p0 | -2147483648;\n",
+        "  }\n",
+        "  for (const [protocol, name] of coreProtocolNames) {\n",
+        "    const mask = protocolMasks.get(name);\n",
+        "    Object.defineProperty(protocol, \"coreInfo$LKEY\", {\n",
+        "      value: {\n",
+        "        name, mask, marker: protocolSlot(name, 0),\n",
+        "        native: nativeImplementations.get(protocol),\n",
+        "        storeNative: storeNativeProtocols.has(name)\n",
+        "      }\n",
+        "    });\n",
         "  }\n",
     );
 
     let mut out = String::with_capacity(source.len() + 4096);
-    let mut deferred_slot_writes = String::new();
     let mut current_unit: Option<&str> = None;
     let mut skipped_count = 0usize;
-    let mut deferred_count = 0usize;
     let mut replaced_implements = false;
     let mut replaced_satisfies = false;
+    let mut replaced_print_seq = false;
+    let mut replaced_print_map = false;
+    let mut replaced_print_values = false;
+    let mut seen_exports = false;
     let mut exports_patched = false;
 
     for line in source.split_inclusive('\n') {
@@ -403,45 +476,50 @@ fn dev_runtime(source: &str) -> String {
             current_unit = Some(name);
             if SKIP_UNITS.contains(&name) {
                 skipped_count += 1;
-            } else if name.starts_with("slotWrites.") {
-                deferred_count += 1;
             } else if name == "implementsProtocol" {
                 out.push_str(FAST_IMPLEMENTS_PROTOCOL);
                 replaced_implements = true;
             } else if name == "satisfies" {
                 out.push_str(FAST_SATISFIES);
                 replaced_satisfies = true;
+            } else if name == "printSequential" {
+                out.push_str(DEV_PRINT_SEQUENTIAL);
+                replaced_print_seq = true;
+            } else if name == "printMapEntries" {
+                out.push_str(DEV_PRINT_MAP_ENTRIES);
+                replaced_print_map = true;
+            } else if name == "printValues" {
+                out.push_str(DEV_PRINT_VALUES);
+                replaced_print_values = true;
             }
             continue;
         }
         if trimmed.starts_with("//@exports") {
             current_unit = None;
-            out.push_str("  let slotWritesEnabled = false;\n");
-            out.push_str("  function enableSlotWrites() {\n");
-            out.push_str("    if (slotWritesEnabled) return;\n");
-            out.push_str("    slotWritesEnabled = true;\n");
-            out.push_str(&deferred_slot_writes);
-            out.push_str("  }\n");
-            out.push_str(WATCH_HOST_KEYS);
+            seen_exports = true;
+            out.push_str(DEV_INIT);
             continue;
         }
         if trimmed.starts_with("//@") {
             continue;
         }
-        if let Some(unit) = current_unit {
-            if SKIP_UNITS.contains(&unit) || unit == "implementsProtocol" || unit == "satisfies" {
-                continue;
-            }
-            if unit.starts_with("slotWrites.") {
-                deferred_slot_writes.push_str("  ");
-                deferred_slot_writes.push_str(line);
-                continue;
-            }
+        if let Some(unit) = current_unit
+            && (SKIP_UNITS.contains(&unit)
+                || matches!(
+                    unit,
+                    "implementsProtocol"
+                        | "satisfies"
+                        | "printSequential"
+                        | "printMapEntries"
+                        | "printValues"
+                ))
+        {
+            continue;
         }
-        if !exports_patched && line.contains("return Object.freeze({") {
+        if seen_exports && !exports_patched && line.contains("return Object.freeze({") {
             out.push_str(&line.replacen(
                 "return Object.freeze({",
-                "return Object.freeze({enableSlotWrites, ",
+                "return Object.freeze({markHostExt, ",
                 1,
             ));
             exports_patched = true;
@@ -455,14 +533,22 @@ fn dev_runtime(source: &str) -> String {
         "dev_runtime expected all hostExt disabler units"
     );
     assert!(
-        deferred_count >= 20,
-        "dev_runtime expected slotWrites.* units, found {deferred_count}"
-    );
-    assert!(
         replaced_implements,
         "dev_runtime expected implementsProtocol unit"
     );
     assert!(replaced_satisfies, "dev_runtime expected satisfies unit");
+    assert!(
+        replaced_print_seq,
+        "dev_runtime expected printSequential unit"
+    );
+    assert!(
+        replaced_print_map,
+        "dev_runtime expected printMapEntries unit"
+    );
+    assert!(
+        replaced_print_values,
+        "dev_runtime expected printValues unit"
+    );
     assert!(exports_patched, "dev_runtime could not patch exports line");
     out
 }

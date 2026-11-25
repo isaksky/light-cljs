@@ -1354,8 +1354,9 @@ start
 (aset IPrintWithWriter "boolean" true)
 (aset -pr-writer "boolean" (fn [b w _] (-write w (if b "YES" "NO"))))
 (set! (.. PersistentVector -prototype -cljs$core$ICounted$_count$arity$1) nil)
+(set! (.. PersistentVector -prototype -cljs$core$IStack$_peek$arity$1) nil)
 (defn snapshot []
-  [(counted? true) (pr-str true) (count [1 2 3])])
+  [(counted? true) (pr-str true) (count [1 2 3]) (peek [1 2])])
 "#,
             ),
             (
@@ -1373,7 +1374,7 @@ start
 
     assert_eq!(
         run_dev(&out, true, &[out_v3.join("app.ext.js")]).unwrap(),
-        r#"{"id":"program","outcome":{"status":"returned","value":{"$value":"undefined"}},"trace":[],"stdout":"[false \"5\" \"{:a 1, :b [2 3]}\" 3 true true]\n#spec 9 true\n[YES \"YES\" 3]\n"}"#
+        r#"{"id":"program","outcome":{"status":"returned","value":{"$value":"undefined"}},"trace":[],"stdout":"[false \"5\" \"{:a 1, :b [2 3]}\" 3 true true]\n#spec 9 true\n[YES \"YES\" 3 2]\n"}"#
     );
 }
 
@@ -1399,6 +1400,7 @@ fn dev_protocol_fast_path_preserves_reload_extend_type_specify_and_arities() {
   (two [this] (:v this))
   (two [this x] (+ (:v this) x)))
 (defonce saved-box (->Box 10))
+(defonce saved-one one)
 (defn call-all []
   [(one saved-box) (two saved-box) (two saved-box 5)])
 "#,
@@ -1422,7 +1424,8 @@ start
     dev_build(&v1, &out);
 
     // Reload: redefine protocol P, extend host types `string`, `nil`, and
-    // `default`, and keep dispatching on the pre-reload `saved-box` instance.
+    // `default`, and keep dispatching on the pre-reload `saved-box` instance
+    // and pre-reload `saved-one` dispatcher (verifying its live Var getter).
     let v2 = source_root(
         &dir.join("v2"),
         &[
@@ -1450,8 +1453,10 @@ start
   (one [x] [:def x])
   (two ([x] [:def1 x]) ([x y] [:def2 x y])))
 (defonce saved-box (->Box 10))
+(defonce saved-one one)
 (defn call-all []
   [(one saved-box) (two saved-box 5)
+   (saved-one saved-box) (saved-one "hi")
    (one (->Box 10)) (two (->Box 10) 5)
    (one "hi") (two "hi" 7)
    (one nil) (two nil 9)
@@ -1474,7 +1479,7 @@ start
 
     assert_eq!(
         run_dev(&out, true, &[out_v2.join("app.proto.js")]).unwrap(),
-        r#"{"id":"program","outcome":{"status":"returned","value":{"$value":"undefined"}},"trace":[],"stdout":"[10 10 15] [:spec-one :spec-two-1 [:spec-two-2 3]]\n[10 15 20 25 \"S:hi\" \"hi:7\" :nil-one [:nil-2 9] [:def 42] :arity-err]\n"}"#
+        r#"{"id":"program","outcome":{"status":"returned","value":{"$value":"undefined"}},"trace":[],"stdout":"[10 10 15] [:spec-one :spec-two-1 [:spec-two-2 3]]\n[10 15 10 \"S:hi\" 20 25 \"S:hi\" \"hi:7\" :nil-one [:nil-2 9] [:def 42] :arity-err]\n"}"#
     );
 }
 
@@ -1492,18 +1497,25 @@ fn dev_satisfies_and_implements_fast_paths_preserve_core_user_and_reload_semanti
                 "app/pred.cljs",
                 r#"(ns app.pred)
 (defprotocol Tag (tag [this]))
+(defprotocol OtherTag (other-tag [this]))
 (defrecord Item [x] Tag (tag [_] :item))
 (defonce saved-item (->Item 1))
 (defn check []
-  [(satisfies? Tag saved-item) (implements? Tag saved-item)
-   (satisfies? Tag "abc") (implements? Tag "abc")
-   (satisfies? ICounted [1]) (implements? ICounted [1])
-   (satisfies? ICounted nil) (implements? ICounted nil)
-   (satisfies? ICounted 5) (implements? ICounted 5)
-   (satisfies? IWatchable (atom 1)) (satisfies? IWatchable [1])
-   (satisfies? IDeref (atom 1)) (satisfies? IDeref :k)
-   (satisfies? IMeta (fn [])) (satisfies? Fn (fn []))
-   (satisfies? ISeqable {:a 1}) (satisfies? ISeq {:a 1})])
+  (let [warm (satisfies? OtherTag saved-item)
+        shadowed (let [Tag OtherTag] (satisfies? Tag saved-item))
+        obj #js {}]
+    [(satisfies? Tag saved-item) (implements? Tag saved-item)
+     warm shadowed
+     (satisfies? IHash obj) (implements? IHash obj)
+     (satisfies? IEquiv obj) (implements? IEquiv obj)
+     (satisfies? Tag "abc") (implements? Tag "abc")
+     (satisfies? ICounted [1]) (implements? ICounted [1])
+     (satisfies? ICounted nil) (implements? ICounted nil)
+     (satisfies? ICounted 5) (implements? ICounted 5)
+     (satisfies? IWatchable (atom 1)) (satisfies? IWatchable [1])
+     (satisfies? IDeref (atom 1)) (satisfies? IDeref :k)
+     (satisfies? IMeta (fn [])) (satisfies? Fn (fn []))
+     (satisfies? ISeqable {:a 1}) (satisfies? ISeq {:a 1})]))
 "#,
             ),
             (
@@ -1556,7 +1568,7 @@ start
 
     assert_eq!(
         run_dev(&out, true, &[out_v2.join("app.pred.js")]).unwrap(),
-        r#"{"id":"program","outcome":{"status":"returned","value":{"$value":"undefined"}},"trace":[],"stdout":"[true true false false true true true false false false true false true false true true true false] true true\n[true true true false true false true false false]\n"}"#
+        r#"{"id":"program","outcome":{"status":"returned","value":{"$value":"undefined"}},"trace":[],"stdout":"[true true false false true false true false false false true true true false false false true false true false true true true false] true true\n[true true true false true false true false false]\n"}"#
     );
 }
 
@@ -1635,5 +1647,149 @@ start
     assert_eq!(
         run_dev(&out, true, &[out_v2.join("app.kw.js")]).unwrap(),
         r#"{"id":"program","outcome":{"status":"returned","value":{"$value":"undefined"}},"trace":[],"stdout":"true [:app.kw/alpha :beta :app.kw/alpha] [8 :beta]\ntrue [:app.kw/alpha :gamma :beta] [10 :beta]\n"}"#
+    );
+}
+
+/// Clearing a core protocol method slot via a computed/reflected key (`aset`)
+/// in a dev build with no named slot writes still preserves the native
+/// fallback (`slotWrites.peek`).
+#[test]
+fn dev_computed_core_slot_clear_preserves_vector_peek() {
+    let dir = TempDir::new("dev-computed-slot-clear");
+    let root = source_root(
+        &dir.join("src"),
+        &[(
+            "app/main.cljs",
+            r#"(ns app.main)
+(defn start []
+  (let [proto (.-prototype PersistentVector)
+        key (some #(when (and (string? %)
+                              (>= (.indexOf % "IStack$_peek$arity$1") 0))
+                     %)
+                  (js/Object.getOwnPropertyNames proto))]
+    (aset proto key nil)
+    (js/console.log (peek [1 2]))))
+start
+"#,
+        )],
+    );
+    let out = dir.join("dev");
+    dev_build(&root, &out);
+    assert_eq!(
+        run_dev(&out, true, &[]).unwrap(),
+        r#"{"id":"program","outcome":{"status":"returned","value":{"$value":"undefined"}},"trace":[],"stdout":"2\n"}"#
+    );
+}
+
+/// Dev `defprotocol` named fast paths read each receiver slot once per
+/// dispatch (both single- and multi-arity), matching `protocolMethod`'s
+/// generic `dispatch` when a slot getter changes value after the first read.
+#[test]
+fn dev_protocol_fast_path_reads_slot_getter_once() {
+    let dir = TempDir::new("dev-protocol-getter-once");
+    let root = source_root(
+        &dir.join("src"),
+        &[(
+            "app/main.cljs",
+            r#"(ns app.main)
+(defprotocol G
+  (solo [this])
+  (multi [this] [this x]))
+(defrecord Dummy []
+  G
+  (solo [_] :dummy)
+  (multi [_] :d1)
+  (multi [_ x] [:d2 x]))
+(defn install-once [obj slot f]
+  (let [seen (atom false)]
+    (js/Object.defineProperty obj slot
+      #js {:configurable true
+           :get (fn []
+                  (when-not @seen
+                    (reset! seen true)
+                    f))})))
+(defn start []
+  (let [names (js/Object.getOwnPropertyNames (.-prototype Dummy))
+        find-slot (fn [sub] (some #(when (>= (.indexOf % sub) 0) %) names))
+        o1 #js {}
+        o2 #js {}]
+    (install-once o1 (find-slot "$solo$arity$1") (fn [_] :solo-hit))
+    (install-once o2 (find-slot "$multi$arity$2") (fn [_ x] [:multi-hit x]))
+    (js/console.log (pr-str [(solo o1) (multi o2 7)]))))
+start
+"#,
+        )],
+    );
+    let out = dir.join("dev");
+    dev_build(&root, &out);
+    assert_eq!(
+        run_dev(&out, true, &[]).unwrap(),
+        r#"{"id":"program","outcome":{"status":"returned","value":{"$value":"undefined"}},"trace":[],"stdout":"[:solo-hit [:multi-hit 7]]\n"}"#
+    );
+}
+
+/// Core protocol objects in dev builds do not carry placeholder host-key
+/// accessors (`js-in` stays false for absent entries), and reflective
+/// `Object.defineProperty` as well as `delete` followed by assignment are
+/// observed immediately.
+#[test]
+fn dev_core_protocol_host_entries_preserve_presence_and_reflective_writes() {
+    let dir = TempDir::new("dev-core-host-entries");
+    let root = source_root(
+        &dir.join("src"),
+        &[(
+            "app/main.cljs",
+            r#"(ns app.main)
+(defn start []
+  (let [before-in (js-in "object" IWatchable)
+        before-sat (satisfies? IWatchable #js {})]
+    (js/Object.defineProperty IWatchable "object" #js {:value true :configurable true :writable true})
+    (let [after-def (satisfies? IWatchable #js {})]
+      (js-delete IWatchable "object")
+      (let [after-del (satisfies? IWatchable #js {})]
+        (aset IWatchable "object" true)
+        (let [after-set (satisfies? IWatchable #js {})]
+          (js/console.log (pr-str [before-in before-sat after-def after-del after-set])))))))
+start
+"#,
+        )],
+    );
+    let out = dir.join("dev");
+    dev_build(&root, &out);
+    assert_eq!(
+        run_dev(&out, true, &[]).unwrap(),
+        r#"{"id":"program","outcome":{"status":"returned","value":{"$value":"undefined"}},"trace":[],"stdout":"[false false true false true]\n"}"#
+    );
+}
+
+/// Dev printer index loops recheck `noSeqExt()` after custom `IPrintWithWriter`
+/// callbacks so an `extend-type IndexedSeq INext` installed mid-print takes
+/// effect on the remaining items.
+#[test]
+fn dev_print_observes_seq_extension_during_writer_callback() {
+    let dir = TempDir::new("dev-print-seq-ext");
+    let root = source_root(
+        &dir.join("src"),
+        &[(
+            "app/main.cljs",
+            r#"(ns app.main)
+(deftype CustomPrint []
+  IPrintWithWriter
+  (-pr-writer [_ w _]
+    (-write w "X")
+    (extend-type IndexedSeq
+      INext
+      (-next [_] nil))))
+(defn start []
+  (js/console.log (pr-str #js [(->CustomPrint) 2 3])))
+start
+"#,
+        )],
+    );
+    let out = dir.join("dev");
+    dev_build(&root, &out);
+    assert_eq!(
+        run_dev(&out, true, &[]).unwrap(),
+        r##"{"id":"program","outcome":{"status":"returned","value":{"$value":"undefined"}},"trace":[],"stdout":"#js [X]\n"}"##
     );
 }

@@ -1224,8 +1224,10 @@ fn emit_js_mode(
         } else {
             runtime.push_str(&registration);
         }
-        if emitter.core_method_write {
-            runtime.push_str("  rt.enableSlotWrites?.();\n");
+        let host_ext_flags =
+            emitter.dev_host_ext_flags | if emitter.core_method_write { 1 } else { 0 };
+        if host_ext_flags != 0 {
+            writeln!(runtime, "  rt.markHostExt?.({host_ext_flags});").unwrap();
         }
         for range in &mut emitter.raw_segments {
             if range.start >= prelude_end {
@@ -2963,8 +2965,12 @@ struct Emitter<'a, 's> {
     declaring_type: bool,
     /// In an interactive/dev unit (`application_roots`), whether emitted code
     /// directly writes or deletes a core protocol method slot by name
-    /// (`cljs$core$...$arity$...`), so the dev runtime activates `slotWrites.*`.
+    /// (`cljs$core$...$arity$...`), so the dev runtime activates `hostExt`.
     core_method_write: bool,
+    /// In an interactive/dev unit (`application_roots`), bitmask of `hostExt`
+    /// flags to mark at load because a core protocol or dispatcher escaped as
+    /// a first-class JS value (`1` = all, `2` = seq, `4` = print).
+    dev_host_ext_flags: u8,
     /// In a dev/interactive unit (`application_roots && !demand_roots`),
     /// per-unit hoisted keyword constants (`const k0 = rt.keyword(...);`).
     dev_keywords: Option<DevKeywordPool<'a>>,
@@ -3325,6 +3331,7 @@ impl<'a, 's> Emitter<'a, 's> {
             top_statement: false,
             declaring_type: false,
             core_method_write: false,
+            dev_host_ext_flags: 0,
             dev_keywords: (application_roots && !demand_roots && direct.is_none())
                 .then(DevKeywordPool::default),
 
@@ -3706,6 +3713,9 @@ impl<'a, 's> Emitter<'a, 's> {
             return format!("(nativeCore${member} ?? nativeCoreGetter${member}())");
         }
         if self.replaced_core.is_none() {
+            if self.application_roots && used == NameUse::Value {
+                self.note_dev_host_ext_escape(name, site);
+            }
             self.runtime_root(name, site, used);
             return name.to_string();
         }
@@ -3927,11 +3937,69 @@ impl<'a, 's> Emitter<'a, 's> {
         self.output.push_str("return m0.apply(null, arguments); }");
     }
 
+    /// Dev-build counterpart of [`Emitter::escaped_dispatcher`]: records when a
+    /// `hostExt`-tracked core protocol (outside `satisfies?`/`implements?`) or
+    /// core dispatcher is read as a first-class JS value in a dev unit, so
+    /// `rt.markHostExt(...)` invalidates the corresponding `hostExt` flags when
+    /// the unit loads.
+    fn note_dev_host_ext_escape(&mut self, name: RuntimeName, site: Option<ExprId>) {
+        if self.dev_host_ext_flags == 1 {
+            return;
+        }
+        let binding = match (name.binding, name.member) {
+            (CORE_HUB, Some(member)) => match core_reference(member) {
+                CoreReference::Binding(binding) => binding,
+                _ => return,
+            },
+            (binding, None) => binding,
+            _ => return,
+        };
+        let manifest = RuntimeManifest::embedded();
+        if manifest.is_core_protocol(binding)
+            && site != self.protocol_operand
+            && matches!(
+                binding,
+                "ICounted"
+                    | "ICollection"
+                    | "ISeq"
+                    | "ISeqable"
+                    | "INext"
+                    | "IMap"
+                    | "ISet"
+                    | "IVector"
+                    | "IReduce"
+                    | "ISequential"
+                    | "IList"
+                    | "IRecord"
+                    | "IPrintWithWriter"
+                    | "IComparable"
+                    | "IEquiv"
+                    | "IMeta"
+                    | "Fn"
+            )
+            || matches!(
+                binding,
+                "compareProtocol" | "equivProtocol" | "metaProtocol"
+            )
+        {
+            self.dev_host_ext_flags |= 1;
+        } else if matches!(
+            binding,
+            "seqProtocol" | "firstProtocol" | "restProtocol" | "nextProtocol" | "reduceProtocol"
+        ) {
+            self.dev_host_ext_flags |= 2;
+        } else if binding == "prWriter" {
+            self.dev_host_ext_flags |= 4;
+        }
+    }
+
     /// Dev-build variant of [`Emitter::protocol_direct_path`]: spells each
     /// arity's keyed slot name directly (`r0.ns$P$m$arity$2$LKEY`) so V8 uses
-    /// a named LoadIC instead of a dynamic keyed lookup, while delegating
-    /// misses to `m0` (`protocolMethod`'s `miss`, which reads the live Var via
-    /// its getter so hot reload and late host `extend-type` still take effect).
+    /// a named LoadIC instead of a dynamic keyed lookup, reads the slot once
+    /// per dispatch (preserving getter side-effects and custom `.apply`
+    /// semantics), and delegates misses to `m0` (`protocolMethod`'s `miss`,
+    /// which reads the live Var via its getter so hot reload and late host
+    /// `extend-type` still take effect).
     fn protocol_named_fast_path(&mut self, key: &str, arities: &[usize]) {
         let widest = arities.iter().copied().max().unwrap_or(1).max(1);
         let parameters = |arity: usize, defaulted: bool| {
@@ -3953,11 +4021,13 @@ impl<'a, 's> Emitter<'a, 's> {
         if let [arity] = arities {
             let slot = crate::rta::protocol_slot(key, *arity);
             let arguments = parameters(*arity, false);
-            self.output.push_str("return r0 != null && r0");
+            self.output.push_str("const f = r0 == null ? null : r0");
             self.keyed_member(&slot);
-            self.output.push_str(" != null ? r0");
-            self.keyed_member(&slot);
-            write!(self.output, "({arguments}) : m0({arguments}); }}").unwrap();
+            write!(
+                self.output,
+                "; return f != null ? (f.apply === Function.prototype.apply ? f.call(r0, {arguments}) : f.apply(r0, [{arguments}])) : m0({arguments}); }}"
+            )
+            .unwrap();
             return;
         }
         for (index, arity) in arities.iter().enumerate() {
@@ -3965,15 +4035,18 @@ impl<'a, 's> Emitter<'a, 's> {
                 self.output.push_str("else ");
             }
             let slot = crate::rta::protocol_slot(key, *arity);
+            let arguments = parameters(*arity, false);
             write!(
                 self.output,
-                "if (arguments.length === {arity}) {{ if (r0 != null && r0"
+                "if (arguments.length === {arity}) {{ const f = r0 == null ? null : r0"
             )
             .unwrap();
             self.keyed_member(&slot);
-            self.output.push_str(" != null) return r0");
-            self.keyed_member(&slot);
-            write!(self.output, "({}); }} ", parameters(*arity, false)).unwrap();
+            write!(
+                self.output,
+                "; if (f != null) return f.apply === Function.prototype.apply ? f.call(r0, {arguments}) : f.apply(r0, arguments); }} "
+            )
+            .unwrap();
         }
         self.output.push_str("return m0.apply(null, arguments); }");
     }
@@ -9994,6 +10067,8 @@ impl<'a, 's> Emitter<'a, 's> {
             ExprKind::CoreFn(core) => {
                 let used = if self.extended_class == Some(id) {
                     NameUse::Extend
+                } else if self.application_roots && self.cell_callee == Some(id) {
+                    NameUse::Call
                 } else {
                     NameUse::Value
                 };
@@ -10741,12 +10816,8 @@ impl<'a, 's> Emitter<'a, 's> {
                 } else if self.application_roots
                     && !self.demand_roots
                     && !self.native_forms
+                    && *direct
                     && self.repeatable(*value)
-                    && (*direct
-                        || matches!(
-                            self.program.exprs[protocol.0].kind,
-                            ExprKind::Global(_) | ExprKind::Local(_)
-                        ))
                 {
                     let slot = crate::rta::protocol_slot(key, 0);
                     self.output.push('(');
@@ -10757,17 +10828,6 @@ impl<'a, 's> Emitter<'a, 's> {
                     self.keyed_member(&slot);
                     self.output.push_str(" === ");
                     self.rt(RuntimeName::core("protocolSentinel"));
-                    if !*direct {
-                        self.output.push_str(" || ");
-                        self.rt(RuntimeName::export("protocolPredicate"));
-                        self.output.push('(');
-                        self.value(*protocol);
-                        self.output.push_str(", ");
-                        self.string_units(&key.encode_utf16().collect::<Vec<_>>());
-                        self.output.push_str(", ");
-                        self.value(*value);
-                        self.output.push_str(", false)");
-                    }
                     self.output.push(')');
                 } else {
                     self.rt(RuntimeName::export("protocolPredicate"));
@@ -11647,7 +11707,8 @@ impl<'a, 's> Emitter<'a, 's> {
                 self.output.push('(');
                 let cell = match self.program.exprs[callee.0].kind {
                     ExprKind::CoreFn(core) if specialized.is_none() => {
-                        self.chunks.is_some() && self.replaced(core.runtime_name())
+                        self.application_roots
+                            || (self.chunks.is_some() && self.replaced(core.runtime_name()))
                     }
                     _ => false,
                 };
