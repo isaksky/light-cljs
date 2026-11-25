@@ -1877,7 +1877,9 @@ from 5.35 to 7.25; rounds 1–2 ran `357.1` / `394.0 ms` vs `474.4` / `609.4 ms`
   `1,127.3` / `1,301.5 MiB` re-frame), and lower than `6f50f0b09` on 6 of 8
   configurations (-19.8 to +12.0 MiB).
 
-## Unused custom reader in a parallel V8 build (light-cljs-1149)
+## Compiler data-reader memory (light-cljs-1149)
+
+### Earlier comparison with slot lending
 
 Six alternating rounds on an unreserved Apple M3 Ultra VM with 24 logical
 CPUs, 32 GiB RAM, macOS 15.7.3 and Homebrew Rust/Cargo 1.99.1. Each revision
@@ -1928,3 +1930,126 @@ under load.
 | 6 | After | 7.10 | 1081.6 | 13.44/19.76/21.34 |
 | 6 | Before | 7.06 | 1331.7 | 13.57/19.68/21.30 |
 | 6 | Fix | 7.21 | 1334.5 | 14.72/19.81/21.34 |
+
+### Independent reader allowances
+
+We built `c41b8869`, `e03ee67a` and `cdab4b7d` with
+`cargo build --locked --release --no-default-features --features v8-macros`
+and the same temporary Rust example. The measured candidate's compiler
+sources are identical to those in the rebased `864e5189`. All used stock
+pointer-compressed V8 152.2.0 on an unreserved Apple M3 Ultra VM with 24
+logical CPUs, 32 GiB RAM,
+macOS 15.7.3, and Homebrew Rust 1.99.1. The driver registered the reader on a
+fresh `MacroHost` with assertions elided, compiled with
+`analyze_namespace_entry_recorded` and statistics enabled, then prepared and
+emitted one advanced ES module with the same slot count. Each sample used a
+fresh process with warm filesystem caches and the compiler cache disabled.
+`/usr/bin/time -l` measured wall time and process peak memory through writing
+the output. Analysis time includes loading sources through finishing the
+program and precedes preparation and emission.
+
+- **Tagged build.** Four slots (the coordinator and three engine workers),
+  a 512 MiB macro limit, and 96 independent leaf namespaces. Each leaf
+  defines a vector of 24 tagged numbers, and the entry requires all leaves
+  and prints a vector containing one more tag and all their values. The
+  `#bench/load` handler retains a 40 MiB `Uint8Array` and writes one byte
+  every 4,096 bytes before handling any tag. It reads back a byte on every
+  call and adds 905,171,301 to the first result from each reader isolate.
+  Every sample reported three participating engine workers. Running the
+  emitted module produced four marked results and, after subtracting the
+  markers, the expected 2,305 values in order.
+- **Macro-heavy build.** The seed-42 generated 200k project with three slots
+  and a 2 GiB macro limit. The driver registered `unused-bench-tag` with a
+  handler that throws if called, and used the generated project's expansion,
+  node, poll and timeout limits. Each sample reported 94,590 macro calls and
+  two participating engine workers. Both comparison revisions emitted the
+  same module (SHA-256 `d69683388b9708e6565c6883d37fc92f6d9eccd0e1e2bb15a96a92bb58def20b`).
+  The candidate module was 44 bytes smaller (SHA-256
+  `88949802f14ca7e26685963a3f751d3f5ac4cac7d1b017c9bbd144adf59ac78f`).
+  Every module printed `484264` with inputs `42 3`, matching the Babashka oracle.
+
+We rotated revision order in six tagged rounds and twelve macro-heavy rounds.
+We collected macro-heavy rounds 7–12 after load shifted during several earlier
+samples. The tables retain all samples. Post-run load was recorded for rounds
+7–12.
+
+| Workload | Revision | Wall seconds, median [range] | Analysis seconds, median [range] | Peak memory MiB, median [range] | 1-minute pre-run load range |
+| --- | --- | ---: | ---: | ---: | ---: |
+| tagged | `c41b8869` | 0.11 [0.10–0.23] | 0.055 [0.054–0.065] | 244.9 [241.0–253.3] | 6.94–7.29 |
+| tagged | `e03ee67a` | 0.10 [0.10–0.19] | 0.053 [0.051–0.057] | 247.3 [240.3–249.7] | 6.94–6.94 |
+| tagged | `cdab4b7d` | 0.11 [0.10–0.20] | 0.055 [0.053–0.058] | 244.7 [241.3–252.3] | 6.94–6.94 |
+| macro-heavy | `c41b8869` | 5.37 [5.19–11.15] | 4.211 [4.096–7.475] | 1081.4 [1040.6–1111.3] | 6.94–24.60 |
+| macro-heavy | `e03ee67a` | 5.39 [5.12–5.51] | 4.242 [3.995–4.297] | 1007.8 [989.9–1051.7] | 6.35–23.11 |
+| macro-heavy | `cdab4b7d` | 5.28 [5.16–14.03] | 4.171 [4.099–10.525] | 1085.6 [1070.3–1163.0] | 6.16–20.64 |
+
+The tagged build's peak-memory ranges overlap. Its candidate median was
+244.7 MiB against 244.9 MiB at `c41b8869`. The macro-heavy candidate's median
+wall time was 5.28 s against 5.37 s at `c41b8869`, within the baseline
+run-to-run range. The candidate's median peak memory was also close to
+`c41b8869`. The lower peak at `e03ee67a` is consistent with its 32 MiB
+macro startup threshold when readers are registered.
+
+
+#### Tagged build samples
+
+| Round | Revision | Wall seconds | Analysis seconds | Peak memory MiB | Pre-run load (1/5/15 minutes) | Post-run load (1/5/15 minutes) |
+| ---: | --- | ---: | ---: | ---: | --- | --- |
+| 1 | `c41b8869` | 0.23 | 0.065 | 253.3 | 7.29/14.64/15.24 | — |
+| 1 | `e03ee67a` | 0.19 | 0.057 | 246.9 | 6.94/14.45/15.17 | — |
+| 1 | `cdab4b7d` | 0.20 | 0.058 | 246.8 | 6.94/14.45/15.17 | — |
+| 2 | `e03ee67a` | 0.10 | 0.051 | 249.7 | 6.94/14.45/15.17 | — |
+| 2 | `cdab4b7d` | 0.10 | 0.055 | 241.4 | 6.94/14.45/15.17 | — |
+| 2 | `c41b8869` | 0.11 | 0.056 | 245.9 | 6.94/14.45/15.17 | — |
+| 3 | `cdab4b7d` | 0.10 | 0.053 | 241.3 | 6.94/14.45/15.17 | — |
+| 3 | `c41b8869` | 0.11 | 0.055 | 247.3 | 6.94/14.45/15.17 | — |
+| 3 | `e03ee67a` | 0.10 | 0.054 | 247.8 | 6.94/14.45/15.17 | — |
+| 4 | `c41b8869` | 0.10 | 0.055 | 243.9 | 6.94/14.45/15.17 | — |
+| 4 | `cdab4b7d` | 0.11 | 0.055 | 249.1 | 6.94/14.45/15.17 | — |
+| 4 | `e03ee67a` | 0.10 | 0.052 | 240.3 | 6.94/14.45/15.17 | — |
+| 5 | `cdab4b7d` | 0.10 | 0.053 | 252.3 | 6.94/14.45/15.17 | — |
+| 5 | `e03ee67a` | 0.10 | 0.053 | 249.2 | 6.94/14.45/15.17 | — |
+| 5 | `c41b8869` | 0.10 | 0.054 | 241.8 | 6.94/14.45/15.17 | — |
+| 6 | `e03ee67a` | 0.10 | 0.053 | 241.0 | 6.94/14.45/15.17 | — |
+| 6 | `c41b8869` | 0.10 | 0.054 | 241.0 | 6.94/14.45/15.17 | — |
+| 6 | `cdab4b7d` | 0.11 | 0.055 | 242.6 | 6.94/14.45/15.17 | — |
+
+#### Macro-heavy build samples
+
+| Round | Revision | Wall seconds | Analysis seconds | Peak memory MiB | Pre-run load (1/5/15 minutes) | Post-run load (1/5/15 minutes) |
+| ---: | --- | ---: | ---: | ---: | --- | --- |
+| 1 | `c41b8869` | 5.33 | 4.241 | 1041.3 | 6.94/14.45/15.17 | — |
+| 1 | `e03ee67a` | 5.51 | 4.250 | 1006.7 | 6.71/14.27/15.10 | — |
+| 1 | `cdab4b7d` | 5.24 | 4.099 | 1080.2 | 6.29/13.94/14.97 | — |
+| 2 | `e03ee67a` | 5.34 | 4.272 | 1039.9 | 6.35/13.82/14.93 | — |
+| 2 | `cdab4b7d` | 10.26 | 4.585 | 1163.0 | 6.16/13.66/14.86 | — |
+| 2 | `c41b8869` | 11.15 | 7.475 | 1040.6 | 7.46/13.69/14.86 | — |
+| 3 | `cdab4b7d` | 14.03 | 10.525 | 1141.7 | 9.39/13.81/14.88 | — |
+| 3 | `c41b8869` | 5.19 | 4.140 | 1076.6 | 24.60/16.97/15.99 | — |
+| 3 | `e03ee67a` | 5.39 | 4.212 | 1009.1 | 23.11/16.79/15.93 | — |
+| 4 | `c41b8869` | 5.30 | 4.175 | 1092.0 | 21.74/16.61/15.87 | — |
+| 4 | `cdab4b7d` | 5.32 | 4.257 | 1091.9 | 20.64/16.47/15.82 | — |
+| 4 | `e03ee67a` | 5.47 | 4.297 | 989.9 | 19.47/16.30/15.77 | — |
+| 5 | `cdab4b7d` | 5.28 | 4.106 | 1072.0 | 18.39/16.12/15.71 | — |
+| 5 | `e03ee67a` | 5.35 | 4.254 | 1051.7 | 17.40/15.96/15.65 | — |
+| 5 | `c41b8869` | 5.41 | 4.265 | 1079.7 | 15.57/15.61/15.53 | — |
+| 6 | `e03ee67a` | 5.41 | 4.243 | 1002.6 | 14.72/15.43/15.47 | — |
+| 6 | `c41b8869` | 9.00 | 6.073 | 1066.0 | 13.87/15.24/15.40 | — |
+| 6 | `cdab4b7d` | 10.30 | 7.452 | 1106.0 | 13.66/15.15/15.37 | — |
+| 7 | `c41b8869` | 5.38 | 4.216 | 1083.2 | 15.27/15.72/15.59 | 14.44/15.55/15.52 |
+| 7 | `e03ee67a` | 5.40 | 4.241 | 1004.1 | 14.44/15.55/15.52 | 13.53/15.34/15.45 |
+| 7 | `cdab4b7d` | 5.29 | 4.193 | 1084.7 | 13.53/15.34/15.45 | 12.84/15.17/15.39 |
+| 8 | `e03ee67a` | 5.37 | 4.215 | 1020.1 | 12.29/15.01/15.33 | 11.71/14.85/15.27 |
+| 8 | `cdab4b7d` | 5.20 | 4.123 | 1107.3 | 11.71/14.85/15.27 | 11.17/14.68/15.21 |
+| 8 | `c41b8869` | 5.37 | 4.285 | 1064.1 | 11.17/14.68/15.21 | 10.60/14.50/15.15 |
+| 9 | `cdab4b7d` | 5.20 | 4.161 | 1086.5 | 10.60/14.50/15.15 | 10.07/14.33/15.08 |
+| 9 | `c41b8869` | 5.37 | 4.207 | 1097.5 | 10.07/14.33/15.08 | 9.58/14.16/15.02 |
+| 9 | `e03ee67a` | 5.39 | 4.257 | 1009.6 | 9.58/14.16/15.02 | 9.22/14.01/14.96 |
+| 10 | `c41b8869` | 5.32 | 4.192 | 1111.3 | 9.22/14.01/14.96 | 9.84/14.06/14.97 |
+| 10 | `cdab4b7d` | 5.27 | 4.181 | 1077.1 | 9.45/13.90/14.91 | 9.09/13.76/14.85 |
+| 10 | `e03ee67a` | 5.38 | 4.159 | 997.1 | 9.09/13.76/14.85 | 8.85/13.63/14.80 |
+| 11 | `cdab4b7d` | 5.16 | 4.101 | 1070.3 | 8.85/13.63/14.80 | 8.46/13.47/14.74 |
+| 11 | `e03ee67a` | 5.12 | 3.995 | 1003.4 | 8.46/13.47/14.74 | 8.18/13.33/14.68 |
+| 11 | `c41b8869` | 5.38 | 4.114 | 1093.8 | 8.18/13.33/14.68 | 7.85/13.17/14.62 |
+| 12 | `e03ee67a` | 5.33 | 4.179 | 1008.9 | 7.85/13.17/14.62 | 7.62/13.04/14.56 |
+| 12 | `c41b8869` | 5.19 | 4.096 | 1098.5 | 7.62/13.04/14.56 | 7.57/12.94/14.52 |
+| 12 | `cdab4b7d` | 5.23 | 4.123 | 1078.9 | 7.44/12.82/14.47 | 7.25/12.69/14.41 |
