@@ -45,8 +45,7 @@ pub(crate) trait CompilerEvaluator: MacroEvaluator {
     fn headroom_held(&self) -> usize {
         0
     }
-    /// Collect the engine's garbage in full, between operations, so that
-    /// what it still holds is what is reachable (`--watch --stats`).
+    /// Request a full collection between operations (`--watch --stats`).
     fn collect_garbage(&self) {}
     /// The values the engine's private registry roots for their `ValueId`s
     /// until they are released: bridge roots the process-wide

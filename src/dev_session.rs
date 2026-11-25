@@ -692,9 +692,9 @@ impl DevSession {
     pub fn control(&self) -> ExecutionControl {
         self.control.clone()
     }
-    /// Collect the garbage of the session's compile-time engines in full, so
-    /// that what they still hold ([`crate::compile_stats::live_counts`]) is
-    /// what they can reach, as `--watch --stats` does after each step.
+    /// Request a full collection of the session's compile-time engines, as
+    /// `--watch --stats` does before sampling [`crate::compile_stats::live_counts`].
+    /// V8 can hold temporary roots through a collection.
     pub fn collect_garbage(&self) {
         self.compiler.borrow().host.collect_garbage();
     }

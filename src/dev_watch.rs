@@ -1766,8 +1766,8 @@ impl Watch {
             ),
         }
         if self.stats {
-            // What the session's engines can still reach, not what they
-            // have yet to collect.
+            // Sample after requesting a collection. V8 can hold temporary
+            // roots through a full collection.
             self.session.collect_garbage();
             let live = light_cljs::compile_stats::live_counts();
             let roots = match self.session.value_roots() {

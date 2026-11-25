@@ -2440,19 +2440,18 @@ fn a_watch_starts_from_the_default_cache_directory() {
 #[cfg(light_v8)]
 /// Steps that each run a changed macro again in the watch's session, after a
 /// start from the persistent cache that installed every namespace, hold no
-/// artifact and the same engines and engine handles after each step, and
-/// bridge payloads that stop growing (`compile_stats::live_counts`, the line
-/// `--stats` adds to each step after a full collection, which also gives
-/// `DevSession::value_roots`), and the same values rooted in the session
-/// engine's registry after each step, since a redefinition releases the
-/// replaced macro's function (light-cljs-381). The payloads grow
-/// with the macro environments until they fill the bridge's 64 environment
-/// slots (with a separate 128-slot child cache). This fixture reaches that
-/// plateau by step 64 and holds it as later imports recycle slots. The startup
-/// report counts nothing live after dropping the artifacts it installed.
+/// artifacts and keep the same engines, handles and registry roots. Each
+/// redefinition releases the replaced macro function (light-cljs-381).
+/// Bridge payloads grow until the 64 environment slots fill, alongside the
+/// 128-slot child cache. This fixture settles by edit 64. V8 can keep some
+/// payloads alive through the collection that precedes a `--stats` sample.
+/// The startup report counts nothing live after dropping installed artifacts.
 #[test]
 fn repeated_steps_hold_bounded_engine_state_and_no_artifact() {
     const CACHE_FILL_STEPS: usize = 64;
+    // Under contention a sample held up to 10 extra payloads. Another
+    // collection a few milliseconds later reclaimed them before any new edit.
+    const MAX_DELAYED_PAYLOADS: usize = 10;
     let mut watch = Watch::start("dev-watch-live");
     let cache = watch.dir.join("cache");
     let cache = cache.to_str().unwrap().to_owned();
@@ -2471,22 +2470,12 @@ fn repeated_steps_hold_bounded_engine_state_and_no_artifact() {
         ),
         "{report}"
     );
-    let macros = watch.source("app/macros.cljs");
     // Per step: artifacts, engines, engine handles, bridge payloads and the
     // values the session engine's registry roots.
-    let mut counts = Vec::new();
-    for step in 1..=320 {
-        let edited = macros.replace("~label \": \"", &format!("~label \" {step}: \""));
-        assert_ne!(edited, macros);
-        let (lines, summary) = watch.save("app/macros.cljs", &edited);
-        assert!(lines.is_empty(), "{lines:#?}");
-        assert!(
-            summary.starts_with("light-cljs: recompiled app.macros, app.view in "),
-            "{summary}"
-        );
+    let live_counts = |watch: &mut Watch| {
         let (lines, live) = watch.until("light-cljs: live ");
         assert!(lines.is_empty(), "{lines:#?}");
-        let values = [
+        [
             "artifacts",
             "engines",
             "engine-handles",
@@ -2498,26 +2487,71 @@ fn repeated_steps_hold_bounded_engine_state_and_no_artifact() {
                 .find_map(|field| field.strip_prefix(key)?.strip_prefix('='))
                 .and_then(|value| value.parse::<usize>().ok())
                 .unwrap_or_else(|| panic!("no {key} in {live}"))
-        });
-        counts.push(values);
-    }
-    let [_, engines, handles, _, _] = counts[0];
+        })
+    };
+    let macros = watch.source("app/macros.cljs");
+    let edit_macros = |watch: &mut Watch, step| {
+        let edited = macros.replace("~label \": \"", &format!("~label \" {step}: \""));
+        assert_ne!(edited, macros);
+        let (lines, summary) = watch.save("app/macros.cljs", &edited);
+        assert!(lines.is_empty(), "{lines:#?}");
+        assert!(
+            summary.starts_with("light-cljs: recompiled app.macros, app.view in "),
+            "{summary}"
+        );
+        live_counts(watch)
+    };
+    let main = watch.source("app/main.cljs");
+    // A macro-free edit requests another collection through --stats without
+    // importing another macro environment.
+    let collect = |watch: &mut Watch, checkpoint| {
+        let (lines, summary) = watch.save("app/main.cljs", &format!("{main}\n;; {checkpoint}\n"));
+        assert!(lines.is_empty(), "{lines:#?}");
+        assert!(
+            summary.starts_with("light-cljs: recompiled app.main in "),
+            "{summary}"
+        );
+        live_counts(watch)
+    };
+    let mut counts: Vec<_> = (1..=CACHE_FILL_STEPS)
+        .map(|step| edit_macros(&mut watch, step))
+        .collect();
+    let warmed = collect(&mut watch, "Collect after filling the cache.");
+    counts.extend((CACHE_FILL_STEPS + 1..=320).map(|step| edit_macros(&mut watch, step)));
+    let settled = collect(&mut watch, "Collect after recycling the cache.");
+
+    let [_, engines, handles, _, roots] = counts[0];
     assert!(engines > 0, "{counts:?}");
-    for (step, &[artifacts, ..]) in counts.iter().enumerate() {
-        assert_eq!(artifacts, 0, "step {}: {counts:?}", step + 1);
-    }
-    assert!(
-        counts.iter().all(|c| c[1] == engines && c[2] == handles),
-        "{counts:?}"
-    );
-    // A redefinition releases the function of the macro it replaces, so
-    // the session engine roots as many values after every step.
-    assert!(counts.iter().all(|c| c[4] == counts[0][4]), "{counts:?}");
-    let payloads = counts[CACHE_FILL_STEPS - 1][3];
+    let payloads = warmed[3];
     assert!(payloads > counts[0][3], "the cache did not warm up");
-    for (step, count) in counts.iter().enumerate().skip(CACHE_FILL_STEPS - 1) {
-        assert_eq!(count[3], payloads, "bridge payloads at step {}", step + 1);
+    let ceiling = payloads + MAX_DELAYED_PAYLOADS;
+    for (i, &count) in counts.iter().enumerate() {
+        let step = i + 1;
+        let [
+            artifacts,
+            step_engines,
+            step_handles,
+            step_payloads,
+            step_roots,
+        ] = count;
+        assert_eq!(
+            [artifacts, step_engines, step_handles, step_roots],
+            [0, engines, handles, roots],
+            "artifacts, engines, handles and roots at edit {step}"
+        );
+        assert!(
+            step_payloads <= ceiling,
+            "bridge payloads at edit {step}: {step_payloads} exceeds {ceiling}"
+        );
+        if step >= CACHE_FILL_STEPS {
+            assert!(
+                step_payloads >= payloads,
+                "bridge payloads at edit {step}: {step_payloads} below warm count {payloads}"
+            );
+        }
     }
+    assert_eq!(warmed, [0, engines, handles, payloads, roots]);
+    assert_eq!(settled, warmed, "live counts after the final collection");
 }
 
 #[cfg(light_v8)]
