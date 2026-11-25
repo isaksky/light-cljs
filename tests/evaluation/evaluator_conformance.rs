@@ -715,6 +715,49 @@ fn every_historical_sci_case_has_an_evaluator_disposition() {
 /// nextest.
 const PARTS: usize = 10;
 
+/// QuickJS puts its JavaScript stack before the compiler's definition
+/// location. V8 leaves the location on the first diagnostic line compared
+/// by the corpus. Check the exact location along with the recorded message.
+fn with_v8_macro_location<'a>(id: &str, expected: &'a str) -> std::borrow::Cow<'a, str> {
+    use std::borrow::Cow;
+    if !cfg!(light_v8) {
+        return Cow::Borrowed(expected);
+    }
+    let location = match id {
+        "sci-control-bad-if-let" => "compiler_core_macros.cljs:49:1",
+        "sci-control-bad-if-some" => "compiler_core_macros.cljs:51:1",
+        "sci-control-bad-when-let" => "compiler_core_macros.cljs:53:1",
+        "sci-control-bad-when-some" => "compiler_core_macros.cljs:55:1",
+        "sci-control-cond-odd" => "compiler_core_macros.cljs:60:1",
+        "sci-io-with-in-arity" => "compiler_core_macros.cljs:21:1",
+        "sci-iteration-arity-dotimes" => "compiler_core_macros.cljs:160:1",
+        "sci-iteration-arity-for-missing" => "compiler_sequence_macros.cljs:11:1",
+        "sci-iteration-arity-while" => "compiler_core_macros.cljs:157:1",
+        "sci-control-case-analysis-order"
+        | "sci-control-cond-malformed-analysis-order"
+        | "sci-control-if-not-analysis-order"
+        | "sci-deferred-lazy-macro"
+        | "sci-deferred-lazy-macroexpand-head"
+        | "sci-macro-analysis-effects"
+        | "sci-macro-arity"
+        | "sci-macro-expansion-order"
+        | "sci-macro-function-analysis-once" => "<sci-evaluator>.cljs:1:1",
+        _ => return Cow::Borrowed(expected),
+    };
+    let (diagnostic, rest) = expected
+        .strip_prefix("(diagnostic ")
+        .and_then(|fields| fields.split_once(")\t"))
+        .expect("recorded macro diagnostic and observation fields");
+    let Value::String(mut message) = protocol::value(diagnostic).unwrap() else {
+        panic!("expected a recorded text diagnostic for {id}");
+    };
+    message.extend(format!("; definition {location}").encode_utf16());
+    Cow::Owned(format!(
+        "(diagnostic {})\t{rest}",
+        Value::String(message).wire()
+    ))
+}
+
 /// Runs every `PARTS`-th historical case from `part` through the evaluator and
 /// compares each observation with the one its disposition requires. Striding
 /// spreads the slow families and the deadline-bound lazy-cycle probes over the
@@ -728,10 +771,11 @@ fn execute_dispositions(part: usize) {
         expected,
     } in dispositions().iter().skip(part).step_by(PARTS)
     {
+        let expected = with_v8_macro_location(case.id, expected);
         let actual = evaluator::run(case.id, row[8], case.profile);
         let observed = actual.as_ref().map(evaluator::Observation::fields);
         let matches = observed.as_ref().is_ok_and(|fields| {
-            same_observation(fields, expected) || stack_depth_reconciliation(row, fields)
+            same_observation(fields, &expected) || stack_depth_reconciliation(row, fields)
         });
         if !matches {
             let actual_text = match &observed {
@@ -744,7 +788,7 @@ fn execute_dispositions(part: usize) {
                 case.id,
                 row[8],
                 brief(actual_text),
-                brief(expected),
+                brief(&expected),
                 row[13]
             ));
         }
@@ -752,7 +796,7 @@ fn execute_dispositions(part: usize) {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-// Executes the historical cases in an interactive session, which runs in QuickJS.
+// Executes the historical cases with QuickJS application forms and the build's macro engine.
 #[cfg(feature = "quickjs")]
 row_tests!(execute_dispositions;
     historical_sci_cases_execute_their_dispositions_0(0),
