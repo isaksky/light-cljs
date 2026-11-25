@@ -252,3 +252,32 @@ QuickJS to V8 adds 30.77 MiB (56.2%) at the median, beyond the observed
 ranges. On warm restart all 49 artifacts hit and the watch runs zero
 macro calls. The user must decide whether to accept the cold-watch
 memory increase.
+
+## 6. Clean and interactive caches
+
+The fixture contains `app.main` and its macro provider. Each side runs
+`--compile --reloadable` and `--watch` with the same entry, roots and dev
+output layout. Each mode fills its own initially empty cache and restarts
+against it. Each then starts against the other mode's populated cache.
+
+```sh
+bb benchmarks/remove-quickjs.bb cache "$logs" "$master" "$branch" 10
+bb benchmarks/remove-quickjs.bb summary "$logs/cache.edn"
+```
+
+| Mode and cache | Master wall (s) | Branch wall (s) | Master peak (MiB) | Branch peak (MiB) | Hits / misses on both |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Clean compilation, empty | 0.048 [0.046–0.195] | 0.049 [0.048–0.154] | 43.05 [42.86–44.22] | 42.71 [42.66–43.63] | 0 / 2 |
+| Clean compilation, unchanged | 0.021 [0.020–0.024] | 0.021 [0.021–0.040] | 18.40 [18.30–18.48] | 18.14 [18.02–18.69] | 2 / 0 |
+| Clean compilation, watch cache | 0.049 [0.046–0.051] | 0.048 [0.046–0.053] | 43.01 [42.81–43.83] | 42.76 [42.23–43.52] | 0 / 2 |
+| Watch, empty | 0.085 [0.081–0.093] | 0.048 [0.045–0.053] | 35.91 [35.81–36.17] | 44.82 [44.67–46.00] | 0 / 2 |
+| Watch, unchanged | 0.021 [0.020–0.023] | 0.021 [0.020–0.023] | 18.57 [18.31–18.72] | 18.47 [18.36–18.56] | 2 / 0 |
+| Watch, clean compilation cache | 0.084 [0.083–0.093] | 0.047 [0.045–0.053] | 35.92 [35.84–36.09] | 45.16 [44.75–45.25] | 0 / 2 |
+
+Load was 3.31–3.34 throughout. Warm runs expand zero macros and the
+opposite-mode cache runs expand two, consistent with separate compiler
+identities. On master the interactive key identifies the QuickJS macro
+engine. On the branch the key marks interactive mode independently of the
+engine, so the all-V8 change keeps the two artifact sets separate.
+The watch peak-memory increases on misses have the cold-watch cause
+described above and require the same user decision.
