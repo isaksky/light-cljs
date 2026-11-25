@@ -1465,6 +1465,13 @@ assert.equal(c.firstProtocol(c.list(1), 2), 1);
     ['sample/P/f', 1, function (receiver) { assert.equal(this, receiver); return 1; }],
     ['sample/P/f', 2, function (receiver, x) { assert.equal(this, receiver); return x; }]
   ]);
+  assert.equal(runtime.protocolPredicate(p, 'sample/P', instance, false), true);
+  assert.equal(runtime.protocolPredicate(p, 'sample/alias', instance, false), false);
+  assert.equal(runtime.protocolPredicate(p, 'sample/P', instance, false), true);
+  const inheritor = Object.setPrototypeOf(function () {}, p);
+  assert.equal(runtime.protocolPredicate(inheritor, 'sample/P', instance, false), false);
+  const proxy = new Proxy(p, {get(_target, key) { assert.ok(key === '_' || key === 'object'); }});
+  assert.equal(runtime.protocolPredicate(proxy, 'sample/P', instance, false), false);
   assert.equal(c.satisfies(p, instance), true);
   assert.equal(c.implements(p, instance), true);
   assert.equal(f(instance), 1);
@@ -1477,12 +1484,14 @@ assert.equal(c.firstProtocol(c.list(1), 2), 1);
   assert.equal(f({}), 9);
   assert.equal(c.satisfies(p, {}), true);
   assert.equal(c.implements(p, {}), false);
+  assert.equal(runtime.protocolPredicate(p, 'sample/alias', {}, false), true);
   const redeclared = runtime.protocol('sample/P');
   runtime.protocolMethod('sample/P/f', 'sample/f', [1, 2], true);
   assert.equal(f(instance), 1);
   assert.throws(() => f({}), /No protocol method/);
   assert.equal(c.satisfies(p, {}), true);
   assert.equal(c.satisfies(redeclared, {}), false);
+  assert.equal(runtime.protocolPredicate(Object.freeze(redeclared), 'sample/P', instance, false), true);
   assert.throws(() => f(), /Invalid arity: 0/);
   assert.throws(() => runtime.extendType(42, []), TypeError);
   runtime.extendType('object', [['ILookup', 0, () => true], ['ILookup/-lookup', 2, (_, k) => k]]);

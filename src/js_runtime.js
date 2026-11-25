@@ -11873,20 +11873,20 @@
   function restoreDeclarationPatches(saved) { for (let i = saved.length - 1; i >= 0; i--) saved[i](); }
   //@unit protocolFallback requires: nativeType
   function protocolFallback(protocol, value) { return !!(protocol._ || protocol[nativeType(value)]); }
-  //@unit protocolPredicate requires: demandProtocol, directMethod, nativeType, protocolSentinel,
-  //@ protocolNames, protocolSlot, slotFirst
+  //@unit protocolPredicate requires: ProtocolMarker, demandProtocol, directMethod, nativeType,
+  //@ protocolNames, protocolSentinel, protocolSlot, slotFirst
   function protocolPredicate(protocol, key, value, direct) {
-    // For satisfies?, the marker must agree with both the name and the live protocol.
-    const checkMarker = direct || protocolNames.get(protocol) === key;
     if (slotFirst.on) {
-      if (checkMarker && value != null && value[protocolSlot(key, 0)] === protocolSentinel) return true;
-      if (direct) return false;
-      return !!(protocol._ || protocol[nativeType(value)]);
+      if (value != null) {
+        if (direct) return value[protocolSlot(key, 0)] === protocolSentinel;
+        const marker = ProtocolMarker.slot(protocol, key);
+        if (marker !== undefined && value[marker] === protocolSentinel) return true;
+      }
+      return !direct && !!(protocol._ || protocol[nativeType(value)]);
     }
     demandProtocol(key, value);
-    if (checkMarker && directMethod(value, key, 0)) return true;
-    if (direct) return false;
-    return !!(protocol[nativeType(value)] || protocol._);
+    if ((direct || protocolNames.get(protocol) === key) && directMethod(value, key, 0)) return true;
+    return !direct && !!(protocol[nativeType(value)] || protocol._);
   }
   //@unit implementsProtocol requires: coreProtocolImplementation, directMethod, protocolNames
   function implementsProtocol(protocol, value) {
@@ -13515,6 +13515,23 @@
   const protocolKeys = new WeakMap(), protocolImplementations = new WeakMap();
   //@unit protocolNames
   const protocolNames = new WeakMap(), protocolValues = new Map(), protocolFunctions = new Map(), protocolVariables = new Map(), protocolGetters = new Map();
+  //@unit ProtocolMarker requires: protocolNames, protocolSlot
+  // Use TypeBrand's stamping pattern to cache the name and marker on the
+  // declaration's function. A local alias can hold the same function, so a
+  // marker only counts when the cached name matches the analyzed name.
+  const ProtocolMarker = class extends (function (value) { return value; }) {
+    #name;
+    #slot;
+    constructor(protocol, name) { super(protocol); this.#name = name; }
+    static slot(protocol, key) {
+      if (typeof protocol !== "function") return;
+      if (!(#name in protocol)) {
+        if (protocolNames.get(protocol) !== key) return;
+        new ProtocolMarker(protocol, key);
+      }
+      if (protocol.#name === key) return protocol.#slot ??= protocolSlot(key, 0);
+    }
+  };
   //@unit nativeMethods
   // The implementations `extend-type` gives host types, `object` and
   // `default`, by a protocol method key's text and then the type's name, and
