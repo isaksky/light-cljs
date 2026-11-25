@@ -219,3 +219,36 @@ Wall and peak-memory ranges overlap for every project and jobs setting.
 The longest 800k runs occurred during the unreserved series and remain
 in the reported ranges. Typical runs took 23 s, so both 800k settings
 used ten pairs.
+
+## 5. TodoMVC watch
+
+```sh
+bb benchmarks/remove-quickjs.bb watch "$logs" "$master" "$branch" 10
+bb benchmarks/remove-quickjs.bb summary "$logs/watch.edn"
+```
+
+For each pair the script copies the TodoMVC port into a separate
+directory for each revision. It starts `--watch --stats` once with an
+empty cache and then again with the populated cache and unchanged
+sources. An idle poll leaves the existing build in place, so the
+unchanged rebuild is a warm watch restart. A third warm process changes
+one string in `todomvc.views` and waits for that namespace to recompile.
+Startup time is process launch to the ready line, and edit time is the
+watcher's notification-to-recompile duration. Edit peak memory is
+the process peak through the edit and includes its warm startup.
+The same TodoMVC macro limits apply to both sides, including the raised
+expansion and heap limits in the port configuration. Each process makes
+at most one edit.
+
+| Stage | Master wall (s) | Branch wall (s) | Master peak (MiB) | Branch peak (MiB) | Load range |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Start, empty cache | 0.317 [0.309–0.366] | 0.254 [0.221–0.319] | 54.73 [53.83–55.38] | 85.50 [83.39–89.27] | 3.52–3.72 |
+| Rebuild, nothing changed | 0.070 [0.068–0.079] | 0.071 [0.067–0.133] | 37.22 [36.83–37.64] | 37.08 [36.55–37.66] | 3.52–3.72 |
+| One-file edit | 0.003 [0.002–0.003] | 0.003 [0.002–0.003] | 38.18 [37.88–38.80] | 37.83 [37.58–38.45] | 3.52–3.72 |
+
+The cold watch compiles 49 namespaces in the interactive macro engine
+and runs 2,782 macro calls on both revisions. Moving that work from
+QuickJS to V8 adds 30.77 MiB (56.2%) at the median, beyond the observed
+ranges. On warm restart all 49 artifacts hit and the watch runs zero
+macro calls. The user must decide whether to accept the cold-watch
+memory increase.
