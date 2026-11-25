@@ -665,3 +665,34 @@ fn same_build_copies_honor_seq_overrides() {
         );
     }
 }
+
+/// light-cljs-1122 (Change 1): two copies of the same build share keyed kinds
+/// and protocol slots; `first` and `LazySeq`/`ChunkedCons` fast paths must check
+/// slot identity against this runtime's built-in slots so `specify!` overrides
+/// in copy 1 are honored when read in copy 2.
+#[test]
+fn same_build_copies_honor_first_overrides() {
+    let source = "(if (exists? js/sharedFirstVals)
+                    (let [f first
+                          [c cc-ac cc is cs ls-f ls-s ls-c] js/sharedFirstVals]
+                      (pr-str [(f c) (f cc-ac) (f cc) (f is) (f cs) (f ls-f) (f ls-s) (f ls-c)]))
+                    (let [c (specify! (cons 1 '(2)) ISeq (-first [_] :c))
+                          ac (specify! (array-chunk #js [1 2]) IIndexed (-nth [_ _] :ac))
+                          cc-ac (chunk-cons ac nil)
+                          cc (specify! (chunk-cons (array-chunk #js [1 2]) nil) ISeq (-first [_] :cc))
+                          is (specify! (array-seq #js [1 2]) ISeq (-first [_] :is))
+                          cs (specify! (seq (vec (range 70))) ISeq (-first [_] :cs))
+                          ls-f (specify! (lazy-seq (cons 1 nil)) ISeq (-first [_] :ls-f))
+                          ls-s (specify! (lazy-seq (cons 1 nil)) ISeqable (-seq [_] nil))
+                          ls-c (lazy-seq c)]
+                      (set! js/sharedFirstVals #js [c cc-ac cc is cs ls-f ls-s ls-c])
+                      :first))";
+    for level in OptimizationLevel::ALL {
+        let js = release(source, level);
+        assert_eq!(
+            execute(&format!("console.log(String({js})); console.log({js});")),
+            ":first\n[:c :ac :cc :is :cs :ls-f nil :c]\n",
+            "at {level}"
+        );
+    }
+}

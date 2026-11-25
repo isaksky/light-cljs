@@ -2135,16 +2135,20 @@
     if (item.done) return null;
     return new IteratorSeqCell(item.value, iterator);
   }
-  //@unit first requires: firstOf, slotFirst
+  //@unit first requires: cellFirstSlot, emptyFirstSlot, firstOf, slotFirst, viewFirstSlot
   function first(value) {
-    if (value != null && slotFirst.on && value.cljs$lang$kind$$LKEY !== undefined) {
+    if (value == null) return null;
+    if (slotFirst.on && value.cljs$lang$kind$$LKEY !== undefined) {
       const method = value.cljs$core$ISeq$_first$arity$1$LKEY;
+      if (method === cellFirstSlot) return value.first$LKEY;
+      if (method === viewFirstSlot) { const arr = value.arr$LKEY, i = value.i$LKEY; return i < arr.length ? arr[i] : null; }
+      if (method === emptyFirstSlot) return null;
       if (method) return method.call(value, value);
     }
     return firstOf(value);
   }
-  //@unit firstOf requires: hostExt, methodKeys, ownSeqs, protocolHooks, protocolSentinel, seq,
-  //@ slotFirst, unsupported
+  //@unit firstOf requires: cellFirstSlot, emptyFirstSlot, hostExt, methodKeys, ownSeqs,
+  //@ protocolHooks, protocolSentinel, seq, slotFirst, unsupported, viewFirstSlot
   // The first item of a collection without `-first` is its seq's, read
   // from the seq's slot (upstream's `(-first (seq coll))`).
   function firstOf(value) {
@@ -2156,12 +2160,17 @@
       && value.cljs$core$ISeqable$$LKEY !== protocolSentinel) {
       return value.length ? value[0] : null;
     }
-    const own = protocolHooks.programMethod?.(value, methodKeys[48], 1, false, true);
-    if (own) return own.call(value, value);
+    if (protocolHooks.programMethod && (!slotFirst.on || hostExt.seq || !(value.cljs$lang$kind$$LKEY < 64) || value.cljs$core$ISeq$_first$arity$1$LKEY !== undefined)) {
+      const own = protocolHooks.programMethod(value, methodKeys[48], 1, false, true);
+      if (own) return own.call(value, value);
+    }
     const s = seq(value);
     if (s == null) return null;
     if (ownSeqs.on) return protocolHooks.firstSeq(s);
     const method = s.cljs$core$ISeq$_first$arity$1$LKEY || Object.getPrototypeOf(s)?.cljs$core$ISeq$_first$arity$1$LKEY || protocolHooks.builtin?.(s, methodKeys[48], 1);
+    if (method === cellFirstSlot) return s.first$LKEY;
+    if (method === viewFirstSlot) { const arr = s.arr$LKEY, i = s.i$LKEY; return i < arr.length ? arr[i] : null; }
+    if (method === emptyFirstSlot) return null;
     if (method) return method.call(s, s);
     return unsupported("ISeq.-first");
   }
@@ -7618,13 +7627,9 @@
   //@unit IndexedSeqValue.count effect: IndexedSeqValue when: count, countOf, countSite, countSlot
   //@ requires: IndexedSeqValue, viewCountSlot
   IndexedSeqValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = viewCountSlot;
-  //@unit ChunkedSeqValue.first effect: ChunkedSeqValue when: first, firstOf, firstSite requires: builtinSlot,
-  //@ ChunkedSeqValue
-  ChunkedSeqValue.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot(function (self) {
-    const arr = self.arr$LKEY;
-    const i = self.i$LKEY;
-    return i < arr.length ? arr[i] : null;
-  });
+  //@unit ChunkedSeqValue.first effect: ChunkedSeqValue when: first, firstOf, firstSite requires: ChunkedSeqValue,
+  //@ viewFirstSlot
+  ChunkedSeqValue.prototype.cljs$core$ISeq$_first$arity$1$LKEY = viewFirstSlot;
   //@unit ChunkedSeqValue.rest effect: ChunkedSeqValue when: rest, restOf, restSite requires: builtinSlot,
   //@ ChunkedSeqCell, ChunkedSeqValue, chunkedVectorRest, emptyList, restSeq
   ChunkedSeqValue.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = builtinSlot(function (self) {
@@ -7639,12 +7644,9 @@
     }
     return chunkedVectorRest(self);
   });
-  //@unit ChunkedSeqValue.seq effect: ChunkedSeqValue when: seq, seqOf, seqSite requires: builtinSlot,
-  //@ ChunkedSeqValue
-  ChunkedSeqValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
-    const arr = self.arr$LKEY;
-    return self.i$LKEY < arr.length ? self : null;
-  });
+  //@unit ChunkedSeqValue.seq effect: ChunkedSeqValue when: seq, seqOf, seqSite requires: ChunkedSeqValue,
+  //@ viewSeqSlot
+  ChunkedSeqValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = viewSeqSlot;
   //@unit ChunkedSeqValue.next effect: ChunkedSeqValue when: next, nextSite requires: builtinSlot,
   //@ ChunkedSeqCell, ChunkedSeqValue, chunkedVectorRest, fieldComparisons, hostExt, ownSeqs, rest,
   //@ seq, slotFirst
@@ -7991,7 +7993,7 @@
   //@unit emptySeqSlot requires: builtinSlot
   const emptySeqSlot = builtinSlot(function (self) { return null; });
   //@unit LazySeq.seqSlot effect: LazySeq when: seq, seqOf, seqSite requires: builtinSlot,
-  //@ emptySeqSlot, lazyRealized, LazySeq, selfSeqSlot, seq, slotFirst
+  //@ emptySeqSlot, lazyRealized, LazySeq, selfSeqSlot, seq, slotFirst, viewSeqSlot
   LazySeq.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
     const s = lazyRealized(self);
     if (s == null) return null;
@@ -7999,15 +8001,44 @@
       const method = s.cljs$core$ISeqable$_seq$arity$1$LKEY;
       if (method === selfSeqSlot) return s;
       if (method === emptySeqSlot) return null;
+      if (method === viewSeqSlot) return s.i$LKEY < s.arr$LKEY.length ? s : null;
     }
     return seq(s);
   });
   //@unit LazySeq.firstSlot effect: LazySeq when: first, firstOf, firstSite requires: builtinSlot,
-  //@ first, LazySeq, seq
-  LazySeq.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot(function (self) {
+  //@ cellFirstSlot, emptyFirstSlot, emptySeqSlot, first, firstOf, lazyRealized, LazySeq,
+  //@ selfSeqSlot, seq, seqOf, slotFirst, viewFirstSlot, viewSeqSlot
+  LazySeq.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot((ownSeq => function (self) {
+    if (slotFirst.on) {
+      const seqMethod = self.cljs$core$ISeqable$_seq$arity$1$LKEY;
+      if (seqMethod === ownSeq) {
+        const s = lazyRealized(self);
+        if (s == null) return null;
+        if (s.cljs$lang$kind$$LKEY !== undefined) {
+          const sm = s.cljs$core$ISeqable$_seq$arity$1$LKEY;
+          if (sm === selfSeqSlot || sm === viewSeqSlot) {
+            const fm = s.cljs$core$ISeq$_first$arity$1$LKEY;
+            if (fm === cellFirstSlot) return s.first$LKEY;
+            if (fm === viewFirstSlot) { const arr = s.arr$LKEY, i = s.i$LKEY; return i < arr.length ? arr[i] : null; }
+            return fm ? fm.call(s, s) : firstOf(s);
+          }
+          if (sm === emptySeqSlot) {
+            const fm = s.cljs$core$ISeq$_first$arity$1$LKEY;
+            if (fm === emptyFirstSlot) return null;
+            return fm ? fm.call(s, s) : firstOf(s);
+          }
+          if (sm) sm.call(s, s); else seqOf(s);
+        } else {
+          seqOf(s);
+        }
+        return first(self.s$LKEY);
+      }
+      if (seqMethod) seqMethod.call(self, self); else seqOf(self);
+      return first(self.s$LKEY);
+    }
     seq(self);
     return first(self.s$LKEY);
-  });
+  })(LazySeq.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY));
   //@unit LazySeq.restSlot effect: LazySeq when: rest, restOf, restSite requires: builtinSlot,
   //@ LazySeq, rest, seq
   LazySeq.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = builtinSlot(function (self) {
@@ -8020,9 +8051,20 @@
     seq(self);
     return next(self.s$LKEY);
   });
-  //@unit ChunkedCons.first effect: ChunkedCons when: first, firstOf, firstSite requires: builtinSlot,
-  //@ ChunkedCons, chunkedConsFirst
+  //@unit ChunkedCons.first effect: ChunkedCons when: first, firstOf, firstSite requires: arrayChunkNth2Slot,
+  //@ builtinSlot, ChunkedCons, chunkedConsFirst, nthOf, slotFirst
   ChunkedCons.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot(function (self) {
+    if (slotFirst.on) {
+      const chunk = self.chunk$LKEY;
+      if (chunk != null && chunk.cljs$lang$kind$$LKEY !== undefined) {
+        const nthMethod = chunk.cljs$core$IIndexed$_nth$arity$2$LKEY;
+        if (nthMethod === arrayChunkNth2Slot && "arr$LKEY" in chunk) {
+          return chunk.step$LKEY !== null ? chunk.first$LKEY + 0 * chunk.step$LKEY : chunk.arr$LKEY?.[chunk.off$LKEY];
+        }
+        if (nthMethod) return nthMethod.call(chunk, chunk, 0);
+        return nthOf(chunk, 0, undefined, 2);
+      }
+    }
     return chunkedConsFirst(self);
   });
   //@unit ChunkedCons.rest effect: ChunkedCons when: rest, restOf, restSite requires: builtinSlot,
@@ -8083,11 +8125,13 @@
   arrayChunk.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot(function (self) {
     return self.step$LKEY !== null ? self.first$LKEY : firstOf(self);
   });
-  //@unit arrayChunk.nthSlot effect: arrayChunk when: mapConj, nth, nthOf, nthSite, nthSite3,
-  //@ ownEntryItems, treeMapConjSlot requires: arrayChunk, builtinSlot, chunkNth, missing
-  arrayChunk.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = builtinSlot(function (self, index) {
+  //@unit arrayChunkNth2Slot requires: builtinSlot, chunkNth, missing
+  const arrayChunkNth2Slot = builtinSlot(function (self, index) {
     return chunkNth(self, index, missing);
   });
+  //@unit arrayChunk.nthSlot effect: arrayChunk when: mapConj, nth, nthOf, nthSite, nthSite3,
+  //@ ownEntryItems, treeMapConjSlot requires: arrayChunk, arrayChunkNth2Slot, builtinSlot, chunkNth
+  arrayChunk.prototype.cljs$core$IIndexed$_nth$arity$2$LKEY = arrayChunkNth2Slot;
   arrayChunk.prototype.cljs$core$IIndexed$_nth$arity$3$LKEY = builtinSlot(function (self, index, notFound) {
     return chunkNth(self, index, notFound);
   });
@@ -8116,15 +8160,15 @@
   // either.
   //@unit cellFirstSlot requires: builtinSlot
   const cellFirstSlot = builtinSlot(function (self) { return self.first$LKEY; });
+  //@unit emptyFirstSlot requires: builtinSlot
+  const emptyFirstSlot = builtinSlot(function (self) { return null; });
   //@unit cellRestSlot requires: builtinSlot, emptyList
   const cellRestSlot = builtinSlot(function (self) { return self.rest$LKEY ?? emptyList; });
   //@unit cellNextSlot requires: builtinSlot, rest, seq
   const cellNextSlot = builtinSlot(function (self) { return seq(rest(self)); });
-  //@unit Cons.firstSlot effect: Cons when: first, firstOf, firstSite requires: builtinSlot, Cons
+  //@unit Cons.firstSlot effect: Cons when: first, firstOf, firstSite requires: cellFirstSlot, Cons
   // A cons's slots of its own, which only conses reach.
-  Cons.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot(function (self) {
-    return self.first$LKEY;
-  });
+  Cons.prototype.cljs$core$ISeq$_first$arity$1$LKEY = cellFirstSlot;
   //@unit Cons.restSlot effect: Cons when: rest, restOf, restSite requires: builtinSlot, Cons,
   //@ emptyList
   Cons.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = builtinSlot(function (self) {
@@ -8136,13 +8180,11 @@
   });
   //@unit Cons.seqSlot effect: Cons when: seq, seqOf, seqSite requires: Cons, selfSeqSlot
   Cons.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = selfSeqSlot;
-  //@unit ListValue.firstSlot effect: ListValue when: first, firstOf, firstSite requires: builtinSlot,
+  //@unit ListValue.firstSlot effect: ListValue when: first, firstOf, firstSite requires: cellFirstSlot,
   //@ ListValue
   // A list of count 0 is empty unless a public constructor gave it the
   // count (`(List. nil 1 nil 0 nil)`), as the operations read it.
-  ListValue.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot(function (self) {
-    return self.first$LKEY;
-  });
+  ListValue.prototype.cljs$core$ISeq$_first$arity$1$LKEY = cellFirstSlot;
   //@unit ListValue.restSlot effect: ListValue when: rest, restOf, restSite requires: builtinSlot,
   //@ emptyList, ListValue
   ListValue.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = builtinSlot(function (self) {
@@ -8162,11 +8204,9 @@
   ListValue.prototype.cljs$core$ICounted$_count$arity$1$LKEY = builtinSlot(function (self) {
     return self.count$LKEY;
   });
-  //@unit EmptyListValue.firstSlot effect: EmptyListValue when: first, firstOf, firstSite requires: builtinSlot,
+  //@unit EmptyListValue.firstSlot effect: EmptyListValue when: first, firstOf, firstSite requires: emptyFirstSlot,
   //@ EmptyListValue
-  EmptyListValue.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot(function (self) {
-    return null;
-  });
+  EmptyListValue.prototype.cljs$core$ISeq$_first$arity$1$LKEY = emptyFirstSlot;
   //@unit EmptyListValue.restSlot effect: EmptyListValue when: rest, restOf, restSite requires: builtinSlot,
   //@ emptyList, EmptyListValue
   EmptyListValue.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = builtinSlot(function (self) {
