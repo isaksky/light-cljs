@@ -62,6 +62,21 @@ fn text_units(
     text.write_v2(scope, 0, &mut result, v8::WriteFlags::empty());
     Ok(result)
 }
+
+pub(super) fn rust_string(
+    scope: &PinScope<'_, '_>,
+    value: Local<'_, v8::Value>,
+) -> Result<String, EvalError> {
+    let text: Local<v8::String> = value.try_into().map_err(|_| error("Expected string"))?;
+    if text.is_onebyte() {
+        return Ok(text.to_rust_string_lossy(scope));
+    }
+    let mut units = vec![0; text.length()];
+    text.write_v2(scope, 0, &mut units, v8::WriteFlags::empty());
+    String::from_utf16(&units)
+        .map_err(|_| error("string is not valid UTF-16: it has a lone surrogate"))
+}
+
 pub(crate) fn put<'s>(
     scope: &mut PinScope<'s, '_>,
     array: Local<'s, v8::Array>,

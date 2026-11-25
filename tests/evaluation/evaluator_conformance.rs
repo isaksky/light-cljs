@@ -32,6 +32,34 @@ fn public_macro_host_creates_a_v8_heap_with_host_settings() {
     assert_eq!(evaluator.print(value).unwrap(), "true");
 }
 
+#[cfg(light_v8)]
+#[test]
+fn public_evaluator_string_callbacks_preserve_text_and_own_failures() {
+    use light_cljs::evaluator::{EvalError, Evaluator};
+
+    let evaluator = Evaluator::new(Default::default()).unwrap();
+    evaluator
+        .install_callback("echo", |control, text| {
+            control.poll()?;
+            Ok(text)
+        })
+        .unwrap();
+    let value = evaluator.evaluate_js(r#"echo("\uD83D\uDE00")"#).unwrap();
+    assert_eq!(evaluator.string(value).unwrap(), "😀");
+    let value = evaluator
+        .evaluate_js(r#"(() => { try { echo("\uD800"); return false; } catch (e) { return e instanceof TypeError; } })()"#)
+        .unwrap();
+    assert_eq!(evaluator.print(value).unwrap(), "true");
+    evaluator
+        .install_callback("fail", |_, _| Err(EvalError("callback failure".into())))
+        .unwrap();
+    let error = evaluator
+        .evaluate_js("(() => { try { fail(''); } catch (_) {} return 42; })()")
+        .unwrap_err();
+    assert_eq!(error.0, "callback failure");
+    assert!(evaluator.evaluate_js("42").is_err());
+}
+
 fn adapted_source(source: &str) -> String {
     let mut adapted = source
         .replace("(catch Exception ", "(catch :default ")

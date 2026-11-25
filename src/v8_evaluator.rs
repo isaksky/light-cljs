@@ -1398,16 +1398,18 @@ fn string_service(
         scope.terminate_execution();
         return;
     };
-    let request = args.get(0);
-    if !request.is_string() {
-        if let Some(message) = v8::String::new(scope, "string callback expects a string") {
-            let error = v8::Exception::type_error(scope, message);
-            scope.throw_exception(error);
-        } else {
-            scope.terminate_execution();
+    let request = match bridge::rust_string(scope, args.get(0)) {
+        Ok(request) => request,
+        Err(error) => {
+            if let Some(message) = v8::String::new(scope, &error.0) {
+                let error = v8::Exception::type_error(scope, message);
+                scope.throw_exception(error);
+            } else {
+                scope.terminate_execution();
+            }
+            return;
         }
-        return;
-    }
+    };
     let output = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let index = bridge::number(scope, args.data())? as usize;
         let callback = state
@@ -1417,7 +1419,7 @@ fn string_service(
             .cloned()
             .ok_or_else(|| bridge::error("unknown string callback"))?;
         state.control.poll()?;
-        let answer = callback(state.control.clone(), request.to_rust_string_lossy(scope));
+        let answer = callback(state.control.clone(), request);
         state.control.poll()?;
         answer
     }));

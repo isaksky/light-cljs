@@ -213,16 +213,8 @@ impl Active<'_, '_, '_> {
         })
     }
     fn string(&self, id: ValueId) -> Result<String, EvalError> {
-        // Rust text has no lone surrogates: reject them, as QuickJS does,
-        // rather than replace them.
         self.service("string", &[self.of(id)?], |scope, value| {
-            let text: Local<v8::String> = value
-                .try_into()
-                .map_err(|_| bridge::error("Expected string"))?;
-            let mut units = vec![0; text.length()];
-            text.write_v2(scope, 0, &mut units, v8::WriteFlags::empty());
-            String::from_utf16(&units)
-                .map_err(|_| bridge::error("string is not valid UTF-16: it has a lone surrogate"))
+            bridge::rust_string(scope, value)
         })
     }
     fn print(&self, id: ValueId) -> Result<String, EvalError> {

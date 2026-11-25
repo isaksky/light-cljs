@@ -132,7 +132,7 @@ fn abandoned_prefixes_and_reducer_cycles_are_collected_in_both_engines() {
       }
       gc(); return 42;
     })()"#;
-    let e = Evaluator::new(EvaluatorOptions {
+    let e = light_cljs::evaluator::QuickJsEvaluator::new(EvaluatorOptions {
         memory_limit: 8 * 1024 * 1024,
         timeout: std::time::Duration::from_secs(60),
         ..EvaluatorOptions::default()

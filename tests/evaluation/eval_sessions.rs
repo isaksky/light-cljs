@@ -357,7 +357,7 @@ fn cancellation_and_limits_require_reset_but_host_compilation_recovers() {
     assert_eq!(printed(&mut s, "42"), "42");
     drop(s);
 
-    // The separate compiler check runs its output in QuickJS explicitly.
+    // The separate compiler check runs its output in a fresh embedded heap.
     let mut host = light_cljs::MacroHost::new();
     for _ in 0..2 {
         let source = "(def hits (atom 0)) (defn next-id [] (swap! hits inc)) (defmacro id [] (next-id)) [(id) (id) @hits]";

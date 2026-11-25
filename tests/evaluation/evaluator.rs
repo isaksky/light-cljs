@@ -1,7 +1,7 @@
 use light_cljs::{
     MacroHost, analyze,
     emitter::emit_js_unit,
-    evaluator::{Evaluator, EvaluatorOptions},
+    evaluator::{Evaluator, EvaluatorOptions, QuickJsEvaluator},
     parse,
 };
 use std::{
@@ -29,7 +29,7 @@ const MAP_SLOTS_SOURCE: &str = "(let [pub (cljs.core/PersistentArrayMap. nil 2 (
    (get (assoc {:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8} :i 9) :i) (persistent! (assoc! (transient {:a 1}) :b 2))])";
 
 #[test]
-fn compiler_units_execute_with_identical_expected_results_in_quickjs_and_node() {
+fn compiler_units_execute_with_identical_expected_results_in_embedded_engine_and_node() {
     let cases = [
         ("(+ 20 22)", "42"),
         (COLLECTION_SOURCE, "[{:a 1} #{3 2} 9]"),
@@ -58,7 +58,7 @@ fn compiler_units_execute_with_identical_expected_results_in_quickjs_and_node() 
     for (source, expected) in cases {
         let p = program(source);
         let id = evaluator.evaluate(&p).unwrap();
-        assert_eq!(evaluator.print(id).unwrap(), expected, "QuickJS: {source}");
+        assert_eq!(evaluator.print(id).unwrap(), expected, "embedded: {source}");
         let script = format!(
             "const rt = {}; console.log(rt.core.prStr(({})(rt)));",
             light_cljs::evaluator::RUNTIME_SOURCE,
@@ -92,7 +92,7 @@ fn complete_collection_fixture_preserves_typed_values_and_printing_in_both_engin
         ))
         .unwrap();
     let observation = evaluator.call(observe, &[value]).unwrap();
-    assert_eq!(evaluator.string(observation).unwrap(), expected, "QuickJS");
+    assert_eq!(evaluator.string(observation).unwrap(), expected, "embedded");
     let script = format!(
         "const rt = {}; console.log(({})(rt.inspect, rt.core.prStr, ({})(rt)));",
         light_cljs::evaluator::RUNTIME_SOURCE,
@@ -126,7 +126,7 @@ fn compile_time_inspect_tests_the_stamp_before_the_keyed_kind() {
     let expected = r#"[null,[],{"kind":"vector","items":[1,2]},"[1 2]"]"#;
     let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
     let observation = evaluator.evaluate_js(&format!("({probe})(rt)")).unwrap();
-    assert_eq!(evaluator.string(observation).unwrap(), expected, "QuickJS");
+    assert_eq!(evaluator.string(observation).unwrap(), expected, "embedded");
     let script = format!(
         "const rt = {}; console.log(({probe})(rt));",
         light_cljs::evaluator::RUNTIME_SOURCE
@@ -224,11 +224,10 @@ fn deadline_allocation_and_panics_produce_owned_failures() {
     .unwrap();
     std::thread::sleep(Duration::from_millis(110));
     assert!(e.evaluate_js("42").unwrap_err().0.contains("deadline"));
-    // A heap the runtime loads in (5.30 MB at its peak since light-cljs-1014,
-    // just over 6 MiB since light-cljs-1108/1109/1110) and the million objects
-    // below exceed.
+    // The runtime starts in these heaps, but the million objects below exceed
+    // the limit. V8 requires at least 16 MiB at startup.
     let e = Evaluator::new(EvaluatorOptions {
-        memory_limit: 8 * 1024 * 1024,
+        memory_limit: if cfg!(light_v8) { 16 << 20 } else { 8 << 20 },
         ..Default::default()
     })
     .unwrap();
@@ -242,11 +241,12 @@ fn deadline_allocation_and_panics_produce_owned_failures() {
     );
 }
 #[test]
-fn clean_sessions_drop_cycles_callbacks_and_mutable_roots() {
-    let host = MacroHost::new();
+fn clean_quickjs_heaps_drop_cycles_callbacks_and_mutable_roots() {
+    // This checks byte-exact QuickJS allocator usage at startup.
+    let options = EvaluatorOptions::default();
     let mut baseline = None;
     for _ in 0..30 {
-        let e = host.new_evaluator().unwrap();
+        let e = QuickJsEvaluator::new(options.clone()).unwrap();
         let bytes = e.memory_usage_bytes();
         if let Some(baseline) = baseline {
             assert_eq!(bytes, baseline);
@@ -372,7 +372,7 @@ fn wide_radix_literals_round_once_in_applications_and_macro_arguments() {
 }
 
 #[test]
-fn quoted_javascript_macro_literals_execute_in_fresh_quickjs_and_node_heaps() {
+fn quoted_javascript_macro_literals_execute_in_fresh_embedded_and_node_heaps() {
     let cases = [
         ("(defmacro m [] '#js []) (alength (m))", "0"),
         // Keep the original failure path through the generated let binding.
@@ -407,7 +407,7 @@ fn quoted_javascript_macro_literals_execute_in_fresh_quickjs_and_node_heaps() {
             assert_eq!(
                 evaluator.print(evaluator.evaluate(&p).unwrap()).unwrap(),
                 expected,
-                "QuickJS: {source}"
+                "embedded: {source}"
             );
             let script = format!(
                 "const rt = {}; console.log(rt.core.prStr(({})(rt)));",
@@ -436,7 +436,7 @@ fn quickjs_sessions_brand_class_values_with_a_weak_set() {
     // runtime brands it with one `WeakSet` entry (`stamp`,
     // docs/value-layout.md, section 4) and writes no WeakMap entry, where it
     // stored its payload with one.
-    let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
+    let e = QuickJsEvaluator::new(EvaluatorOptions::default()).unwrap();
     let writes = e
         .evaluate_unit(
             "rt => { const set = WeakMap.prototype.set, add = WeakSet.prototype.add; let writes = 0, adds = 0; \

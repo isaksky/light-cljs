@@ -14,7 +14,7 @@ license = "MIT AND EPL-1.0"
 exclude = ["vendor/rquickjs-sys", "playground/crate"]
 resolver = "3"
 
-# QuickJS is the default interactive and data-reader engine.
+# QuickJS is available as an alternate native engine.
 # WebAssembly builds leave it out: their
 # embedder supplies the engine (`host_evaluator::ScriptHost`, light-cljs-357).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -40,8 +40,8 @@ quickjs = ["dep:rquickjs"]
 # Test-only scheduler perturbation in optimized builds of large projects.
 # Ordinary release builds omit it; no engine or production default changes.
 scheduling-stress = []
-# Native clean compilations use V8; interactive sessions use QuickJS, and wasm
-# embeds no engine (light-cljs-357).
+# Use V8 for clean compilations, interactive sessions and the public Evaluator.
+# WebAssembly embeds no engine (light-cljs-357).
 v8-macros = ["dep:v8"]
 # Benchmark-only allocation instrumentation, absent from normal timing runs.
 count-allocations = []
