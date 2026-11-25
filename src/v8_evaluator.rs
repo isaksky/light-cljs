@@ -565,7 +565,7 @@ impl V8Evaluator {
                 sweeping_support: v8::cppgc::SweepingType::Atomic,
             },
         );
-        let buffers = buffers::Budget::new(options.memory_limit, control.clone(), pool);
+        let buffers = buffers::Budget::new(options.memory_limit, control.clone(), pool)?;
         // V8 reserves its code range from the heap limit, which must be
         // page aligned: a build's share of the memory limit need not be.
         let heap_limit =

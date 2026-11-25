@@ -1584,7 +1584,11 @@ impl MacroHost {
             crate::compiler_bootstrap::prepare(self).map_err(crate::evaluator::EvalError)?;
         }
         catalog
-            .initialize_resources(&self.evaluator_options, isolates, false)
+            .initialize_resources(
+                &self.evaluator_options,
+                isolates,
+                session.reserves_v8_worker_shares(),
+            )
             .cloned()
             .map(Some)
     }
@@ -4020,11 +4024,11 @@ mod compiler_default_reader_tests {
 
     #[cfg(light_v8)]
     #[test]
-    fn an_unstarted_pool_leaves_memory_to_the_coordinator() {
+    fn a_grown_coordinator_keeps_all_planned_worker_engines() {
         use crate::{compilation_session::PoolEngines, scheduler::Slots};
 
         let mut host = MacroHost::new();
-        host.evaluator_options.memory_limit = 192 << 20;
+        host.evaluator_options.memory_limit = 256 << 20;
         host.begin_compilation();
         let session = host.session_handle().unwrap();
         session.plan_v8_pool(3);
@@ -4034,8 +4038,11 @@ mod compiler_default_reader_tests {
         let buffer = coordinator
             .evaluate_js("new ArrayBuffer(100 * 1024 * 1024)")
             .unwrap();
-        // A later cache miss can start the pool, with room for only one
-        // worker engine while the coordinator retains this allocation.
+        assert!(coordinator.headroom_held() >= 36 << 20);
+        // Even with the unit pool deferred, this allocation must leave the
+        // planned worker shares available for a later cache miss.
+        let resources = session.shared().resources().unwrap();
+        let remaining = resources.memory.headroom();
         session
             .start_pool(
                 Slots::new(3).unwrap(),
@@ -4045,9 +4052,87 @@ mod compiler_default_reader_tests {
                 Default::default(),
             )
             .unwrap();
-        assert_eq!(session.pool_policy().unwrap().engine_workers, 1);
+        assert_eq!(session.pool_policy().unwrap().engine_workers, 2);
+        assert_eq!(resources.memory.headroom(), remaining);
+        assert!(remaining < 28 << 20);
         coordinator.release(buffer).unwrap();
         session.finish_pool();
+    }
+
+    #[cfg(light_v8)]
+    #[test]
+    fn a_fully_cached_build_can_expand_a_large_restored_macro_on_its_coordinator() {
+        use crate::{
+            compile_cache::CacheOptions, compile_stats::CompileStats,
+            compiler::analyze_namespace_entry_cached, compiler_data::DataBuilder, scheduler::Slots,
+        };
+
+        let root = std::env::temp_dir().join(format!(
+            "light-cljs-cached-coordinator-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(
+            root.join("main.cljs"),
+            "(ns main)
+             (defmacro allocate [] (.-byteLength (js/ArrayBuffer. (* 100 1024 1024))))
+             (js/console.log (allocate))",
+        )
+        .unwrap();
+        let cache = CacheOptions {
+            dir: root.join("cache"),
+            ..Default::default()
+        };
+        let compile = |host: &mut MacroHost, jobs, stats: &mut CompileStats| {
+            host.evaluator_options.memory_limit = 192 << 20;
+            analyze_namespace_entry_cached(
+                "main",
+                std::slice::from_ref(&root),
+                host,
+                Default::default(),
+                &mut Vec::new(),
+                &cache,
+                Some(stats),
+                Slots::new(jobs).unwrap(),
+            )
+            .unwrap()
+            .0
+        };
+        let mut stats = CompileStats::default();
+        let cold = compile(&mut MacroHost::new(), 1, &mut stats);
+        assert_eq!(stats.macro_calls, 2);
+        let mut host = MacroHost::new();
+        let warm = compile(&mut host, 3, &mut stats);
+        std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(crate::emit_js(&warm), crate::emit_js(&cold));
+        assert_eq!(stats.install.unwrap().installed, ["main"]);
+        assert_eq!(stats.deferred_units.pool_workers, 0);
+        assert_eq!(stats.macro_calls, 0);
+        assert!(host.engine.bootstrap.is_none());
+
+        // Artifact installation leaves the macro unevaluated. Exercise the
+        // restored declaration on the same coordinator and in the same session.
+        let call = host
+            .read_compiler_form(&Source::new("main.cljs", "(allocate)"))
+            .unwrap()
+            .unwrap();
+        let result = host
+            .expand_source_javascript(
+                "main",
+                "allocate",
+                &call,
+                &DataBuilder.map(&[]).unwrap(),
+                None,
+            )
+            .unwrap();
+        assert!(matches!(
+            result.data().kind(),
+            DatumKind::Integer(104_857_600) | DatumKind::Double(104_857_600.0)
+        ));
+        let session = host.session_handle().unwrap();
+        assert!(session.pool_policy().is_none());
+        let coordinator = host.engine.bootstrap.as_ref().unwrap();
+        assert!(coordinator.evaluator.headroom_held() >= 36 << 20);
     }
 
     #[cfg(light_v8)]

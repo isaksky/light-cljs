@@ -333,10 +333,9 @@ impl ExecutionControl {
 
 /// The macro memory limit of one build. The coordinator and its workers
 /// have base shares and can grow into the shared headroom, which they give
-/// back on destruction. Before the worker pool starts, the coordinator can
-/// use unassigned worker shares as headroom. Starting the pool reserves as
-/// many worker shares as still fit. Parallel V8 readers have separate
-/// startup allowances and grow into this same headroom.
+/// back on destruction. Worker shares stay reserved while the pool can
+/// still start. Parallel V8 readers have their own startup allowances and
+/// grow into the macro isolates' headroom.
 #[derive(Debug)]
 #[cfg_attr(not(any(light_v8, light_quickjs)), allow(dead_code))]
 pub(crate) struct MemoryPool {
@@ -345,7 +344,7 @@ pub(crate) struct MemoryPool {
     keep: usize,
     headroom: std::sync::atomic::AtomicUsize,
     #[cfg(light_v8)]
-    reserved_workers: std::sync::OnceLock<usize>,
+    reader_base_headroom: std::sync::atomic::AtomicUsize,
 }
 #[cfg_attr(not(any(light_v8, light_quickjs)), allow(dead_code))]
 impl MemoryPool {
@@ -382,28 +381,24 @@ impl MemoryPool {
                 limit - main
             }),
             #[cfg(light_v8)]
-            reserved_workers: if reserve_workers {
-                std::sync::OnceLock::from(isolates - 1)
-            } else {
-                std::sync::OnceLock::new()
-            },
+            reader_base_headroom: std::sync::atomic::AtomicUsize::new(limit / 4),
         })
     }
-    /// Assign worker bases before any worker can enter an isolate. Keep
-    /// headroom already taken by the coordinator charged to the pool.
+    /// Parallel readers' base allowances together can add up to 25% of
+    /// the configured limit. Reader growth uses the macro pool's headroom.
     #[cfg(light_v8)]
     #[allow(deprecated)] // fetch_update supports the stable compiler used in CI.
-    pub(crate) fn reserve_workers(&self, planned: usize) -> usize {
-        *self.reserved_workers.get_or_init(|| {
-            let mut reserved = 0;
-            let _ = self
-                .headroom
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |left| {
-                    reserved = planned.min(left.checked_div(self.base).unwrap_or(0));
-                    Some(left - reserved * self.base)
-                });
-            reserved
-        })
+    pub(crate) fn take_reader_base(&self, bytes: usize) -> bool {
+        self.reader_base_headroom
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |left| {
+                left.checked_sub(bytes)
+            })
+            .is_ok()
+    }
+    #[cfg(light_v8)]
+    pub(crate) fn give_reader_base(&self, bytes: usize) {
+        self.reader_base_headroom
+            .fetch_add(bytes, Ordering::Relaxed);
     }
     /// The bytes each worker isolate is allowed before it takes headroom.
     pub(crate) fn base(&self) -> usize {
@@ -454,8 +449,8 @@ pub(crate) struct BuildResources {
 }
 impl BuildResources {
     /// The resources of a build with `options`, whose deadline starts now,
-    /// for `isolates` planned isolates. Worker shares are reserved at pool
-    /// start, or immediately if `reserve_workers` is set.
+    /// for `isolates` planned isolates. Worker shares are reserved while
+    /// the pool can still start.
     pub(crate) fn new(
         options: &EvaluatorOptions,
         isolates: usize,

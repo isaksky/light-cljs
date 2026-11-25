@@ -1785,6 +1785,8 @@ pub(crate) struct CompilationSession {
     /// coordinator, whose isolate may start before the pool does.
     #[cfg(light_v8)]
     v8_pool_isolates: Cell<usize>,
+    #[cfg(light_v8)]
+    v8_pool_elided: Cell<bool>,
     /// The last unit, in unit order, a drain point took
     /// ([`Self::analyze_drained`] or [`Self::note_drained`]); a failed build's
     /// counts stop there ([`Self::failed_unit_counts`]).
@@ -1987,6 +1989,8 @@ impl Default for CompilationSession {
             pool: Default::default(),
             #[cfg(light_v8)]
             v8_pool_isolates: Default::default(),
+            #[cfg(light_v8)]
+            v8_pool_elided: Default::default(),
             drained_through: Default::default(),
             local_overlay: RefCell::new(None),
             deferred_engine_namespaces: Default::default(),
@@ -2977,6 +2981,8 @@ impl CompilationSession {
             pool: Default::default(),
             #[cfg(light_v8)]
             v8_pool_isolates: Default::default(),
+            #[cfg(light_v8)]
+            v8_pool_elided: Default::default(),
             drained_through: Default::default(),
             deferred_engine_namespaces: Default::default(),
             local_overlay: RefCell::new(Some(NamespaceOverlay {
@@ -4219,6 +4225,23 @@ impl CompilationSession {
     pub(crate) fn v8_isolate_count(&self) -> usize {
         self.v8_pool_isolates.get().max(1)
     }
+    #[cfg(light_v8)]
+    pub(crate) fn reserves_v8_worker_shares(&self) -> bool {
+        !self.v8_pool_elided.get()
+    }
+    /// The build installed every artifact without starting the pool.
+    /// Let the coordinator use its worker shares from here on.
+    #[cfg(light_v8)]
+    pub(crate) fn elide_v8_pool(&self) {
+        debug_assert!(self.pool.borrow().is_none());
+        if !self.v8_pool_elided.replace(true)
+            && let Some(resources) = self.shared.resources()
+        {
+            resources
+                .memory
+                .give(resources.memory.base() * resources.isolates.saturating_sub(1));
+        }
+    }
     /// Start the build's unit pool of `slots`, whose workers are bound to
     /// `environment` and of which `isolates`, the coordinator's included,
     /// have `engines` ([`UnitPool::start`]).
@@ -4230,19 +4253,15 @@ impl CompilationSession {
         environment: MacroEnvironment,
         recording: crate::macro_host::UnitRecording,
     ) -> Result<(), String> {
-        let isolates = if engines == PoolEngines::None {
-            isolates
-        } else {
-            let _resources = self
-                .shared
+        #[cfg(light_v8)]
+        if !self.reserves_v8_worker_shares() {
+            return Err("cannot start the compiler unit pool after releasing its shares".into());
+        }
+        if engines != PoolEngines::None {
+            self.shared
                 .initialize_resources(environment.evaluator_options(), isolates, true)
                 .map_err(|error| error.0)?;
-            #[cfg(light_v8)]
-            let isolates = 1 + _resources
-                .memory
-                .reserve_workers(isolates.saturating_sub(1));
-            isolates
-        };
+        }
         let _ = self.shared.recording.set(recording);
         let pool = UnitPool::start(self.shared.clone(), slots, engines, isolates, environment)?;
         *self.pool.borrow_mut() = Some(pool);

@@ -22,7 +22,7 @@ pub(super) struct Budget {
     /// budget is dropped.
     allowance: AtomicUsize,
     /// The pool the isolate borrows from and the base it starts with.
-    pool: Option<(Arc<MemoryPool>, usize)>,
+    pool: Option<(Arc<MemoryPool>, Share, usize)>,
     /// The allowance a worker isolate keeps between jobs, its base and
     /// [`MemoryPool::keep`]; unbounded for any other.
     kept: usize,
@@ -56,28 +56,39 @@ impl Budget {
         limit: usize,
         control: ExecutionControl,
         pool: Option<(Arc<MemoryPool>, Share)>,
-    ) -> Arc<Self> {
-        let mut kept = usize::MAX;
-        let pool = pool.map(|(pool, share)| {
+    ) -> Result<Arc<Self>, EvalError> {
+        let (pool, allowance, kept) = if let Some((pool, share)) = pool {
             let base = match share {
                 Share::Coordinator => pool.main_base(),
                 Share::Worker => pool.base(),
-                Share::Reader => super::MINIMUM_HEAP_LIMIT,
+                Share::Reader => {
+                    let base = super::MINIMUM_HEAP_LIMIT;
+                    if !pool.take_reader_base(base) {
+                        control.memory_exhausted();
+                        return Err(EvalError(
+                            "JavaScript session memory limit exhausted".into(),
+                        ));
+                    }
+                    base
+                }
             };
-            if !matches!(share, Share::Coordinator) {
-                kept = base + pool.keep();
-            }
-            (pool, base)
-        });
-        Arc::new(Self {
+            let kept = match share {
+                Share::Coordinator => usize::MAX,
+                _ => base + pool.keep(),
+            };
+            (Some((pool, share, base)), base, kept)
+        } else {
+            (None, limit, usize::MAX)
+        };
+        Ok(Arc::new(Self {
             used: AtomicUsize::new(0),
             heap: AtomicUsize::new(0),
-            allowance: AtomicUsize::new(pool.as_ref().map_or(limit, |(_, base)| *base)),
+            allowance: AtomicUsize::new(allowance),
             pool,
             kept,
             refused: AtomicUsize::new(0),
             control,
-        })
+        }))
     }
 
     /// What the heap and backing stores may hold together now.
@@ -88,7 +99,7 @@ impl Budget {
     /// Take up to `wanted` more bytes from the build's pool, but none
     /// unless `needed` are left: whether any were taken.
     pub(super) fn grow(&self, wanted: usize, needed: usize) -> bool {
-        let Some((pool, _)) = &self.pool else {
+        let Some((pool, _, _)) = &self.pool else {
             return false;
         };
         let taken = pool.take(wanted, needed.max(1));
@@ -100,7 +111,7 @@ impl Budget {
     pub(super) fn headroom_held(&self) -> usize {
         self.pool
             .as_ref()
-            .map_or(0, |(_, base)| self.allowance().saturating_sub(*base))
+            .map_or(0, |(_, _, base)| self.allowance().saturating_sub(*base))
     }
 
     /// The allowance a worker isolate keeps between jobs
@@ -203,8 +214,38 @@ unsafe extern "C" fn drop_budget(state: *const c_void) {
 
 impl Drop for Budget {
     fn drop(&mut self) {
-        if let Some((pool, base)) = &self.pool {
+        if let Some((pool, share, base)) = &self.pool {
             pool.give(self.allowance().saturating_sub(*base));
+            if matches!(share, Share::Reader) {
+                pool.give_reader_base(*base);
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::evaluator::{DEFAULT_MEMORY_LIMIT, EvaluatorOptions, WORKER_SHARE};
+
+    #[test]
+    fn parallel_reader_bases_fit_and_cannot_exceed_a_quarter_of_the_build_limit() {
+        let workers = 16;
+        let limit = DEFAULT_MEMORY_LIMIT + workers * WORKER_SHARE;
+        let pool = MemoryPool::new(limit, 1 + workers);
+        let reader = || {
+            Budget::new(
+                limit,
+                ExecutionControl::new(&EvaluatorOptions::default()).unwrap(),
+                Some((pool.clone(), Share::Reader)),
+            )
+        };
+        let mut readers: Vec<_> = (0..=workers).map(|_| reader().unwrap()).collect();
+        let base_bytes: usize = readers.iter().map(|reader| reader.allowance()).sum();
+        assert_eq!(base_bytes, limit / 4);
+        assert_eq!(pool.headroom(), 0);
+        assert!(reader().is_err());
+        drop(readers.pop().unwrap());
+        assert!(reader().is_ok());
     }
 }

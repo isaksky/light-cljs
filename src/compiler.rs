@@ -2937,7 +2937,8 @@ fn analyze_entry(
         && !macros.tables.interactive;
     #[cfg(light_v8)]
     if can_pool_engines && let Some(session) = macros.session_handle() {
-        // Plan the shares now. Worker memory is reserved when the pool starts.
+        // An engine can start before the first miss decides whether to start
+        // the pool, so its memory budget must already include worker shares.
         session.plan_v8_pool(isolates);
     }
     let mut initial_environment = (analysis.unit_slots.get() > 1).then(|| macros.environment());
@@ -3708,6 +3709,13 @@ fn analyze_entry(
     // counts stop at ([`CompilationSession::failed_unit_counts`]).
     let stopped = looped.is_err();
     let program = looped.and_then(|()| {
+        #[cfg(light_v8)]
+        if !pool_started
+            && can_pool_engines
+            && let Some(session) = macros.session_handle()
+        {
+            session.elide_v8_pool();
+        }
         let _traced = crate::compile_trace::enter(crate::compile_trace::Stage::Finish, 0, None);
         analysis
             .finish(entry_index, macros)
