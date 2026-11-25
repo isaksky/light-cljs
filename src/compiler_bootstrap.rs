@@ -1512,9 +1512,11 @@ mod tests {
     #[cfg(light_quickjs)]
     #[test]
     fn compiling_the_units_charges_nothing_to_the_build_engine() {
+        use crate::evaluator::QuickJsEvaluator;
+
         let options = crate::evaluator::EvaluatorOptions::default();
         let remaining = |cache| {
-            let evaluator = Rc::new(Evaluator::interactive(options.clone()).unwrap());
+            let evaluator = Rc::new(QuickJsEvaluator::interactive(options.clone()).unwrap());
             let bootstrap = build_in(evaluator, cache).unwrap();
             bootstrap.evaluator.control().remaining_polls()
         };
