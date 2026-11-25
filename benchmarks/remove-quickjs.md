@@ -103,6 +103,21 @@ arguments from `remove-quickjs.bb output`, with `--size-report` for the
 unit names and byte counts. TodoMVC uses a copy of `research/todomvc-port`
 and `release client --no-cache --optimize advanced`.
 
+Both generated projects use seed 42. The plain workload has 199,129
+nonblank lines and the re-frame workload has 202,053. The re-frame
+libraries use re-frame `1a1bf1d`, Reagent 1.2.0 and React 18.2.0.
+
+```sh
+bb benchmarks/generated-project/re-frame-libs.bb "$logs/re-frame-libs"
+bb benchmarks/generated-project/generate.bb "$logs/workload-200k" --seed 42 --lines 200k
+bb benchmarks/generated-project/generate.bb "$logs/re-frame-200k" --seed 42 --lines 200k \
+  --shape re-frame --libs "$logs/re-frame-libs"
+# Run in each generated project with each checkpoint's release executable.
+"$LIGHT" release bench --no-cache --optimize advanced --out-dir "$out"
+```
+
+#### Readable ratchets
+
 The readable runtime lost 4,334 bytes of Pants-specific comments per
 ratchet at both `none` and `prepare` (`36a2de8c`, light-cljs-1129). After
 replacing the runtime key and registration hash with their placeholders
@@ -121,6 +136,22 @@ and removing the embedded runtime text, all 72 outputs matched between
 | `reduceOwnPath` (-60), `setDeclarationDemand` (-218), `slotFirst` (-137), `swap` (-72), `symbolOf` (-56) | -543 |
 | `typeMasks` (-43), `updatedMap` (-74), `vars` (-124), `vectorCells` (-220), `withMetaKeeps` (-45) | -506 |
 | Total | -4,334 |
+
+The alias fix (`1899b743`) and live-name guard (`dbe6511f`), both from
+light-cljs-1139, change only `protocolPredicate` in the readable files.
+They remove four bytes and add 56 bytes respectively. The alias fix
+uses the analyzed marker key and the guard checks that the live protocol
+agrees with it for `satisfies?`. All 72 application remainders still match
+after subtracting each revision's runtime and normalizing its key and hash.
+
+#### Advanced builds
+
+The Pants checkpoint produces the same bytes for all 36 advanced
+ratchets and all three projects. The protocol alias fix and live-name
+guard also leave the advanced ratchets byte-identical. In the three
+projects both commits change only `protocolPredicate` in the rekeyed
+`--pseudo-names` code. Their changes in the compact output are -43 and
++17 bytes per project respectively.
 
 ## 4. Interactive sessions
 
