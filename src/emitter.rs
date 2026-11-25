@@ -1214,6 +1214,9 @@ fn emit_js_mode(
             );
             runtime.push_str(&constants.declarations);
         }
+        if let Some(pool) = &emitter.dev_keywords {
+            runtime.push_str(&pool.declarations);
+        }
         let registration_at = runtime.len();
         if let Some(detached) = detached_registration {
             detached.source = registration;
@@ -2962,6 +2965,15 @@ struct Emitter<'a, 's> {
     /// directly writes or deletes a core protocol method slot by name
     /// (`cljs$core$...$arity$...`), so the dev runtime activates `slotWrites.*`.
     core_method_write: bool,
+    /// In a dev/interactive unit (`application_roots && !demand_roots`),
+    /// per-unit hoisted keyword constants (`const k0 = rt.keyword(...);`).
+    dev_keywords: Option<DevKeywordPool<'a>>,
+}
+
+#[derive(Default)]
+struct DevKeywordPool<'a> {
+    declarations: String,
+    numbers: HashMap<(Option<&'a [u16]>, &'a [u16]), usize>,
 }
 
 /// Saved positions in the emitter's buffers before a region that may need
@@ -3313,6 +3325,8 @@ impl<'a, 's> Emitter<'a, 's> {
             top_statement: false,
             declaring_type: false,
             core_method_write: false,
+            dev_keywords: (application_roots && !demand_roots && direct.is_none())
+                .then(DevKeywordPool::default),
 
             self_aliases: Vec::new(),
             receivers: Vec::new(),
@@ -4234,10 +4248,51 @@ impl<'a, 's> Emitter<'a, 's> {
         self.output.push(')');
     }
 
-    /// A keyword or quoted symbol literal: a table constant at `Advanced`,
-    /// else `rt.keyword(namespace, name)` or `rt.symbol(namespace, name)`.
+    /// A keyword or quoted symbol literal: a table constant at `Advanced`, a
+    /// unit-hoisted constant for keywords in dev builds, else
+    /// `rt.keyword(namespace, name)` or `rt.symbol(namespace, name)`.
     fn named_literal(&mut self, literal: NamedLiteralId, symbol: bool) {
         if self.constants.is_none() {
+            if !symbol && !self.native_forms && self.dev_keywords.is_some() {
+                let entry = &self.program.named_literals[literal.0];
+                let key = (
+                    entry
+                        .namespace
+                        .map(|id| self.program.strings[id.0].as_slice()),
+                    self.program.strings[entry.name.0].as_slice(),
+                );
+                let existing = self
+                    .dev_keywords
+                    .as_ref()
+                    .unwrap()
+                    .numbers
+                    .get(&key)
+                    .copied();
+                let number = match existing {
+                    Some(number) => number,
+                    None => {
+                        let number = self.dev_keywords.as_ref().unwrap().numbers.len();
+                        self.dev_keywords
+                            .as_mut()
+                            .unwrap()
+                            .numbers
+                            .insert(key, number);
+                        let saved = std::mem::take(&mut self.output);
+                        write!(self.output, "  const k{number} = ").unwrap();
+                        self.construct_named(literal, false);
+                        self.output.push_str(";\n");
+                        let decl = std::mem::replace(&mut self.output, saved);
+                        self.dev_keywords
+                            .as_mut()
+                            .unwrap()
+                            .declarations
+                            .push_str(&decl);
+                        number
+                    }
+                };
+                write!(self.output, "k{number}").unwrap();
+                return;
+            }
             return self.construct_named(literal, symbol);
         }
         let number = self.named_entry(literal, symbol, None);

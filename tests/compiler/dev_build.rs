@@ -1559,3 +1559,81 @@ start
         r#"{"id":"program","outcome":{"status":"returned","value":{"$value":"undefined"}},"trace":[],"stdout":"[true true false false true true true false false false true false true false true true true false] true true\n[true true true false true false true false false]\n"}"#
     );
 }
+
+/// Dev units hoist each distinct keyword literal to one `const kN` per
+/// namespace/unit, keeping keyword identity across hot reload and renaming
+/// compiler names cleanly when raw `js*` mentions `k0`.
+#[test]
+fn dev_keyword_hoisting_deduplicates_per_namespace_and_preserves_reload_and_hygiene() {
+    let dir = TempDir::new("dev-kw-hoist");
+    let v1 = source_root(
+        &dir.join("v1"),
+        &[
+            (
+                "app/kw.cljs",
+                r#"(ns app.kw)
+(defonce saved-kw :app.kw/alpha)
+(defn pair [] [:app.kw/alpha :beta :app.kw/alpha])
+(defn raw-k0 []
+  (let [k0 7]
+    [(js* "((k0) => k0 + 1)(~{})" k0) :beta]))
+"#,
+            ),
+            (
+                "app/main.cljs",
+                r#"(ns app.main (:require [app.kw :as kw]))
+(defn ^:dev/after-load after []
+  (js/console.log (identical? kw/saved-kw (first (kw/pair))) (pr-str (kw/pair)) (pr-str (kw/raw-k0))))
+(defn start [] (after))
+start
+"#,
+            ),
+        ],
+    );
+    let out = dir.join("dev");
+    dev_build(&v1, &out);
+
+    let kw_js = fs::read_to_string(out.join("app.kw.js")).unwrap();
+    assert_eq!(
+        kw_js.matches("rt.keyword(\"app.kw\", \"alpha\")").count(),
+        1,
+        "expected :app.kw/alpha hoisted once:\n{kw_js}"
+    );
+    assert_eq!(
+        kw_js.matches("rt.keyword(null, \"beta\")").count(),
+        1,
+        "expected :beta hoisted once:\n{kw_js}"
+    );
+
+    let v2 = source_root(
+        &dir.join("v2"),
+        &[
+            (
+                "app/kw.cljs",
+                r#"(ns app.kw)
+(defonce saved-kw :app.kw/alpha)
+(defn pair [] [:app.kw/alpha :gamma :beta])
+(defn raw-k0 []
+  (let [k0 9]
+    [(js* "((k0) => k0 + 1)(~{})" k0) :beta]))
+"#,
+            ),
+            (
+                "app/main.cljs",
+                r#"(ns app.main (:require [app.kw :as kw]))
+(defn ^:dev/after-load after []
+  (js/console.log (identical? kw/saved-kw (first (kw/pair))) (pr-str (kw/pair)) (pr-str (kw/raw-k0))))
+(defn start [] (after))
+start
+"#,
+            ),
+        ],
+    );
+    let out_v2 = dir.join("dev-v2");
+    dev_build(&v2, &out_v2);
+
+    assert_eq!(
+        run_dev(&out, true, &[out_v2.join("app.kw.js")]).unwrap(),
+        r#"{"id":"program","outcome":{"status":"returned","value":{"$value":"undefined"}},"trace":[],"stdout":"true [:app.kw/alpha :beta :app.kw/alpha] [8 :beta]\ntrue [:app.kw/alpha :gamma :beta] [10 :beta]\n"}"#
+    );
+}
