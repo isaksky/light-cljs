@@ -74,10 +74,12 @@ impl std::fmt::Debug for EvalSession {
 /// about 4 MiB while it loads the runtime (light-cljs-358), 5.30 MB since
 /// the classes' own `-equiv` and `-hash` slots (light-cljs-1014; 5.21 MB
 /// before), just over 6 MiB since the transient collection builders
-/// (light-cljs-1108/1109/1110), and V8 refuses a limit under 16 MB at startup.
+/// (light-cljs-1108/1109/1110). In the V8 build, the macro heap requires
+/// 16 MiB even when the session evaluates forms with QuickJS.
 fn small_heap() -> usize {
     if engine() == EvalEngine::QuickJs {
-        8 * 1024 * 1024
+        let mib = if cfg!(light_v8) { 16 } else { 8 };
+        mib * 1024 * 1024
     } else {
         32 * 1024 * 1024
     }
