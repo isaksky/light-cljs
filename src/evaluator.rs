@@ -331,16 +331,12 @@ impl ExecutionControl {
     }
 }
 
-/// The macro memory limit of one build, which its macro isolates
-/// share (docs/compiler-concurrency.md, "As built
-/// (light-cljs-341)"): each worker isolate is allowed [`Self::base`] bytes
-/// and the main one [`Self::main_base`], and each grows past that only by
-/// taking from the headroom the others have not taken, which it gives back
-/// when it is destroyed, so the isolates never hold more than the limit
-/// together. An isolate that cannot take what it needs fails; none takes
-/// more silently. A worker isolate keeps what it took up to [`Self::keep`]
-/// between jobs, which is its steady need rather than one unit's spike, and
-/// is retired after a job that left it holding more (light-cljs-459).
+/// The macro memory limit of one build. The coordinator and its workers
+/// have base shares and can grow into the shared headroom, which they give
+/// back on destruction. Before the worker pool starts, the coordinator can
+/// use unassigned worker shares as headroom. Starting the pool reserves as
+/// many worker shares as still fit. Parallel V8 readers have separate
+/// startup allowances and grow into this same headroom.
 #[derive(Debug)]
 #[cfg_attr(not(any(light_v8, light_quickjs)), allow(dead_code))]
 pub(crate) struct MemoryPool {
@@ -348,9 +344,16 @@ pub(crate) struct MemoryPool {
     main: usize,
     keep: usize,
     headroom: std::sync::atomic::AtomicUsize,
+    #[cfg(light_v8)]
+    reserved_workers: std::sync::OnceLock<usize>,
 }
 #[cfg_attr(not(any(light_v8, light_quickjs)), allow(dead_code))]
 impl MemoryPool {
+    #[cfg(test)]
+    pub(crate) fn new(limit: usize, isolates: usize) -> Arc<Self> {
+        Self::with_worker_reservation(limit, isolates, true)
+    }
+
     /// The pool of `limit` bytes for `isolates` isolates. Each worker's is
     /// allowed a base of half the even share, at least [`WORKER_SHARE`] and
     /// at most 256 MiB, but never more than the even share; the main isolate the
@@ -359,7 +362,7 @@ impl MemoryPool {
     /// as the workers' bases leave it. What is left of the limit is
     /// headroom to grow into, of which a worker keeps an even part between
     /// jobs.
-    pub(crate) fn new(limit: usize, isolates: usize) -> Arc<Self> {
+    fn with_worker_reservation(limit: usize, isolates: usize, reserve_workers: bool) -> Arc<Self> {
         let isolates = isolates.max(1);
         let base = (limit / (2 * isolates))
             .clamp(WORKER_SHARE, 256 << 20)
@@ -373,7 +376,33 @@ impl MemoryPool {
             base,
             main,
             keep: headroom / isolates,
-            headroom: std::sync::atomic::AtomicUsize::new(headroom),
+            headroom: std::sync::atomic::AtomicUsize::new(if reserve_workers {
+                headroom
+            } else {
+                limit - main
+            }),
+            #[cfg(light_v8)]
+            reserved_workers: if reserve_workers {
+                std::sync::OnceLock::from(isolates - 1)
+            } else {
+                std::sync::OnceLock::new()
+            },
+        })
+    }
+    /// Assign worker bases before any worker can enter an isolate. Keep
+    /// headroom already taken by the coordinator charged to the pool.
+    #[cfg(light_v8)]
+    #[allow(deprecated)] // fetch_update supports the stable compiler used in CI.
+    pub(crate) fn reserve_workers(&self, planned: usize) -> usize {
+        *self.reserved_workers.get_or_init(|| {
+            let mut reserved = 0;
+            let _ = self
+                .headroom
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |left| {
+                    reserved = planned.min(left.checked_div(self.base).unwrap_or(0));
+                    Some(left - reserved * self.base)
+                });
+            reserved
         })
     }
     /// The bytes each worker isolate is allowed before it takes headroom.
@@ -384,13 +413,9 @@ impl MemoryPool {
     pub(crate) fn main_base(&self) -> usize {
         self.main
     }
-    /// The headroom a worker isolate keeps between its jobs: the headroom
-    /// over the isolates, so that the workers together keep less than all
-    /// of it and at least this much is left for the main isolate and for
-    /// one unit's spike. A worker whose need beyond its base is no more
-    /// keeps its engine, rather than giving the headroom back after every
-    /// unit for a replacement that installs the build's macros again and
-    /// takes it at once (light-cljs-459).
+    /// The fraction of planned headroom a worker can keep between jobs.
+    /// Workers can reuse isolates whose steady needs exceed their base
+    /// shares and return larger spikes at the end of the job (light-cljs-459).
     pub(crate) fn keep(&self) -> usize {
         self.keep
     }
@@ -418,7 +443,7 @@ impl MemoryPool {
     }
 }
 /// A build's deadline and cancellation, a linked control for workers,
-/// and the memory pool for its macro isolates.
+/// and the memory pool for its macro and parallel reader isolates.
 #[derive(Clone)]
 #[cfg_attr(not(any(light_v8, light_quickjs)), allow(dead_code))]
 pub(crate) struct BuildResources {
@@ -429,13 +454,22 @@ pub(crate) struct BuildResources {
 }
 impl BuildResources {
     /// The resources of a build with `options`, whose deadline starts now,
-    /// for `isolates` isolates.
-    pub(crate) fn new(options: &EvaluatorOptions, isolates: usize) -> Result<Self, EvalError> {
+    /// for `isolates` planned isolates. Worker shares are reserved at pool
+    /// start, or immediately if `reserve_workers` is set.
+    pub(crate) fn new(
+        options: &EvaluatorOptions,
+        isolates: usize,
+        reserve_workers: bool,
+    ) -> Result<Self, EvalError> {
         let control = ExecutionControl::new(options)?;
         Ok(Self {
             workers: ExecutionControl::linked(options, &control)?,
             control,
-            memory: MemoryPool::new(options.memory_limit, isolates),
+            memory: MemoryPool::with_worker_reservation(
+                options.memory_limit,
+                isolates,
+                reserve_workers,
+            ),
             isolates,
         })
     }
@@ -2301,7 +2335,7 @@ mod active_tests {
             memory_limit: (64 << 20) + 3 * WORKER_SHARE + (96 << 20),
             ..Default::default()
         };
-        let resources = BuildResources::new(&options, 4).unwrap();
+        let resources = BuildResources::new(&options, 4, true).unwrap();
         let headroom = resources.memory.headroom();
         assert_eq!(headroom, 96 << 20);
         let base = resources.memory.base() >> 20;
@@ -2348,7 +2382,7 @@ mod active_tests {
             memory_limit: (64 << 20) + 2 * WORKER_SHARE,
             ..Default::default()
         };
-        let resources = BuildResources::new(&options, 3).unwrap();
+        let resources = BuildResources::new(&options, 3, true).unwrap();
         let spinning = QuickJsEvaluator::new_for_build(options.clone(), &resources, false).unwrap();
         let sibling = QuickJsEvaluator::new_for_build(options.clone(), &resources, false).unwrap();
         let main = QuickJsEvaluator::new_for_build(options.clone(), &resources, true).unwrap();

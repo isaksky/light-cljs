@@ -461,16 +461,30 @@ gives, whichever worker failed first, after which the workers' remaining
 work is cancelled and nothing is written. `--macro-expansions` and
 `--macro-nodes` count each unit's expansions where the units are charged in
 source order, so a limit fails in the unit and with the message one job
-gives. `--macro-memory-limit` is one budget for the calling thread's isolate
-and every worker's together: the calling thread's isolate keeps what one job
-has at the default limit (64 MiB, or the whole limit when it is lower), so a
-build that fits the default at one job fits it at every N, and a worker gets
-an isolate (in a QuickJS-only build a QuickJS runtime) for each 64 MiB
-beyond that, since a worker's engine holds 27 to 48 MiB on large programs;
-the default gives none, so its
-workers have no engine. Each isolate is allowed a base share and takes more
-from what the others have not taken, and one that cannot get what it needs
-fails the build.
+gives.
+
+In the V8 build, `--macro-memory-limit` sets a budget for the JavaScript heaps
+and fixed-length buffer backing stores used by macros. The coordinator has a
+base share of at least 64 MiB, or the whole limit if it is lower. Each worker
+isolate needs at least 64 MiB, so the default limit of 64 MiB leaves workers
+without engines. Macro isolates can grow past their base shares using the
+remaining headroom. Until the unit pool starts, the coordinator can also use
+the planned worker shares as headroom. A build that stays fully cached leaves
+those shares available to the coordinator. If a cache miss starts the pool,
+it enables as many worker isolates as the remaining memory can support.
+
+Without custom data-reader calls, the total JavaScript memory budget is
+`--macro-memory-limit` for any job count. When the build plans worker isolates,
+the coordinator and each engine worker can lazily start one reader isolate
+with a 16 MiB base allowance. Any growth uses the macro isolates' shared
+headroom, so the total budget is `--macro-memory-limit` plus 16 MiB per
+active reader isolate, at most 125% of the limit. A serial build or one with
+no worker isolates planned gives its single reader an independent allowance
+equal to `--macro-memory-limit`, for a total of twice that limit when the reader
+is used. An isolate that exhausts its allowance and the available headroom
+reports a memory-limit error. Process peak memory also includes native
+engine overhead and the compiler's own data.
+
 `--macro-timeout-ms` is one deadline for the build, from the pool's start;
 `--macro-poll-budget` is per isolate. A timeout or memory failure depends on
 scheduling, so its message is not promised to be the same at every N. With

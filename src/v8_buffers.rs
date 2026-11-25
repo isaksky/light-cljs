@@ -7,6 +7,12 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
+pub(super) enum Share {
+    Coordinator,
+    Worker,
+    Reader,
+}
+
 pub(super) struct Budget {
     used: AtomicUsize,
     heap: AtomicUsize,
@@ -15,8 +21,7 @@ pub(super) struct Budget {
     /// plus the headroom taken from the pool, which is given back when the
     /// budget is dropped.
     allowance: AtomicUsize,
-    /// The build's pool and the isolate's base in it: the main isolate's
-    /// or a worker's.
+    /// The pool the isolate borrows from and the base it starts with.
     pool: Option<(Arc<MemoryPool>, usize)>,
     /// The allowance a worker isolate keeps between jobs, its base and
     /// [`MemoryPool::keep`]; unbounded for any other.
@@ -45,19 +50,23 @@ unsafe extern "C" {
 }
 
 impl Budget {
-    /// The budget of `limit` bytes, or with a build's pool, of the main
-    /// isolate's base in it when `main`, else a worker's.
+    /// The budget of `limit` bytes, or a base allowance with growth
+    /// charged to the build's pool.
     pub(super) fn new(
         limit: usize,
         control: ExecutionControl,
-        pool: Option<(Arc<MemoryPool>, bool)>,
+        pool: Option<(Arc<MemoryPool>, Share)>,
     ) -> Arc<Self> {
-        let kept = match &pool {
-            Some((pool, false)) => pool.base() + pool.keep(),
-            _ => usize::MAX,
-        };
-        let pool = pool.map(|(pool, main)| {
-            let base = if main { pool.main_base() } else { pool.base() };
+        let mut kept = usize::MAX;
+        let pool = pool.map(|(pool, share)| {
+            let base = match share {
+                Share::Coordinator => pool.main_base(),
+                Share::Worker => pool.base(),
+                Share::Reader => super::MINIMUM_HEAP_LIMIT,
+            };
+            if !matches!(share, Share::Coordinator) {
+                kept = base + pool.keep();
+            }
             (pool, base)
         });
         Arc::new(Self {

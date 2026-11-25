@@ -2937,6 +2937,7 @@ fn analyze_entry(
         && !macros.tables.interactive;
     #[cfg(light_v8)]
     if can_pool_engines && let Some(session) = macros.session_handle() {
+        // Plan the shares now. Worker memory is reserved when the pool starts.
         session.plan_v8_pool(isolates);
     }
     let mut initial_environment = (analysis.unit_slots.get() > 1).then(|| macros.environment());

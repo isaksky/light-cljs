@@ -1176,6 +1176,14 @@ impl MacroHost {
             evaluator.collect_garbage();
         }
     }
+    pub(crate) fn reader_headroom_held(&self) -> usize {
+        self.engine
+            .data_readers
+            .borrow()
+            .evaluator
+            .as_ref()
+            .map_or(0, |evaluator| evaluator.headroom_held())
+    }
     /// The values the host's macro engine roots for their `ValueId`s
     /// ([`crate::compiler_evaluator::CompilerEvaluator::value_roots`]), 0
     /// before it starts, once it has released the functions of macros no
@@ -1576,7 +1584,7 @@ impl MacroHost {
             crate::compiler_bootstrap::prepare(self).map_err(crate::evaluator::EvalError)?;
         }
         catalog
-            .initialize_resources(&self.evaluator_options, isolates)
+            .initialize_resources(&self.evaluator_options, isolates, false)
             .cloned()
             .map(Some)
     }
@@ -4009,6 +4017,90 @@ impl MacroHost {
 mod compiler_default_reader_tests {
     use super::*;
     use crate::compiler_data::{DatumKind, Source};
+
+    #[cfg(light_v8)]
+    #[test]
+    fn an_unstarted_pool_leaves_memory_to_the_coordinator() {
+        use crate::{compilation_session::PoolEngines, scheduler::Slots};
+
+        let mut host = MacroHost::new();
+        host.evaluator_options.memory_limit = 192 << 20;
+        host.begin_compilation();
+        let session = host.session_handle().unwrap();
+        session.plan_v8_pool(3);
+
+        let coordinator = host.new_compiler_evaluator().unwrap();
+        assert!(session.pool_policy().is_none());
+        let buffer = coordinator
+            .evaluate_js("new ArrayBuffer(100 * 1024 * 1024)")
+            .unwrap();
+        // A later cache miss can start the pool, with room for only one
+        // worker engine while the coordinator retains this allocation.
+        session
+            .start_pool(
+                Slots::new(3).unwrap(),
+                PoolEngines::Persistent,
+                3,
+                host.environment(),
+                Default::default(),
+            )
+            .unwrap();
+        assert_eq!(session.pool_policy().unwrap().engine_workers, 1);
+        coordinator.release(buffer).unwrap();
+        session.finish_pool();
+    }
+
+    #[cfg(light_v8)]
+    #[test]
+    fn parallel_readers_grow_only_into_shared_headroom() {
+        use crate::{compilation_session::PoolEngines, scheduler::Slots};
+
+        let mut host = MacroHost::new();
+        host.evaluator_options.memory_limit = 224 << 20;
+        host.begin_compilation();
+        let session = host.session_handle().unwrap();
+        session.plan_v8_pool(3);
+        session
+            .start_pool(
+                Slots::new(3).unwrap(),
+                PoolEngines::Persistent,
+                3,
+                host.environment(),
+                Default::default(),
+            )
+            .unwrap();
+        let resources = session.shared().resources().unwrap();
+        let worker = || {
+            let mut worker = MacroHost::bind(host.environment(), None).unwrap();
+            worker.engine.catalog = Some(session.shared().clone());
+            worker
+        };
+        let first = worker();
+        let second = worker();
+
+        let first_reader = first.new_data_reader_evaluator().unwrap();
+        let second_reader = second.new_data_reader_evaluator().unwrap();
+        let buffer = first_reader
+            .evaluate_js("new ArrayBuffer(39 * 1024 * 1024)")
+            .unwrap();
+        assert!(resources.memory.headroom() < 9 << 20);
+        let error = second_reader
+            .evaluate_js("new ArrayBuffer(26 * 1024 * 1024)")
+            .unwrap_err();
+        assert!(error.0.contains("memory limit exhausted"), "{error}");
+        assert!(first_reader.control().check().is_ok());
+        assert!(resources.control.check().is_ok());
+        drop(second_reader);
+        first_reader.release(buffer).unwrap();
+        drop(first_reader);
+        assert_eq!(resources.memory.headroom(), 32 << 20);
+        let second_reader = second.new_data_reader_evaluator().unwrap();
+        let buffer = second_reader
+            .evaluate_js("new ArrayBuffer(26 * 1024 * 1024)")
+            .unwrap();
+        second_reader.release(buffer).unwrap();
+        session.finish_pool();
+    }
 
     #[cfg(light_v8)]
     #[test]

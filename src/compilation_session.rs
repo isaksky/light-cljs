@@ -1095,11 +1095,13 @@ impl SharedCatalog {
         &self,
         options: &crate::evaluator::EvaluatorOptions,
         isolates: usize,
+        reserve_workers: bool,
     ) -> Result<&crate::evaluator::BuildResources, crate::evaluator::EvalError> {
         let resources = match self.resources() {
             Some(resources) => resources,
             None => {
-                let resources = crate::evaluator::BuildResources::new(options, isolates)?;
+                let resources =
+                    crate::evaluator::BuildResources::new(options, isolates, reserve_workers)?;
                 self.resources.get_or_init(|| resources)
             }
         };
@@ -4228,11 +4230,19 @@ impl CompilationSession {
         environment: MacroEnvironment,
         recording: crate::macro_host::UnitRecording,
     ) -> Result<(), String> {
-        if engines != PoolEngines::None {
-            self.shared
-                .initialize_resources(environment.evaluator_options(), isolates)
+        let isolates = if engines == PoolEngines::None {
+            isolates
+        } else {
+            let _resources = self
+                .shared
+                .initialize_resources(environment.evaluator_options(), isolates, true)
                 .map_err(|error| error.0)?;
-        }
+            #[cfg(light_v8)]
+            let isolates = 1 + _resources
+                .memory
+                .reserve_workers(isolates.saturating_sub(1));
+            isolates
+        };
         let _ = self.shared.recording.set(recording);
         let pool = UnitPool::start(self.shared.clone(), slots, engines, isolates, environment)?;
         *self.pool.borrow_mut() = Some(pool);
@@ -5672,7 +5682,7 @@ impl WorkerView {
             .sync_catalog(total, bundles, &new_protocols)
             .map_err(|e| e.to_string())
     }
-    /// Whether the view's engine took more headroom from the build's
+    /// Whether the view's macro and reader isolates took more headroom from the build's
     /// memory budget than a worker keeps between jobs
     /// ([`crate::evaluator::MemoryPool::keep`]), which only destroying it
     /// gives back: its worker retires it after the job, so what one unit
@@ -5682,11 +5692,13 @@ impl WorkerView {
     /// once (light-cljs-459).
     fn holds_excess_headroom(&self) -> bool {
         let keep = self.shared.resources().map_or(0, |r| r.memory.keep());
-        self.host
+        let macro_headroom = self
+            .host
             .engine
             .bootstrap
             .as_ref()
-            .is_some_and(|b| b.evaluator.headroom_held() > keep)
+            .map_or(0, |b| b.evaluator.headroom_held());
+        macro_headroom + self.host.reader_headroom_held() > keep
     }
     /// Whether the view's engine failed for good, such as by running out of
     /// memory or time: its worker retires it.

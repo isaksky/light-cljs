@@ -509,18 +509,22 @@ impl V8Evaluator {
             &resources.workers
         };
         let control = ExecutionControl::linked(&options, build)?;
+        let share = if main {
+            buffers::Share::Coordinator
+        } else {
+            buffers::Share::Worker
+        };
         Self::create(
             options,
             control,
-            Some((resources.memory.clone(), main)),
+            Some((resources.memory.clone(), share)),
             INITIAL_HEAP_LIMIT,
             Self::startup_source,
         )
     }
 
-    /// Readers have their own memory allowance, as they did in QuickJS.
-    /// A linked control follows the build's deadline and cancellation while
-    /// keeping a reader exception local to the reader's discarded isolate.
+    /// Give a reader its own startup allowance. When the build plans worker
+    /// isolates, growth also uses the macro isolates' shared headroom.
     pub(crate) fn new_for_build_reader(
         options: EvaluatorOptions,
         resources: &BuildResources,
@@ -532,10 +536,12 @@ impl V8Evaluator {
             &resources.control
         };
         let control = ExecutionControl::linked(&options, build)?;
+        let pool =
+            (resources.isolates > 1).then(|| (resources.memory.clone(), buffers::Share::Reader));
         Self::create(
             options,
             control,
-            None,
+            pool,
             INITIAL_HEAP_LIMIT,
             Self::startup_source,
         )
@@ -544,7 +550,7 @@ impl V8Evaluator {
     fn create(
         options: EvaluatorOptions,
         control: ExecutionControl,
-        pool: Option<(Arc<MemoryPool>, bool)>,
+        pool: Option<(Arc<MemoryPool>, buffers::Share)>,
         initial_heap_limit: usize,
         source: impl FnOnce() -> String,
     ) -> Result<Self, EvalError> {
@@ -1592,7 +1598,7 @@ mod tests {
         let share = crate::evaluator::WORKER_SHARE >> 18;
         let slots = 256_000 / SLOT_BYTES;
         for old in (share * 3 / 4..=share + 8).step_by(2) {
-            let resources = crate::evaluator::BuildResources::new(&options, 3).unwrap();
+            let resources = crate::evaluator::BuildResources::new(&options, 3, true).unwrap();
             let worker = V8Evaluator::new_for_build(options.clone(), &resources, false).unwrap();
             let result = worker.evaluate_js(&format!(
                 "(() => {{ globalThis.kept = []; for (let i = 0; i < {old}; i++) kept.push(new Array({slots}).fill(1)); globalThis.young = []; for (let i = 0; i < 2000; i++) young.push(new Array(64).fill(i)); return kept.length; }})()"

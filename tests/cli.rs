@@ -2433,6 +2433,58 @@ fn codec_measurement_reports_sizes_without_changing_output() {
     assert!(value("cache.keys-ms") >= 0.0 && value("cache.revalidate-ms") >= 0.0);
 }
 
+#[cfg(light_v8)]
+#[test]
+fn jobs_reuses_fully_cached_artifacts_from_a_build_with_a_large_macro() {
+    let sources = TempDir::new("cli-cached-large-macro");
+    std::fs::write(
+        sources.join("main.cljs"),
+        "(ns main)
+         (defmacro allocate [] (.-byteLength (js/ArrayBuffer. (* 100 1024 1024))))
+         (js/console.log (allocate))",
+    )
+    .unwrap();
+    let cache = sources.join("cache");
+    let args = [
+        "--compile",
+        "--entry",
+        "main",
+        "--source-root",
+        sources.path().to_str().unwrap(),
+        "--cache-dir",
+        cache.to_str().unwrap(),
+        "--macro-memory-limit",
+        "201326592", // 192 MiB, three 64 MiB shares if the pool starts.
+        "--stats",
+        "--jobs",
+    ];
+    let compile = |jobs| {
+        let output = light_cljs(&[args.as_slice(), &[jobs]].concat());
+        let stats = String::from_utf8(output.stderr).unwrap();
+        assert!(output.status.success(), "{stats}");
+        (output.stdout, stats)
+    };
+    let (serial, cold_stats) = compile("1");
+    assert!(
+        cold_stats.lines().any(|line| line == "macro-calls 2"),
+        "{cold_stats}"
+    );
+    let (warm, warm_stats) = compile("3");
+    assert_eq!(warm, serial);
+    for counter in ["cache.install.namespaces 1", "macro-calls 0"] {
+        assert!(
+            warm_stats.lines().any(|line| line == counter),
+            "{warm_stats}"
+        );
+    }
+    assert!(
+        !warm_stats
+            .lines()
+            .any(|line| line.starts_with("pool.workers ")),
+        "{warm_stats}"
+    );
+}
+
 #[test]
 fn jobs_counts_work_slots_without_changing_output() {
     let root = "examples/namespaces";
