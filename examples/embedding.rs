@@ -1,4 +1,4 @@
-//! Run with `cargo run --example embedding`; uses the embedded QuickJS engine.
+//! Run with `cargo run --example embedding` in a V8 build.
 use light_cljs::compiler_data::{Datum, DatumKind};
 use light_cljs::source_provider::SourceInput;
 use light_cljs::{EvalOptions, EvalSession, HostArity, HostFunction};

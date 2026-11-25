@@ -70,10 +70,10 @@ harness = false
 name = "evaluator"
 harness = false
 
-# The evaluator example embeds QuickJS.
+# The evaluator example uses the V8-backed public evaluator.
 [[example]]
 name = "evaluator"
-required-features = ["quickjs"]
+required-features = ["v8-macros"]
 
 # Dependencies (chiefly the QuickJS C engine behind the macro host and evaluator)
 # build once, so optimizing them costs nothing in the edit loop and makes

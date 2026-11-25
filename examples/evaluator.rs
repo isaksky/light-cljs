@@ -1,4 +1,4 @@
-//! Minimal synchronous embedding; no Node process or native evaluation.
+//! Minimal synchronous V8 embedding. Run with `cargo run --example evaluator`.
 use light_cljs::{
     analyze,
     evaluator::{Evaluator, EvaluatorOptions},
