@@ -72,23 +72,48 @@ no engine of its own.
 
 Opening a macro session clears globals added by previous sessions in the
 compiler worker. Changes to builtins persist until the worker is replaced.
-Macros can use worker APIs such as `fetch`, `WebSocket`, `indexedDB` and
-`postMessage`. The browser supplies the worker's heap and stack limits.
-The command line and development server use the embedded V8 evaluator.
+Macros can use worker APIs such as `fetch`, `WebSocket` and `indexedDB`.
+A macro can forge a `compiled` reply to the page via `postMessage`. The
+playground's browser macro backend is unsuitable for expanding untrusted code.
+
+The browser sets the worker's heap and stack limits. JavaScript stack
+overflow raises a catchable exception such as `RangeError`. If it escapes
+the macro, the compiler reports it as a macro error. The command line and
+development server use embedded V8, which enforces a configurable memory
+budget and stack limit and checks execution limits while JavaScript runs.
 [V8 evaluator](evaluator.md)
 
-The compiler checks its deadline and poll budget at bridge boundaries. If a
-macro keeps running past the 10-second deadline, the watchdog in
-`playground/compiler.js` terminates the worker. Stop also terminates the
-worker so the next compile starts in a fresh one.
+The October 2026 comparison produced identical output in Chromium,
+Firefox and WebKit. Macros that use `Intl`, read the time zone or rely on
+engine-specific behavior can expand differently in different browsers.
 
-To recover a source location, the watchdog can replay the compile in a fresh
-worker and stop just before the stuck macro call. The worker numbers host
-calls and records a fingerprint based on the services and arguments it sees.
-The watchdog uses the location only if the trace matches on replay. If the
-call began before the worker started reporting calls, the watchdog can first
-probe in a fresh worker. If the replay takes too long or follows a different
-path, the watchdog reports the deadline without a source location.
+### Deadline watchdog
+
+In the browser, the compiler checks its deadline and poll budget at bridge
+boundaries. When a macro host call is still open after the 10-second deadline
+and a 250 ms grace period, the watchdog in `playground/compiler.js` terminates
+the worker. If the worker reports that the compiler is between host calls,
+the watchdog waits for the compiler to check the deadline at its next call.
+Stop also terminates the worker so the next compile starts in a fresh one.
+
+The worker numbers host calls and fingerprints the sequence of services and
+arguments. It starts reporting calls after 500 ms to avoid slowing down
+short compiles. If the stuck call began before then, the watchdog probes in
+a fresh worker that reports every call and selects the one that stays open
+for one second.
+
+To recover a source location, the watchdog replays the compile in a fresh
+worker. The replay reruns earlier macros and raises `JavaScript session
+deadline exceeded` just before the stuck call. The watchdog uses the location
+only if the fingerprint matches, and counts elapsed time from the original
+start. It reports the deadline without a source location if the stuck call
+started more than 1.5 seconds into its run, the probe or replay runs out of
+time, or the replay fails to reach the same call. Probes and replays share a
+three-second allowance after the watchdog fires.
+
+If a worker fails to start a queued compile within 10 seconds, for example
+because a macro left a timer running, the page replaces it and resends the
+newest request. `playground/check.mjs` covers the watchdog and its fallbacks.
 
 ## Historical measurements (October 18, 2026)
 

@@ -260,8 +260,8 @@ All paths are under `research/shadow-cljs/src/main/shadow/build/`.
   demanded it. This is the tool upstream lacks; shadow's build report only
   attributes bytes after the fact. Implemented for runtime units (see "Phase
   1 slicing extension points"); retained globals are not listed yet.
-- The original startup benchmark recorded parse-plus-execute time in Node
-  and QuickJS for the fixture set under `benchmarks/`, with steady state for a
+- Startup benchmark: parse-plus-execute time in Node and QuickJS for the
+  fixture set, recorded under `benchmarks/`, with steady state for a
   sequence pipeline and a record/protocol workload and upstream's
   `:advanced` byte size beside ours.
 
@@ -307,8 +307,8 @@ retention report covers runtime units. Later phases plug in here:
   runs a bundler module built with `--esm --optimize LEVEL` for each level.
 - **Benchmark.** `cargo bench --locked --bench compiler -- --levels --output
   DIR` (`benches/support/levels.rs`) times every ratchet fixture at every
-  level in fresh Node processes. It measures parse plus first execution
-  and steady-state calls of the `STEADY` workloads
+  level: parse plus first execution in fresh Node processes and fresh
+  QuickJS `Evaluator`s, and steady-state calls of the `STEADY` workloads
   (the seq-pipeline and record-protocol fixtures as functions of `n`).
   `--upstream research/clojurescript` adds upstream's `:advanced` and
   lite-mode byte sizes, which needs Java and the Clojure CLI. Rounds
@@ -1029,7 +1029,7 @@ Step 2 is implemented (light-cljs-209). Later steps read it:
   units (step 5) fail it until the table follows: run
   `LIGHT_CLJS_UPDATE_CORE_OPERATIONS=1 cargo test --test compiler core_operations::`
   and review the `units` diff. The same suite calls every row with
-  signatures on sample arguments in V8 (functions that throw when
+  signatures on sample arguments in QuickJS (functions that throw when
   called, lazy sequences and sorted collections that throw when their code
   runs) and fails on a result outside the annotated type, a `pure` or
   `allocates` call that throws, a fresh result from a `pure` call, or
@@ -1951,13 +1951,12 @@ mask, its marker's and the method's slot names) on every call, wherever
   `contains?` of records, a `deftype`, `extend-type` and `specify!`
   replacements, and maps, vectors and nil in the same program, at every
   level; `builtin_types`: `masked_lookup_getters_preserve_selected_dispatch`.
+  The QuickJS evaluator tests' small heap grows from 4 to 5 MiB: loading
+  the runtime peaked just under 4 MiB on master and now just over.
 - **Measured.** light-cljs-266's `record-lookup` at `advanced` in Node goes
   from 14× to 2.5× upstream with this change (1.268 to 0.220 ms a call);
   `seq-pipeline` and `record-protocol` keep no key and do not move. At
-  the time, the QuickJS evaluator tests' small heap grew from 4 to 5 MiB.
-  Loading the runtime peaked just under 4 MiB on master and just over 4 MiB
-  with the change. At `advanced`, programs without protocol implementations
-  shrink by up to 355
+  `advanced` programs without protocol implementations shrink by up to 355
   bytes, `record-protocol` grows by 6 and the protocol-heavy fixtures by
   0.8 to 1.0 KB; the runtime `none` and `prepare` embed grows by about
   9.1 KB. Details in `benchmarks/compiler.md` ("Protocol keys resolved
@@ -3015,17 +3014,17 @@ shapes below.
   which throws before evaluating the arguments where a plain call of
   `undefined` evaluates them first.
 - **Unknown callees** keep `.call(null, ...)`. `cargo bench --bench compiler --
-  --callees` times the candidates per call in Node. The original measurement
-  also timed QuickJS. Upstream's `:fn-invoke-direct` shape,
+  --callees` times the candidates per call in Node and QuickJS (see
+  `benches/support/callees.js` and "Direct call shapes" in
+  `benchmarks/compiler.md`). Upstream's `:fn-invoke-direct` shape,
   `f.cljs$core$IFn$_invoke$arity$1 ? f.cljs$core$IFn$_invoke$arity$1(a) :
-  f.call(null, a)`, was four times faster in QuickJS for a callee with a
+  f.call(null, a)`, is four times faster in QuickJS for a callee with a
   dispatcher but 19% slower for one with a single method, the common case of
   `fn` literals. It adds about 60 bytes per call site until Phase 3 mangles
   the property, needs a callee it can read twice, and passes the function as
   the method's `this`, which `this-as` sees: the methods of
   `ifnInvokeEntry` objects need that receiver, so `.call(null, ...)` on the
   property is not an option either.
-  [Direct call shapes](../benchmarks/compiler.md#direct-call-shapes--october-13-2026)
 - **For parameter types.** `CallShapes::closed(global)` says when a known
   function does not escape, so its direct calls are all its calls, and
   `CallShapes::calls_of(function)` lists them with the method each runs.
@@ -3904,8 +3903,8 @@ tier 4 (light-cljs-220); tier 5 (light-cljs-221) has a section of its own,
   `ConstantPool::functions` counts them.
 - **Hash tests.** `tests/compiler/constant_hashes.rs` rewrites the output's
   `hashed` to compare each embedded hash with the runtime's own, in Node and
-  in embedded V8, for edge cases (`-0`, NaN, large and non-safe integers,
-  non-BMP strings and lone surrogates, namespaced keywords and symbols, nested empty
+  in QuickJS, for edge cases (`-0`, NaN, large and non-safe integers, non-BMP
+  strings and lone surrogates, namespaced keywords and symbols, nested empty
   collections, reader-distinct `1`/`1.0` keys, merged keys, metadata, a lazy
   cell), seeded random scalars, every constant of the language and execution
   corpora and the generated programs; it also checks that cached hashes do
@@ -3929,7 +3928,7 @@ tier 4 (light-cljs-220); tier 5 (light-cljs-221) has a section of its own,
   their low bits, keys spelled alike, collection keys with metadata, a trie
   node that becomes an array node) and values (nil, undefined, one local at
   several keys) through printing, order, hashes, lookups, updates and
-  transients at every level in Node and embedded V8, and compares array maps with
+  transients at every level in Node and QuickJS, and compares array maps with
   maps built at their site in the program; likewise sets with duplicate
   members. It checks what stays at its site, compares the runtime's private
   entries and trie nodes of 600 random shaped maps and 600 sets with the
@@ -4067,7 +4066,7 @@ runs in its rounds.
   `Advanced` (inlining and definition removal still run), as Closure's
   `foldConstants` option off does.
 - **Tests.** `tests/compiler/constant_lookups.rs` runs every program at
-  every level in Node and embedded V8 and checks the `Advanced` text: folds
+  every level in Node and QuickJS and checks the `Advanced` text: folds
   with missing keys, defaults with effects, `nil`, string, symbol, number,
   boolean and namespaced keys, positional and merging collections,
   truncated, negative, fractional and infinite indexes, metadata and empty
@@ -4675,9 +4674,8 @@ upstream states that advanced mode is unsafe for certain patterns.
 - Retention report checked in under `benchmarks/results/` so size
   regressions name their cause (the first is
   `benchmarks/results/retention-2026-10-12/`).
-- Startup and steady-state benchmarks in Node (`--levels` of
-  `benches/compiler.rs`). The original baseline is in
-  `benchmarks/results/levels-2026-10-13/`.
+- Startup and steady-state benchmarks in Node and QuickJS (`--levels` of
+  `benches/compiler.rs`; the baseline is `benchmarks/results/levels-2026-10-13/`).
 - The manifest validator in the test suite, so the runtime cannot regain
   hidden edges.
 
@@ -4686,8 +4684,8 @@ upstream states that advanced mode is unsafe for certain patterns.
 - Whether record field names should be mangled under an opt-in flag, given
   keyword lookup can go through a field table.
 - Whether the sliced runtime should be emitted as top-level `const`s in the
-  output closure or as a nested factory, considering parse costs for large
-  closures. A chunked build answers it for its chunks
+  output closure or as a nested factory, considering QuickJS and V8 parse
+  costs for large closures. A chunked build answers it for its chunks
   (docs/code-splitting.md, "Open questions", light-cljs-279): there each
   chunk's factory also lists the bindings it takes from earlier chunks
   twice, and on examples/features the lists cost 1,573 / 983 bytes raw /

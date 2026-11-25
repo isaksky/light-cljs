@@ -1,7 +1,7 @@
 # Value layout: classes with secret-key protocol slots
 
-Historical design notes for the runtime layout migration. The QuickJS
-reference and the Pants build described here were removed from this branch.
+Historical design notes for the runtime layout migration. QuickJS and the
+Pants build described here were removed from light-cljs in November 2026.
 See the compiler reference for the runtime layout in use today.
 [Runtime values](compiler.md#immutable-collection-data-and-the-core-runtime)
 

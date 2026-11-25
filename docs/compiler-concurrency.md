@@ -27,7 +27,8 @@ Process peak memory also includes engine overhead and the compiler's own data.
 ## Historical research and design
 
 The notes below describe earlier implementations, experiments and proposals.
-QuickJS and the experimental Pants build were removed from this branch.
+QuickJS and the experimental Pants build were removed from light-cljs in
+November 2026.
 
 Status, October 19, 2026: stage A is built behind `--jobs N` and stays
 experimental with a default of 1, because the stage A gate was missed on
@@ -1267,8 +1268,9 @@ The engines are ready for concurrent use.
   queue; a worker constructs a local host bound to its own evaluator from
   transferable data.
 
-QuickJS remains for interactive sessions, and WebAssembly (whose embedder runs
-the macros since light-cljs-357) has no engine of its own; both stay serial.
+QuickJS remains for interactive sessions (at the time of this design), and
+WebAssembly (whose embedder runs the macros since light-cljs-357) has no
+engine of its own; both stay serial.
 Parsing and IR work must not come to require V8. (Since light-cljs-436 a
 QuickJS-only build has the pool too, with one QuickJS runtime per worker;
 see "As built (light-cljs-436)" under "Stage A".)
@@ -3392,7 +3394,8 @@ output changes once, when stage A lands.
 | Stage C | Program view over prefix and overlays, fragment relocation and interned-table canonicalization at commit, closure-based visibility (shared with cache Phase 2) |
 
 Interactive sessions, `--eval`/`--repl` and the WebAssembly playground stay
-single-threaded; QuickJS-only builds have the pool since light-cljs-436. `DevSession` reloads are a later consumer.
+single-threaded; QuickJS-only builds (before their removal) have the pool
+since light-cljs-436. `DevSession` reloads are a later consumer.
 
 ## Risks and unknowns
 
@@ -3628,7 +3631,7 @@ Validation that the prototype must cover:
 | Liveness | duplicate unit demands, cross-worker cycles, panic and cancellation during discovery and nested demand; small queue capacities with saturated workers |
 | Completion | empty queues mid-discovery do not end the build; successors register before completion checks; one-thread inline execution progresses |
 | Limits | shared expansion and node limits, no replay, no replenished budgets; aggregate memory budget; bounded backlog; stack behavior on pool threads |
-| Backends | native V8; QuickJS-only; wasm without threads; thread-affine custom providers |
+| Backends | native V8; QuickJS-only (historical); wasm without threads; thread-affine custom providers |
 | Performance | cold Penpot builds and small fixtures; wall, user, system, peak RSS; per-stage queue depth and wait, lock contention, steal counts, worker utilization, critical path and main-isolate time; isolate start-up and helper initialization; measured by light-cljs-343 with `benchmarks/jobs.bb` ("Gates and first steps", item 4) |
 
 Benchmark with the existing Babashka workflow: sequential, non-overlapping

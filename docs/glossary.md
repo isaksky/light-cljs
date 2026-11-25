@@ -13,7 +13,7 @@ compiles.
   `--no-default-features`. The WebAssembly compiler is also a no-engine build.
   An embedder can provide a `ScriptHost` for macros in clean compilations.
 - **QuickJS reference**: a label in historical measurements. QuickJS and the
-  experimental Pants build have been removed from this branch.
+  experimental Pants build were removed from light-cljs in November 2026.
 
 ## Measurements
 
