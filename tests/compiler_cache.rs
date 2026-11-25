@@ -531,7 +531,7 @@ fn a_cold_parallel_build_expands_units_on_workers_and_publishes_the_one_job_arti
         assert_eq!(parallel.stat("cache.published"), 4, "round {round}");
         assert_eq!(objects(&cache), objects(&serial_cache), "round {round}");
         // Units that expand macros went to the pool too, analyzed in the
-        // workers' isolates (QuickJS runtimes in QuickJS-only builds).
+        // workers' V8 isolates.
         let (pooled, macro_free) = (
             parallel.stat("deferred-units.pooled"),
             parallel.stat("deferred-units.macro-free"),

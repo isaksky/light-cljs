@@ -213,7 +213,7 @@ fn vector_keyword_acceptance_compiles_and_executes_from_cli() {
 
 /// A `--macro-memory-limit` that gives one worker an engine beyond the
 /// main one's 64 MiB, which the default does not (light-cljs-437): 64 MiB
-/// for a V8 isolate or a QuickJS runtime (light-cljs-436, light-cljs-441).
+/// for a V8 isolate (light-cljs-441).
 const ONE_WORKER_ENGINE: &str = "134217728";
 
 fn light_cljs(args: &[&str]) -> std::process::Output {
@@ -781,8 +781,7 @@ fn elide_asserts_omits_assertions_at_every_level() {
         assert_eq!(entry(true).stdout, b"-2\n", "{level}");
     }
 
-    // `--eval` runs an interactive session, which runs in QuickJS.
-    #[cfg(feature = "quickjs")]
+    #[cfg(light_v8)]
     {
         let output = light_cljs(&["--eval", "--text", pre]);
         assert!(!output.status.success());
@@ -846,8 +845,7 @@ fn elide_asserts_reaches_the_assert_source_macros_read() {
     .unwrap();
     let root_arg = root.to_str().unwrap();
     let text = format!("(defmacro m [] {flags}) (pr-str (m))");
-    // `--eval` runs an interactive session, which runs in QuickJS.
-    #[cfg(feature = "quickjs")]
+    #[cfg(light_v8)]
     let eval = format!("(defmacro m [] {flags}) (m)");
     let node = |js: &str| {
         let output = node::print(js).unwrap();
@@ -866,8 +864,7 @@ fn elide_asserts_reaches_the_assert_source_macros_read() {
             let args = [&["--compile"][..], flag, input].concat();
             assert_eq!(node(&compiled(&args)), expected, "{args:?}");
         }
-        // `--eval` runs an interactive session, which runs in QuickJS.
-        #[cfg(feature = "quickjs")]
+        #[cfg(light_v8)]
         {
             let args = [&["--eval"][..], flag, &["--text", &eval]].concat();
             assert_eq!(compiled(&args), expected, "{args:?}");
@@ -1741,9 +1738,7 @@ fn stats_reports_peak_rss_parsed_trees_and_queued_unit_ir_at_any_job_count() {
     let args = ["--compile", "--entry", "app.main", "--source-root", root];
     let plain = light_cljs(&args);
     assert!(plain.status.success());
-    // The default memory limit gives no worker an isolate; 96 MiB gives one,
-    // which `pushed`'s `dotimes`, a JavaScript macro, needs (light-cljs-437),
-    // and 128 MiB one QuickJS runtime.
+    // Give a worker its own isolate so it can expand pushed's dotimes macro.
     for (jobs, limit) in [
         ("1", "67108864"),
         ("4", "67108864"),
@@ -1813,7 +1808,7 @@ fn stats_reports_peak_rss_parsed_trees_and_queued_unit_ir_at_any_job_count() {
         if jobs == "4" {
             assert!(value("deferred-units.pooled") > 0.0, "{stderr}");
             let isolates = value("pool.worker-isolates");
-            if limit == "67108864" || !cfg!(any(feature = "quickjs", feature = "v8-macros")) {
+            if limit == "67108864" || !cfg!(light_v8) {
                 assert_eq!(isolates, 0.0, "{stderr}");
             } else {
                 assert!(isolates > 0.0, "{stderr}");
@@ -2138,11 +2133,9 @@ fn stats_file_traces_exclusive_stages_and_demand_edges() {
         assert_eq!(unit("app.macros/outer")[8], unit("app.macros/inner")[5]);
         // Positions are the forms' lines.
         assert_eq!(unit("app.macros/plain")[3], "9");
-        // Only the units that run a JavaScript macro enter the host, with
-        // either engine: QuickJS's service calls are timed as V8's are
-        // (light-cljs-435).
+        // V8 enters the host only for units that run a JavaScript macro.
         let host: Vec<_> = units.iter().map(|row| (row[2], row[11])).collect();
-        if cfg!(any(feature = "quickjs", feature = "v8-macros")) {
+        if cfg!(light_v8) {
             assert_eq!(
                 host,
                 [
@@ -2328,7 +2321,7 @@ fn dag_model_tests_pass() {
 }
 
 /// The browser playground (playground/crate) compiles the library for
-/// wasm32 with neither QuickJS nor V8, a cfg path no native build takes:
+/// wasm32 without V8, a cfg path no V8 build takes:
 /// `bb playground/build.bb lint` checks it with warnings denied, so a change
 /// that breaks only that build (light-cljs-396) fails here and not first in
 /// the Pages deploy. Skipped when `bb` is not on PATH or the toolchain has no
@@ -2540,7 +2533,7 @@ fn jobs_counts_work_slots_without_changing_output() {
 }
 
 // Counts per-worker engine isolates.
-#[cfg(any(feature = "quickjs", feature = "v8-macros"))]
+#[cfg(light_v8)]
 /// With `--jobs N`, units are analyzed in persistent worker isolates, and
 /// the program is the one a fresh isolate per unit gives, the correctness
 /// reference (docs/compiler-concurrency.md, "As built (light-cljs-339)").
@@ -2654,7 +2647,7 @@ fn jobs_stats_report_the_unit_pool_scheduler() {
     let jobs = stat("pool.jobs");
     let units = stat("deferred-units.pooled");
     let helped = stat("pool.jobs.helped");
-    if cfg!(any(feature = "quickjs", feature = "v8-macros")) {
+    if cfg!(light_v8) {
         assert_eq!(jobs, units, "{stderr}");
     } else {
         // A parked step can be taken by an ordinary claim as well as by

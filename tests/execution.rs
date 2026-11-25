@@ -262,9 +262,9 @@ fn compiled_batch_script(cases: &[Case], first_index: usize) -> String {
 fn literal_cases_in_both_engines(cases: &[Case], label: &str) -> String {
     let script = compiled_batch_script(cases, 0);
     let node_output = node(&script);
-    #[cfg(not(light_quickjs))]
+    #[cfg(not(light_v8))]
     let _ = label;
-    #[cfg(light_quickjs)]
+    #[cfg(light_v8)]
     {
         // These exact literal cases use the shared observer's empty text stream.
         // Reject byte writes here: this is not a Node Buffer/IO compatibility layer.
@@ -284,25 +284,25 @@ fn literal_cases_in_both_engines(cases: &[Case], label: &str) -> String {
         };
         globalThis.console = {log: (...xs) => process.stdout.write(xs.join(" ") + "\n")};
     "#;
-        let runtime = rquickjs::Runtime::new().unwrap();
-        let context = rquickjs::Context::full(&runtime).unwrap();
-        let quickjs_input = format!("{prelude}\n{script}\nliteralOutput");
-        let quickjs_output =
-            context.with(|ctx| ctx.eval::<String, _>(quickjs_input.as_bytes()).unwrap());
+        use light_cljs::evaluator::Evaluator;
+        let evaluator = Evaluator::new(Default::default()).unwrap();
+        let v8_input = format!("(() => {{\n{prelude}\n{script}\nreturn literalOutput;\n}})()");
+        let value = evaluator.evaluate_js(&v8_input).unwrap();
+        let v8_output = evaluator.string(value).unwrap();
         if let Some(root) = std::env::var_os("LIGHT_LITERAL_EXECUTION_AUDIT_ROOT") {
             let directory = PathBuf::from(root).join(label);
             fs::create_dir_all(&directory).unwrap();
             for (name, value) in [
                 ("node.stdin", &script),
                 ("node.stdout", &node_output),
-                ("quickjs.stdin", &quickjs_input),
-                ("quickjs.stdout", &quickjs_output),
+                ("v8.stdin", &v8_input),
+                ("v8.stdout", &v8_output),
             ] {
                 fs::write(directory.join(name), value).unwrap();
             }
         }
         assert_eq!(
-            quickjs_output, node_output,
+            v8_output, node_output,
             "Complete literal packets differ between engines"
         );
     }
@@ -1807,7 +1807,7 @@ fn numeric_fixture_applications_match_expected_outcomes_in_embedded_engine_and_n
                 case.stdout
             )
         );
-        #[cfg(light_quickjs)]
+        #[cfg(light_v8)]
         {
             use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
             let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
