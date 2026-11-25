@@ -9077,7 +9077,10 @@ impl<'a, 's> Emitter<'a, 's> {
             } => {
                 if self.replaced_core.is_some()
                     && self.repeatable(*value)
-                    && (*direct || self.pure_operand(*protocol))
+                    && (*direct
+                        || matches!(self.program.exprs[protocol.0].kind, ExprKind::Global(global)
+                            if self.program.protocols.contains_key(&global))
+                            && self.pure_operand(*protocol))
                 {
                     let slot = crate::rta::protocol_slot(key, 0);
                     self.output.push('(');

@@ -11874,19 +11874,17 @@
   //@unit protocolFallback requires: nativeType
   function protocolFallback(protocol, value) { return !!(protocol._ || protocol[nativeType(value)]); }
   //@unit protocolPredicate requires: demandProtocol, directMethod, nativeType, protocolSentinel,
-  //@ protocolSlot, slotFirst
+  //@ protocolNames, protocolSlot, slotFirst
   function protocolPredicate(protocol, key, value, direct) {
+    // For satisfies?, the marker must agree with both the name and the live protocol.
+    const checkMarker = direct || protocolNames.get(protocol) === key;
     if (slotFirst.on) {
-      if (value != null) {
-        // A local alias can share the protocol object but names a different marker.
-        const slot = protocolSlot(key, 0);
-        if (value[slot] === protocolSentinel) return true;
-      }
+      if (checkMarker && value != null && value[protocolSlot(key, 0)] === protocolSentinel) return true;
       if (direct) return false;
       return !!(protocol._ || protocol[nativeType(value)]);
     }
     demandProtocol(key, value);
-    if (directMethod(value, key, 0)) return true;
+    if (checkMarker && directMethod(value, key, 0)) return true;
     if (direct) return false;
     return !!(protocol[nativeType(value)] || protocol._);
   }
