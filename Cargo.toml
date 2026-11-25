@@ -65,10 +65,6 @@ harness = false
 name = "evaluator"
 harness = false
 
-# Optimize dependencies while keeping the compiler's development build unoptimized.
-[profile.dev.package."*"]
-opt-level = 3
-
 # Ship the same optimized compiler configuration used by the cold-build runs.
 [profile.release]
 lto = "thin"

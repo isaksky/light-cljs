@@ -65,8 +65,8 @@ Macros run in the compiler worker's own JavaScript engine: the crate hands
 `MacroHost::set_script_host` a host that calls
 `globalThis.lightCljsMacroHost`, which `macro-host.js` provides, and
 `serve_macro_host` is the way back in for the compiler services macros call.
-The browser's JavaScript checks the compiler's 10 s deadline at bridge
-boundaries. When a macro keeps running past it, `compiler.js` terminates
+The compiler checks its 10 s deadline at bridge boundaries. When a macro
+keeps running past it, `compiler.js` terminates
 its worker and replays the compile in a fresh one up to that macro call.
 It then reports the located deadline diagnostic. Interactive sessions and
 compiler data readers require a V8 build.
