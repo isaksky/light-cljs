@@ -14,13 +14,12 @@ fn execute(unit: &str, expected: &str, directory: &Path) {
         light_cljs::evaluator::RUNTIME_SOURCE,
         unit
     );
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
-        let runtime = rquickjs::Runtime::new().unwrap();
-        let context = rquickjs::Context::full(&runtime).unwrap();
-        let quickjs = context.with(|ctx| ctx.eval::<String, _>(script.as_bytes()).unwrap());
-        fs::write(directory.join("quickjs.txt"), &quickjs).unwrap();
-        assert_eq!(quickjs, expected);
+        let context = crate::embedded_js::EmbeddedJs::new();
+        let embedded = context.string(&script).unwrap();
+        fs::write(directory.join("embedded.txt"), &embedded).unwrap();
+        assert_eq!(embedded, expected);
     }
     let mut child = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
         .arg("-")
@@ -81,7 +80,7 @@ const PARTS: usize = 6;
 
 /// Runs every `PARTS`-th fixture row from `part` as an application and as a macro
 /// computation, each with a fresh host and with the part's one reused host, in
-/// QuickJS and Node.
+/// the embedded engine and Node.
 fn execute_rows(part: usize) {
     let root = artifact_root(&format!("rows-{part}"));
     let mut reused = warmed_host(&root);
@@ -121,7 +120,7 @@ fn execute_rows(part: usize) {
                     expected.to_owned()
                 };
                 execute(&unit, &literal, &directory);
-                println!("{variant}: QuickJS/Node {literal}");
+                println!("{variant}: embedded engine/Node {literal}");
             }
         }
     }
@@ -195,7 +194,7 @@ fn hash_branch_failures_leave_fresh_and_reused_hosts_usable() {
 }
 
 /// Complete sources in both compiler phases and both host lifecycles, each run in
-/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+/// the embedded engine and Node (see `tests/support/phase_oracle.rs`).
 mod phase_oracles {
     use crate::phase_oracle::{Case, run};
 

@@ -5,7 +5,7 @@ use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 fn both(source: &str, expected: &str) {
     let program = analyze_with_macros(source, &parse(source).unwrap(), &mut MacroHost::new())
         .unwrap_or_else(|e| panic!("{source}: {e}"));
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(
@@ -13,7 +13,7 @@ fn both(source: &str, expected: &str) {
                 .print(evaluator.evaluate(&program).unwrap())
                 .unwrap(),
             expected,
-            "QuickJS: {source}"
+            "embedded engine: {source}"
         );
     }
     assert_eq!(
@@ -87,7 +87,7 @@ fn iterator_helper_phase_isolation_diagnostics_and_repetition() {
         );
         let source = "(defmacro good [] (.next (seq-iter [42]))) (good)";
         let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
-        #[cfg(feature = "quickjs")]
+        #[cfg(any(light_v8, light_quickjs))]
         {
             let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
             assert_eq!(
@@ -100,8 +100,8 @@ fn iterator_helper_phase_isolation_diagnostics_and_repetition() {
     }
 }
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+// Exercises the embedded engine through EvalSession.
+#[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn iterator_helpers_preserve_session_owned_progress() {
     use light_cljs::{EvalOptions, EvalSession};
@@ -131,7 +131,7 @@ fn iterator_helpers_preserve_session_owned_progress() {
 }
 
 /// Complete sources in both compiler phases and both host lifecycles, each run in
-/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+/// the embedded engine and Node (see `tests/support/phase_oracle.rs`).
 mod phase_oracles {
     use crate::phase_oracle::{Case, run};
 

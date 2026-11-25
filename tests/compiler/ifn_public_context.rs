@@ -72,14 +72,14 @@ fn execute(identity: &str) {
                     .unwrap_or_else(|error| {
                         panic!("{identity} macro={macro_phase} reuse={reuse}: {error}")
                     });
-            #[cfg(feature = "quickjs")]
+            #[cfg(any(light_v8, light_quickjs))]
             let actual = {
                 let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
                 let actual = evaluator
                     .string(evaluator.evaluate(&program).unwrap())
                     .unwrap();
                 println!(
-                    "ifn-observation\t{identity}\tmacro={macro_phase}\treuse={reuse}\tQuickJS\t{actual}"
+                    "ifn-observation\t{identity}\tmacro={macro_phase}\treuse={reuse}\tembedded engine\t{actual}"
                 );
                 actual
             };
@@ -91,7 +91,7 @@ fn execute(identity: &str) {
                 "ifn-observation\t{identity}\tmacro={macro_phase}\treuse={reuse}\tNode\t{actual_node}"
             );
             // Node's run above throws unless the value equals the expected literal.
-            #[cfg(feature = "quickjs")]
+            #[cfg(any(light_v8, light_quickjs))]
             assert_eq!(
                 actual_node, actual,
                 "{identity} macro={macro_phase} reuse={reuse}"

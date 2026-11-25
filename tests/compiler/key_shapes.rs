@@ -16,7 +16,7 @@
 //! does. Below `Advanced` nothing changes, and every observation of a shaped
 //! literal (printing, order, equality, hashes, lookups, updates, transients,
 //! duplicate errors) is the one a literal built at its site gives, which these
-//! tests check at every level in Node and QuickJS, down to the runtime's
+//! tests check at every level in Node and embedded engine, down to the runtime's
 //! internal entries and trie nodes.
 use super::constant_hashes::agrees;
 use super::constant_pool::calls;
@@ -45,9 +45,9 @@ fn emit(program: &Program, level: OptimizationLevel) -> String {
 }
 
 /// The value of the JavaScript string expression `expression` in a fresh
-/// QuickJS evaluator.
-#[cfg(feature = "quickjs")]
-fn quickjs(expression: &str) -> String {
+/// embedded evaluator.
+#[cfg(any(light_v8, light_quickjs))]
+fn embedded(expression: &str) -> String {
     let evaluator = Evaluator::new(EvaluatorOptions {
         memory_limit: 1 << 30,
         poll_budget: u64::MAX,
@@ -61,11 +61,11 @@ fn quickjs(expression: &str) -> String {
     evaluator.string(value).unwrap()
 }
 
-/// `expression`'s string value in QuickJS when available, otherwise in Node.
+/// `expression`'s string value in the embedded engine when available, otherwise in Node.
 fn summary_of(expression: &str) -> String {
-    #[cfg(feature = "quickjs")]
-    return quickjs(expression);
-    #[cfg(not(feature = "quickjs"))]
+    #[cfg(any(light_v8, light_quickjs))]
+    return embedded(expression);
+    #[cfg(not(any(light_v8, light_quickjs)))]
     {
         let printed = execute(&format!("console.log({expression});"));
         printed.strip_suffix('\n').unwrap_or(&printed).to_owned()
@@ -73,13 +73,17 @@ fn summary_of(expression: &str) -> String {
 }
 
 /// What the program, whose value is a string, gives at every level, in Node
-/// and in QuickJS: the same string, which is returned. `None` is the oracle.
+/// and in the embedded engine: the same string, which is returned. `None` is the oracle.
 fn every_level(program: &Program) -> String {
     let outputs = OptimizationLevel::ALL.map(|level| {
         let js = emit_terse(program, level);
         let node = execute(&format!("console.log({js});"));
         let printed = summary_of(&js);
-        assert_eq!(node, format!("{printed}\n"), "Node and QuickJS at {level}");
+        assert_eq!(
+            node,
+            format!("{printed}\n"),
+            "Node and embedded engine at {level}"
+        );
         printed
     });
     for (level, output) in OptimizationLevel::ALL.into_iter().zip(&outputs) {
@@ -633,7 +637,7 @@ fn transient_hash_sets_edit_the_nodes_they_own_in_place() {
 fn shape_key_hashes_are_the_runtime_hashes() {
     // Each shape embeds its keys' hashes from `src/value_hash.rs`; the
     // constant hash check of light-cljs-219 also compares those with the
-    // runtime's, in Node and QuickJS (see `constant_hashes::agrees`).
+    // runtime's, in Node and embedded engine (see `constant_hashes::agrees`).
     let advanced = emit(&program(&edge_cases()), OptimizationLevel::Advanced);
     let checked = agrees(&advanced, "edge cases");
     // 94 since light-cljs-1080, whose map literals of at most 8 keys have no

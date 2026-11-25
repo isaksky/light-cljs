@@ -6,7 +6,7 @@
 //! calls the runtime's own `get`, so replacing `cljs.core/get` does not change
 //! what a keyword-literal call returns.
 //!
-//! Every program runs at every level in Node and in QuickJS and must give
+//! Every program runs at every level in Node and in the embedded engine and must give
 //! the same value.
 use super::optimization::{execute, readable};
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
@@ -19,9 +19,9 @@ fn program(source: &str) -> Program {
     analyze(source, &parse(source).unwrap()).unwrap_or_else(|error| panic!("{source}\n{error}"))
 }
 
-// Runs the program in QuickJS.
-#[cfg(feature = "quickjs")]
-fn quickjs(expression: &str) -> String {
+// Runs the program in the embedded engine.
+#[cfg(any(light_v8, light_quickjs))]
+fn embedded(expression: &str) -> String {
     let evaluator = Evaluator::new(EvaluatorOptions {
         memory_limit: 1 << 30,
         timeout: Duration::from_secs(60),
@@ -35,7 +35,7 @@ fn quickjs(expression: &str) -> String {
 }
 
 /// The program, whose value is a string, gives `expected` at every level in
-/// Node and in QuickJS; returns the readable output of each level.
+/// Node and in the embedded engine; returns the readable output of each level.
 fn every_level(source: &str, expected: &str) -> Vec<String> {
     let program = program(source);
     OptimizationLevel::ALL
@@ -47,8 +47,12 @@ fn every_level(source: &str, expected: &str) -> Vec<String> {
                 format!("{expected}\n"),
                 "Node at {level}: {source}"
             );
-            #[cfg(feature = "quickjs")]
-            assert_eq!(quickjs(&js), expected, "QuickJS at {level}: {source}");
+            #[cfg(any(light_v8, light_quickjs))]
+            assert_eq!(
+                embedded(&js),
+                expected,
+                "embedded engine at {level}: {source}"
+            );
             prepare_application(&program, readable(level)).emit_js()
         })
         .collect()

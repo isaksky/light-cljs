@@ -38,8 +38,8 @@ fn printed(session: &mut EvalSession, source: &str) -> String {
     result
 }
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+// Exercises the embedded engine through EvalSession.
+#[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn clocks_random_sources_and_taps_are_explicit_session_capabilities() {
     let mut session = EvalSession::new(EvalOptions {
@@ -136,7 +136,7 @@ fn runtime_scheduler_admission_bounded_reentrancy_and_arities() {
       return true;
     }})()"#
     );
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let result = evaluator.evaluate_js(&expression).unwrap();
@@ -166,8 +166,8 @@ fn host_hooks_have_macro_application_phase_witnesses() {
     let program =
         analyze_with_macros(source, &parse(source).unwrap(), &mut MacroHost::new()).unwrap();
     let expected = "[[true true [0 1 2 3] [true true true] true false] [true true [0 1 2 3] [true true true] true false]]";
-    // Evaluating the analyzed program needs the QuickJS evaluator; Node runs it below.
-    #[cfg(feature = "quickjs")]
+    // Evaluating the analyzed program needs the embedded evaluator; Node runs it below.
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let result = evaluator.evaluate(&program).unwrap();
@@ -187,7 +187,7 @@ fn host_hooks_have_macro_application_phase_witnesses() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), expected);
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let mut denied = EvalSession::new(EvalOptions {
             clock: Some(Rc::new(|| Err(EvalError("clock denied".into())))),
@@ -240,8 +240,8 @@ fn provider(requests: Rc<RefCell<Vec<FileLoadRequest>>>) -> FileProvider {
     })
 }
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+// Exercises the embedded engine through EvalSession.
+#[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn load_file_uses_one_compiler_and_heap_with_macros_namespaces_and_require() {
     let requests = Rc::new(RefCell::new(Vec::new()));
@@ -280,8 +280,8 @@ fn load_file_uses_one_compiler_and_heap_with_macros_namespaces_and_require() {
     assert_eq!(requests.borrow()[1].requesting_namespace, "tools");
 }
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+// Exercises the embedded engine through EvalSession.
+#[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn file_diagnostics_history_recovery_and_capability_denial_are_stable() {
     let requests = Rc::new(RefCell::new(Vec::new()));

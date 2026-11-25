@@ -81,17 +81,20 @@ fn unchanged_invoke_fixture_preserves_its_original_declared_call_failure() {
             quote(&javascript)
         );
         std::fs::write(sources.join("observed.js"), &observed).unwrap();
-        #[cfg(feature = "quickjs")]
+        #[cfg(any(light_v8, light_quickjs))]
         {
             let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
-            let quickjs = evaluator
+            let embedded = evaluator
                 .string(evaluator.evaluate_js(&observed).unwrap())
                 .unwrap();
             println!(
-                "invoke-program-observation\t{lifecycle}\tQuickJS\t{}",
-                hex(&quickjs)
+                "invoke-program-observation\t{lifecycle}\tembedded engine\t{}",
+                hex(&embedded)
             );
-            assert!(quickjs.contains("\"category\":\"TypeError\""), "{quickjs}");
+            assert!(
+                embedded.contains("\"category\":\"TypeError\""),
+                "{embedded}"
+            );
         }
         let node = node(&format!("console.log({observed});"));
         println!(

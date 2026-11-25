@@ -10,7 +10,7 @@ fn both(source: &str, expected: &str) {
     let mut host = MacroHost::new();
     let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host)
         .unwrap_or_else(|error| panic!("{source}\n{error}"));
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let value = evaluator.evaluate(&program).unwrap();
@@ -56,7 +56,7 @@ fn callable_rest_sequences_receivers_effects_and_lazy_values_match_references() 
         let fields: Vec<_> = line.split('\t').collect();
         assert_eq!(fields.len(), 3);
         both(fields[1], fields[2]);
-        // Macro computation is executed in QuickJS, with its own fresh roots.
+        // Macro computation is executed in the embedded engine, with its own fresh roots.
         both(
             &format!(
                 "(defmacro rest-contract [] (pr-str (do {}))) (rest-contract)",
@@ -69,7 +69,7 @@ fn callable_rest_sequences_receivers_effects_and_lazy_values_match_references() 
 
 #[test]
 fn invalid_rest_forms_and_failed_invocations_leave_reused_sessions_usable() {
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let mut session = light_cljs::EvalSession::new(Default::default()).unwrap();
         for source in [
@@ -106,7 +106,7 @@ fn invalid_rest_forms_and_failed_invocations_leave_reused_sessions_usable() {
     let js =
         light_cljs::compile_with_macros(&format!("{source} (pr-str (restored-rest))"), &mut host)
             .unwrap();
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let value = evaluator.evaluate_js(&js).unwrap();
@@ -115,7 +115,7 @@ fn invalid_rest_forms_and_failed_invocations_leave_reused_sessions_usable() {
 }
 
 /// Complete sources in both compiler phases and both host lifecycles, each run in
-/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+/// the embedded engine and Node (see `tests/support/phase_oracle.rs`).
 mod phase_oracles {
     use crate::phase_oracle::{Case, run};
 

@@ -5,7 +5,7 @@ use std::process::Command;
 
 fn both(host: &mut MacroHost, source: &str, expected: &str) {
     let program = analyze_with_macros(source, &parse(source).unwrap(), host).unwrap();
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(
@@ -13,7 +13,7 @@ fn both(host: &mut MacroHost, source: &str, expected: &str) {
                 .print(evaluator.evaluate(&program).unwrap())
                 .unwrap(),
             expected,
-            "QuickJS: {source}"
+            "embedded engine: {source}"
         );
     }
     let output = Command::new("node")
@@ -109,15 +109,12 @@ mod original_table {
         String::from_utf8(out.stdout).unwrap()
     }
     fn assert_complete_table(packet: &str) {
-        #[cfg(feature = "quickjs")]
+        #[cfg(any(light_v8, light_quickjs))]
         {
-            let runtime = rquickjs::Runtime::new().unwrap();
-            let context = rquickjs::Context::full(&runtime).unwrap();
-            let passed = context.with(|ctx| {
-        ctx.eval::<bool, _>(format!(
-            "(() => {{const packet=JSON.parse({packet:?}); const rows=packet.outcome.value.$vector[1].$vector; return packet.outcome.status==='returned' && rows.length===112 && rows.every(row=>row.$vector[1]===true);}})()"
-        )).unwrap()
-    });
+            let context = crate::embedded_js::EmbeddedJs::new();
+            let passed = context.boolean(&format!(
+                "(() => {{const packet=JSON.parse({packet:?}); const rows=packet.outcome.value.$vector[1].$vector; return packet.outcome.status==='returned' && rows.length===112 && rows.every(row=>row.$vector[1]===true);}})()"
+            )).unwrap();
             assert!(passed, "all 112 original comparisons must pass: {packet}");
         }
     }
@@ -175,18 +172,19 @@ mod original_table {
                 );
                 fs::write(folder.join("script.js"), &script).unwrap();
                 let input = format!("(0, eval)({script:?})");
-                fs::write(folder.join("quickjs.stdin"), &input).unwrap();
-                #[cfg(feature = "quickjs")]
+                fs::write(folder.join("embedded.stdin"), &input).unwrap();
+                #[cfg(any(light_v8, light_quickjs))]
                 {
-                    let runtime = rquickjs::Runtime::new().unwrap();
-                    let context = rquickjs::Context::full(&runtime).unwrap();
-                    let qjs = context.with(|ctx| match ctx.eval::<String, _>(input.as_bytes()) {
+                    let context = crate::embedded_js::EmbeddedJs::new();
+                    let embedded = match context.string(&script) {
                         Ok(value) => value,
-                        Err(e) => format!("ERROR {e:?} {:?}", ctx.catch()),
-                    });
-                    fs::write(folder.join("quickjs.stdout"), &qjs).unwrap();
-                    println!("integer-table-observation\t{lifecycle}\t{phase}\tQuickJS\t{qjs}");
-                    assert_complete_table(&qjs);
+                        Err(e) => format!("ERROR {e:?}"),
+                    };
+                    fs::write(folder.join("embedded.stdout"), &embedded).unwrap();
+                    println!(
+                        "integer-table-observation\t{lifecycle}\t{phase}\tembedded engine\t{embedded}"
+                    );
+                    assert_complete_table(&embedded);
                 }
                 let node_input = format!("console.log({script});");
                 fs::write(folder.join("node.stdin"), &node_input).unwrap();

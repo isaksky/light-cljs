@@ -14,13 +14,12 @@ fn execute(unit: &str, expected: &str, directory: &Path) {
         light_cljs::evaluator::RUNTIME_SOURCE,
         unit
     );
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
-        let runtime = rquickjs::Runtime::new().unwrap();
-        let context = rquickjs::Context::full(&runtime).unwrap();
-        let quickjs = context.with(|ctx| ctx.eval::<String, _>(script.as_bytes()).unwrap());
-        fs::write(directory.join("quickjs.txt"), &quickjs).unwrap();
-        assert_eq!(quickjs, expected);
+        let context = crate::embedded_js::EmbeddedJs::new();
+        let embedded = context.string(&script).unwrap();
+        fs::write(directory.join("embedded.txt"), &embedded).unwrap();
+        assert_eq!(embedded, expected);
     }
     let mut child = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
         .arg("-")
@@ -52,25 +51,23 @@ fn execute(unit: &str, expected: &str, directory: &Path) {
 
 fn uncaught_application(failed_unit: &str, recovery_unit: &str, message: &str, directory: &Path) {
     let script = format!(
-        "const rt = {}; rt.core.prStr(({})(rt));",
+        "var rt = {}; rt.core.prStr(({})(rt));",
         light_cljs::evaluator::RUNTIME_SOURCE,
         failed_unit
     );
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
-        let runtime = rquickjs::Runtime::new().unwrap();
-        let context = rquickjs::Context::full(&runtime).unwrap();
-        context.with(|ctx| {
-            assert!(ctx.eval::<String, _>(script.as_bytes()).is_err());
-            let failure = ctx.catch();
-            let actual: String = failure.as_object().unwrap().get("message").unwrap();
-            assert_eq!(actual, message);
-            fs::write(directory.join("application-quickjs-failure.txt"), actual).unwrap();
-            let recovery = format!("rt.core.prStr(({})(rt));", recovery_unit);
-            let actual: String = ctx.eval(recovery.as_bytes()).unwrap();
-            assert_eq!(actual, "42");
-            fs::write(directory.join("application-quickjs-recovered.txt"), actual).unwrap();
-        });
+        let engine = crate::embedded_js::EmbeddedJs::interactive();
+        let failure = engine.string(&script).unwrap_err();
+        assert_eq!(
+            failure.0.lines().next().unwrap(),
+            format!("Error: {message}")
+        );
+        fs::write(directory.join("application-embedded-failure.txt"), message).unwrap();
+        let recovery = format!("rt.core.prStr(({})(rt));", recovery_unit);
+        let actual = engine.string(&recovery).unwrap();
+        assert_eq!(actual, "42");
+        fs::write(directory.join("application-embedded-recovered.txt"), actual).unwrap();
     }
     let mut child = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
         .arg("-")
@@ -140,7 +137,7 @@ fn find_effects_execute_in_fresh_and_reused_phases() {
                     expected.to_owned()
                 };
                 execute(&unit, &literal, &directory);
-                println!("{variant}: QuickJS/Node {literal}");
+                println!("{variant}: embedded engine/Node {literal}");
             }
         }
     }
