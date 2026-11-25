@@ -43,7 +43,7 @@ fn host() -> MacroHost {
 #[test]
 fn complete_declaration_sources_execute_in_fresh_and_reused_hosts_and_both_phases() {
     let mut reused = host();
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     let evaluator = Evaluator::new(EvaluatorOptions {
         timeout: std::time::Duration::from_secs(120),
         ..EvaluatorOptions::default()
@@ -93,13 +93,13 @@ fn complete_declaration_sources_execute_in_fresh_and_reused_hosts_and_both_phase
                         let emitted = light_cljs::compile_with_macros(&computation, host).unwrap();
                         format!("eval({emitted:?})")
                     };
-                    #[cfg(feature = "quickjs")]
+                    #[cfg(any(light_v8, light_quickjs))]
                     let actual = evaluator
                         .string(evaluator.evaluate_js(&script).unwrap())
                         .unwrap();
-                    #[cfg(feature = "quickjs")]
+                    #[cfg(any(light_v8, light_quickjs))]
                     assert_eq!(actual, expected, "{id} {phase} {session} {cycle}");
-                    #[cfg(feature = "quickjs")]
+                    #[cfg(any(light_v8, light_quickjs))]
                     {
                         let fresh_engine = Evaluator::new(EvaluatorOptions {
                             timeout: std::time::Duration::from_secs(120),
@@ -116,7 +116,7 @@ fn complete_declaration_sources_execute_in_fresh_and_reused_hosts_and_both_phase
                     assert_eq!(node(&script), expected, "Node {id} {phase} {session}");
                     node_batch.push_str(&format!("console.log({script});\n"));
                     expected_batch.push(expected.to_owned());
-                    #[cfg(feature = "quickjs")]
+                    #[cfg(any(light_v8, light_quickjs))]
                     println!("declare-value-packet\t{cycle}\t{phase}\t{session}\t{id}\t{actual}");
                 }
             }
@@ -176,7 +176,7 @@ fn declaration_demand_failures_ownership_and_generations_recover() {
             node(&format!("eval({js:?})")),
             "[[[true [:pending]] 43 [:pending]] 43 [:pending :unrelated]]"
         );
-        #[cfg(feature = "quickjs")]
+        #[cfg(any(light_v8, light_quickjs))]
         {
             let evaluator = Evaluator::new(EvaluatorOptions {
                 timeout: std::time::Duration::from_secs(120),
@@ -197,7 +197,7 @@ fn declaration_demand_failures_ownership_and_generations_recover() {
         light_cljs::compile("(pr-str (let [d (declare single)] [(undefined? d) (nil? d)]))")
             .unwrap();
     assert_eq!(node(&format!("eval({direct:?})")), "[true true]");
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let direct_engine = Evaluator::new(EvaluatorOptions {
             timeout: std::time::Duration::from_secs(120),
@@ -221,7 +221,7 @@ fn declaration_demand_failures_ownership_and_generations_recover() {
 }
 
 /// Complete sources in both compiler phases and both host lifecycles, each run in
-/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+/// the embedded engine and Node (see `tests/support/phase_oracle.rs`).
 mod phase_oracles {
     use crate::phase_oracle::{Case, run};
 

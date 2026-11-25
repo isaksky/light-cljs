@@ -8,7 +8,7 @@ fn program(source: &str) -> light_cljs::Program {
 }
 fn both(source: &str, expected: &str) {
     let p = program(source);
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(e.print(e.evaluate(&p).unwrap()).unwrap(), expected);
@@ -57,8 +57,8 @@ fn eduction_public_arities_run_as_shared_macro_and_application_helpers() {
     );
 }
 
-// Recovery and cancellation of the QuickJS evaluator are the subject.
-#[cfg(feature = "quickjs")]
+// Recovery and cancellation of the embedded evaluator are the subject.
+#[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn throwing_application_and_macro_views_recover_in_fresh_sessions() {
     let p = program("(into [] (eduction (map #(throw (js/Error. \"view failed\"))) [1 2]))");
@@ -79,8 +79,8 @@ fn throwing_application_and_macro_views_recover_in_fresh_sessions() {
     );
 }
 
-// Recovery and cancellation of the QuickJS evaluator are the subject.
-#[cfg(feature = "quickjs")]
+// Recovery and cancellation of the embedded evaluator are the subject.
+#[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn cancellation_in_eduction_construction_demand_and_completion_is_terminal() {
     use std::sync::{Arc, Mutex};
@@ -131,8 +131,8 @@ fn cancellation_in_eduction_construction_demand_and_completion_is_terminal() {
     }
 }
 
-// The QuickJS evaluator's heap retention is the subject.
-#[cfg(feature = "quickjs")]
+// The embedded evaluator's heap retention is the subject.
+#[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn abandoned_prefixes_and_reducer_cycles_are_collected_in_both_engines() {
     let batch = r#"(() => {
@@ -150,20 +150,24 @@ fn abandoned_prefixes_and_reducer_cycles_are_collected_in_both_engines() {
       }
       gc(); return 42;
     })()"#;
-    let e = light_cljs::evaluator::QuickJsEvaluator::new(EvaluatorOptions {
-        memory_limit: 8 * 1024 * 1024,
+    let e = Evaluator::new(EvaluatorOptions {
+        memory_limit: 16 << 20,
         timeout: std::time::Duration::from_secs(60),
         ..EvaluatorOptions::default()
     })
     .unwrap();
     e.install_gc_callback("gc").unwrap();
-    e.collect_garbage();
-    let before = e.memory_usage_bytes();
-    for _ in 0..3 {
+    let run_batch = || {
         let result = e.evaluate_js(batch).unwrap();
         assert_eq!(e.number(result).unwrap(), 42.0);
         e.release(result).unwrap();
         e.collect_garbage();
+    };
+    // Warm the V8 code paths before measuring retained heap across batches.
+    run_batch();
+    let before = e.memory_usage_bytes();
+    for _ in 0..3 {
+        run_batch();
         let after = e.memory_usage_bytes();
         assert!(
             after < before + 128 * 1024,

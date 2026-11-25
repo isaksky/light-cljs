@@ -27,13 +27,17 @@ impl Sources {
 fn both(body: &str, expected: &str) {
     let sources = Sources::new();
     let js = sources.compile(body);
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let evaluator = Evaluator::new(Default::default()).unwrap();
         let value = evaluator
             .evaluate_js(&format!("JSON.stringify({js})"))
             .unwrap();
-        assert_eq!(evaluator.string(value).unwrap(), expected, "QuickJS {body}");
+        assert_eq!(
+            evaluator.string(value).unwrap(),
+            expected,
+            "embedded engine {body}"
+        );
     }
     assert_eq!(
         crate::canonical_json::node_stdout(&format!("console.log(JSON.stringify({js}));")).trim(),
@@ -116,7 +120,7 @@ fn macros_use_libraries_without_native_registration() {
         "true\n",
         "Node"
     );
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let e = Evaluator::new(Default::default()).unwrap();
         assert_eq!(
@@ -150,8 +154,8 @@ fn traversal_limits_and_session_recovery() {
     );
     let sources = Sources::new();
     let bad = sources.compile("(try (w/prewalk (fn [x] [x]) 1) (catch js/Error e (.-message e)))");
-    // The limits and recovery checked below are QuickJS evaluator limits.
-    #[cfg(feature = "quickjs")]
+    // Exercise the embedded evaluator's limits and recovery.
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert!(
@@ -266,13 +270,13 @@ fn all_supported_native_set_and_walk_fixtures_migrate_with_values_and_effects() 
     body.push(']');
     sources.write("probe/main.cljs", &format!("(ns probe.main (:require [clojure.set :as s :refer [union]] [clojure.walk :as w :refer [postwalk]])) {body}"));
     let js = compile_namespace("probe.main", std::slice::from_ref(sources.0.path())).unwrap();
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     let observations = {
         let e = Evaluator::new(Default::default()).unwrap();
         e.string(e.evaluate_js(&format!("JSON.stringify({js})")).unwrap())
             .unwrap()
     };
-    #[cfg(not(feature = "quickjs"))]
+    #[cfg(not(any(light_v8, light_quickjs)))]
     let observations =
         crate::canonical_json::node_stdout(&format!("console.log(JSON.stringify({js}));"))
             .trim()
@@ -351,7 +355,7 @@ fn compiler_data_readers_run_without_quickjs() {
         scheduler::Slots,
     };
 
-    // The guard is process-wide. Isolate it from tests that run emitted JS in QuickJS.
+    // The guard is process-wide, so set it in a separate test process.
     const GUARD: &str = "LIGHT_CLJS_ASSERT_NO_QUICKJS";
     if std::env::var_os(GUARD).is_none() {
         let output = Command::new(std::env::current_exe().unwrap())
@@ -435,10 +439,10 @@ fn compiler_owned_data_readers_keep_source_order_origins_and_typed_results() {
     .unwrap();
     let source = "#_ #test/tag 1 (let [x #test/tag 2] (if false #test/tag 3 x)) #_ #test/tag 4";
     let js = compile_with_macros(&format!("(pr-str (do {source}))"), &mut host).unwrap();
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     let e = Evaluator::new(Default::default()).unwrap();
     // Every read occurs, including a discarded form and an untaken branch.
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     assert_eq!(e.string(e.evaluate_js(&js).unwrap()).unwrap(), "[2 [1 2]]");
     let source = Source::new("owned.cljs", "#test/tag 5");
     let form = host.read_compiler_form(&source).unwrap().unwrap();
@@ -448,7 +452,7 @@ fn compiler_owned_data_readers_keep_source_order_origins_and_typed_results() {
     host.register_compiler_data_reader(Name::new(None, "inst"), "(fn [x] (+ x 10))")
         .unwrap();
     let inst = compile_with_macros("#inst 5", &mut host).unwrap();
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     assert_eq!(e.number(e.evaluate_js(&inst).unwrap()).unwrap(), 15.0);
     for handler in [
         "(fn [x] (atom x))",
@@ -542,7 +546,7 @@ fn compiler_data_readers_report_conversion_and_execution_limits() {
 fn upstream_set_and_walk_witnesses_execute_with_full_setup() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/compiler-libraries");
     let js = compile_namespace("library.upstream", &[root]).unwrap();
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let e = Evaluator::new(Default::default()).unwrap();
         assert_eq!(

@@ -13,17 +13,17 @@ use std::{
 fn both(source: &str, expected: &str) {
     let mut host = MacroHost::new();
     let p = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(
             e.print(
                 e.evaluate(&p)
-                    .unwrap_or_else(|error| panic!("QuickJS {source}: {error}"))
+                    .unwrap_or_else(|error| panic!("embedded engine {source}: {error}"))
             )
             .unwrap(),
             expected,
-            "QuickJS: {source}"
+            "embedded engine: {source}"
         );
     }
     let script = format!(
@@ -215,7 +215,7 @@ fn equality_fixtures_match_pinned_release_and_checkout() {
 }
 
 /// Complete sources in both compiler phases and both host lifecycles, each run in
-/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+/// the embedded engine and Node (see `tests/support/phase_oracle.rs`).
 mod phase_oracles {
     use crate::phase_oracle::{Case, run};
 

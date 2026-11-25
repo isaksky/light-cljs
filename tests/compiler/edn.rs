@@ -33,7 +33,7 @@ fn both(source: &str, expected: &str) {
         &mut host,
     )
     .unwrap_or_else(|e| panic!("{source}: {e}"));
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let e = Evaluator::new(EvaluatorOptions {
             timeout: std::time::Duration::from_secs(60),
@@ -49,7 +49,7 @@ fn both(source: &str, expected: &str) {
         )
         .unwrap(),
         expected,
-        "QuickJS: {source}"
+        "embedded engine: {source}"
     );
     }
     let mut child = Command::new("node")
@@ -245,8 +245,8 @@ fn typed_results_reject_host_objects_cycles_and_deferred_values_without_effects(
     );
 }
 
-// Input providers and limits of the QuickJS evaluator are the subject.
-#[cfg(feature = "quickjs")]
+// Input providers and limits of the embedded evaluator are the subject.
+#[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn rust_providers_supply_chunks_only_and_errors_remain_bounded_and_located() {
     let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
@@ -309,8 +309,8 @@ fn cljs_builtin_js_literals_empty_input_timestamps_and_duplicate_errors() {
     );
 }
 
-// Input providers and limits of the QuickJS evaluator are the subject.
-#[cfg(feature = "quickjs")]
+// Input providers and limits of the embedded evaluator are the subject.
+#[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn reader_limits_and_cancelled_providers_share_sticky_session_control() {
     let e = Evaluator::new(EvaluatorOptions::default()).unwrap();

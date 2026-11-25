@@ -22,7 +22,7 @@ fn compile(
 
 fn both(host: &mut MacroHost, source: &str) {
     let js = compile(host, source).unwrap_or_else(|e| panic!("{e}"));
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(
