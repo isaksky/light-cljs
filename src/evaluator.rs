@@ -2308,97 +2308,18 @@ impl<'js> rquickjs::IntoJs<'js> for BridgeOutput {
     }
 }
 
-#[cfg(all(test, light_quickjs))]
-mod active_tests {
+#[cfg(all(test, light_v8))]
+mod engine_tests {
     use super::*;
-    use crate::compiler_data::DatumKind;
-
-    /// A compile-time QuickJS runtime of a build with several slots is
-    /// allowed its base in the build's memory pool, grows into the headroom
-    /// the others leave, gives it back when it is freed, and follows the
-    /// build's cancellation (light-cljs-436).
-    #[test]
-    fn a_build_runtime_grows_into_the_shared_headroom_and_gives_it_back() {
-        // Four runtimes: 64 MiB for the main one, a worker's share for each
-        // worker's and 96 MiB of headroom.
-        let options = EvaluatorOptions {
-            memory_limit: (64 << 20) + 3 * WORKER_SHARE + (96 << 20),
-            ..Default::default()
-        };
-        let resources = BuildResources::new(&options, 4, true).unwrap();
-        let headroom = resources.memory.headroom();
-        assert_eq!(headroom, 96 << 20);
-        let base = resources.memory.base() >> 20;
-        assert_eq!(base << 20, WORKER_SHARE);
-        // A QuickJS array of 48,000 doubles, as `fill` grows it, about 1 MiB.
-        let keep = |mb: usize| {
-            format!(
-                "(() => {{ globalThis.kept = []; for (let i = 0; i < {mb}; i++) kept.push(new Array(48000).fill(1.5)); return kept.length; }})()"
-            )
-        };
-        let worker = QuickJsEvaluator::new_for_build(options.clone(), &resources, false).unwrap();
-        assert_eq!(worker.headroom_held(), 0);
-        let kept = worker.evaluate_js(&keep(base + 32)).unwrap();
-        assert_eq!(worker.number(kept).unwrap(), (base + 32) as f64);
-        worker.release(kept).unwrap();
-        let taken = headroom - resources.memory.headroom();
-        assert_eq!(worker.headroom_held(), taken);
-        assert!((16 << 20..48 << 20).contains(&taken), "{taken}");
-        // Another worker cannot take more than what is left.
-        let other = QuickJsEvaluator::new_for_build(options.clone(), &resources, false).unwrap();
-        let error = other.evaluate_js(&keep(base + 100)).unwrap_err();
-        assert!(error.0.contains("memory limit"), "{error}");
-        drop(other);
-        assert_eq!(resources.memory.headroom(), headroom - taken);
-        drop(worker);
-        assert_eq!(resources.memory.headroom(), headroom);
-        // The workers' control is the build's: cancelling it stops them.
-        let worker = QuickJsEvaluator::new_for_build(options.clone(), &resources, false).unwrap();
-        let main = QuickJsEvaluator::new_for_build(options, &resources, true).unwrap();
-        resources.workers.cancel();
-        let error = worker.evaluate_js("1").unwrap_err();
-        assert!(error.0.contains("cancelled"), "{error}");
-        let one = main.evaluate_js("1").unwrap();
-        assert_eq!(main.number(one).unwrap(), 1.0);
-    }
-
-    /// The runtimes of a build count their polls each on their own control:
-    /// a worker whose budget runs out in its interrupt handler fails, and
-    /// stays failed, while a sibling worker, the main runtime and the build's
-    /// control go on (light-cljs-436).
-    #[test]
-    fn build_runtimes_enforce_independent_poll_budgets() {
-        let options = EvaluatorOptions {
-            memory_limit: (64 << 20) + 2 * WORKER_SHARE,
-            ..Default::default()
-        };
-        let resources = BuildResources::new(&options, 3, true).unwrap();
-        let spinning = QuickJsEvaluator::new_for_build(options.clone(), &resources, false).unwrap();
-        let sibling = QuickJsEvaluator::new_for_build(options.clone(), &resources, false).unwrap();
-        let main = QuickJsEvaluator::new_for_build(options.clone(), &resources, true).unwrap();
-        spinning
-            .begin_operation(&EvaluatorOptions {
-                poll_budget: 5,
-                ..options.clone()
-            })
-            .unwrap();
-        let error = spinning
-            .evaluate_js("(() => { for (;;) {} })()")
-            .unwrap_err();
-        assert!(error.0.contains("poll budget exhausted"), "{error}");
-        let error = spinning.evaluate_js("1").unwrap_err();
-        assert!(error.0.contains("poll budget exhausted"), "{error}");
-        for evaluator in [&sibling, &main] {
-            let one = evaluator.evaluate_js("1").unwrap();
-            assert_eq!(evaluator.number(one).unwrap(), 1.0);
-        }
-        resources.control.poll().unwrap();
-        resources.workers.poll().unwrap();
-    }
+    use crate::{
+        compiler_data::{DatumKind, ExpansionOrigin},
+        compiler_evaluator::CompilerEvaluator,
+    };
+    use std::rc::Rc;
 
     #[test]
     fn protocol_arity_cache_does_not_inherit_array_properties() {
-        let evaluator = QuickJsEvaluator::new(EvaluatorOptions::default()).unwrap();
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let result = evaluator
             .evaluate_js(
                 r#"(() => {
@@ -2422,72 +2343,22 @@ mod active_tests {
     }
 
     #[test]
-    fn frontier_service_preserves_errors_dynamic_lookup_and_cancellation() {
-        let evaluator = QuickJsEvaluator::interactive(EvaluatorOptions::default()).unwrap();
-        let setup = evaluator.evaluate_js(r#"(() => {
-            globalThis.frontierEvents = [];
-            globalThis.frontierError = rt.core.exInfo('frontier failed', rt.core.hashMap('code', 42));
-            globalThis.__lightEnterCompilerFrontier = next => {
-                frontierEvents.push(next);
-                if (next === 7) throw frontierError;
-                return {unneeded: new Array(10000)};
-            };
-            globalThis.__lightLeaveCompilerFrontier = () => frontierEvents.push('leave');
-        })()"#).unwrap();
-        evaluator.release(setup).unwrap();
-        evaluator.compiler_frontier(Some(0)).unwrap();
-        evaluator
-            .with_active(|active| active.compiler_frontier(None))
-            .unwrap();
-        let error = evaluator.compiler_frontier(Some(7)).unwrap_err();
-        assert!(error.0.contains("frontier failed"), "{error}");
-        evaluator
-            .enter(|ctx| {
-                assert!(ctx.eval::<bool, _>("__lightEvaluator.errorValue() === frontierError")?);
-                Ok(())
-            })
-            .unwrap();
-        let change = evaluator
-            .evaluate_js(
-                "globalThis.__lightEnterCompilerFrontier = next => frontierEvents.push(next + 100)",
-            )
-            .unwrap();
-        evaluator.release(change).unwrap();
-        evaluator.compiler_frontier(Some(3)).unwrap();
-        evaluator
-            .enter(|ctx| {
-                assert!(ctx.eval::<bool, _>("__lightEvaluator.errorValue() === null")?);
-                assert_eq!(
-                    ctx.eval::<String, _>("JSON.stringify(frontierEvents)")?,
-                    "[0,\"leave\",7,103]"
-                );
-                Ok(())
-            })
-            .unwrap();
-        evaluator.control().cancel();
-        assert!(
-            evaluator
-                .compiler_frontier(None)
-                .unwrap_err()
-                .0
-                .contains("cancelled")
-        );
-    }
-
-    #[test]
     fn frontier_service_can_reenter_an_active_compilation() {
-        let evaluator = Rc::new(QuickJsEvaluator::new(EvaluatorOptions::default()).unwrap());
-        let weak = Rc::downgrade(&evaluator);
+        let evaluator = Rc::new(Evaluator::new(EvaluatorOptions::default()).unwrap());
+        let heap = evaluator.heap();
         evaluator
-            .install_unit_service("nestedFrontier", move |ctx, next| {
-                let evaluator = weak.upgrade().unwrap();
-                let active = evaluator.active(ctx).map_err(|e| e.0)?;
-                active
-                    .compiler_frontier(Some(next.try_into().unwrap()))
-                    .map_err(|e| e.0)?;
-                active.compiler_frontier(None).map_err(|e| e.0)?;
-                Ok("nested".into())
-            })
+            .clone()
+            .install_compiler_service(
+                "nestedFrontier",
+                Rc::new(move |active, next| {
+                    assert_eq!(active.heap(), heap);
+                    active
+                        .compiler_frontier(Some(next.try_into().unwrap()))
+                        .map_err(|e| e.0)?;
+                    active.compiler_frontier(None).map_err(|e| e.0)?;
+                    Ok("nested".into())
+                }),
+            )
             .unwrap();
         let setup = evaluator
             .evaluate_js(
@@ -2517,7 +2388,7 @@ mod active_tests {
 
     #[test]
     fn frontier_replay_includes_an_earlier_bundle_initialized_by_a_proxy_patch() {
-        let evaluator = QuickJsEvaluator::new(EvaluatorOptions::default()).unwrap();
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let setup = evaluator
             .evaluate_unit("rt => { globalThis.__lightRuntimeForCompiler = rt; }")
             .unwrap();
@@ -2557,7 +2428,7 @@ mod active_tests {
 
     #[test]
     fn engine_maps_preserve_key_semantics_across_growth_and_deletion() {
-        let evaluator = QuickJsEvaluator::new(EvaluatorOptions::default()).unwrap();
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let result = evaluator.evaluate_js(r#"(() => {
             const keys = Array.from({length: 4096}, (_, i) => [i, {i}, Symbol(String(i))]).flat();
             const map = new Map(keys.map((key, i) => [key, i]));
@@ -2582,42 +2453,6 @@ mod active_tests {
             return true;
         })()"#).unwrap();
         assert_eq!(evaluator.print(result).unwrap(), "true");
-    }
-
-    #[test]
-    fn failed_macro_calls_release_their_imported_object_arguments() {
-        use crate::compiler_data::{DataBuilder, ExpansionOrigin, Name, Source};
-        let evaluator = QuickJsEvaluator::interactive(EvaluatorOptions::default()).unwrap();
-        let function = evaluator
-            .evaluate_js("() => { throw new Error('expected failure'); }")
-            .unwrap();
-        let mut host = crate::MacroHost::new();
-        let form = host
-            .read_compiler_form(&Source::new("failed.cljs", "(explode [some-name])"))
-            .unwrap()
-            .unwrap();
-        let env = DataBuilder.map(&[]).unwrap();
-        let live = evaluator.bridge.borrow().live_provenance.clone();
-        for _ in 0..25 {
-            let error = host
-                .expand_javascript(
-                    &evaluator,
-                    function,
-                    &form,
-                    &env,
-                    ExpansionOrigin {
-                        macro_name: Name::new(Some("cljs.user"), "explode"),
-                        call: form.span(),
-                        definition: None,
-                        helpers: vec![],
-                    },
-                )
-                .unwrap_err();
-            assert!(error.contains("expected failure"), "{error}");
-        }
-        evaluator.collect_garbage();
-        assert_eq!(live.get(), 0, "failed calls must not pin their input forms");
-        evaluator.release(function).unwrap();
     }
 
     #[test]
@@ -2647,7 +2482,7 @@ mod active_tests {
             ),
         ];
         for (argument, environment) in cases {
-            let evaluator = QuickJsEvaluator::new(EvaluatorOptions::default()).unwrap();
+            let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
             let source = Source::new("shared.cljs", "(identity value)");
             let data = c
                 .list(&[c.symbol(Name::new(None, "identity")), argument.clone()])
@@ -2691,53 +2526,9 @@ mod active_tests {
     }
 
     #[test]
-    fn failed_macro_environments_release_pending_input_graphs() {
-        use crate::compiler_data::{
-            CompilerLiteralKind, DataBuilder, ExpansionOrigin, Name, Source,
-        };
-        let evaluator = QuickJsEvaluator::interactive(EvaluatorOptions::default()).unwrap();
-        let function = evaluator
-            .evaluate_js("(_form, _env, value) => value")
-            .unwrap();
-        let mut host = crate::MacroHost::new();
-        let form = host
-            .read_compiler_form(&Source::new("pending.cljs", "(identity [some-name])"))
-            .unwrap()
-            .unwrap();
-        let environment = Datum::new(DatumKind::CompilerLiteral {
-            kind: CompilerLiteralKind::Uuid,
-            payload: DataBuilder.string("not-valid".encode_utf16().collect::<Vec<_>>()),
-        });
-        let live = evaluator.bridge.borrow().live_provenance.clone();
-        for _ in 0..25 {
-            let error = host
-                .expand_javascript(
-                    &evaluator,
-                    function,
-                    &form,
-                    &environment,
-                    ExpansionOrigin {
-                        macro_name: Name::new(Some("cljs.user"), "identity"),
-                        call: form.span(),
-                        definition: None,
-                        helpers: vec![],
-                    },
-                )
-                .unwrap_err();
-            assert!(error.contains("invalid UUID"), "{error}");
-        }
-        evaluator.collect_garbage();
-        // Each call's scalar table goes when its input is released.
-        assert_eq!(live.get(), 0, "no scalar provenance may outlive its call");
-        evaluator.release(function).unwrap();
-        drop(evaluator);
-        assert_eq!(live.get(), 0);
-    }
-
-    #[test]
     fn shared_macro_literals_are_constructed_once() {
         use crate::compiler_data::{DataBuilder, ExpansionOrigin, Name, Source};
-        let evaluator = QuickJsEvaluator::new(EvaluatorOptions::default()).unwrap();
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let setup = evaluator.evaluate_js("(() => { const NativeDate = Date; globalThis.dateInputs = 0; globalThis.Date = class extends NativeDate { constructor(...args) { super(...args); dateInputs++; } }; return null; })()").unwrap();
         evaluator.release(setup).unwrap();
         let function = evaluator
@@ -2772,62 +2563,8 @@ mod active_tests {
     }
 
     #[test]
-    fn value_registry_roots_are_counted_and_released() {
-        let evaluator = QuickJsEvaluator::new(EvaluatorOptions::default()).unwrap();
-        let baseline = evaluator.value_roots().unwrap();
-        let ids = (0..3)
-            .map(|_| evaluator.evaluate_js("new Array(10000)").unwrap())
-            .collect::<Vec<_>>();
-        evaluator.collect_garbage();
-        assert_eq!(evaluator.value_roots().unwrap(), baseline + 3);
-        for id in ids {
-            evaluator.release(id).unwrap();
-        }
-        assert_eq!(evaluator.value_roots().unwrap(), baseline);
-    }
-
-    #[test]
-    fn failed_argument_snapshots_drop_the_pending_graph_and_partial_results() {
-        use crate::compiler_data::Source;
-        let evaluator = QuickJsEvaluator::interactive(EvaluatorOptions::default()).unwrap();
-        let mut host = crate::MacroHost::new();
-        let form = host
-            .read_compiler_form(&Source::new(
-                "arguments.cljs",
-                "(identity [first] #js [second])",
-            ))
-            .unwrap()
-            .unwrap();
-        let mutate = evaluator
-            .evaluate_js("form => { rt.core.nth(form, 2).push(() => null); return null; }")
-            .unwrap();
-        let live = evaluator.bridge.borrow().live_provenance.clone();
-        let limits = ConversionLimits::default();
-        for _ in 0..25 {
-            let input = evaluator.import_macro_form(&form, limits).unwrap();
-            let result = evaluator.call(mutate, &[input]).unwrap();
-            evaluator.release(result).unwrap();
-            let error = evaluator.macro_arguments(input, &form, limits).unwrap_err();
-            assert!(
-                error
-                    .to_string()
-                    .contains("Unsupported macro result function"),
-                "{error}"
-            );
-            evaluator.release(input).unwrap();
-        }
-        evaluator.collect_garbage();
-        assert_eq!(
-            live.get(),
-            0,
-            "failed preparation must not retain snapshots or descriptor graphs"
-        );
-        evaluator.release(mutate).unwrap();
-    }
-
-    #[test]
     fn native_bridge_strings_preserve_every_utf16_code_unit_in_both_directions() {
-        let evaluator = QuickJsEvaluator::new(EvaluatorOptions::default()).unwrap();
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let units: Vec<u16> = (0..=u16::MAX).collect();
         let input = evaluator
             .import_data(
@@ -2855,7 +2592,7 @@ mod active_tests {
 
     #[test]
     fn native_bridge_name_components_and_empty_text_preserve_utf16() {
-        let evaluator = QuickJsEvaluator::new(EvaluatorOptions::default()).unwrap();
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let output = evaluator
             .evaluate_unit(
                 r#"rt => rt.core.vector(
@@ -2892,7 +2629,7 @@ mod active_tests {
 
     #[test]
     fn native_bridge_unqualified_names_keep_a_null_namespace() {
-        let evaluator = QuickJsEvaluator::new(EvaluatorOptions::default()).unwrap();
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let c = crate::compiler_data::DataBuilder;
         let name = crate::compiler_data::Name::new(None, "readers");
         for data in [c.symbol(name.clone()), c.keyword(name)] {
@@ -2911,109 +2648,8 @@ mod active_tests {
     }
 
     #[test]
-    fn released_bridge_inputs_release_native_provenance() {
-        let evaluator = QuickJsEvaluator::new(EvaluatorOptions::default()).unwrap();
-        let c = crate::compiler_data::DataBuilder;
-        let live = evaluator.bridge.borrow().live_provenance.clone();
-        for n in 0..1000 {
-            let data = c
-                .vector(&[c.symbol(crate::compiler_data::Name::new(None, &format!("input-{n}")))])
-                .unwrap();
-            let input = evaluator
-                .import_data(&data, ConversionLimits::default())
-                .unwrap();
-            evaluator.release(input).unwrap();
-        }
-        evaluator.collect_garbage();
-        assert_eq!(
-            live.get(),
-            0,
-            "released input provenance must not be session-owned"
-        );
-    }
-
-    #[test]
-    fn scalar_provenance_retains_values_instead_of_import_history() {
-        let evaluator = QuickJsEvaluator::new(EvaluatorOptions::default()).unwrap();
-        let c = crate::compiler_data::DataBuilder;
-        let live = evaluator.bridge.borrow().live_provenance.clone();
-        for _ in 0..1000 {
-            let data = c
-                .vector(&[c.integer(42), c.nil(), c.boolean(true)])
-                .unwrap();
-            let input = evaluator
-                .import_data(&data, ConversionLimits::default())
-                .unwrap();
-            evaluator.release(input).unwrap();
-        }
-        evaluator.collect_garbage();
-        assert_eq!(live.get(), 3);
-        drop(evaluator);
-        assert_eq!(live.get(), 0);
-    }
-
-    #[test]
-    fn failed_import_validation_releases_temporary_roots() {
-        let c = crate::compiler_data::DataBuilder;
-        // The engine can construct this UUID, but canonical validation rejects
-        // its payload after the value has been imported and assigned an ID.
-        let invalid_cases = [
-            (
-                crate::compiler_data::CompilerLiteralKind::Uuid,
-                "invalid UUID",
-            ),
-            (
-                crate::compiler_data::CompilerLiteralKind::Instant,
-                "invalid instant",
-            ),
-        ];
-        for (kind, message) in invalid_cases {
-            let invalid = Datum::new(DatumKind::CompilerLiteral {
-                kind,
-                payload: c.string("not-valid".encode_utf16().collect::<Vec<_>>()),
-            });
-            for mode in 0..3 {
-                let evaluator = QuickJsEvaluator::interactive(EvaluatorOptions::default()).unwrap();
-                let live = evaluator.bridge.borrow().live_provenance.clone();
-                let data = if mode == 0 {
-                    c.vector(std::slice::from_ref(&invalid)).unwrap()
-                } else {
-                    c.map(&[(
-                        c.keyword(crate::compiler_data::Name::new(None, "invalid")),
-                        invalid.clone(),
-                    )])
-                    .unwrap()
-                };
-                for _ in 0..100 {
-                    let result = match mode {
-                        0 => evaluator.import_data(&data, ConversionLimits::default()),
-                        1 => evaluator.import_environment(&data, ConversionLimits::default()),
-                        _ => evaluator.with_active(|active| {
-                            active.import_environment(&data, ConversionLimits::default())
-                        }),
-                    };
-                    assert!(result.unwrap_err().to_string().contains(message));
-                }
-                evaluator.collect_garbage();
-                assert_eq!(
-                    live.get(),
-                    1,
-                    "only the latest string provenance survives, mode {mode}"
-                );
-                let valid = evaluator
-                    .import_data(&c.vector(&[]).unwrap(), ConversionLimits::default())
-                    .unwrap();
-                assert_eq!(evaluator.print(valid).unwrap(), "[]");
-                evaluator.release(valid).unwrap();
-                drop(evaluator);
-                assert_eq!(live.get(), 0);
-            }
-        }
-    }
-
-    #[test]
     fn environment_cache_preserves_lexical_data_and_copies_mutable_literals() {
-        let evaluator = QuickJsEvaluator::new(EvaluatorOptions::default()).unwrap();
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let limits = ConversionLimits::default();
         let key = |name| {
             crate::compiler_data::DataBuilder.keyword(crate::compiler_data::Name::new(None, name))
@@ -3089,7 +2725,7 @@ mod active_tests {
     #[test]
     fn environment_child_eviction_preserves_values_and_metadata_order() {
         use crate::compiler_data::{DataBuilder, Name};
-        let evaluator = QuickJsEvaluator::new(EvaluatorOptions::default()).unwrap();
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let c = DataBuilder;
         let key = |name| c.keyword(Name::new(None, name));
         let rows = (0..512)
@@ -3147,7 +2783,7 @@ mod active_tests {
     #[test]
     fn discarded_environment_children_preserve_spelling_when_reused() {
         use crate::compiler_data::{DataBuilder, Name};
-        let evaluator = QuickJsEvaluator::new(EvaluatorOptions::default()).unwrap();
+        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let c = DataBuilder;
         let key = |name| c.keyword(Name::new(None, name));
         let hidden = c
@@ -3212,7 +2848,7 @@ mod active_tests {
                 depth: 3,
             },
         ] {
-            let evaluator = QuickJsEvaluator::new(EvaluatorOptions::default()).unwrap();
+            let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
             let value = evaluator
                 .import_environment(&warm, ConversionLimits::default())
                 .unwrap();
@@ -3224,7 +2860,7 @@ mod active_tests {
 
     #[test]
     fn failed_environment_import_does_not_publish_uninstalled_cache_slots() {
-        let evaluator = QuickJsEvaluator::interactive(EvaluatorOptions::default()).unwrap();
+        let evaluator = Evaluator::interactive(EvaluatorOptions::default()).unwrap();
         let c = crate::compiler_data::DataBuilder;
         let key = |name| c.keyword(crate::compiler_data::Name::new(None, name));
         let stable = c.vector(&[c.integer(222)]).unwrap();
@@ -3249,7 +2885,10 @@ mod active_tests {
 
     #[test]
     fn environment_import_can_reenter_before_its_cache_slots_are_installed() {
-        let evaluator = Rc::new(QuickJsEvaluator::new(EvaluatorOptions::default()).unwrap());
+        use crate::compiler_data::{Name, Source};
+        use std::cell::Cell;
+
+        let evaluator = Rc::new(Evaluator::new(EvaluatorOptions::default()).unwrap());
         let c = crate::compiler_data::DataBuilder;
         let data = c
             .map(&[(
@@ -3258,18 +2897,35 @@ mod active_tests {
             )])
             .unwrap();
         let nested_data = data.clone();
-        let weak = Rc::downgrade(&evaluator);
+        let call = crate::MacroHost::new()
+            .read_compiler_form(&Source::new("cache.cljs", "(reenter)"))
+            .unwrap()
+            .unwrap();
+        let origin = ExpansionOrigin {
+            macro_name: Name::new(None, "reenter"),
+            call: call.span(),
+            definition: None,
+            helpers: vec![],
+        };
+        let observed = Rc::new(Cell::new(0));
+        let calls = observed.clone();
         evaluator
-            .install_unit_service("reenterEnvironment", move |ctx, _| {
-                let evaluator = weak.upgrade().unwrap();
-                let active = evaluator.active(ctx).map_err(|e| e.0)?;
-                let input = active
-                    .import_environment(&nested_data, ConversionLimits::default())
-                    .map_err(|e| e.0)?;
-                assert_eq!(active.print(input).map_err(|e| e.0)?, "{:stable [42]}");
-                active.release(input).map_err(|e| e.0)?;
-                Ok("nested".into())
-            })
+            .clone()
+            .install_compiler_service(
+                "reenterEnvironment",
+                Rc::new(move |active, _| {
+                    let run = || -> Result<String, EvalError> {
+                        calls.set(calls.get() + 1);
+                        let limits = ConversionLimits::default();
+                        let input = active.import_environment(&nested_data, limits)?;
+                        let output = active.export_form(input, &call, origin.clone(), limits)?;
+                        assert!(crate::form_bridge::exact(&output.data(), &nested_data));
+                        active.release(input)?;
+                        Ok("nested".into())
+                    };
+                    run().map_err(|e| e.0)
+                }),
+            )
             .unwrap();
         // Force a callback during descriptor construction, as demanded user
         // hash/equality implementations can do. Restore before reentering.
@@ -3282,33 +2938,58 @@ mod active_tests {
             assert_eq!(evaluator.print(input).unwrap(), "{:stable [42]}");
             evaluator.release(input).unwrap();
         }
+        assert_eq!(observed.get(), 1);
     }
 
     #[test]
     fn unit_service_recurses_with_active_context_and_bridge() {
-        let evaluator = Rc::new(QuickJsEvaluator::new(EvaluatorOptions::default()).unwrap());
-        let weak = Rc::downgrade(&evaluator);
-        evaluator.install_unit_service("compileNested", move |ctx, request| {
-            let evaluator = weak.upgrade().unwrap();
-            let active = evaluator.active(ctx).map_err(|e| e.0)?;
-            let run = || -> Result<String, EvalError> {
-                let limits = ConversionLimits::default();
-                let input = active.import_data(&Datum::new(DatumKind::Integer(41)), limits)?;
-                let identity = active.evaluate_js("x => x")?;
-                let result = active.call(identity, &[input])?;
-                assert!(matches!(active.export_data(result, limits)?.kind(), DatumKind::Integer(n) if *n == 41));
-                active.release(result)?;
-                active.release(identity)?;
-                active.release(input)?;
-                if request > 0 {
-                    let nested = active.evaluate_js(&format!("compileNested({})", request - 1))?;
-                    assert_eq!(active.string(nested)?, "(rt) => 42");
-                    active.release(nested)?;
-                }
-                Ok("(rt) => 42".into())
-            };
-            run().map_err(|e| e.0)
-        }).unwrap();
+        use crate::compiler_data::{Name, Source};
+
+        let evaluator = Rc::new(Evaluator::new(EvaluatorOptions::default()).unwrap());
+        let heap = evaluator.heap();
+        let call = crate::MacroHost::new()
+            .read_compiler_form(&Source::new("reentry.cljs", "(compile-nested)"))
+            .unwrap()
+            .unwrap();
+        let origin = ExpansionOrigin {
+            macro_name: Name::new(None, "compile-nested"),
+            call: call.span(),
+            definition: None,
+            helpers: vec![],
+        };
+        evaluator
+            .clone()
+            .install_compiler_service(
+                "compileNested",
+                Rc::new(move |active, request| {
+                    let run = || -> Result<String, EvalError> {
+                        assert_eq!(active.heap(), heap);
+                        let limits = ConversionLimits::default();
+                        let input =
+                            active.import_data(&Datum::new(DatumKind::Integer(41)), limits)?;
+                        let identity = active.evaluate_unit("rt => x => x")?;
+                        let result = active.call(identity, &[input])?;
+                        let output = active.export_form(result, &call, origin.clone(), limits)?;
+                        assert!(matches!(output.data().kind(), DatumKind::Integer(41)));
+                        active.release(result)?;
+                        active.release(identity)?;
+                        active.release(input)?;
+                        if request > 0 {
+                            let nested = active.evaluate_unit(&format!(
+                                "rt => compileNested({}) === '(rt) => 42'",
+                                request - 1
+                            ))?;
+                            let output =
+                                active.export_form(nested, &call, origin.clone(), limits)?;
+                            assert!(matches!(output.data().kind(), DatumKind::Boolean(true)));
+                            active.release(nested)?;
+                        }
+                        Ok("(rt) => 42".into())
+                    };
+                    run().map_err(|e| e.0)
+                }),
+            )
+            .unwrap();
         let result = evaluator.evaluate_js("compileNested(3)").unwrap();
         assert_eq!(evaluator.string(result).unwrap(), "(rt) => 42");
         evaluator.release(result).unwrap();
@@ -3317,13 +2998,17 @@ mod active_tests {
 
     #[test]
     fn unit_service_cancellation_is_sticky_even_when_js_catches() {
-        let evaluator = QuickJsEvaluator::new(EvaluatorOptions::default()).unwrap();
+        let evaluator = Rc::new(Evaluator::new(EvaluatorOptions::default()).unwrap());
         let control = evaluator.control();
         evaluator
-            .install_unit_service("cancelCompile", move |_, _| {
-                control.cancel();
-                Ok("(rt) => 42".into())
-            })
+            .clone()
+            .install_compiler_service(
+                "cancelCompile",
+                Rc::new(move |_, _| {
+                    control.cancel();
+                    Ok("(rt) => 42".into())
+                }),
+            )
             .unwrap();
         let error = evaluator
             .evaluate_js("(() => { try { cancelCompile(0) } catch (_) {} return 1 })()")
@@ -3334,38 +3019,31 @@ mod active_tests {
 
     #[test]
     fn unit_service_failure_is_sticky_even_when_js_catches() {
-        let evaluator = QuickJsEvaluator::new(EvaluatorOptions::default()).unwrap();
+        let evaluator = Rc::new(Evaluator::new(EvaluatorOptions::default()).unwrap());
         evaluator
-            .install_unit_service("failCompile", |_, _| Err("compile failed".into()))
+            .clone()
+            .install_compiler_service("failCompile", Rc::new(|_, _| Err("compile failed".into())))
             .unwrap();
-        assert!(
-            evaluator
-                .evaluate_js("(() => { try { failCompile(0) } catch (_) {} return 1 })()")
-                .is_err()
-        );
+        let error = evaluator
+            .evaluate_js("(() => { try { failCompile(0) } catch (_) {} return 1 })()")
+            .unwrap_err();
+        assert_eq!(error.0, "compile failed");
         assert!(evaluator.evaluate_js("1").is_err());
-    }
-
-    #[test]
-    fn active_handle_rejects_other_contexts() {
-        let evaluator = QuickJsEvaluator::new(EvaluatorOptions::default()).unwrap();
-        let other = QuickJsEvaluator::new(EvaluatorOptions::default()).unwrap();
-        other.context.as_ref().unwrap().with(|ctx| {
-            assert!(evaluator.active(ctx).is_err());
-        });
     }
 
     #[test]
     fn backtracking_deadline_is_terminal_and_fresh_operations_recover() {
         let host = crate::MacroHost::new();
-        let evaluator = QuickJsEvaluator::new(host.evaluator_options.clone()).unwrap();
+        let evaluator = host.new_evaluator().unwrap();
         let short = EvaluatorOptions {
-            timeout: Duration::from_millis(40),
+            timeout: Duration::from_millis(150),
             ..Default::default()
         };
         // Keep runtime startup outside the intentionally short regex window.
         evaluator.begin_operation(&short).unwrap();
-        let work = "(()=>{try { /^(a+)+$/.test('a'.repeat(28)+'!'); } catch(e) {} return 42;})()";
+        // The lookahead keeps the regexp on V8's backtracking engine.
+        let work =
+            "(()=>{try { /^(?=a)(a+)+$/.test('a'.repeat(30)+'!'); } catch(e) {} return 42;})()";
         let error = evaluator.evaluate_js(work).unwrap_err();
         assert!(error.0.contains("deadline exceeded"), "{error}");
         assert!(
@@ -3385,7 +3063,7 @@ mod active_tests {
 
         // Recovery has its own normal operation timeout, preserving the short
         // bound above without imposing it on a fresh heap's initialization.
-        let fresh = QuickJsEvaluator::new(host.evaluator_options.clone()).unwrap();
+        let fresh = host.new_evaluator().unwrap();
         fresh.begin_operation(&host.evaluator_options).unwrap();
         assert_eq!(
             fresh.number(fresh.evaluate_js("42").unwrap()).unwrap(),
@@ -3738,125 +3416,108 @@ impl SessionEvaluator for QuickJsEvaluator {
 // Interrupted bridge imports must release every engine value exactly once.
 // Regression coverage for the double free in the engine's `Array.prototype.find`
 // cleanup that corrupted the heap during an interrupted form import.
-#[cfg(all(test, light_quickjs))]
+#[cfg(all(test, light_v8))]
 mod bridge_interrupt_tests {
     use super::*;
-    use crate::compiler_data::{DatumKind, Source};
+    use crate::{MacroHost, compiler_data::Source};
+    use std::sync::mpsc;
 
-    /// Compiler form whose decode builds nested array maps. Its inner map
-    /// literals drive `Array.prototype.findIndex` through the bridge's map
-    /// builder, which is where an engine interrupt used to leave the previous
-    /// element double referenced.
-    const BRIDGE_FORM: &str = r#"{:locals {x {:name x :kind :let} y {:name y :kind :arg :argument 0}} :ns {:name cljs.user} :context :expr :line 3 :column 7 :data [1 2.5 "str" \c nil true false sym ns/sym :kw :ns/kw #{1 2} (a b c) ^{:m 1} [x] #"re+" #uuid "00000000-0000-0000-0000-000000000000" #inst "2020-01-01" #js [1 2] #js {:a 1}]}"#;
-
-    /// Warm-up loop length that places the engine's 10_000-poll interrupt
-    /// counter so its next expiry lands on the loop-top poll of the second
-    /// `findIndex` iteration inside the bridge's array-map builder. The engine
-    /// is pinned exactly (rquickjs 0.14.0, quickjs-ng 0.16.2), so this is
-    /// deterministic. After an engine update, run the ignored sweep below to
-    /// locate the new value.
-    const INTERRUPT_WARMUP: usize = 1_184;
-
-    fn bridge_form(host: &mut crate::MacroHost) -> Form {
-        host.read_compiler_form(&Source::new("interrupted_bridge.cljs", BRIDGE_FORM))
-            .unwrap()
-            .unwrap()
-    }
-
-    /// Import `form` once with the engine interrupt armed to fire at the first
-    /// poll after the warm-up. The session is dropped before returning, so a
-    /// heap corrupted by the interrupted import faults here.
-    fn import_with_engine_interrupt(
-        host: &crate::MacroHost,
-        form: &Form,
-        warmup: usize,
-    ) -> (bool, Result<ValueId, EvalError>) {
-        let evaluator = QuickJsEvaluator::new(host.evaluator_options.clone()).unwrap();
+    fn cancel_during_bridge(evaluator: &Evaluator, operation: impl Fn() -> Result<(), EvalError>) {
         let control = evaluator.control();
-        let armed = Arc::new(AtomicBool::new(false));
-        let fired = Arc::new(AtomicBool::new(false));
-        let (arm, seen) = (armed.clone(), fired.clone());
+        let (entered, wait) = mpsc::channel();
         evaluator
-            .runtime
-            .set_interrupt_handler(Some(Box::new(move || {
-                if arm.swap(false, Ordering::Relaxed) {
-                    seen.store(true, Ordering::Relaxed);
-                    control.cancel();
-                    true
-                } else {
-                    false
-                }
-            })));
-        let shift = evaluator
-            .evaluate_js(&format!(
-                "(() => {{ for (let i = 0; i < {warmup}; i++); return 0; }})()"
-            ))
+            .install_callback("bridgeEntered", move |_, _| {
+                entered
+                    .send(())
+                    .map_err(|error| EvalError(error.to_string()))?;
+                Ok(String::new())
+            })
             .unwrap();
-        evaluator.release(shift).unwrap();
-        armed.store(true, Ordering::Relaxed);
-        let limits = ConversionLimits::default();
-        let result = evaluator.import_form(form, limits);
-        let fired = fired.load(Ordering::Relaxed);
-        if fired {
-            // Cancellation is terminal: a retry through the poisoned session
-            // cannot turn the interruption into a successful import.
-            assert!(evaluator.import_form(form, limits).is_err());
-        }
-        (fired, result)
-    }
-
-    #[test]
-    fn interrupted_bridge_array_map_build_releases_each_value_once() {
-        let mut host = crate::macro_host::MacroHost::new();
-        host.evaluator_options.poll_budget = u64::MAX;
-        let form = bridge_form(&mut host);
-
-        let (fired, result) = import_with_engine_interrupt(&host, &form, INTERRUPT_WARMUP);
-        assert!(fired, "engine interrupt did not fire at the pinned poll");
-        let error = result.expect_err("interrupted import must not succeed");
+        std::thread::scope(|scope| {
+            let canceller = scope.spawn(move || {
+                wait.recv_timeout(Duration::from_secs(5))
+                    .expect("the bridge must reach the JavaScript hook");
+                control.cancel();
+            });
+            let error = operation().unwrap_err();
+            canceller.join().unwrap();
+            assert!(error.0.contains("cancelled"), "{error}");
+        });
+        let error = operation().unwrap_err();
         assert!(error.0.contains("cancelled"), "{error}");
-
-        // The interrupted session above is dropped by now. A fresh session from
-        // the same host must import and export the same form cleanly.
-        let evaluator = QuickJsEvaluator::new(host.evaluator_options.clone()).unwrap();
-        let value = evaluator
-            .import_form(&form, ConversionLimits::default())
-            .unwrap();
-        assert!(matches!(
-            evaluator
-                .export_data(value, ConversionLimits::default())
-                .unwrap()
-                .kind(),
-            DatumKind::Collection { .. }
-        ));
-        evaluator.release(value).unwrap();
     }
 
-    /// Wider interrupt-point sweep over the same bridge decode. It covers every
-    /// poll position in a counter cycle, so it both locates the pinned warm-up
-    /// above and re-checks that no other interrupted bridge cleanup releases a
-    /// value twice. Run explicitly; optionally in parallel chunks:
-    ///   cargo test --lib sweep_bridge_import_interrupt_points -- --ignored --nocapture
-    ///   SWEEP_START=0 SWEEP_END=1257 cargo test --lib ...   (8 chunks cover 0..=10_050)
     #[test]
-    #[ignore = "stress sweep; run explicitly to cover every interrupt point"]
-    fn sweep_bridge_import_interrupt_points() {
-        let mut host = crate::macro_host::MacroHost::new();
-        host.evaluator_options.poll_budget = u64::MAX;
-        let form = bridge_form(&mut host);
-        let start: usize = std::env::var("SWEEP_START").map_or(0, |v| v.parse().unwrap());
-        let end: usize = std::env::var("SWEEP_END").map_or(1_257, |v| v.parse().unwrap());
-        let mut interrupts = 0;
-        for warmup in start..end {
-            let (fired, result) = import_with_engine_interrupt(&host, &form, warmup);
-            if fired {
-                interrupts += 1;
-                let error = result.expect_err("interrupted import must not succeed");
-                assert!(error.0.contains("cancelled"), "{error}");
-            }
-        }
-        assert!(interrupts > 0, "no interrupt fired in {start}..{end}");
-        eprintln!("sweep {start}..{end}: {interrupts} interrupts");
+    fn interrupted_bridge_array_map_import_leaves_fresh_heap_usable() {
+        let mut host = MacroHost::new();
+        let form = host
+            .read_compiler_form(&Source::new(
+                "interrupted_bridge.cljs",
+                r#"{:locals {x {:name x :kind :let} y {:name y :kind :arg :argument 0}} :ns {:name cljs.user} :context :expr :line 3 :column 7 :data [1 2.5 "str" \c nil true false sym ns/sym :kw :ns/kw #{1 2} (a b c) ^{:m 1} [x] #"re+" #uuid "00000000-0000-0000-0000-000000000000" #inst "2020-01-01" #js [1 2] #js {:a 1}]}"#,
+            ))
+            .unwrap()
+            .unwrap();
+        let limits = ConversionLimits::default();
+        let evaluator = host.new_evaluator().unwrap();
+        // The bridge maps the descriptors of an array map's entries before
+        // constructing the map. Previous children may already be decoded.
+        let hook = evaluator
+            .evaluate_js(
+                r#"(() => {
+            const map = Array.prototype.map;
+            Array.prototype.map = function (...args) {
+                if (this[0]?.[0] === 'keyword' && this[0][4] === 'name') {
+                    bridgeEntered('');
+                    for (;;) {}
+                }
+                return Reflect.apply(map, this, args);
+            };
+        })()"#,
+            )
+            .unwrap();
+        evaluator.release(hook).unwrap();
+        cancel_during_bridge(&evaluator, || {
+            evaluator.import_form(&form, limits).map(|_| ())
+        });
+        drop(evaluator);
+
+        let fresh = host.new_evaluator().unwrap();
+        let value = fresh.import_form(&form, limits).unwrap();
+        let output = fresh.export_data(value, limits).unwrap();
+        assert!(crate::form_bridge::exact(&form.data(), &output));
+        fresh.release(value).unwrap();
+        assert_eq!(fresh.value_roots().unwrap(), 0);
+    }
+
+    #[test]
+    fn interrupted_bridge_export_during_lazy_realization_leaves_fresh_heap_usable() {
+        let host = MacroHost::new();
+        let limits = ConversionLimits::default();
+        let evaluator = host.new_evaluator().unwrap();
+        let lazy = evaluator
+            .evaluate_unit(
+                r#"rt => rt.core.mapSeq(() => {
+            bridgeEntered('');
+            for (;;) {}
+        }, rt.core.vector(1))"#,
+            )
+            .unwrap();
+        cancel_during_bridge(&evaluator, || {
+            evaluator.export_data(lazy, limits).map(|_| ())
+        });
+        drop(evaluator);
+
+        let fresh = host.new_evaluator().unwrap();
+        let value = fresh
+            .evaluate_unit("rt => rt.core.mapSeq(x => x + 1, rt.core.vector(1))")
+            .unwrap();
+        let output = fresh.export_data(value, limits).unwrap();
+        let expected = crate::compiler_data::DataBuilder
+            .list(&[crate::compiler_data::DataBuilder.integer(2)])
+            .unwrap();
+        assert!(output.value_eq(&expected), "{output:?}");
+        fresh.release(value).unwrap();
+        assert_eq!(fresh.value_roots().unwrap(), 0);
     }
 }
 

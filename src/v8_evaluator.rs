@@ -1499,7 +1499,311 @@ impl CompilerEvaluator for V8Evaluator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compiler_data::DatumKind;
     use std::time::Duration;
+
+    #[test]
+    fn frontier_service_preserves_errors_dynamic_lookup_and_cancellation() {
+        let evaluator = V8Evaluator::interactive(EvaluatorOptions::default()).unwrap();
+        let setup = evaluator.evaluate_js(r#"(() => {
+            globalThis.frontierEvents = [];
+            globalThis.frontierError = rt.core.exInfo('frontier failed', rt.core.hashMap('code', 42));
+            globalThis.__lightEnterCompilerFrontier = next => {
+                frontierEvents.push(next);
+                if (next === 7) throw frontierError;
+                return {unneeded: new Array(10000)};
+            };
+            globalThis.__lightLeaveCompilerFrontier = () => frontierEvents.push('leave');
+        })()"#).unwrap();
+        evaluator.release(setup).unwrap();
+        evaluator.compiler_frontier(Some(0)).unwrap();
+        evaluator
+            .with_active(|active| active.compiler_frontier(None))
+            .unwrap();
+        let error = evaluator.compiler_frontier(Some(7)).unwrap_err();
+        assert!(error.0.contains("frontier failed"), "{error}");
+        evaluator
+            .with_active(|active| {
+                active.enter(|scope| {
+                    let error = invoke(scope, active.state, "errorValue", &[])?;
+                    let key = bridge::string(scope, "frontierError")?;
+                    let expected = scope
+                        .get_current_context()
+                        .global(scope)
+                        .get(scope, key.into())
+                        .unwrap();
+                    assert!(error.strict_equals(expected));
+                    Ok(())
+                })
+            })
+            .unwrap();
+        let change = evaluator
+            .evaluate_js(
+                "globalThis.__lightEnterCompilerFrontier = next => frontierEvents.push(next + 100)",
+            )
+            .unwrap();
+        evaluator.release(change).unwrap();
+        evaluator.compiler_frontier(Some(3)).unwrap();
+        evaluator
+            .with_active(|active| {
+                active.enter(|scope| {
+                    assert!(invoke(scope, active.state, "errorValue", &[])?.is_null());
+                    Ok(())
+                })
+            })
+            .unwrap();
+        let events = evaluator
+            .evaluate_js("JSON.stringify(frontierEvents)")
+            .unwrap();
+        assert_eq!(evaluator.string(events).unwrap(), "[0,\"leave\",7,103]");
+        evaluator.release(events).unwrap();
+        evaluator.control().cancel();
+        assert!(
+            evaluator
+                .compiler_frontier(None)
+                .unwrap_err()
+                .0
+                .contains("cancelled")
+        );
+    }
+
+    #[test]
+    fn failed_macro_calls_release_their_imported_object_arguments() {
+        use crate::compiler_data::{DataBuilder, ExpansionOrigin, Name, Source};
+        let evaluator = V8Evaluator::interactive(EvaluatorOptions::default()).unwrap();
+        let function = evaluator
+            .evaluate_js("() => { throw new Error('expected failure'); }")
+            .unwrap();
+        let mut host = crate::MacroHost::new();
+        let form = host
+            .read_compiler_form(&Source::new("failed.cljs", "(explode [some-name])"))
+            .unwrap()
+            .unwrap();
+        let env = DataBuilder.map(&[]).unwrap();
+        let roots = evaluator.value_roots().unwrap();
+        for _ in 0..25 {
+            let error = host
+                .expand_javascript(
+                    &evaluator,
+                    function,
+                    &form,
+                    &env,
+                    ExpansionOrigin {
+                        macro_name: Name::new(Some("cljs.user"), "explode"),
+                        call: form.span(),
+                        definition: None,
+                        helpers: vec![],
+                    },
+                )
+                .unwrap_err();
+            assert!(error.contains("expected failure"), "{error}");
+        }
+        evaluator.collect_garbage();
+        assert_eq!(
+            evaluator.state.bridge.borrow().external_estimate(),
+            0,
+            "failed calls must not pin their input forms"
+        );
+        assert_eq!(evaluator.value_roots().unwrap(), roots);
+        evaluator.release(function).unwrap();
+    }
+
+    #[test]
+    fn failed_macro_environments_release_pending_input_graphs() {
+        use crate::compiler_data::{
+            CompilerLiteralKind, DataBuilder, ExpansionOrigin, Name, Source,
+        };
+        let evaluator = V8Evaluator::interactive(EvaluatorOptions::default()).unwrap();
+        let function = evaluator
+            .evaluate_js("(_form, _env, value) => value")
+            .unwrap();
+        let mut host = crate::MacroHost::new();
+        let form = host
+            .read_compiler_form(&Source::new("pending.cljs", "(identity [some-name])"))
+            .unwrap()
+            .unwrap();
+        let environment = Datum::new(DatumKind::CompilerLiteral {
+            kind: CompilerLiteralKind::Uuid,
+            payload: DataBuilder.string("not-valid".encode_utf16().collect::<Vec<_>>()),
+        });
+        let roots = evaluator.value_roots().unwrap();
+        for _ in 0..25 {
+            let error = host
+                .expand_javascript(
+                    &evaluator,
+                    function,
+                    &form,
+                    &environment,
+                    ExpansionOrigin {
+                        macro_name: Name::new(Some("cljs.user"), "identity"),
+                        call: form.span(),
+                        definition: None,
+                        helpers: vec![],
+                    },
+                )
+                .unwrap_err();
+            assert!(error.contains("invalid UUID"), "{error}");
+        }
+        evaluator.collect_garbage();
+        assert_eq!(
+            evaluator.state.bridge.borrow().external_estimate(),
+            0,
+            "failed calls must release their input graphs and scalar provenance"
+        );
+        assert_eq!(evaluator.value_roots().unwrap(), roots);
+        evaluator.release(function).unwrap();
+    }
+
+    #[test]
+    fn failed_argument_snapshots_drop_the_pending_graph_and_partial_results() {
+        use crate::compiler_data::Source;
+        let evaluator = V8Evaluator::interactive(EvaluatorOptions::default()).unwrap();
+        let mut host = crate::MacroHost::new();
+        let form = host
+            .read_compiler_form(&Source::new(
+                "arguments.cljs",
+                "(identity [first] #js [second])",
+            ))
+            .unwrap()
+            .unwrap();
+        let mutate = evaluator
+            .evaluate_js("form => { rt.core.nth(form, 2).push(() => null); return null; }")
+            .unwrap();
+        let roots = evaluator.value_roots().unwrap();
+        let limits = ConversionLimits::default();
+        for _ in 0..25 {
+            let input = evaluator.import_macro_form(&form, limits).unwrap();
+            let result = evaluator.call(mutate, &[input]).unwrap();
+            evaluator.release(result).unwrap();
+            let error = evaluator.macro_arguments(input, &form, limits).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("Unsupported macro result function"),
+                "{error}"
+            );
+            evaluator.release(input).unwrap();
+        }
+        evaluator.collect_garbage();
+        assert_eq!(
+            evaluator.state.bridge.borrow().external_estimate(),
+            0,
+            "failed preparation must not retain snapshots or descriptor graphs"
+        );
+        assert_eq!(evaluator.value_roots().unwrap(), roots);
+        evaluator.release(mutate).unwrap();
+    }
+
+    #[test]
+    fn released_bridge_inputs_release_native_provenance() {
+        let evaluator = V8Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let c = crate::compiler_data::DataBuilder;
+        for n in 0..1000 {
+            let data = c
+                .vector(&[c.symbol(crate::compiler_data::Name::new(None, &format!("input-{n}")))])
+                .unwrap();
+            let input = evaluator
+                .import_data(&data, ConversionLimits::default())
+                .unwrap();
+            evaluator.release(input).unwrap();
+        }
+        evaluator.collect_garbage();
+        assert_eq!(
+            evaluator.state.bridge.borrow().external_estimate(),
+            0,
+            "released input provenance must not be session-owned"
+        );
+    }
+
+    #[test]
+    fn scalar_provenance_retains_values_instead_of_import_history() {
+        let evaluator = V8Evaluator::new(EvaluatorOptions::default()).unwrap();
+        let c = crate::compiler_data::DataBuilder;
+        let limits = ConversionLimits::default();
+        let external = || {
+            evaluator.collect_garbage();
+            evaluator.state.bridge.borrow().external_estimate()
+        };
+        for scalar in [c.integer(42), c.nil(), c.boolean(true)] {
+            let input = evaluator.import_data(&scalar, limits).unwrap();
+            evaluator.release(input).unwrap();
+        }
+        let scalar_charge = external();
+        assert!(scalar_charge > 0, "latest scalar provenance is retained");
+        for _ in 0..1000 {
+            let data = c
+                .vector(&[c.integer(42), c.nil(), c.boolean(true)])
+                .unwrap();
+            let input = evaluator.import_data(&data, limits).unwrap();
+            evaluator.release(input).unwrap();
+        }
+        assert_eq!(external(), scalar_charge);
+    }
+
+    #[test]
+    fn failed_import_validation_releases_temporary_roots() {
+        let c = crate::compiler_data::DataBuilder;
+        // The engine can construct this UUID, but canonical validation rejects
+        // its payload after the value has been imported and assigned an ID.
+        let invalid_cases = [
+            (
+                crate::compiler_data::CompilerLiteralKind::Uuid,
+                "invalid UUID",
+            ),
+            (
+                crate::compiler_data::CompilerLiteralKind::Instant,
+                "invalid instant",
+            ),
+        ];
+        let limits = ConversionLimits::default();
+        let payload = c.string("not-valid".encode_utf16().collect::<Vec<_>>());
+        for (kind, message) in invalid_cases {
+            let invalid = Datum::new(DatumKind::CompilerLiteral {
+                kind,
+                payload: payload.clone(),
+            });
+            for mode in 0..3 {
+                let evaluator = V8Evaluator::interactive(EvaluatorOptions::default()).unwrap();
+                let roots = evaluator.value_roots().unwrap();
+                let data = if mode == 0 {
+                    c.vector(std::slice::from_ref(&invalid)).unwrap()
+                } else {
+                    c.map(&[(
+                        c.keyword(crate::compiler_data::Name::new(None, "invalid")),
+                        invalid.clone(),
+                    )])
+                    .unwrap()
+                };
+                let scalar = evaluator.import_data(&payload, limits).unwrap();
+                evaluator.release(scalar).unwrap();
+                evaluator.collect_garbage();
+                let scalar_charge = evaluator.state.bridge.borrow().external_estimate();
+                for _ in 0..100 {
+                    let result = match mode {
+                        0 => evaluator.import_data(&data, limits),
+                        1 => evaluator.import_environment(&data, limits),
+                        _ => {
+                            evaluator.with_active(|active| active.import_environment(&data, limits))
+                        }
+                    };
+                    let error = result.unwrap_err();
+                    assert!(error.0.contains(message), "{error}");
+                }
+                evaluator.collect_garbage();
+                assert_eq!(
+                    evaluator.state.bridge.borrow().external_estimate(),
+                    scalar_charge,
+                    "only the latest string provenance survives, mode {mode}"
+                );
+                assert_eq!(evaluator.value_roots().unwrap(), roots);
+                let valid = evaluator
+                    .import_data(&c.vector(&[]).unwrap(), limits)
+                    .unwrap();
+                assert_eq!(evaluator.print(valid).unwrap(), "[]");
+                evaluator.release(valid).unwrap();
+            }
+        }
+    }
 
     fn startup_error(options: EvaluatorOptions, source: &str) -> EvalError {
         match V8Evaluator::new_with_startup(options, || source.into()) {
