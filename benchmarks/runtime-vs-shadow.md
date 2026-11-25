@@ -6796,3 +6796,106 @@ Measured on Apple M3 Ultra VM (24 CPUs, 32 GiB), Node v26.12.1, Headless Chromiu
 - **Release `:advanced` output:** `src/emitter.rs` and `src/js_runtime.js` are untouched; workload 200k `:advanced` output (`workload.main.js`) is byte-identical before and after (`sha256 e4ae4d595d7c59af6e3b56f37d220d580833efc827471fff7b7a704c1766d643`), and re-frame `:advanced` output sizes (without React, `bb benchmarks/re-frame.bb size --light-only`) are unchanged: `simple` `282,075` B raw / `75,914` B gzip -9, `todomvc` `400,439` B raw / `106,573` B gzip -9, `flow` `1,170,632` B raw / `272,298` B gzip -9 (+0.00%). Size ratchet ceilings in `tests/support/ratchet_fixtures.rs` are unchanged (note added).
 - **`bb benchmarks/re-frame-tests.bb`:** 118/118 tests pass (446 assertions per run across 3 runs) on shadow, `light-compile` (dev), and `light-release`.
 - **Browser checks:** dev TodoMVC functional browser checks 9/9 pass across 3 runs (zero non-404 errors); release TodoMVC browser checks 10/10 pass across 3 runs.
+
+## 2026-11-24: own-field `first`/`rest`/`next` paths for `Cons`, `ChunkedCons`, `LazySeq`, `IndexedSeq`, and `ChunkedSeq` (light-cljs-1122)
+
+Rebased onto `master` `845f5cb0` (`light-cljs-1118` and `light-cljs-1119` only change dev builds; release `:advanced` output is byte-identical to `4cb35725`). Final post-Sol-fix measurements taken using immutable release binaries `light-cljs-4cb35725` (SHA-256 `70a92a722ae0c2bd...`) and `light-cljs-ec4f95d5` (rebased as `995c2985`, SHA-256 `3e88530e3a58a609...`, after Sol review findings #2-#7 and #9) against shadow-cljs 3.5.3 (Node v26.12.1, Apple M3 Ultra VM, 24 CPUs, 32 GiB; unreserved, compilers alternated, every checksum equal to oracle).
+
+- **Changes (`src/js_runtime.js`, `tests/compiler/builtin_types.rs`, `tests/compiler/runtime_key.rs`):**
+  1. Share built-in `cellFirstSlot` (`Cons`/`ListValue`), `viewFirstSlot` and `viewSeqSlot` (`IndexedSeqValue`/`ChunkedSeqValue`), `emptyFirstSlot` (`EmptyListValue`), and `arrayChunkNth2Slot` (`arrayChunk`) so `first`, `firstOf`, `LazySeq.firstSlot`, and `ChunkedCons.first` read own fields directly when protocol slots match by identity, while honoring late `extend-type`, `specify!`, cross-copy overrides, and single-read slot getters.
+  2. Share built-in `cellRestSlot` (`Cons`), `listRestSlot`/`listNextSlot` (`ListValue`), `emptyRestSlot`/`emptyNextSlot` (`EmptyListValue`), and `arrayChunkCountSlot`/`arrayChunkDropFirstSlot` (`arrayChunk`) so `rest`, `restOf`, `next`, `Cons.nextSlot`, `LazySeq.restSlot`/`nextSlot`, and `ChunkedCons.rest`/`next` advance own fields directly when protocol slots match by identity.
+  3. Sol review fixes (`#2`-`#7`, `#9`): preserve `viewSeqSlot`'s backing `length` read and host `-seq` probe in `LazySeq.{first,rest,next}Slot`, remove `firstOf`/`restOf` `programMethod` pre-probes, read `ChunkedCons.next`'s `-seq` slot once on `nextCell`, dispatch missing/noBranch `-drop-first` directly to `dropFirstProtocol` while retaining `dropFirstChunk`'s `count` check when `programMethod` is active, restrict `ChunkedCons.first` direct array indexing to numeric offsets when `programMethod` is active, and add cross-copy nested-operand and different-build tests.
+  4. The remaining `*Site` helper work and GC allocation reductions on `re-frame-200k` are tracked in follow-up pellet `light-cljs-1125`.
+
+### Generated re-frame-shaped app, 200k lines (jsdom in Node, 10 runs alternated, unreserved)
+
+- **Before (`4cb35725`, load 4.36-5.79):** 1-iter first output `1.471 s (1.402-1.580)` vs shadow `1.358 s (1.339-1.492, 1.08x)`; 1-iter wall `1.484 s (1.414-1.600)` vs `1.372 s (1.351-1.506, 1.08x)`; 10-iter first output `4.129 s (3.989-4.339)` vs `3.818 s (3.675-3.878, 1.08x)`; 10-iter wall `4.173 s (4.023-4.365)` vs `3.840 s (3.695-3.900, 1.09x)`; 10-iter peak memory `0.737 GB (0.636-0.759)` vs `0.724 GB (0.721-0.726, 1.02x)`; steady state **298.8 vs 274.3 ms/iter (1.09x)**.
+- **After (`ec4f95d5`, load 12.94-14.59):**
+
+| Iterations | Compiler | First output | Wall time | User CPU | System CPU | Peak memory | 1-minute load before |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | light-cljs | 1.666 s (1.590-1.901) | 1.690 s (1.605-1.919) | 2.41 s (2.35-2.49) | 0.23 s (0.19-0.32) | 0.495 GB (0.473-0.505) | 13.21-13.39 |
+| 1 | shadow-cljs | 1.552 s (1.507-1.611) | 1.569 s (1.525-1.634) | 2.38 s (2.30-2.40) | 0.20 s (0.17-0.36) | 0.484 GB (0.466-0.489) | 13.21-13.39 |
+| 10 | light-cljs | 4.502 s (4.340-5.209) | 4.590 s (4.367-5.322) | 6.28 s (5.79-6.70) | 0.42 s (0.36-0.81) | 0.757 GB (0.632-0.770) | 12.94-14.40 |
+| 10 | shadow-cljs | 4.236 s (4.057-4.852) | 4.267 s (4.084-4.891) | 5.67 s (5.52-6.19) | 0.47 s (0.32-0.94) | 0.745 GB (0.730-0.759) | 13.11-14.59 |
+
+Steady state (from 1- and 10-iter medians): **322.2 vs 299.8 ms/iter (1.07x**, down from `1.09x` on `4cb35725`; 1-iter first output `1.07x`, 10-iter first output `1.06x`, 10-iter wall `1.08x`, peak memory `1.02x`).
+
+### Paired 10-iteration `--pseudo-names` CPU profiles of `re-frame-200k` (unreserved, load 3.52-3.84)
+
+Paired back-to-back runs at 100 us interval (`4cb35725` 29,805 samples / `4,888.5 ms` total -> `ec4f95d5` 28,437 samples / `4,644.9 ms` total, `-5.0%`; shadow-cljs 3.5.3 27,550 samples / `4,501.3 ms` total):
+
+| Function (light-cljs / shadow-cljs) | light-cljs before (`4cb35725`) | light-cljs after (`ec4f95d5`) | change | shadow-cljs 3.5.3 |
+| --- | ---: | ---: | ---: | ---: |
+| Total profile time | 4,888.5 ms | 4,644.9 ms | -5.0% | 4,501.3 ms |
+| `first` / `$cljs$core$first$$` | 61.7 ms (1.26%) | 57.5 ms (1.24%) | -6.8% | 37.2 ms (0.83%) |
+| `firstOf` | 13.5 ms (0.28%) | 12.3 ms (0.26%) | -8.9% | — |
+| `rest` / `$cljs$core$rest$$` | 29.4 ms (0.60%) | 17.2 ms (0.37%) | -41.5% | 11.0 ms (0.24%) |
+| `next` / `$cljs$core$next$$` | 49.4 ms (1.01%) | 43.5 ms (0.94%) | -11.9% | 35.2 ms (0.78%) |
+| `seq` / `$cljs$core$seq$$` | 63.2 ms (1.29%) | 49.6 ms (1.07%) | -21.5% | 70.1 ms (1.56%) |
+| Combined seq/first/rest/next | 217.2 ms (4.44%) | 180.1 ms (3.88%) | -17.1% | 153.5 ms (3.41%) |
+| `lazyRealized` + `lazyOf` | 50.9 ms (1.04%) | 52.6 ms (1.13%) | +3.3% | 64.9 ms (`sval`, 1.44%) |
+| `*Site` helpers (`get`/`nth3`/`assoc`/`first`/`count`) | 71.4 ms (1.46%) | 66.1 ms (1.42%) | -7.4% | — |
+| `(garbage collector)` | 255.0 ms (5.22%) | 260.9 ms (5.62%) | +2.3% | 203.8 ms (4.53%) |
+
+Top 10 self-time rows for **light-cljs `ec4f95d5`** (28,437 samples, `4,644.9 ms` total) vs **shadow-cljs 3.5.3** (27,550 samples, `4,501.3 ms` total):
+
+| Rank | light-cljs `ec4f95d5` | shadow-cljs 3.5.3 |
+| ---: | --- | --- |
+| 1 | `compileSourceTextModule [utils:338]` 439.7 ms (9.47%) | `wrapSafe [loader:1858]` 342.2 ms (7.60%) |
+| 2 | `(garbage collector)` 260.9 ms (5.62%) | `(garbage collector)` 203.8 ms (4.53%) |
+| 3 | `__light0_g143` (`reagent.ratom/notify-w`) 105.6 ms (2.27%) | `$cljs$core$array_index_of$$ [shadow-pseudo.js:7519]` 153.9 ms (3.42%) |
+| 4 | `arrayIndex [workload.main.js:2912]` 104.1 ms (2.24%) | `(anonymous) [shadow-pseudo.js:18760]` 108.7 ms (2.42%) |
+| 5 | `ReactElement [react.development.js:725]` 90.5 ms (1.95%) | `$reagent$ratom$notify_w$$ [shadow-pseudo.js:18182]` 98.3 ms (2.18%) |
+| 6 | `updateClassInstance [react-dom.development.js:14638]` 85.6 ms (1.84%) | `ReactElement [react.development.js:725]` 83.4 ms (1.85%) |
+| 7 | `__light0_g169` (`reagent.ratom/handle-reaction-change`) 68.4 ms (1.47%) | `updateClassInstance [react-dom.development.js:14638]` 79.9 ms (1.78%) |
+| 8 | `wrapSafe [loader:1858]` 66.9 ms (1.44%) | `(anonymous) [shadow-pseudo.js:21349]` 73.8 ms (1.64%) |
+| 9 | `__light0_g149 [workload.main.js:48412]` 58.7 ms (1.26%) | `$cljs$core$seq$$ [shadow-pseudo.js:1432]` 70.1 ms (1.56%) |
+| 10 | `first [workload.main.js:1442]` 57.5 ms (1.24%) | `$reagent$ratom$handle_reaction_change$$ [shadow-pseudo.js:18489]` 67.7 ms (1.50%) |
+
+### Generated workload, 200k lines (10 runs alternated, unreserved)
+
+- **Before (`4cb35725`, load 4.01-4.56):** 1-iter wall `0.343 s (0.316-0.350)` vs shadow `0.323 s (0.308-0.334, 1.06x)`; 10-iter wall `0.628 s (0.600-0.704)` vs `0.654 s (0.601-0.696, 0.96x)`; 40-iter wall `1.250 s (1.185-1.385)` vs `1.287 s (1.259-1.391, 0.97x)`; steady state **23.3 vs 24.7 ms/iter (0.94x)**.
+- **After (`ec4f95d5`, load 12.38-12.90):**
+
+| Iterations | Compiler | First output | Wall time | User CPU | System CPU | Peak memory | 1-minute load before |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | light-cljs | 0.343 s (0.334-0.368) | 0.348 s (0.339-0.373) | 0.40 s (0.38-0.42) | 0.04 s (0.03-0.05) | 0.147 GB (0.139-0.149) | 12.75-12.90 |
+| 1 | shadow-cljs | 0.337 s (0.310-0.388) | 0.340 s (0.313-0.392) | 0.38 s (0.36-0.42) | 0.04 s (0.03-0.11) | 0.129 GB (0.125-0.135) | 12.75-12.90 |
+| 10 | light-cljs | 0.621 s (0.606-0.659) | 0.627 s (0.612-0.665) | 0.86 s (0.83-0.90) | 0.07 s (0.06-0.09) | 0.199 GB (0.194-0.204) | 12.69-12.79 |
+| 10 | shadow-cljs | 0.630 s (0.611-0.655) | 0.637 s (0.617-0.665) | 0.85 s (0.83-0.88) | 0.08 s (0.07-0.09) | 0.218 GB (0.205-0.220) | 12.69-12.79 |
+| 40 | light-cljs | 1.245 s (1.211-1.306) | 1.264 s (1.228-1.326) | 1.74 s (1.70-1.82) | 0.11 s (0.10-0.13) | 0.263 GB (0.257-0.269) | 12.38-12.68 |
+| 40 | shadow-cljs | 1.372 s (1.295-1.439) | 1.382 s (1.304-1.449) | 1.92 s (1.82-1.96) | 0.13 s (0.11-0.19) | 0.283 GB (0.277-0.295) | 12.38-12.68 |
+
+Steady state (from 1- and 40-iter medians): **23.5 vs 26.7 ms/iter (0.88x**, down from `0.94x`; 40-iter wall `0.92x`, CPU `0.90x`, peak memory `0.93x`).
+
+### Core-ops gate (80 operations, `4cb35725` -> `ec4f95d5`, 5 runs alternated, unreserved)
+
+Load `3.78-4.72` before, `2.49-3.91` after; every checksum matched across all 80 operations. **Zero of the 80 operations got slower than before beyond its range** (all 80 pairs have overlapping min-max ranges). Selected improved and watched operations:
+
+| op (full 80-op pass) | light-cljs before (range) | light-cljs after (range) | change | shadow-cljs after | light/shadow before -> after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| lazy-walk-1000 | 36,754.1 (36,186.5-37,006.8) | 21,589.0 (21,442.8-22,594.4) | -41.3% | 48,919.0 | 0.74 -> 0.44 |
+| reduce-map-inc-1000 | 34,311.0 (33,603.4-35,845.6) | 23,155.6 (21,912.8-23,686.2) | -32.5% | 40,702.0 | 0.85 -> 0.57 |
+| get-in-3 | 46.6 (46.0-49.1) | 32.9 (32.8-34.7) | -29.4% | 57.9 | 0.81 -> 0.57 |
+| filter-count-1000 | 29,456.4 (29,032.9-30,264.8) | 23,982.8 (23,941.3-24,311.6) | -18.6% | 27,799.9 | 1.06 -> 0.86 |
+| seq-walk-vec-1000 | 10,343.8 (9,993.8-10,934.9) | 8,879.5 (8,811.9-9,010.8) | -14.2% | 19,198.5 | 0.54 -> 0.46 |
+| apply-vec | 44.3 (43.5-44.8) | 39.4 (38.6-39.9) | -11.2% | 90.5 | 0.49 -> 0.44 |
+| select-keys-3 | 203.9 (196.3-208.6) | 188.3 (184.2-203.5) | -7.6% | 242.7 | 0.81 -> 0.78 |
+| assoc-in-3 | 110.2 (109.2-112.3) | 102.7 (100.7-104.4) | -6.8% | 135.7 | 0.84 -> 0.76 |
+| update-in-3 | 120.6 (118.1-123.1) | 113.4 (112.0-114.9) | -6.0% | 142.8 | 0.89 -> 0.79 |
+| multimethod | 42.3 (41.7-42.8) | 40.2 (38.8-40.9) | -5.0% | 47.0 | 0.88 -> 0.85 |
+| sort-by-100 | 1,184.1 (1,150.0-1,214.2) | 1,133.7 (1,117.9-1,255.7) | -4.3% | 4,562.9 | 0.25 -> 0.25 |
+| into-map-small | 171.3 (164.8-175.8) | 164.2 (158.1-180.4) | -4.2% | 322.7 | 0.52 -> 0.51 |
+| list-pop | 14.6 (14.4-15.0) | 15.0 (14.5-15.7) | +2.3% | 14.5 | 0.99 -> 1.03 |
+| vec-pop | 23.7 (23.6-24.1) | 24.4 (23.6-24.7) | +2.7% | 23.8 | 0.98 -> 1.02 |
+| assoc-small-new | 39.4 (39.1-40.2) | 40.5 (38.5-42.3) | +2.9% | 38.4 | 1.02 -> 1.06 |
+| record-kw-field | 3.05 (2.99-3.08) | 3.19 (2.99-3.32) | +4.6% | 4.11 | 0.73 -> 0.78 |
+
+### Sizes (`4cb35725` -> `ec4f95d5`, `--elide-asserts --no-cache`, without React)
+
+- `simple`: raw `283,394 -> 287,730` (+4,336 B), gzip -9 `76,242 -> 77,266` (+1,024 B, +1.34%).
+- `todomvc`: raw `400,439 -> 404,771` (+4,332 B), gzip -9 `106,582 -> 107,562` (+980 B, +0.92%).
+- `flow`: raw `1,262,981 -> 1,267,327` (+4,346 B), gzip -9 `294,010 -> 294,918` (+908 B, +0.31%).
+
+Growth above +0.5% gzip on `simple` (+1.34%) and `todomvc` (+0.92%) is accounted for by the per-type inline own-field fast paths and single-read slot fallbacks in `LazySeq.{firstSlot,restSlot,nextSlot}` (+82 net lines), `ChunkedCons.{next,rest,first}` (+71 net lines plus Sol fixes `#4`/`#5`/`#7`), `Cons.nextSlot` (+21 net lines), and `first`/`firstOf`/`rest`/`restOf`/`next` (+18 net lines). A consolidation attempt extracting `lazyForceSeq`, `chunkedConsDrop`, and `emptyListSeq` cut the delta by ~241 B gzip (`simple` +0.89%, `todomvc` +0.63%, `flow` +0.22%), but routing `LazySeq` inner seqs back through `first`/`rest`/`next` polluted V8 inline caches and regressed `seq-walk-vec-1000` (+12%), `apply-vec` (+9%), `select-keys-3` (+5%), and `lazy-walk-1000` (+5%) outside their ranges, so it was reverted. Size ratchet ceilings are recomputed on master `845f5cb0` in `tests/support/ratchet_fixtures.rs` and `tests/compiler/chunks.rs`.
