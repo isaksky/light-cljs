@@ -72,6 +72,14 @@ impl V8Evaluator {
         MacroEvaluator::release(&evaluator, done)?;
         Ok(evaluator)
     }
+
+    pub(super) fn export_data(
+        &self,
+        id: ValueId,
+        limits: ConversionLimits,
+    ) -> Result<Datum, EvalError> {
+        self.with_active(|e| e.export_data(id, limits))
+    }
 }
 
 /// An argument of a `__lightEvaluator` service.
@@ -194,7 +202,7 @@ impl SessionEvaluator for V8Evaluator {
         MacroEvaluator::import_data(self, data, limits)
     }
     fn export_data(&self, id: ValueId, limits: ConversionLimits) -> Result<Datum, EvalError> {
-        self.with_active(|e| e.export_data(id, limits))
+        V8Evaluator::export_data(self, id, limits)
     }
     fn validate(&self, id: ValueId) -> Result<(), EvalError> {
         self.with_active(|e| e.service("validate", &[e.of(id)?], |_, _| Ok(())))

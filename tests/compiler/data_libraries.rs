@@ -316,6 +316,86 @@ fn all_supported_native_set_and_walk_fixtures_migrate_with_values_and_effects() 
     assert_eq!(ids.len(), 117);
 }
 
+#[cfg(light_v8)]
+#[test]
+fn compiler_data_readers_run_without_quickjs() {
+    use light_cljs::{
+        EvalOptions, EvalSession, MacroHost, compile_with_macros,
+        compiler::{EntryRecorders, analyze_namespace_entry_recorded},
+        compiler_data::Name,
+        scheduler::Slots,
+    };
+
+    // The guard is process-wide. Isolate it from tests that run emitted JS in QuickJS.
+    const GUARD: &str = "LIGHT_CLJS_ASSERT_NO_QUICKJS";
+    if std::env::var_os(GUARD).is_none() {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "data_libraries::compiler_data_readers_run_without_quickjs",
+                "--nocapture",
+            ])
+            .env(GUARD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+
+    let tag = Name::new(None, "named");
+    let named = "(fn [x] (inc x))";
+    let default = "(fn [tag x] [(str tag) x])";
+    let source = "(when true [#named 7 #demo/missing 9])";
+    let mut host = MacroHost::new();
+    host.register_compiler_data_reader(tag.clone(), named)
+        .unwrap();
+    host.register_compiler_default_data_reader(default).unwrap();
+    let js = compile_with_macros(&format!("(pr-str {source})"), &mut host).unwrap();
+    let expected = r#"[8 ["demo/missing" 9]]"#;
+    assert_eq!(crate::canonical_json::node(&js), expected);
+
+    let sources = Sources::new();
+    sources.write("probe/a.cljs", "(ns probe.a) (def value #named 7)");
+    sources.write("probe/b.cljs", "(ns probe.b) (def value #demo/missing 9)");
+    sources.write(
+        "probe/main.cljs",
+        "(ns probe.main (:require [probe.a :as a] [probe.b :as b]))
+         (pr-str (when true [a/value b/value]))",
+    );
+    host.evaluator_options.memory_limit = 192 << 20;
+    let (program, _) = analyze_namespace_entry_recorded(
+        "probe.main",
+        std::slice::from_ref(sources.0.path()),
+        &mut host,
+        Default::default(),
+        &mut Vec::new(),
+        EntryRecorders {
+            slots: Slots::new(3).unwrap(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        crate::canonical_json::node(&light_cljs::emit_js(&program)),
+        expected
+    );
+
+    let mut session = EvalSession::new(EvalOptions {
+        data_readers: vec![(tag, named.into())],
+        default_data_reader: Some(default.into()),
+        ..Default::default()
+    })
+    .unwrap();
+    let result = session.eval_string(source).unwrap();
+    assert_eq!(session.print(result.value).unwrap(), expected);
+    session.release(result.value).unwrap();
+}
+
 #[test]
 fn compiler_owned_data_readers_keep_source_order_origins_and_typed_results() {
     use light_cljs::{
@@ -392,6 +472,45 @@ fn compiler_owned_data_readers_keep_source_order_origins_and_typed_results() {
     assert_eq!(error.span.text(), "#size 1");
     // A fresh compilation resets cumulative output and failed reader state.
     assert!(compile_with_macros("#size 1", &mut bounded).is_ok());
+}
+
+#[cfg(any(light_v8, light_quickjs))]
+#[test]
+fn compiler_data_readers_report_conversion_and_execution_limits() {
+    use light_cljs::{
+        MacroHost,
+        compiler_data::{Name, Source},
+    };
+    use std::time::Duration;
+
+    let mut host = MacroHost::new();
+    host.limits.generated_nodes = 5;
+    host.evaluator_options.timeout = Duration::from_secs(2);
+    host.register_compiler_data_reader(
+        Name::new(None, "bounded"),
+        "(fn [x] (case x
+                   0 :ok
+                   1 [x x x x x]
+                   2 (reduce (fn [nested _] [nested]) x (range 129))
+                   (loop [] (recur))))",
+    )
+    .unwrap();
+
+    let read = |host: &mut MacroHost, text: &str| {
+        host.read_compiler_form(&Source::new("reader-limits.cljs", text))
+    };
+    assert!(read(&mut host, "#bounded 0").unwrap().is_some());
+    let error = read(&mut host, "#bounded 1").unwrap_err();
+    assert!(error.message.contains("node limit at "), "{error}");
+    assert_eq!(error.span.text(), "#bounded 1");
+    host.limits.generated_nodes = 1000;
+    let error = read(&mut host, "#bounded 2").unwrap_err();
+    assert!(error.message.contains("depth limit at "), "{error}");
+    assert_eq!(error.span.text(), "#bounded 2");
+    assert!(read(&mut host, "#bounded 0").unwrap().is_some());
+    let error = read(&mut host, "#bounded 3").unwrap_err();
+    assert!(error.message.contains("deadline exceeded"), "{error}");
+    assert_eq!(error.span.text(), "#bounded 3");
 }
 
 #[test]

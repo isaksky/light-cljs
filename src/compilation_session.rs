@@ -1087,9 +1087,21 @@ impl SharedCatalog {
             self.lock().queued_ir.merged(id);
         }
     }
-    /// What the build's isolates share, once its pool runs engines.
+    /// What the build's isolates share, once its pool runs engines or a
+    /// serial build with configured data readers starts an isolate.
     pub(crate) fn resources(&self) -> Option<&crate::evaluator::BuildResources> {
         self.resources.get()
+    }
+    #[cfg(light_v8)]
+    pub(crate) fn serial_reader_resources(
+        &self,
+        options: &crate::evaluator::EvaluatorOptions,
+    ) -> Result<&crate::evaluator::BuildResources, crate::evaluator::EvalError> {
+        if let Some(resources) = self.resources() {
+            return Ok(resources);
+        }
+        let resources = crate::evaluator::BuildResources::for_serial_readers(options)?;
+        Ok(self.resources.get_or_init(|| resources))
     }
     /// What the compilation records of each analysis beyond its charges.
     fn recording(&self) -> crate::macro_host::UnitRecording {

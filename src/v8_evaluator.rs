@@ -3,8 +3,8 @@ use crate::{
     compiler_data::{Datum, ExpansionOrigin, Form},
     compiler_evaluator::{CompilerEvaluator, UnitService},
     evaluator::{
-        EvalError, EvaluatorOptions, ExecutionControl, MacroEvaluator, MemoryPool, NEXT_SESSION,
-        RUNTIME_SOURCE, ValueId,
+        BuildResources, EvalError, EvaluatorOptions, ExecutionControl, MacroEvaluator, MemoryPool,
+        NEXT_SESSION, RUNTIME_SOURCE, ValueId,
     },
     form_bridge::ConversionLimits,
     v8_bridge::{self as bridge, BridgeState},
@@ -384,26 +384,61 @@ impl V8Evaluator {
         Self::create(options, control, None, INITIAL_HEAP_LIMIT, source)
     }
 
-    /// An isolate of a build with several unit slots: its control follows
-    /// `resources`' deadline and cancellation, through the build's control
-    /// for the `main` isolate and the workers' for a worker's, and its
-    /// memory comes from the build's pool, with the main isolate's base or
-    /// a worker's.
+    /// A macro isolate with the build's deadline, cancellation and memory pool.
     pub(crate) fn new_for_build(
         options: EvaluatorOptions,
-        resources: &crate::evaluator::BuildResources,
+        resources: &BuildResources,
         main: bool,
     ) -> Result<Self, EvalError> {
-        let build = if main {
-            &resources.control
+        Self::create_for_build(options, resources, main, !main)
+    }
+
+    /// The data-reader isolate has its own memory share and follows its
+    /// slot's cancellation. A reader error discards this isolate without
+    /// invalidating a serial build's shared control.
+    pub(crate) fn new_for_build_reader(
+        options: EvaluatorOptions,
+        resources: &BuildResources,
+        worker: bool,
+    ) -> Result<Self, EvalError> {
+        let evaluator = Self::create_for_build(options, resources, false, worker)?;
+        evaluator.state.interactive.set(resources.serial);
+        Ok(evaluator)
+    }
+
+    fn create_for_build(
+        options: EvaluatorOptions,
+        resources: &BuildResources,
+        main_share: bool,
+        worker: bool,
+    ) -> Result<Self, EvalError> {
+        let control = if resources.serial {
+            // The coordinator can exempt process-wide bootstrap work even
+            // when a reader already shares the deadline.
+            resources.control.clone()
         } else {
-            &resources.workers
+            let build = if worker {
+                &resources.workers
+            } else {
+                &resources.control
+            };
+            ExecutionControl::linked(&options, build)?
         };
-        let control = ExecutionControl::linked(&options, build)?;
+        let share = if main_share {
+            resources.memory.main_base()
+        } else {
+            resources.memory.base()
+        };
+        if share < 16 << 20 {
+            control.memory_exhausted();
+            return Err(bridge::error(
+                "JavaScript session memory limit exhausted: V8 isolate share is below 16 MiB",
+            ));
+        }
         Self::create(
             options,
             control,
-            Some((resources.memory.clone(), main)),
+            Some((resources.memory.clone(), main_share)),
             INITIAL_HEAP_LIMIT,
             Self::startup_source,
         )
@@ -1305,6 +1340,9 @@ fn string_service(
     scope.terminate_execution();
 }
 impl CompilerEvaluator for V8Evaluator {
+    fn export_data(&self, id: ValueId, limits: ConversionLimits) -> Result<Datum, EvalError> {
+        V8Evaluator::export_data(self, id, limits)
+    }
     fn headroom_held(&self) -> usize {
         self.state.buffers.headroom_held()
     }

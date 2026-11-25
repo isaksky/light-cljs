@@ -2992,12 +2992,16 @@ fn analyze_entry(
                         // before the build's deadline starts (light-cljs-378).
                         crate::compiler_bootstrap::prepare(macros)
                             .map_err(NamespaceCompileError::new)?;
+                        // A slot that can run macros can also boot a separate
+                        // reader isolate. Reserve both shares from the same pool.
+                        let heaps = if cfg!(light_v8) && macros.data_reader_count() != 0 {
+                            isolates * 2
+                        } else {
+                            isolates
+                        };
                         resources = Some(
-                            crate::evaluator::BuildResources::new(
-                                &macros.evaluator_options,
-                                isolates,
-                            )
-                            .map_err(|e| NamespaceCompileError::new(e.0))?,
+                            crate::evaluator::BuildResources::new(&macros.evaluator_options, heaps)
+                                .map_err(|e| NamespaceCompileError::new(e.0))?,
                         );
                     }
                     if let Some(cache) = cache.as_deref_mut() {

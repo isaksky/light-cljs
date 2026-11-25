@@ -417,16 +417,16 @@ impl MemoryPool {
         self.headroom.load(Ordering::Relaxed)
     }
 }
-/// What the compile-time isolates of one build with several unit slots
-/// share: the build's control, whose deadline and cancellation every
-/// isolate's own control follows; the workers' control, linked to it, which
-/// the coordinator cancels when the build fails; and the memory pool.
+/// What a build's compile-time isolates share: its deadline and
+/// cancellation, a linked control for workers, and the memory pool.
 #[derive(Clone)]
 #[cfg_attr(not(any(light_v8, light_quickjs)), allow(dead_code))]
 pub(crate) struct BuildResources {
     pub(crate) control: ExecutionControl,
     pub(crate) workers: ExecutionControl,
     pub(crate) memory: Arc<MemoryPool>,
+    #[cfg(light_v8)]
+    pub(crate) serial: bool,
 }
 impl BuildResources {
     /// The resources of a build with `options`, whose deadline starts now,
@@ -437,7 +437,17 @@ impl BuildResources {
             workers: ExecutionControl::linked(options, &control)?,
             control,
             memory: MemoryPool::new(options.memory_limit, isolates),
+            #[cfg(light_v8)]
+            serial: false,
         })
+    }
+
+    /// Share a serial build's limits between its macro and data-reader heaps.
+    #[cfg(light_v8)]
+    pub(crate) fn for_serial_readers(options: &EvaluatorOptions) -> Result<Self, EvalError> {
+        let mut resources = Self::new(options, 2)?;
+        resources.serial = true;
+        Ok(resources)
     }
 }
 
@@ -451,8 +461,8 @@ pub struct ValueId {
 /// A build without QuickJS cannot create this legacy evaluator. Compiler
 /// macros may use another selected backend or a
 /// [`crate::host_evaluator::ScriptHost`]. Every constructor fails, so no
-/// value of this type exists and the paths that would use one, such as
-/// interactive sessions and compiler data readers, report [`no_quickjs`].
+/// value of this type exists and callers of its constructors receive
+/// [`no_quickjs`].
 #[cfg(not(light_quickjs))]
 pub enum Evaluator {}
 /// Why a build without QuickJS cannot make an [`Evaluator`].

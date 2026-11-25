@@ -1195,14 +1195,24 @@ impl MacroHost {
         std::rc::Rc<dyn crate::compiler_evaluator::CompilerEvaluator>,
         crate::evaluator::EvalError,
     > {
+        self.new_compile_time_evaluator(false)
+    }
+    fn new_compile_time_evaluator(
+        &self,
+        data_reader: bool,
+    ) -> Result<
+        std::rc::Rc<dyn crate::compiler_evaluator::CompilerEvaluator>,
+        crate::evaluator::EvalError,
+    > {
         if self.engine.forbid_engine_boot.get() {
             return Err(crate::evaluator::EvalError(
                 NEEDS_ENGINE_SENTINEL.to_owned(),
             ));
         }
         self.engine.entered_engine.set(true);
-        if let Some(host) = &self.engine.script_host
+        if !data_reader
             && !self.tables.interactive
+            && let Some(host) = &self.engine.script_host
         {
             let evaluator =
                 crate::host_evaluator::HostEvaluator::new(host.clone(), &self.evaluator_options)?;
@@ -1220,14 +1230,18 @@ impl MacroHost {
                     None => ExecutionControl::new(&options)?,
                 };
                 V8Evaluator::interactive_with_control(options, control)?
-            } else {
-                // The main isolate of a build with several unit slots shares
-                // the build's deadline and memory with its workers.
-                let session = self.session_handle();
-                match session.as_ref().and_then(|s| s.shared().resources()) {
-                    Some(resources) => V8Evaluator::new_for_build(options, resources, true)?,
-                    None => V8Evaluator::new(options)?,
+            } else if let Some(resources) = self.v8_build_resources()? {
+                if data_reader {
+                    V8Evaluator::new_for_build_reader(
+                        options,
+                        &resources,
+                        self.engine.catalog.is_some(),
+                    )?
+                } else {
+                    V8Evaluator::new_for_build(options, &resources, true)?
                 }
+            } else {
+                V8Evaluator::new(options)?
             };
             self.prepare_compiler_evaluator(&evaluator)?;
             Ok(std::rc::Rc::new(evaluator))
@@ -1237,7 +1251,8 @@ impl MacroHost {
             // The main QuickJS runtime of a build with worker runtimes
             // shares the build's deadline and memory with them (light-cljs-436).
             #[cfg(light_quickjs)]
-            if !self.tables.interactive
+            if !data_reader
+                && !self.tables.interactive
                 && self.engine.interactive_control.is_none()
                 && let Some(session) = self.session_handle()
                 && let Some(resources) = session.shared().resources()
@@ -1535,13 +1550,29 @@ impl MacroHost {
         std::rc::Rc<dyn crate::compiler_evaluator::CompilerEvaluator>,
         crate::evaluator::EvalError,
     > {
-        if self.engine.forbid_engine_boot.get() {
-            return Err(crate::evaluator::EvalError(
-                NEEDS_ENGINE_SENTINEL.to_owned(),
-            ));
+        self.new_compile_time_evaluator(true)
+    }
+    #[cfg(light_v8)]
+    fn v8_build_resources(
+        &self,
+    ) -> Result<Option<crate::evaluator::BuildResources>, crate::evaluator::EvalError> {
+        if let Some(catalog) = &self.engine.catalog {
+            return Ok(catalog.resources().cloned());
         }
-        self.engine.entered_engine.set(true);
-        Ok(std::rc::Rc::new(self.new_evaluator()?))
+        let Some(session) = self.session_handle() else {
+            return Ok(None);
+        };
+        let catalog = session.shared();
+        if let Some(resources) = catalog.resources() {
+            return Ok(Some(resources.clone()));
+        }
+        if self.data_reader_count() == 0 || self.engine.script_host.is_some() {
+            return Ok(None);
+        }
+        catalog
+            .serial_reader_resources(&self.evaluator_options)
+            .cloned()
+            .map(Some)
     }
     /// Register an explicit compiler-emitted function over immutable reader data.
     /// It executes in canonical JavaScript; only finite form-domain results cross
@@ -2192,7 +2223,8 @@ impl MacroHost {
         self.tables.runtime_vars.get(key).copied()
     }
     pub(crate) fn data_reader_count(&self) -> usize {
-        self.tables.data_readers.units.len()
+        let readers = &self.tables.data_readers;
+        readers.units.len() + usize::from(readers.default_unit.is_some())
     }
     pub(crate) fn set_renames(&mut self, caller: &str, renames: Vec<(String, String, String)>) {
         self.tables.renames.insert(caller.to_owned(), renames);
@@ -3962,6 +3994,29 @@ impl MacroHost {
 mod compiler_default_reader_tests {
     use super::*;
     use crate::compiler_data::{DatumKind, Source};
+
+    #[cfg(light_v8)]
+    #[test]
+    fn compiler_reader_heap_shares_the_build_budget_and_has_its_own_registry() {
+        let mut host = MacroHost::new();
+        host.register_compiler_default_data_reader("(fn [tag value] value)")
+            .unwrap();
+        host.begin_compilation();
+
+        let macro_heap = host.new_compiler_evaluator().unwrap();
+        let reader_heap = host.new_data_reader_evaluator().unwrap();
+        let macro_registry = macro_heap.reader_namespaces().unwrap();
+        let reader_registry = reader_heap.reader_namespaces().unwrap();
+        assert!(!std::rc::Rc::ptr_eq(&macro_registry, &reader_registry));
+
+        // 40 MiB would fit in a dedicated 64 MiB isolate. The reader shares
+        // the compilation's limit with the macro isolate.
+        let error = reader_heap
+            .evaluate_js("new ArrayBuffer(40 * 1024 * 1024)")
+            .unwrap_err();
+        assert!(error.0.contains("memory limit exhausted"), "{error}");
+        assert!(macro_heap.control().check().is_err());
+    }
 
     #[test]
     fn default_reader_is_compiled_typed_and_preserves_reader_precedence() {
