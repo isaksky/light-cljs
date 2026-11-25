@@ -95,13 +95,12 @@ The merge criterion allows JavaScript changes from the Pants runtime
 removal, the QuickJS WeakMap switch removal, the live protocol-name fix,
 and the `satisfies?` marker cache and stable-protocol inlining.
 
-The audit compares master `fb7de495` and `remove-quickjs` at `29e8401a`,
-whose compiler sources match `50890488`. Each checkpoint uses
-`cargo build --release --locked --bin light-cljs` with the V8 build features
-enabled by default at that revision. The ratchets use the inputs and
-arguments from `remove-quickjs.bb output`, with `--size-report` for the
-unit names and byte counts. TodoMVC uses a copy of `research/todomvc-port`
-and `release client --no-cache --optimize advanced`.
+The audit compares master `fb7de495` and `remove-quickjs` at `8b72ab93`.
+Each checkpoint uses `cargo build --release --locked --bin light-cljs`
+with the V8 build features enabled by default at that revision. The
+ratchets use the inputs and arguments from `remove-quickjs.bb output`,
+with `--size-report` for unit names and byte counts. TodoMVC uses a copy
+of `research/todomvc-port` and `release client --no-cache --optimize advanced`.
 
 Both generated projects use seed 42. The plain workload has 199,129
 nonblank lines and the re-frame workload has 202,053. The re-frame
@@ -118,11 +117,23 @@ bb benchmarks/generated-project/generate.bb "$logs/re-frame-200k" --seed 42 --li
 
 #### Readable ratchets
 
-The readable runtime lost 4,334 bytes of Pants-specific comments per
-ratchet at both `none` and `prepare` (`36a2de8c`, light-cljs-1129). After
-replacing the runtime key and registration hash with their placeholders
-and removing the embedded runtime text, all 72 outputs matched between
-`fb7de495` and `f3ce9409`. The changes fall in these runtime manifest spans.
+Each fixture at both `none` and `prepare` loses 4,420 bytes. All 72
+application bodies match after restoring the runtime key and registration
+hash to their placeholders and subtracting each revision's entire embedded
+runtime. The runtime key and hash are derived from the emitted text and
+retain their widths when the text changes.
+
+| Change | Runtime units | Bytes per fixture at either level |
+| --- | --- | ---: |
+| Pants removal, light-cljs-1129 (`36a2de8c`) | Comments in 45 spans below | -4,334 |
+| Alias fix, light-cljs-1139 (`1899b743`) | `protocolPredicate` | -4 |
+| Live-name guard, light-cljs-1139 (`dbe6511f`) | `protocolPredicate` | +56 |
+| Marker cache, light-cljs-1142 (`fdb245dd`) | `ProtocolMarker` (+712), `protocolPredicate` (-11) | +701 |
+| Stable-protocol inlining, light-cljs-1142 (`646d0f3f`) | Advanced emission only | 0 |
+| QuickJS switch removal, light-cljs-1136 (`b6f143e3`) | `weakMapStores` replaced by `canHoldField` (-631), `stampBrand` (-208) | -839 |
+| Total | | -4,420 |
+
+The Pants subtotal accounts for comments in these runtime manifest spans.
 
 | Runtime unit spans and individual byte deltas | Subtotal |
 | --- | ---: |
@@ -137,12 +148,10 @@ and removing the embedded runtime text, all 72 outputs matched between
 | `typeMasks` (-43), `updatedMap` (-74), `vars` (-124), `vectorCells` (-220), `withMetaKeeps` (-45) | -506 |
 | Total | -4,334 |
 
-The alias fix (`1899b743`) and live-name guard (`dbe6511f`), both from
-light-cljs-1139, change only `protocolPredicate` in the readable files.
-They remove four bytes and add 56 bytes respectively. The alias fix
-uses the analyzed marker key and the guard checks that the live protocol
-agrees with it for `satisfies?`. All 72 application remainders still match
-after subtracting each revision's runtime and normalizing its key and hash.
+The alias fix uses the analyzed marker key and the guard checks that the
+live protocol agrees with it for `satisfies?`. The marker cache puts the
+resolved slot behind that guard. QuickJS removal drops the switch from the
+`canHoldField` declaration and the WeakSet alternative from `stampBrand`.
 
 #### Advanced builds
 
@@ -150,6 +159,22 @@ The Pants checkpoint produces the same bytes for all 36 advanced
 ratchets and all three projects. The protocol alias fix, live-name guard,
 marker cache and stable-protocol inlining all leave the advanced ratchets
 byte-identical.
+
+The affected advanced slices retain `canHoldField`. Before `b6f143e3`
+it shares a declaration with `weakMapStores`. Only the readable runtime
+includes `stampBrand` in these fixtures.
+
+| Advanced ratchets | Runtime unit before and after QuickJS switch removal | Bytes per fixture | Total delta |
+| --- | --- | ---: | ---: |
+| `vector-printed` | `weakMapStores` (100) becomes `canHoldField` (56) | -44 | -44 |
+| 14 other changed fixtures | `weakMapStores` (101) becomes `canHoldField` (57) | -44 | -616 |
+| 21 byte-identical fixtures | Same units | 0 | 0 |
+| Total | | | -660 |
+
+The other changed fixtures are `callbacks`, `constant-keys`,
+`constant-literals`, `eight-records`, `event-maps`, `extended-classes`,
+`features`, `features-direct`, `keyword-lookups`, `map-printed`,
+`mapv-count`, `protocol-params`, `rest-fn`, and `seq-pipeline`.
 
 Each project produces one ES module. The stock `--size-report` for these
 builds measures the expression layout. A diagnostic build in a detached
@@ -172,6 +197,8 @@ runtime functions after restoring the runtime key and hash to placeholders.
 | Stable-protocol inlining (`646d0f3f`) | `protocolSlotCodes` | +30 | +4,688 | +2,036 |
 | Stable-protocol inlining (`646d0f3f`) | Compact name reassignment in 20 other retained runtime units | 0 | 0 | -24 |
 | Stable-protocol inlining (`646d0f3f`) | Application and wrapper bytes outside the runtime units | +36 | +4,298 | +1,751 |
+| QuickJS switch removal (`b6f143e3`) | `weakMapStores` (-101), `canHoldField` (+57) | -44 | -44 | -44 |
+| Total | | -182 | +8,738 | +3,514 |
 
 Inlining replaces two `protocolPredicate` calls in TodoMVC, 234 in the
 plain workload and 98 in the re-frame workload. TodoMVC's two calls come
@@ -186,6 +213,27 @@ Inlining alone changes TodoMVC by -373 bytes, the plain workload by
 +8,547 bytes and the re-frame workload by +3,322 bytes. The re-frame
 workload grew by 3,584 bytes across light-cljs-1142 when the marker cache
 is included (`8817bcbb` to `646d0f3f`).
+
+For the QuickJS change, after removing the 44-byte switch binding and
+normalizing the key and hash, token and lexical binding comparison with
+`src/js_syntax.rs` finds only same-width identifier renames in the 18
+changed advanced outputs. These renames follow from the removed binding.
+
+| Advanced startup module compared with `cmp` | Master bytes | Branch bytes | Delta |
+| --- | ---: | ---: | ---: |
+| TodoMVC `todomvc.core.js` | 349,574 | 349,392 | -182 |
+| Workload 200k `workload.main.js` | 3,735,910 | 3,744,648 | +8,738 |
+| Re-frame 200k `workload.main.js` | 5,734,283 | 5,737,797 | +3,514 |
+
+All three modules differ in `cmp`. Their `chunks.json` manifests agree
+after dropping the recorded JavaScript byte counts. At input 42 with three
+iterations, `node run-light.mjs 42 3` agrees with `bb oracle.bb 42 3`
+on both revisions, producing `484264` for the plain workload and
+`714878 117718` for re-frame.
+
+All 111 JavaScript outputs match across `dbe6511f` to `8817bcbb`,
+`646d0f3f` to `54bd6dce`, and `b6f143e3` to `8b72ab93`. The measured
+changes account for the entire drift and pass the revised output check.
 
 ## 4. Interactive sessions
 
