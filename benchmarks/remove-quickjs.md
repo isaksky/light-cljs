@@ -85,3 +85,35 @@ remaining byte drift and the decision on whether to accept it. TodoMVC
 SHA-256 was `0bc64c35bdd4b5aaa28cfb755f2fc081ffe8e3ce39131bfd12a23a8870e2b8b3`
 on master and `cc7681507c8a03e5ca5e8785e47172331f0fb6ec9d433fa46036c7223c623a57`
 on the branch.
+
+## 4. Interactive sessions
+
+```sh
+bb benchmarks/remove-quickjs.bb sessions "$logs" "$master" "$branch" 10
+bb benchmarks/remove-quickjs.bb summary "$logs/sessions.edn"
+```
+
+The library workload requires `clojure.string`, `clojure.set`, `clojure.walk`,
+`clojure.edn` and `cljs.reader` in one evaluation. The macro script expands
+400 calls to a macro that introduces a local binding and adds three
+terms. The REPL follows light-cljs-305 and light-cljs-366, with 3,000
+`(def vI (vec (range 50)))` forms each followed by
+`(reduce + (map inc vI))`. The macro script and REPL both use
+`--timeout-ms 120000 --poll-budget 1000000000000`. Every run checked
+the expected result and result line count.
+
+| Workload | Master wall (s) | Branch wall (s) | Master peak (MiB) | Branch peak (MiB) | Load range |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `--eval --text '(+ 1 2)'` | 0.037 [0.033–0.122] | 0.035 [0.033–0.105] | 32.35 [32.11–33.06] | 31.98 [31.73–32.28] | 3.57 |
+| Five libraries | 0.043 [0.042–0.049] | 0.043 [0.042–0.048] | 34.54 [34.45–34.91] | 34.22 [34.02–34.45] | 3.52–3.57 |
+| 400 macro calls | 0.167 [0.165–0.194] | 0.081 [0.078–0.099] | 54.45 [54.09–55.19] | 67.51 [63.55–71.67] | 3.52 |
+| 6,000 REPL forms | 0.423 [0.418–0.439] | 0.424 [0.419–0.446] | 82.97 [81.39–85.17] | 82.75 [80.83–84.69] | 3.44–3.52 |
+
+The macro-heavy script takes 49% of master's wall time and adds 13.06
+MiB (24.0%) at the median. Both changes exceed the observed ranges.
+A separate `LIGHT_V8_STATS=1` run showed one V8 isolate on each side for
+`(+ 1 2)` and one on master versus two on the branch for the macro
+script. Macro execution starts a second V8 isolate on the branch in
+place of master's QuickJS runtime. The branch requires at least 16 MiB
+for a V8 heap, and these runs use the default 64 MiB setting. The user
+must decide whether the macro-heavy memory increase is acceptable.
