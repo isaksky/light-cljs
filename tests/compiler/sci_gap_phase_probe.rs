@@ -21,7 +21,7 @@ fn unhex(text: &str) -> String {
 }
 fn observe(script: &str) -> Vec<(String, String)> {
     let mut observed = Vec::new();
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let context = crate::embedded_js::EmbeddedJs::new();
         let embedded = context.string(script).unwrap();
@@ -122,11 +122,7 @@ fn original_gap_sources_execute_through_actual_macro_hosts() {
     assert!(!input.is_empty());
     // Two lifecycles times two phases, observed by Node and, in builds that
     // embed it, embedded engine.
-    let engines = if cfg!(any(light_v8, light_quickjs)) {
-        2
-    } else {
-        1
-    };
+    let engines = if cfg!(light_v8) { 2 } else { 1 };
     assert_eq!(input.lines().count() * 4 * engines, count);
     output.flush().unwrap();
 }

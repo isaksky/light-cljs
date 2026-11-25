@@ -9,12 +9,12 @@
 //! Every program runs at every level in Node and in the embedded engine and must give
 //! the same value.
 use super::optimization::{execute, readable};
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{
     ApplicationOptions, OptimizationLevel, Program, analyze, parse, prepare_application,
 };
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use std::time::Duration;
 
 fn program(source: &str) -> Program {
@@ -22,7 +22,7 @@ fn program(source: &str) -> Program {
 }
 
 // Runs the program in the embedded engine.
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 fn embedded(expression: &str) -> String {
     let evaluator = Evaluator::new(EvaluatorOptions {
         memory_limit: 1 << 30,
@@ -49,7 +49,7 @@ fn every_level(source: &str, expected: &str) -> Vec<String> {
                 format!("{expected}\n"),
                 "Node at {level}: {source}"
             );
-            #[cfg(any(light_v8, light_quickjs))]
+            #[cfg(light_v8)]
             assert_eq!(
                 embedded(&js),
                 expected,

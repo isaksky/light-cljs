@@ -1,6 +1,6 @@
 //! Public positional construction in both canonical execution phases.
 use light_cljs::evaluator::RUNTIME_SOURCE;
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 use std::io::Write;
@@ -9,7 +9,7 @@ use std::process::{Command, Stdio};
 fn both(source: &str, expected: &str) {
     let program = analyze_with_macros(source, &parse(source).unwrap(), &mut MacroHost::new())
         .unwrap_or_else(|e| panic!("{source}: {e}"));
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(
@@ -101,7 +101,7 @@ fn factory_phase_isolation_diagnostics_and_bounded_repetition() {
             error.contains("Unsupported macro result") && error.contains("bad"),
             "{error}"
         );
-        #[cfg(any(light_v8, light_quickjs))]
+        #[cfg(light_v8)]
         {
             let source = "(defmacro good [] (str (->UUID \"ABC\" nil))) (good)";
             let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();

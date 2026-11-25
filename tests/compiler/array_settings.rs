@@ -2,7 +2,7 @@
 use crate::temp_dir::TempDir;
 use light_cljs::analyzer::{AnalysisOptions, CheckedArrays, analyze_with_macro_warnings};
 use light_cljs::evaluator::RUNTIME_SOURCE;
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, Program, emitter::emit_js_unit, parse};
 use std::{path::PathBuf, process::Command};
@@ -26,7 +26,7 @@ fn program(
     (p, warnings)
 }
 fn both(p: &Program, expected: &str) {
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(
@@ -233,7 +233,7 @@ fn complete_source_bodies_retain_modules_and_file_isolation() {
         let source = format!(
             "JSON.stringify(({js})(() => {{ throw new Error('unexpected host request'); }}))"
         );
-        #[cfg(any(light_v8, light_quickjs))]
+        #[cfg(light_v8)]
         {
             let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
             assert_eq!(
@@ -282,7 +282,7 @@ fn checked_options_reset_between_loaded_files_and_capture_definitions() {
     .unwrap();
     assert!(warnings.is_empty(), "{warnings:?}");
     let script = format!("JSON.stringify(({js})())");
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(e.string(e.evaluate_js(&script).unwrap()).unwrap(), "true");

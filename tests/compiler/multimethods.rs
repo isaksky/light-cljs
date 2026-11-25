@@ -1,10 +1,10 @@
 //! Canonical hierarchy/multimethod behavior and phase-owned declaration demand.
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::EvalOptions;
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::EvalSession;
 use light_cljs::evaluator::RUNTIME_SOURCE;
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 use std::process::Command;
@@ -12,7 +12,7 @@ use std::process::Command;
 fn both(source: &str, expected: &str) {
     let mut host = MacroHost::new();
     let p = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(
@@ -37,7 +37,7 @@ fn both(source: &str, expected: &str) {
         "Node: {source}"
     );
 }
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 fn printed(s: &mut EvalSession, source: &str) -> String {
     let value = s.eval_string(source).unwrap().value;
     let result = s.print(value).unwrap();
@@ -199,7 +199,7 @@ fn macro_method_replacements_follow_declaration_frontiers() {
     );
 }
 
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 #[test]
 fn sessions_and_dynamic_hierarchy_roots_invalidate_independently() {
     let mut first = EvalSession::new(EvalOptions::default()).unwrap();

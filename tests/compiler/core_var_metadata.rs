@@ -1,5 +1,5 @@
 //! Public metadata observations are independent of the generated table.
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{
     MacroHost, analyze_with_macros, emitter::emit_js_unit, evaluator::RUNTIME_SOURCE, parse,
@@ -16,7 +16,7 @@ fn recovered_core_var_metadata_executes_in_applications_and_macros() {
     );
     let program = analyze_with_macros(&source, &parse(&source).unwrap(), &mut MacroHost::new())
         .unwrap_or_else(|e| panic!("{e}"));
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(

@@ -16,7 +16,7 @@
 use super::generated::{namespace_program, seeds};
 use super::generated_optimization::analyze;
 use super::optimization::{execute, readable};
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{
     ApplicationOptions, OptimizationLevel, Program, analyze as analyze_source, parse,
@@ -24,7 +24,7 @@ use light_cljs::{
 };
 use std::io::Write as _;
 use std::process::{Command, Stdio};
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use std::time::Duration;
 
 fn program(source: &str) -> Program {
@@ -81,7 +81,7 @@ fn node(script: &str) -> String {
 
 /// The value of the JavaScript string expression `expression` in a fresh
 /// embedded evaluator.
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 fn embedded(expression: &str) -> String {
     let evaluator = Evaluator::new(EvaluatorOptions {
         memory_limit: 1 << 30,
@@ -168,7 +168,7 @@ fn checks(js: &str) -> Vec<Checks> {
     };
     vec![
         parse(&node(&format!("console.log({expression});"))),
-        #[cfg(any(light_v8, light_quickjs))]
+        #[cfg(light_v8)]
         parse(&embedded(&expression)),
     ]
 }

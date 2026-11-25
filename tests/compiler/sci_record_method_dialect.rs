@@ -99,11 +99,11 @@ fn original_record_methods_execute_in_both_phases_and_lifecycles() {
                 "(() => {{ const run = {captured}; return ({}) (globalThis.lightRuntime)('{id}',observe=>run(observe)); }})()",
                 include_str!("../support/sci_execution_observation.js")
             );
-            #[cfg(any(light_v8, light_quickjs))]
+            #[cfg(light_v8)]
             let context = crate::embedded_js::EmbeddedJs::new();
-            #[cfg(any(light_v8, light_quickjs))]
+            #[cfg(light_v8)]
             let embedded = context.string(&script).unwrap();
-            #[cfg(any(light_v8, light_quickjs))]
+            #[cfg(light_v8)]
             assert_eq!(
                 canonical(&embedded),
                 canonical(&expected),
@@ -127,7 +127,7 @@ fn original_record_methods_execute_in_both_phases_and_lifecycles() {
             let node = String::from_utf8(result.stdout).unwrap();
             assert_eq!(canonical(&node), canonical(&expected), "{variant} Node");
             let observed = [
-                #[cfg(any(light_v8, light_quickjs))]
+                #[cfg(light_v8)]
                 ("embedded engine", embedded),
                 ("Node", node),
             ];

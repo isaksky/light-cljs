@@ -2,7 +2,7 @@
 use super::optimization::execute;
 use crate::temp_dir::TempDir;
 use light_cljs::evaluator::RUNTIME_SOURCE;
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{
     ApplicationOptions, MacroHost, OptimizationLevel, analyze_with_macros, emitter::emit_js_unit,
@@ -19,7 +19,7 @@ use std::{
 fn both(source: &str, expected: &str) {
     let mut host = MacroHost::new();
     let p = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(

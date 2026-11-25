@@ -1,5 +1,5 @@
 //! Audit the unchanged upstream emission fixture and its intentional runtime failure.
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, compile_namespace_with_macros, compile_with_macros};
 use std::io::Write;
@@ -82,7 +82,7 @@ fn unchanged_invoke_fixture_preserves_its_original_declared_call_failure() {
             quote(&javascript)
         );
         std::fs::write(sources.join("observed.js"), &observed).unwrap();
-        #[cfg(any(light_v8, light_quickjs))]
+        #[cfg(light_v8)]
         {
             let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
             let embedded = evaluator

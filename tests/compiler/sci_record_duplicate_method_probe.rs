@@ -26,7 +26,7 @@ fn execute(javascript: &str, expected_value: &str, directory: &std::path::Path) 
     let expected = format!(
         r#"{{"id":"duplicate-method","outcome":{{"status":"returned","value":{expected_value}}},"trace":[],"stdout":""}}"#
     );
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let context = crate::embedded_js::EmbeddedJs::new();
         let embedded = context.string(&script).unwrap();

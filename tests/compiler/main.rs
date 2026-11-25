@@ -42,7 +42,7 @@ mod reload_fixtures;
 mod temp_dir;
 
 // Embedded execution of standalone JavaScript fixture scripts.
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 mod embedded_js;
 
 // Canonical JSON of engine observations, computed in the embedded engine or Node.

@@ -61,13 +61,13 @@ pub fn canonical(value: &str) -> String {
 }
 
 fn evaluate(expression: &str) -> String {
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         crate::embedded_js::EmbeddedJs::new()
             .string(expression)
             .unwrap()
     }
-    #[cfg(not(any(light_v8, light_quickjs)))]
+    #[cfg(not(light_v8))]
     {
         node(expression)
     }

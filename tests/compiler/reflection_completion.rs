@@ -1,5 +1,5 @@
 //! Compiler-owned namespace reflection, source identity and phase separation.
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 use std::{
@@ -10,7 +10,7 @@ fn both(source: &str, expected: &str) {
     let mut host = MacroHost::new();
     let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host)
         .unwrap_or_else(|e| panic!("{source}\n{e}"));
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let value = evaluator
@@ -54,7 +54,7 @@ fn complete_upstream_var_test_runs_metadata_callbacks_in_both_engines() {
     // This existing source adapter retains both complete upstream definitions,
     // the :test callback assertions, and both function/Var test invocations.
     let script = format!("(() => {{ const run = {js}; return run(null); }})()");
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let value = evaluator.evaluate_js(&script).unwrap();
@@ -167,7 +167,7 @@ fn namespace_view_contains_core_binding_kinds_without_engine_roots() {
     );
     assert_eq!(view.declaration_frontier, 0);
 }
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 #[test]
 fn namespace_refers_use_actual_public_var_identity() {
     use light_cljs::{

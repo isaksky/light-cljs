@@ -1274,22 +1274,10 @@ impl MacroHost {
         }
         #[cfg(not(light_v8))]
         {
-            // The main QuickJS runtime of a build with worker runtimes
-            // shares the build's deadline and memory with them (light-cljs-436).
-            #[cfg(light_quickjs)]
-            if !data_reader
-                && !self.tables.interactive
-                && self.engine.interactive_control.is_none()
-                && let Some(session) = self.session_handle()
-                && let Some(resources) = session.shared().resources()
-            {
-                let evaluator = crate::evaluator::Evaluator::new_for_build(
-                    self.evaluator_options.clone(),
-                    resources,
-                    true,
-                )?;
-                self.prepare_compiler_evaluator(&evaluator)?;
-                return Ok(std::rc::Rc::new(evaluator));
+            if data_reader {
+                return Err(crate::evaluator::EvalError(
+                    "compiler data readers require a V8 build of light-cljs".into(),
+                ));
             }
             Ok(std::rc::Rc::new(self.new_evaluator()?))
         }

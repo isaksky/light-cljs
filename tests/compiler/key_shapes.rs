@@ -23,12 +23,12 @@ use super::constant_pool::calls;
 use super::generated::{SEEDS, namespace_program};
 use super::generated_optimization::analyze as analyze_generated;
 use super::optimization::{execute, readable};
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{
     ApplicationOptions, OptimizationLevel, Program, analyze, parse, prepare_application,
 };
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use std::time::Duration;
 
 fn program(source: &str) -> Program {
@@ -48,7 +48,7 @@ fn emit(program: &Program, level: OptimizationLevel) -> String {
 
 /// The value of the JavaScript string expression `expression` in a fresh
 /// embedded evaluator.
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 fn embedded(expression: &str) -> String {
     let evaluator = Evaluator::new(EvaluatorOptions {
         memory_limit: 1 << 30,
@@ -65,9 +65,9 @@ fn embedded(expression: &str) -> String {
 
 /// `expression`'s string value in the embedded engine when available, otherwise in Node.
 fn summary_of(expression: &str) -> String {
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     return embedded(expression);
-    #[cfg(not(any(light_v8, light_quickjs)))]
+    #[cfg(not(light_v8))]
     {
         let printed = execute(&format!("console.log({expression});"));
         printed.strip_suffix('\n').unwrap_or(&printed).to_owned()

@@ -1,9 +1,9 @@
 //! Reader prefixes own the next selected form in their original CLJC stream.
 use crate::temp_dir::TempDir;
 use light_cljs::MacroHost;
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::source_provider::SourceInput;
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::{EvalOptions, EvalSession};
 use std::{fs, process::Command};
 struct Sources(TempDir);
@@ -22,7 +22,7 @@ impl Sources {
     }
 }
 fn both(js: &str, expected: &str) {
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
         assert_eq!(e.string(e.evaluate_js(js).unwrap()).unwrap(), expected);
@@ -101,7 +101,7 @@ fn scalar_splice_and_nested_prefix_controls_execute_both_phases_and_lifecycles()
 fn located_active_and_missing_target_errors_recover_in_hosts_and_sessions() {
     let sources = Sources::new();
     let mut host = MacroHost::new();
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     let mut session = EvalSession::new(EvalOptions::default()).unwrap();
     for (original, _location) in [
         ("[0 '#?@(:cljs 1) 2]", "#?@(:cljs 1)"),
@@ -132,7 +132,7 @@ fn located_active_and_missing_target_errors_recover_in_hosts_and_sessions() {
             );
         }
         // The host checks above also run without an embedded engine.
-        #[cfg(any(light_v8, light_quickjs))]
+        #[cfg(light_v8)]
         {
             let error = session
                 .eval_source(&SourceInput::new("bad.cljc", format!("\n{original}")))
@@ -149,14 +149,14 @@ fn located_active_and_missing_target_errors_recover_in_hosts_and_sessions() {
     }
     let error = sources.compile("(ns user) #?(:cljs 1)", &mut host);
     assert!(error.is_ok());
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     assert!(
         session
             .eval_source(&SourceInput::new("plain.cljs", "[#?(:cljs 1)]"))
             .is_err()
     );
 }
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 #[test]
 fn selected_targets_keep_metadata_quote_ownership_and_source_locations() {
     let mut session = EvalSession::new(EvalOptions::default()).unwrap();
@@ -179,7 +179,7 @@ fn selected_targets_keep_metadata_quote_ownership_and_source_locations() {
     assert_eq!(selected[0].span().source().name(), "ownership.cljc");
 }
 
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 #[test]
 fn nested_discarded_readers_keep_canonical_effect_order() {
     use light_cljs::compiler_data::Name;
@@ -262,9 +262,9 @@ mod original_reader_rejections {
     #[allow(clippy::vec_init_then_push)]
     fn observe(js: &str) -> Vec<(&'static str, String)> {
         let script = format!("JSON.stringify({js})");
-        #[cfg(any(light_v8, light_quickjs))]
+        #[cfg(light_v8)]
         let engine = crate::embedded_js::EmbeddedJs::new();
-        #[cfg(any(light_v8, light_quickjs))]
+        #[cfg(light_v8)]
         let embedded = engine.string(&script).unwrap();
         let mut child = Command::new("node")
             .arg("-")
@@ -283,7 +283,7 @@ mod original_reader_rejections {
         assert!(out.status.success());
         assert!(out.stderr.is_empty());
         let mut observed = Vec::new();
-        #[cfg(any(light_v8, light_quickjs))]
+        #[cfg(light_v8)]
         observed.push(("embedded engine", embedded));
         observed.push(("Node", String::from_utf8(out.stdout).unwrap().trim().into()));
         observed

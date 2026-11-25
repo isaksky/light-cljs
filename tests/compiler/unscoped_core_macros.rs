@@ -245,14 +245,7 @@ fn declined_doseq_rejects_invalid_regex_before_conversion_limits() {
                 .unwrap_err()
                 .to_string();
             let expected = format!("macro cljs.core/doseq: SyntaxError: {error}; definition");
-            // The QuickJS reference words the reason in its own way, in
-            // its `RegExp` constructor all the same.
-            let found = if cfg!(all(light_quickjs, not(light_v8))) {
-                failure.contains("macro cljs.core/doseq: ") && failure.contains("at RegExp")
-            } else {
-                without_stack(&failure).contains(&expected)
-            };
-            if !found {
+            if !without_stack(&failure).contains(&expected) {
                 failures.push(format!("{source} raised {raised}: {failure}"));
             }
         }
@@ -272,11 +265,6 @@ fn declined_doseq_preserves_surrogate_regex_ranges() {
         r#"(defmacro wide [] (list 'doseq '{bindings} (list 'js/console.log (list '.test (js/RegExp. "^[\uD800-\uE000]$") "\uDBFF") (list '.test #"(?u)^[😀-😂]$" "😁") 'i)))
         (wide)"#
     );
-    // The QuickJS reference's own decoding refuses the lone surrogate's
-    // range ("invalid class range").
-    if cfg!(all(light_quickjs, not(light_v8))) {
-        return;
-    }
     let mut host = MacroHost::new();
     host.limits.generated_nodes = 10_000_000;
     host.limits.expansions = 100_000;

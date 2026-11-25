@@ -15,12 +15,12 @@
 //! what `None` gives; the `Advanced` text is checked for what folded and what
 //! stayed.
 use super::optimization::{execute, readable};
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{
     ApplicationOptions, OptimizationLevel, Program, analyze, parse, prepare_application,
 };
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use std::time::Duration;
 
 fn program(source: &str) -> Program {
@@ -32,7 +32,7 @@ fn emit(program: &Program, level: OptimizationLevel) -> String {
 }
 
 // Runs the program in the embedded engine.
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 /// The value of the JavaScript string expression `expression` in a fresh
 /// embedded evaluator.
 fn embedded(expression: &str) -> String {
@@ -60,7 +60,7 @@ fn every_level(source: &str, expected: &str) -> String {
             format!("{expected}\n"),
             "Node at {level}: {source}"
         );
-        #[cfg(any(light_v8, light_quickjs))]
+        #[cfg(light_v8)]
         assert_eq!(
             embedded(&js),
             expected,

@@ -1,7 +1,7 @@
 //! Sorted membership, order, saved callbacks, protocols, and macro/runtime parity.
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::EvalSession;
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{
     MacroHost, analyze_with_macros, emitter::emit_js_unit, evaluator::RUNTIME_SOURCE, parse,
@@ -122,7 +122,7 @@ const CONTRACT: &str = r#"
 fn both(source: &str) {
     let mut host = MacroHost::new();
     let p = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(
@@ -163,7 +163,7 @@ fn sorted_contract_executes_in_application_and_macro_phases() {
         "(defmacro sorted-contract [] {CONTRACT}) (sorted-contract)"
     ));
 }
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 #[test]
 fn sorted_callbacks_survive_reused_sessions_and_custom_protocol_dispatch() {
     let mut session = EvalSession::new(Default::default()).unwrap();

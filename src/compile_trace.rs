@@ -621,9 +621,9 @@ struct Recorder {
     depth: u32,
     engine_started: Option<Instant>,
     /// Engine depth across frames, for [`Trace::engine_outer`].
-    #[cfg_attr(not(any(light_v8, light_quickjs)), allow(dead_code))]
+    #[cfg_attr(not(light_v8), allow(dead_code))]
     outer_depth: u32,
-    #[cfg_attr(not(any(light_v8, light_quickjs)), allow(dead_code))]
+    #[cfg_attr(not(light_v8), allow(dead_code))]
     outer_started: Option<Instant>,
     trace: Trace,
     /// Exclusive load times, in the order sources were appended.
@@ -1015,7 +1015,7 @@ pub(crate) fn executed(unit: usize, prepared: bool) {
 /// close before it returns, so the entry's own code ran in this frame.
 /// A build with neither engine (the wasm playground) has no such check.
 #[inline]
-#[cfg_attr(not(any(light_quickjs, light_v8)), allow(dead_code))]
+#[cfg_attr(not(light_v8), allow(dead_code))]
 pub(crate) fn frame() -> Option<u32> {
     with_recorder(|recorder| recorder.frames.last().expect("root frame").serial)
 }
@@ -1302,7 +1302,7 @@ pub(crate) fn charged(counter: &Rc<Cell<usize>>, expansions: usize, nodes: usize
 
 /// An engine service call begins; the result goes to [`engine_exit`].
 #[inline]
-#[cfg_attr(not(any(light_v8, light_quickjs)), allow(dead_code))]
+#[cfg_attr(not(light_v8), allow(dead_code))]
 pub(crate) fn engine_enter() -> bool {
     with_recorder(|recorder| {
         crate::wait_timeline::begin_raw(crate::wait_timeline::Kind::Engine, 0, 0);
@@ -1324,7 +1324,7 @@ pub(crate) fn engine_enter() -> bool {
 /// entry unless it is bookkeeping every unit makes: the compiler frontier's
 /// transitions and the bridge check that follows each engine entry.
 #[inline]
-#[cfg_attr(not(any(light_v8, light_quickjs)), allow(dead_code))]
+#[cfg_attr(not(light_v8), allow(dead_code))]
 pub(crate) fn engine_exit(entered: bool, service: &str) {
     if !entered {
         return;

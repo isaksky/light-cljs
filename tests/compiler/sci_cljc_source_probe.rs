@@ -22,7 +22,7 @@ fn unhex(s: &str) -> String {
 }
 fn observe(script: &str) -> Vec<(String, String)> {
     let mut observed = Vec::new();
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let context = crate::embedded_js::EmbeddedJs::new();
         let embedded = match context.string(script) {

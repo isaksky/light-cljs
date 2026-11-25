@@ -2572,7 +2572,7 @@ fn datum(datum: &Datum) -> SourceDatum {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::evaluator::{Evaluator, EvaluatorOptions};
+    use crate::evaluator::{EvaluatorOptions, ExecutionControl};
     use crate::namespace_artifact::{
         Declarations, DeferredUnits, Diagnostics, Expr, ExprContext, ExprKind, ExprRef, Header,
         Live, References, SemanticIr, SourceRef,
@@ -2580,8 +2580,7 @@ mod tests {
 
     #[test]
     fn cancelled_verified_install_fails_before_refusal() {
-        let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
-        let control = evaluator.control();
+        let control = ExecutionControl::new(&EvaluatorOptions::default()).unwrap();
         control.cancel();
 
         // Structurally valid artifact that `resolve` would refuse because its

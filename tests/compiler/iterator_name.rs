@@ -22,7 +22,7 @@ fn unhex(s: &str) -> String {
 }
 fn observe(script: &str, artifact: &std::path::Path) -> Vec<(String, String)> {
     let mut observed = Vec::new();
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let context = crate::embedded_js::EmbeddedJs::new();
         let embedded = match context.string(script) {
@@ -177,7 +177,7 @@ fn canonical_iterator_name_preserves_rejection_and_same_host_recovery() {
                 valid.clone()
             };
             let js = light_cljs::compile_with_macros(&source, host).unwrap();
-            #[cfg(any(light_v8, light_quickjs))]
+            #[cfg(light_v8)]
             let context = crate::embedded_js::EmbeddedJs::new();
             let captured = js.replacen(
                 " = // Original bounded runtime",
@@ -187,9 +187,9 @@ fn canonical_iterator_name_preserves_rejection_and_same_host_recovery() {
             let script = format!(
                 "(() => {{const value={captured};return globalThis.lightRuntime.core.prStr(value);}})()"
             );
-            #[cfg(any(light_v8, light_quickjs))]
+            #[cfg(light_v8)]
             let embedded = context.string(&script).unwrap();
-            #[cfg(any(light_v8, light_quickjs))]
+            #[cfg(light_v8)]
             assert_eq!(embedded, expected);
             let mut child = Command::new("node")
                 .arg("-")

@@ -1,5 +1,5 @@
 //! Core helpers checked with literal host outcomes and independent runtime tests.
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, analyze_with_macros, compile, emit_js, parse};
 use std::{path::PathBuf, process::Command};
@@ -85,7 +85,7 @@ fn applied_partial_and_juxt_constructors_preserve_lazy_tails_in_both_phases() {
     for _ in 0..2 {
         for (source, expected) in cases {
             let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
-            #[cfg(any(light_v8, light_quickjs))]
+            #[cfg(light_v8)]
             {
                 let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
                 let value = evaluator.evaluate(&program).unwrap();

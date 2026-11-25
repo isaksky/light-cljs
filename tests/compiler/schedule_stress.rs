@@ -652,7 +652,7 @@ fn a_cross_worker_cycle_fails_the_build_at_the_same_unit_under_any_schedule() {
 }
 
 // Retires a per-worker engine isolate.
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 /// A Rust panic inside `__lightCompileUnit`, the callback a running
 /// macro's nested demand enters, fails the unit whose macro ran, in
 /// whichever isolate ran it: the build fails with the one-slot error at
@@ -692,7 +692,7 @@ fn a_panic_in_a_nested_demand_callback_fails_the_build_the_same_way_and_retires_
 
 /// Whether, with one worker taking every unit in a seed's random order,
 /// some seed made a second isolate: a unit ran after the first failed.
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 fn retired_for_some_seed(fixture: &Fixture, base: &Perturbation) {
     let isolates: Vec<_> = (1..=12)
         .map(|seed| {
@@ -709,11 +709,11 @@ fn retired_for_some_seed(fixture: &Fixture, base: &Perturbation) {
 }
 
 /// A macro that holds `mb` MiB of JavaScript heap while it runs.
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 const HOG: &str = "(ns app.m) (defmacro hog [mb] (let [keep #js []] (dotimes [_ mb] (.push keep (.fill (js/Array. 131072) 1.5))) (.-length keep)))";
 
 // Retires a per-worker engine isolate.
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 /// An isolate that runs out of memory is retired: the unit fails as with
 /// one slot, and a unit after it gets a new isolate.
 #[test]

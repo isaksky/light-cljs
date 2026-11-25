@@ -1,7 +1,7 @@
 //! Exact retained library contexts, including their actual MacroHost observations.
 //! The standalone provenance helper supplies complete, source-bound modules and
 //! separate local contracts; historical SCI expectations are never overwritten.
-#![cfg(any(light_v8, light_quickjs))]
+#![cfg(light_v8)]
 
 use light_cljs::MacroHost;
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};

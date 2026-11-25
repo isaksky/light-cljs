@@ -37,7 +37,7 @@ use crate::canonical_json::canonical;
 
 #[test]
 fn independent_runtime_maps_preserve_complete_order_effects_and_recovery() {
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     let context = crate::embedded_js::EmbeddedJs::new();
     let catalog = include_str!("../fixtures/contracts/runtime-map-traversal-contracts.json");
     let extract = format!(
@@ -75,7 +75,7 @@ fn independent_runtime_maps_preserve_complete_order_effects_and_recovery() {
                 "(() => {{const observerRuntime={observer_runtime};const value={captured};return ({})(globalThis.lightRuntime)('{id}',()=>value);}})()",
                 include_str!("../support/sci_execution_observation.js")
             );
-            #[cfg(any(light_v8, light_quickjs))]
+            #[cfg(light_v8)]
             let raw = context
                 .string(&script)
                 .unwrap_or_else(|error| panic!("{id}, macro={phase}: {error}"));
@@ -86,7 +86,7 @@ fn independent_runtime_maps_preserve_complete_order_effects_and_recovery() {
             );
             // Sort JSON object property names only. Collection tags, every
             // sequence position, effects and output remain exact and complete.
-            #[cfg(any(light_v8, light_quickjs))]
+            #[cfg(light_v8)]
             {
                 assert_eq!(canonical(&raw), canonical(expected), "{id}, macro={phase}");
                 context.collect_garbage();
@@ -123,7 +123,7 @@ fn independent_runtime_maps_preserve_complete_order_effects_and_recovery() {
             )
             .unwrap();
             assert_eq!(node(&js), "42");
-            #[cfg(any(light_v8, light_quickjs))]
+            #[cfg(light_v8)]
             assert_eq!(context.number(&js).unwrap(), 42.0);
         }
     }

@@ -2,7 +2,7 @@
 use crate::optimization::execute;
 use crate::temp_dir::TempDir;
 use light_cljs::MacroHost;
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 
 fn both(source: &str, expected: &str) {
@@ -26,7 +26,7 @@ fn both(source: &str, expected: &str) {
         &mut MacroHost::new(),
     )
     .unwrap_or_else(|e| panic!("{source}: {e}"));
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(

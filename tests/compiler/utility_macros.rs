@@ -11,10 +11,10 @@
 //! advances 2.25 ms per read; `simple-benchmark` reads `Date`, so the programs
 //! replace its millisecond count with `N`.
 use super::optimization::execute;
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{ApplicationOptions, OptimizationLevel, analyze, parse, prepare_application};
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use std::time::Duration;
 
 /// A `performance.now` that reads 12.25, 14.5, ... (2.25 ms per read).
@@ -23,7 +23,7 @@ const CLOCK: &str = r#"(set! (.-performance js/globalThis)
 
 /// The value of the JavaScript string expression `expression` in a fresh
 /// embedded evaluator.
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 fn embedded(expression: &str) -> String {
     let evaluator = Evaluator::new(EvaluatorOptions {
         memory_limit: 1 << 30,
@@ -51,7 +51,7 @@ fn every_level(source: &str, expected: &str) -> Vec<String> {
                 format!("{expected}\n"),
                 "Node at {level}: {source}"
             );
-            #[cfg(any(light_v8, light_quickjs))]
+            #[cfg(light_v8)]
             assert_eq!(
                 embedded(&js),
                 expected,

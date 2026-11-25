@@ -1,5 +1,5 @@
 //! Explicit genuine Closure library profile, preserving the entire import body.
-#![cfg(any(light_v8, light_quickjs))]
+#![cfg(light_v8)]
 
 use light_cljs::MacroHost;
 use std::io::Write;

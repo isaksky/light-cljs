@@ -113,22 +113,22 @@ fn record_factory_metadata_executes_in_actual_phases_and_lifecycles() {
                     )
                 };
                 fs::write(root.join("script.js"), &script).unwrap();
-                #[cfg(any(light_v8, light_quickjs))]
+                #[cfg(light_v8)]
                 let context = crate::embedded_js::EmbeddedJs::new();
                 let embedded_input = format!("(0, eval)({script:?})");
                 fs::write(root.join("embedded.stdin"), &embedded_input).unwrap();
-                #[cfg(any(light_v8, light_quickjs))]
+                #[cfg(light_v8)]
                 let embedded = context
                     .string(&script)
                     .unwrap_or_else(|e| panic!("{id} {lifecycle} {phase} observer: {e}"));
-                #[cfg(any(light_v8, light_quickjs))]
+                #[cfg(light_v8)]
                 fs::write(root.join("embedded.raw"), &embedded).unwrap();
-                #[cfg(any(light_v8, light_quickjs))]
+                #[cfg(light_v8)]
                 assert_eq!(
                     embedded, expected,
                     "{id} {lifecycle} {phase} embedded engine"
                 );
-                #[cfg(any(light_v8, light_quickjs))]
+                #[cfg(light_v8)]
                 println!(
                     "record-metadata-observation\t{id}\t{lifecycle}\t{phase}\tembedded engine\t{embedded}"
                 );
@@ -183,7 +183,7 @@ fn reflected_factory_metadata_does_not_force_unrelated_roots_and_failure_recover
 (pr-str (recovered))
 "#;
         let js = light_cljs::compile_with_macros(recovered, &mut host).unwrap();
-        #[cfg(any(light_v8, light_quickjs))]
+        #[cfg(light_v8)]
         {
             let evaluator = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
             assert_eq!(

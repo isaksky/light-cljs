@@ -83,7 +83,7 @@ fn retained_sci_sources_execute_in_node_and_embedded() {
                 String::from_utf8_lossy(&result.stderr).replace(['\n', '\t'], " ")
             )
         };
-        #[cfg(any(light_v8, light_quickjs))]
+        #[cfg(light_v8)]
         {
             let context = crate::embedded_js::EmbeddedJs::new();
             let embedded = match context.string(&script) {
@@ -92,7 +92,7 @@ fn retained_sci_sources_execute_in_node_and_embedded() {
             };
             writeln!(observations, "{id}\texecuted\t{node}\t{embedded}").unwrap();
         }
-        #[cfg(not(any(light_v8, light_quickjs)))]
+        #[cfg(not(light_v8))]
         writeln!(observations, "{id}\texecuted\t{node}").unwrap();
         count += 1;
         if count % 100 == 0 {

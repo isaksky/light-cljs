@@ -1,7 +1,7 @@
 //! Canonical library values run in both engines; macros demand the same sources.
 use crate::temp_dir::TempDir;
 use light_cljs::compile_namespace;
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use std::{fs, path::PathBuf, process::Command};
 struct Sources(TempDir);
@@ -26,7 +26,7 @@ impl Sources {
 fn both(body: &str, expected: &str) {
     let sources = Sources::new();
     let js = sources.compile(body);
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let evaluator = Evaluator::new(Default::default()).unwrap();
         let value = evaluator
@@ -119,7 +119,7 @@ fn macros_use_libraries_without_native_registration() {
         "true\n",
         "Node"
     );
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let e = Evaluator::new(Default::default()).unwrap();
         assert_eq!(
@@ -152,7 +152,7 @@ fn traversal_limits_and_session_recovery() {
         "[true,true,true,true,true,true,true,true,true]",
     );
     // Exercise the embedded evaluator's limits and recovery.
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let sources = Sources::new();
         let bad =
@@ -270,13 +270,13 @@ fn all_supported_native_set_and_walk_fixtures_migrate_with_values_and_effects() 
     body.push(']');
     sources.write("probe/main.cljs", &format!("(ns probe.main (:require [clojure.set :as s :refer [union]] [clojure.walk :as w :refer [postwalk]])) {body}"));
     let js = compile_namespace("probe.main", std::slice::from_ref(sources.0.path())).unwrap();
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     let observations = {
         let e = Evaluator::new(Default::default()).unwrap();
         e.string(e.evaluate_js(&format!("JSON.stringify({js})")).unwrap())
             .unwrap()
     };
-    #[cfg(not(any(light_v8, light_quickjs)))]
+    #[cfg(not(light_v8))]
     let observations =
         crate::canonical_json::node_stdout(&format!("console.log(JSON.stringify({js}));"))
             .trim()
@@ -425,7 +425,7 @@ fn compiler_data_readers_run_without_quickjs() {
     session.release(result.value).unwrap();
 }
 
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 #[test]
 fn compiler_owned_data_readers_keep_source_order_origins_and_typed_results() {
     use light_cljs::{
@@ -501,7 +501,7 @@ fn compiler_owned_data_readers_keep_source_order_origins_and_typed_results() {
     assert!(compile_with_macros("#size 1", &mut bounded).is_ok());
 }
 
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 #[test]
 fn compiler_data_readers_report_conversion_and_execution_limits() {
     use light_cljs::{
@@ -544,7 +544,7 @@ fn compiler_data_readers_report_conversion_and_execution_limits() {
 fn upstream_set_and_walk_witnesses_execute_with_full_setup() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/compiler-libraries");
     let js = compile_namespace("library.upstream", &[root]).unwrap();
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let e = Evaluator::new(Default::default()).unwrap();
         assert_eq!(

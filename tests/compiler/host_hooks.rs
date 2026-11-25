@@ -1,26 +1,26 @@
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::EvalOptions;
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::EvalSession;
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::compiler_data::DatumKind;
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::eval_session::{FileLoadRequest, FileProvider};
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::EvalError;
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::source_provider::LoadRequest;
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::source_provider::SourceInput;
 use light_cljs::{MacroHost, analyze_with_macros, emit_js, parse};
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use std::cell::Cell;
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use std::cell::RefCell;
 use std::process::Command;
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use std::rc::Rc;
 
 /// Runs `script` with Node from its standard input: a script that embeds the
@@ -43,7 +43,7 @@ fn node_script(script: &str) -> std::process::Output {
     child.wait_with_output().unwrap()
 }
 
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 fn printed(session: &mut EvalSession, source: &str) -> String {
     let value = session.eval_string(source).unwrap().value;
     let result = session.print(value).unwrap();
@@ -51,7 +51,7 @@ fn printed(session: &mut EvalSession, source: &str) -> String {
     result
 }
 
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 #[test]
 fn clocks_random_sources_and_taps_are_explicit_session_capabilities() {
     let mut session = EvalSession::new(EvalOptions {
@@ -137,7 +137,7 @@ fn runtime_scheduler_admission_bounded_reentrancy_and_arities() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     let expression = format!(
         r#"(() => {{
       const c = rt.core, assert = {{
@@ -149,7 +149,7 @@ fn runtime_scheduler_admission_bounded_reentrancy_and_arities() {
       return true;
     }})()"#
     );
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let result = evaluator.evaluate_js(&expression).unwrap();
@@ -180,7 +180,7 @@ fn host_hooks_have_macro_application_phase_witnesses() {
         analyze_with_macros(source, &parse(source).unwrap(), &mut MacroHost::new()).unwrap();
     let expected = "[[true true [0 1 2 3] [true true true] true false] [true true [0 1 2 3] [true true true] true false]]";
     // Evaluating the analyzed program needs the embedded evaluator; Node runs it below.
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let result = evaluator.evaluate(&program).unwrap();
@@ -200,7 +200,7 @@ fn host_hooks_have_macro_application_phase_witnesses() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), expected);
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let mut denied = EvalSession::new(EvalOptions {
             clock: Some(Rc::new(|| Err(EvalError("clock denied".into())))),
@@ -218,7 +218,7 @@ fn host_hooks_have_macro_application_phase_witnesses() {
     }
 }
 
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 fn provider(requests: Rc<RefCell<Vec<FileLoadRequest>>>) -> FileProvider {
     Rc::new(move |request| {
         requests.borrow_mut().push(request.clone());
@@ -254,7 +254,7 @@ fn provider(requests: Rc<RefCell<Vec<FileLoadRequest>>>) -> FileProvider {
     })
 }
 
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 #[test]
 fn load_file_uses_one_compiler_and_heap_with_macros_namespaces_and_require() {
     let requests = Rc::new(RefCell::new(Vec::new()));
@@ -293,7 +293,7 @@ fn load_file_uses_one_compiler_and_heap_with_macros_namespaces_and_require() {
     assert_eq!(requests.borrow()[1].requesting_namespace, "tools");
 }
 
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 #[test]
 fn file_diagnostics_history_recovery_and_capability_denial_are_stable() {
     let requests = Rc::new(RefCell::new(Vec::new()));

@@ -1,7 +1,7 @@
 //! Canonical receiver shadowing with complete original source and actual macro demand.
 use crate::temp_dir::TempDir;
 use light_cljs::{MacroHost, compile_namespace_with_macros};
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use std::path::PathBuf;
 use std::{
     fs,
@@ -115,22 +115,22 @@ fn record_receiver_binding_executes_in_actual_phases_and_lifecycles() {
                     )
                 };
                 fs::write(root.join("script.js"), &script).unwrap();
-                #[cfg(any(light_v8, light_quickjs))]
+                #[cfg(light_v8)]
                 let context = crate::embedded_js::EmbeddedJs::new();
                 let embedded_input = format!("(0, eval)({script:?})");
                 fs::write(root.join("embedded.stdin"), &embedded_input).unwrap();
-                #[cfg(any(light_v8, light_quickjs))]
+                #[cfg(light_v8)]
                 let embedded = context
                     .string(&script)
                     .unwrap_or_else(|e| panic!("{id} {lifecycle} {phase} observer: {e}"));
-                #[cfg(any(light_v8, light_quickjs))]
+                #[cfg(light_v8)]
                 fs::write(root.join("embedded.raw"), &embedded).unwrap();
-                #[cfg(any(light_v8, light_quickjs))]
+                #[cfg(light_v8)]
                 assert_eq!(
                     embedded, expected,
                     "{id} {lifecycle} {phase} embedded engine"
                 );
-                #[cfg(any(light_v8, light_quickjs))]
+                #[cfg(light_v8)]
                 println!(
                     "record-receiver-observation\t{id}\t{lifecycle}\t{phase}\tembedded engine\t{embedded}"
                 );
@@ -185,7 +185,7 @@ fn demanded_receiver_methods_and_failure_recover_in_same_host() {
 (pr-str (recovered))
 "#;
         let js = light_cljs::compile_with_macros(recovered, &mut host).unwrap();
-        #[cfg(any(light_v8, light_quickjs))]
+        #[cfg(light_v8)]
         {
             let evaluator = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
             assert_eq!(
@@ -199,7 +199,7 @@ fn demanded_receiver_methods_and_failure_recover_in_same_host() {
     }
 }
 
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 #[test]
 #[ignore = "Independent replay of retained actual embedded engine inputs"]
 fn replay_actual_embedded_inputs() {
@@ -216,7 +216,7 @@ fn replay_actual_embedded_inputs() {
                     actual,
                     fs::read_to_string(folder.join("embedded.raw")).unwrap()
                 );
-                #[cfg(any(light_v8, light_quickjs))]
+                #[cfg(light_v8)]
                 println!("receiver-independent-embedded\t{id}\t{lifecycle}\t{phase}\t{actual}");
             }
         }

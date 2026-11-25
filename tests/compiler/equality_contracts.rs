@@ -1,5 +1,5 @@
 //! Cross-type equality, representative retention, public hashes and metadata in both phases.
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{
     MacroHost, analyze_with_macros, emitter::emit_js_unit, evaluator::RUNTIME_SOURCE, parse,
@@ -12,7 +12,7 @@ use std::{
 fn both(source: &str) {
     let mut host = MacroHost::new();
     let p = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(

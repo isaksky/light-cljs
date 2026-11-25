@@ -2459,7 +2459,7 @@ fn a_data_readers_conversions_need_the_node_limit_they_took() {
 }
 
 // Takes its execution control from the embedded evaluator.
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 /// Cancelling the compilation while a namespace installs stops it there:
 /// nothing after it is installed, or analyzed in its place, and the
 /// cancelled compilation captures no further artifact. The cancellation

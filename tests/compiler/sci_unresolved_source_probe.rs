@@ -24,9 +24,9 @@ fn unhex(s: &str) -> String {
 // The embedded engine's entry comes before Node's when available.
 #[allow(clippy::vec_init_then_push)]
 fn execute(script: &str) -> Vec<(String, String)> {
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     let context = crate::embedded_js::EmbeddedJs::new();
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     let embedded = match context.string(script) {
         Ok(s) => s,
         Err(e) => format!("HARNESS:{e:?}"),
@@ -54,7 +54,7 @@ fn execute(script: &str) -> Vec<(String, String)> {
         )
     };
     let mut observed = Vec::new();
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     observed.push(("embedded engine".into(), embedded));
     observed.push(("Node".into(), node));
     observed

@@ -1,5 +1,5 @@
 //! Atom Object equiv methods in both engines and phases.
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 use std::{
@@ -11,7 +11,7 @@ fn both(source: &str, expected: &str) {
     let mut host = MacroHost::new();
     let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host)
         .unwrap_or_else(|error| panic!("{source}\n{error}"));
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let value = evaluator.evaluate(&program).unwrap();
@@ -80,7 +80,7 @@ fn failed_atom_equiv_leaves_fresh_and_reused_hosts_usable() {
     const RECOVERY: &str = "[(.equiv v v) (.equiv v (atom 1)) (= v v) (swap! v inc) @v]";
     for reused in [false, true] {
         // The macro-host checks below also run without an embedded evaluator.
-        #[cfg(any(light_v8, light_quickjs))]
+        #[cfg(light_v8)]
         {
             let mut session = light_cljs::EvalSession::new(Default::default()).unwrap();
             if reused {
@@ -110,7 +110,7 @@ fn failed_atom_equiv_leaves_fresh_and_reused_hosts_usable() {
         let error = light_cljs::compile_with_macros(&failing_macro, &mut host).unwrap_err();
         assert!(error.to_string().contains("Atom equiv failure"), "{error}");
         // A subsequent compilation on the same host gets fresh phase roots.
-        #[cfg(any(light_v8, light_quickjs))]
+        #[cfg(light_v8)]
         {
             let source = format!(
                 "(defmacro restored-atom-equiv [] {SETUP} (pr-str {RECOVERY})) (restored-atom-equiv)"

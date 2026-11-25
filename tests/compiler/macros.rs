@@ -6,7 +6,7 @@ use light_cljs::{
     MacroHost, analyze_with_macros, compile, compile_namespace, compile_namespace_with_macros,
     emit_js, parse,
 };
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{fs, path::PathBuf, process::Command};
 
@@ -1169,7 +1169,7 @@ fn generated_map_keys_keep_reader_name_parts_before_runtime_spelling_equality() 
         execute(&compile_with_macros(source, &mut h).unwrap()),
         "1 null a/b a b\n"
     );
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     let evaluator = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
     // The exact direct-source fixtures also pass through ordinary source macro
     // imports. Generated keys keep both sets of parts; the generated literal
@@ -1189,7 +1189,7 @@ fn generated_map_keys_keep_reader_name_parts_before_runtime_spelling_equality() 
             compile_with_macros(&format!("(js/console.log (pr-str {source}))"), &mut h).unwrap();
         let expected = format!("{}\n", columns[2]);
         assert_eq!(execute(&js), expected, "Node: {}", columns[0]);
-        #[cfg(any(light_v8, light_quickjs))]
+        #[cfg(light_v8)]
         {
             let value = evaluator
                 .evaluate_js(&format!(
@@ -1524,7 +1524,7 @@ fn imported_macro_environment_keeps_qualified_ids_across_a_long_shadow_chain() {
         assert_eq!(result(&js), format!("{expected}\n"));
         // Application evaluation owns a fresh heap: macro mutation is quoted
         // into the expansion, while the imported application atom stays zero.
-        #[cfg(any(light_v8, light_quickjs))]
+        #[cfg(light_v8)]
         {
             let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
             let value = e.evaluate_js(&js).unwrap();
@@ -1709,7 +1709,7 @@ fn generated_metadata_evaluates_runtime_forms_and_preserves_macro_definition_met
 
 // Compiler form bridge observations, with emitted macro functions and source
 // declarations. The numeric fixtures retain their pinned expected outcomes.
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 mod javascript_form_bridge {
     use super::*;
     use light_cljs::{
@@ -3585,7 +3585,7 @@ fn ordinary_dual_use_require_executes_exact_tools_example_through_api_and_cli() 
         for host in [&mut h, &mut MacroHost::new()] {
             let js = s.compile_host("app", host).unwrap();
             assert_eq!(inspect(&js), "[42 42 42]\n");
-            #[cfg(any(light_v8, light_quickjs))]
+            #[cfg(light_v8)]
             {
                 let evaluator = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
                 let value = evaluator.evaluate_js(&format!("String({js})")).unwrap();
@@ -3799,7 +3799,7 @@ mod top_level_definition_groups {
     fn checked(source: &str, host: &mut MacroHost) {
         let js = compile_with_macros(source, host).unwrap();
         assert_eq!(result(&js), "true\n");
-        #[cfg(any(light_v8, light_quickjs))]
+        #[cfg(light_v8)]
         {
             let evaluator = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
             let value = evaluator.evaluate_js(&format!("Number({js})")).unwrap();

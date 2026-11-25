@@ -1,5 +1,5 @@
 //! Explicit configured-reader embedding audit; this does not exercise the CLI.
-#![cfg(any(light_v8, light_quickjs))]
+#![cfg(light_v8)]
 
 use light_cljs::{MacroHost, compiler_data::Name};
 use std::io::Write;

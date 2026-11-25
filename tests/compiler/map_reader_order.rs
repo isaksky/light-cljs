@@ -30,7 +30,7 @@ use crate::canonical_json::{canonical, node};
 
 #[test]
 fn independent_map_sources_preserve_thresholds_groups_metadata_and_recovery() {
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     let context = crate::embedded_js::EmbeddedJs::new();
     let catalog = include_str!("../fixtures/contracts/literal-map-traversal-contracts.json");
     let extract = format!(
@@ -73,13 +73,13 @@ fn independent_map_sources_preserve_thresholds_groups_metadata_and_recovery() {
                 canonical(expected),
                 "Node: {id}, macro={phase}"
             );
-            #[cfg(any(light_v8, light_quickjs))]
+            #[cfg(light_v8)]
             let raw = context
                 .string(&script)
                 .unwrap_or_else(|error| panic!("{id}, macro={phase}: {error}"));
             // Sort JSON object property names only. Collection tags, every
             // sequence position, effects and output remain exact and complete.
-            #[cfg(any(light_v8, light_quickjs))]
+            #[cfg(light_v8)]
             {
                 assert_eq!(canonical(&raw), canonical(expected), "{id}, macro={phase}");
                 context.collect_garbage();
@@ -116,7 +116,7 @@ fn independent_map_sources_preserve_thresholds_groups_metadata_and_recovery() {
             )
             .unwrap();
             assert_eq!(node(&format!("String({js})")), "42");
-            #[cfg(any(light_v8, light_quickjs))]
+            #[cfg(light_v8)]
             assert_eq!(context.number(&js).unwrap(), 42.0);
         }
     }

@@ -1,7 +1,7 @@
 //! Canonical project metadata and complete SCI source in fresh/reused phases.
 use crate::temp_dir::TempDir;
 use light_cljs::MacroHost;
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use std::{fs, process::Command};
 
@@ -21,7 +21,7 @@ fn compile(
 
 fn both(host: &mut MacroHost, source: &str, expected: &str) {
     let js = compile(host, source).unwrap_or_else(|e| panic!("{e}"));
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(

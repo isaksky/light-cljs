@@ -74,14 +74,14 @@ fn execute(script: &str) -> (String, String) {
             String::from_utf8_lossy(&result.stderr).replace(['\n', '\t'], " ")
         )
     };
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     let context = crate::embedded_js::EmbeddedJs::new();
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     let embedded = match context.string(script) {
         Ok(value) => value,
         Err(error) => format!("HARNESS:{error:?}").replace(['\n', '\t'], " "),
     };
-    #[cfg(not(any(light_v8, light_quickjs)))]
+    #[cfg(not(light_v8))]
     let embedded = String::new();
     (node, embedded)
 }
@@ -150,7 +150,7 @@ fn library_import_fixture_preserves_values_and_callbacks_in_both_engines() {
                     let script = script(id, declarations, source, &root.join(id)).unwrap();
                     let (node, _embedded) = execute(&script);
                     assert_eq!(node, expected, "Node {id}");
-                    #[cfg(any(light_v8, light_quickjs))]
+                    #[cfg(light_v8)]
                     assert_eq!(_embedded, expected, "embedded engine {id}");
                 })
             })

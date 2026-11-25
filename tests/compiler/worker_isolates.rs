@@ -223,7 +223,7 @@ fn a_worker_isolate_that_runs_out_of_time_fails_its_unit_and_the_build_ends() {
 }
 
 // Starts per-worker engine isolates.
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 #[test]
 #[cfg(debug_assertions)]
 fn pooled_macro_charging_propagates_main_engine_startup_failure() {
@@ -544,7 +544,7 @@ fn a_persistent_worker_never_takes_a_released_macro_generation_for_a_later_one()
 }
 
 /// Units of which half expand a source macro and half are macro-free.
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 fn mixed_units(sources: &Sources) {
     let mut body = String::from("(ns app.u (:require [app.m :refer [twice]]))\n");
     for k in 0..12 {
@@ -558,7 +558,7 @@ fn mixed_units(sources: &Sources) {
 }
 
 // Counts per-worker engine isolates.
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 #[test]
 fn workers_beyond_the_isolates_take_only_macro_free_units() {
     // 64 MiB and two shares at eight slots: the main isolate's 64 MiB and

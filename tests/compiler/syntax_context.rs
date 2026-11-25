@@ -1,7 +1,7 @@
 //! Complete syntax semantics in applications and actual MacroHost bodies.
 use crate::temp_dir::TempDir;
 use light_cljs::evaluator::RUNTIME_SOURCE;
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 use std::io::Write;
@@ -75,7 +75,7 @@ fn literal(identity: &str) {
         let parsed = parse(&observed_source).unwrap();
         let program =
             analyze_with_macros(&observed_source, &parsed, &mut MacroHost::new()).unwrap();
-        #[cfg(any(light_v8, light_quickjs))]
+        #[cfg(light_v8)]
         {
             let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
             let actual = evaluator
@@ -152,7 +152,7 @@ fn syntax_namespace_context_executes_with_actual_macro_environment() {
             &mut MacroHost::new(),
         )
         .unwrap();
-        #[cfg(any(light_v8, light_quickjs))]
+        #[cfg(light_v8)]
         {
             let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
             let actual = evaluator
@@ -198,7 +198,7 @@ fn syntax_raw_nsstar_alias_executes_in_fresh_and_reused_macro_hosts() {
                     host,
                 )
                 .unwrap();
-                #[cfg(any(light_v8, light_quickjs))]
+                #[cfg(light_v8)]
                 {
                     let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
                     let actual = evaluator
@@ -334,7 +334,7 @@ fn raw_nsstar_imports_keep_ordinary_cljs_macro_and_definition_ownership() {
                 host,
             )
             .unwrap();
-            #[cfg(any(light_v8, light_quickjs))]
+            #[cfg(light_v8)]
             {
                 let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
                 assert_eq!(

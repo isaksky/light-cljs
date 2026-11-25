@@ -12,7 +12,7 @@ fn both(source: &str) {
             source.to_owned()
         };
         let js = light_cljs::compile_with_macros(&text, &mut host).unwrap();
-        #[cfg(any(light_v8, light_quickjs))]
+        #[cfg(light_v8)]
         {
             let engine = crate::embedded_js::EmbeddedJs::new();
             assert!(engine.boolean(&js).unwrap(), "{text}");

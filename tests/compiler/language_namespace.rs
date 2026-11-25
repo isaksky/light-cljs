@@ -1,5 +1,5 @@
 //! Execute the report's complete source observation in a fresh embedded heap.
-#![cfg(any(light_v8, light_quickjs))]
+#![cfg(light_v8)]
 
 #[test]
 #[ignore = "explicit namespace report audit; Python checks the complete raw outcome"]

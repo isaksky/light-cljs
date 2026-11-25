@@ -2,7 +2,7 @@
 use crate::sci_protocol as native;
 use crate::temp_dir::TempDir;
 use light_cljs::compile_namespace;
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::Evaluator;
 use std::{
     fs,
@@ -311,7 +311,7 @@ fn all_131_native_string_bodies_execute_with_canonical_printing_evidence() {
                 continue;
             }
         };
-        #[cfg(any(light_v8, light_quickjs))]
+        #[cfg(light_v8)]
         let observation = {
             let e = Evaluator::new(Default::default()).unwrap();
             let observation = e
@@ -325,7 +325,7 @@ fn all_131_native_string_bodies_execute_with_canonical_printing_evidence() {
             }
             observation
         };
-        #[cfg(not(any(light_v8, light_quickjs)))]
+        #[cfg(not(light_v8))]
         let observation = String::new();
         scripts.push(format!("console.log(JSON.stringify({javascript}));"));
         ids.push((case.id, observation));
@@ -333,7 +333,7 @@ fn all_131_native_string_bodies_execute_with_canonical_printing_evidence() {
     for (group, expected) in scripts.chunks(8).zip(ids.chunks(8)) {
         let observations = node(&group.join("\n"));
         for ((id, _embedded), node) in expected.iter().zip(observations.lines()) {
-            #[cfg(any(light_v8, light_quickjs))]
+            #[cfg(light_v8)]
             assert_eq!(node, _embedded, "Node/embedded engine {id}");
             if !node.starts_with("[true,true,") {
                 failures.push(format!("Node {id}: {node}"));
@@ -403,7 +403,7 @@ fn verbatim_pinned_upstream_string_api_and_capitalization_property_execute() {
         .unwrap();
     let observation = node(&format!("console.log(JSON.stringify({js}));"));
     assert_eq!(observation.trim(), "[true,95,true,1000]");
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let e = Evaluator::new(light_cljs::evaluator::EvaluatorOptions {
             timeout: std::time::Duration::from_secs(60),

@@ -17,7 +17,7 @@
 //! unit there; otherwise they go to a temporary directory that is removed when the
 //! test ends (`LIGHT_CLJS_KEEP_TMP=1` keeps it; see `tests/support/temp_dir.rs`).
 use crate::temp_dir::TempDir;
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, compile_namespace_with_macros};
 use std::{
@@ -222,7 +222,7 @@ fn value(
     let js = compile_namespace_with_macros(namespace, &[root.to_path_buf()], host)
         .unwrap_or_else(|e| panic!("{context}: {e}"));
     fs::write(root.join("compiled.js"), &js).unwrap();
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let evaluator = Evaluator::new(EvaluatorOptions {
             timeout: TIMEOUT,
@@ -274,7 +274,7 @@ fn observed(
         )
     };
     fs::write(root.join("script.js"), &script).unwrap();
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let actual = crate::embedded_js::EmbeddedJs::new()
             .string(&script)

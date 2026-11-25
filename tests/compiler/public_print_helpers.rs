@@ -22,7 +22,7 @@ fn unhex(s: &str) -> String {
 }
 fn observe(script: &str, artifact: &std::path::Path) -> Vec<(String, String)> {
     let mut observed = Vec::new();
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let context = crate::embedded_js::EmbeddedJs::new();
         let embedded = match context.string(script) {
@@ -83,11 +83,11 @@ fn both(source: &str, expected: &str, host: &mut MacroHost) {
         "(() => {{const value={captured};return ({})(globalThis.lightRuntime)('regression',()=>value);}})()",
         include_str!("../support/sci_execution_observation.js")
     );
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     let context = crate::embedded_js::EmbeddedJs::new();
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     let actual = context.string(&script).unwrap();
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     assert_eq!(actual, expected, "embedded engine: {source}");
     let output = Command::new("node").args(["-p", &script]).output().unwrap();
     assert!(

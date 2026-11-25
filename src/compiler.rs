@@ -2931,7 +2931,7 @@ fn analyze_entry(
     let memory_limit = macros.evaluator_options.memory_limit;
     let isolates =
         crate::compilation_session::pool_isolate_count(memory_limit, analysis.unit_slots);
-    let can_pool_engines = cfg!(any(light_v8, light_quickjs))
+    let can_pool_engines = cfg!(light_v8)
         && isolates > 1
         && macros.engine.script_host.is_none()
         && !macros.tables.interactive;

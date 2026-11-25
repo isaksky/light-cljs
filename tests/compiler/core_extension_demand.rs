@@ -1,5 +1,5 @@
 //! Core macro expansion preserves bootstrap and user extension demand frontiers.
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 use std::{
@@ -10,7 +10,7 @@ use std::{
 fn both(host: &mut MacroHost, source: &str, expected: &str) {
     let program = analyze_with_macros(source, &parse(source).unwrap(), host)
         .unwrap_or_else(|error| panic!("{source}\n{error}"));
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let value = evaluator.evaluate(&program).unwrap();

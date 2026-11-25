@@ -1,6 +1,6 @@
 //! Executable definition metadata survives ordinary and demanded macro initialization.
 use crate::temp_dir::TempDir;
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, compile_namespace_with_macros};
 use std::io::Write;
@@ -83,7 +83,7 @@ fn metadata_test_original_source_passes_both_phases_and_recovers() {
             {
                 let js = compiled.unwrap();
                 std::fs::write(root.join("compiled.js"), &js).unwrap();
-                #[cfg(any(light_v8, light_quickjs))]
+                #[cfg(light_v8)]
                 {
                     let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
                     let actual = evaluator
@@ -111,7 +111,7 @@ fn metadata_test_original_source_passes_both_phases_and_recovers() {
             let js = compile_namespace_with_macros("user", std::slice::from_ref(&recovery), host)
                 .unwrap();
             std::fs::write(recovery.join("compiled.js"), &js).unwrap();
-            #[cfg(any(light_v8, light_quickjs))]
+            #[cfg(light_v8)]
             {
                 let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
                 let actual = evaluator
@@ -133,7 +133,7 @@ fn metadata_test_original_source_passes_both_phases_and_recovers() {
 
 fn both(source: &str, host: &mut MacroHost, expected: &str) {
     let js = light_cljs::compile_with_macros(source, host).unwrap();
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(

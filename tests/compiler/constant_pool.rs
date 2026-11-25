@@ -15,7 +15,7 @@ use light_cljs::{
     ApplicationOptions, ConstantPool, OptimizationLevel, Program, analyze, parse,
     prepare_application,
 };
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::{EvalOptions, EvalSession};
 
 fn program(source: &str) -> Program {
@@ -181,7 +181,7 @@ fn empty_literals_read_the_runtime_singletons_at_every_level() {
             .all(|line| !line.contains("EMPTY"))
     );
 
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let mut session = EvalSession::new(EvalOptions::default()).unwrap();
         let value = session

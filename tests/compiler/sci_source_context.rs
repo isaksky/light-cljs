@@ -77,14 +77,14 @@ fn execute(script: &str) -> (String, String) {
             String::from_utf8_lossy(&result.stderr).replace(['\n', '\t'], " ")
         )
     };
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     let context = crate::embedded_js::EmbeddedJs::new();
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     let embedded = match context.string(script) {
         Ok(value) => value,
         Err(error) => format!("HARNESS:{error:?}").replace(['\n', '\t'], " "),
     };
-    #[cfg(not(any(light_v8, light_quickjs)))]
+    #[cfg(not(light_v8))]
     let embedded = String::new();
     (node, embedded)
 }
@@ -121,7 +121,7 @@ fn original_source_macro_declarations_execute_phase_and_application_contracts() 
         let script = script(id, source).unwrap();
         let (node, _embedded) = execute(&script);
         assert_eq!(node, expected, "{id}: Node");
-        #[cfg(any(light_v8, light_quickjs))]
+        #[cfg(light_v8)]
         assert_eq!(_embedded, expected, "{id}: embedded engine");
     }
 }

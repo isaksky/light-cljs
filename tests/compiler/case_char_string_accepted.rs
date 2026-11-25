@@ -22,7 +22,7 @@ fn unhex(s: &str) -> String {
 }
 fn observe(script: &str, artifact: &std::path::Path) -> Vec<(String, String)> {
     let mut observed = Vec::new();
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let context = crate::embedded_js::EmbeddedJs::new();
         let embedded = match context.string(script) {
@@ -282,16 +282,16 @@ fn canonical_case_constants_and_same_host_diagnostic_recovery() {
                 "(() => {{const value={captured};return ({})(globalThis.lightRuntime)('{id}',()=>value);}})()",
                 include_str!("../support/sci_execution_observation.js")
             );
-            #[cfg(any(light_v8, light_quickjs))]
+            #[cfg(light_v8)]
             let context = crate::embedded_js::EmbeddedJs::new();
             assert_eq!(
                 canonical(&node(&script)),
                 canonical(expected),
                 "Node: {id}, macro={phase}"
             );
-            #[cfg(any(light_v8, light_quickjs))]
+            #[cfg(light_v8)]
             let raw = context.string(&script).unwrap();
-            #[cfg(any(light_v8, light_quickjs))]
+            #[cfg(light_v8)]
             assert_eq!(canonical(&raw), canonical(expected), "{id}, macro={phase}");
         }
     }
@@ -341,10 +341,10 @@ fn canonical_case_constants_and_same_host_diagnostic_recovery() {
                 &mut host,
             )
             .unwrap();
-            #[cfg(any(light_v8, light_quickjs))]
+            #[cfg(light_v8)]
             let context = crate::embedded_js::EmbeddedJs::new();
             assert_eq!(node(&format!("String({js})")), "42");
-            #[cfg(any(light_v8, light_quickjs))]
+            #[cfg(light_v8)]
             assert_eq!(context.number(&js).unwrap(), 42.0);
         }
     }

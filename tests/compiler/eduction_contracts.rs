@@ -1,6 +1,6 @@
 //! Canonical eduction ABI, shared macro/application execution, cancellation and GC.
 use light_cljs::evaluator::RUNTIME_SOURCE;
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 use std::process::Command;
@@ -10,7 +10,7 @@ fn program(source: &str) -> light_cljs::Program {
 }
 fn both(source: &str, expected: &str) {
     let p = program(source);
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(e.print(e.evaluate(&p).unwrap()).unwrap(), expected);
@@ -60,7 +60,7 @@ fn eduction_public_arities_run_as_shared_macro_and_application_helpers() {
 }
 
 // Recovery and cancellation of the embedded evaluator are the subject.
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 #[test]
 fn throwing_application_and_macro_views_recover_in_fresh_sessions() {
     let p = program("(into [] (eduction (map #(throw (js/Error. \"view failed\"))) [1 2]))");
@@ -82,7 +82,7 @@ fn throwing_application_and_macro_views_recover_in_fresh_sessions() {
 }
 
 // Recovery and cancellation of the embedded evaluator are the subject.
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 #[test]
 fn cancellation_in_eduction_construction_demand_and_completion_is_terminal() {
     use std::sync::{Arc, Mutex};
@@ -134,7 +134,7 @@ fn cancellation_in_eduction_construction_demand_and_completion_is_terminal() {
 }
 
 // The embedded evaluator's heap retention is the subject.
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 #[test]
 fn abandoned_prefixes_and_reducer_cycles_are_collected_in_both_engines() {
     let batch = r#"(() => {

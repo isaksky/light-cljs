@@ -44,13 +44,13 @@ fn original_closure_and_ownership_controls() {
                     let expected = if name == "explicit-global-control" { r#"{"$vector":[2,99,true]}"# } else { "40" };
                     let captured = javascript.replacen(" = // Original bounded runtime", " = globalThis.lightRuntime = // Original bounded runtime", 1);
                     let script = format!("(() => {{ const run = {captured}; return ({}) (globalThis.lightRuntime)('control',observe=>run(observe)); }})()", include_str!("../support/sci_execution_observation.js"));
-                    #[cfg(any(light_v8, light_quickjs))]
+                    #[cfg(light_v8)]
                     let context = crate::embedded_js::EmbeddedJs::new();
-                    #[cfg(any(light_v8, light_quickjs))]
+                    #[cfg(light_v8)]
                     let observation = context.string(&script).unwrap();
-                    #[cfg(any(light_v8, light_quickjs))]
+                    #[cfg(light_v8)]
                     fs::write(directory.join("embedded.json"), &observation).unwrap();
-                    #[cfg(any(light_v8, light_quickjs))]
+                    #[cfg(light_v8)]
                     assert!(observation.contains(&format!("\"value\":{expected}")), "{variant}: {observation}");
                     use std::{io::Write, process::{Command, Stdio}};
                     let mut node = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into())).arg("-").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
@@ -61,7 +61,7 @@ fn original_closure_and_ownership_controls() {
                     assert!(result.status.success() && result.stderr.is_empty());
                     let node_observation = String::from_utf8(result.stdout).unwrap();
                     assert!(node_observation.contains(&format!("\"value\":{expected}")), "{variant}: {node_observation}");
-                    #[cfg(any(light_v8, light_quickjs))]
+                    #[cfg(light_v8)]
                     assert_eq!(node_observation.trim(), observation);
                     println!("{variant}: actual MacroHost then Node/embedded engine observed {expected}");
                 }

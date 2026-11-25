@@ -1,13 +1,13 @@
 //! Public iterator helpers retain canonical iterator state in both phases.
 use light_cljs::evaluator::RUNTIME_SOURCE;
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 
 fn both(source: &str, expected: &str) {
     let program = analyze_with_macros(source, &parse(source).unwrap(), &mut MacroHost::new())
         .unwrap_or_else(|e| panic!("{source}: {e}"));
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(
@@ -87,7 +87,7 @@ fn iterator_helper_phase_isolation_diagnostics_and_repetition() {
             error.contains("Unsupported macro result") && error.contains("bad"),
             "{error}"
         );
-        #[cfg(any(light_v8, light_quickjs))]
+        #[cfg(light_v8)]
         {
             let source = "(defmacro good [] (.next (seq-iter [42]))) (good)";
             let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
@@ -102,7 +102,7 @@ fn iterator_helper_phase_isolation_diagnostics_and_repetition() {
     }
 }
 
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 #[test]
 fn iterator_helpers_preserve_session_owned_progress() {
     use light_cljs::{EvalOptions, EvalSession};

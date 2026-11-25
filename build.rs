@@ -31,7 +31,6 @@ use js_syntax::{Join, Kind, Shape, TerseWriter};
 
 fn main() {
     println!("cargo::rustc-check-cfg=cfg(light_v8)");
-    println!("cargo::rustc-check-cfg=cfg(light_quickjs)");
     println!(
         "cargo::rustc-env=LIGHT_CLJS_COMPILER_IDENTITY={}",
         sha256::hex(&compiler_identity())
@@ -42,10 +41,6 @@ fn main() {
     // default; reserve the 8 MiB macOS and Linux give it.
     if os == "windows" && env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
         println!("cargo::rustc-link-arg-bins=/STACK:8388608");
-    }
-    // QuickJS is optional on native targets and absent on wasm32.
-    if arch != "wasm32" && env::var_os("CARGO_FEATURE_QUICKJS").is_some() {
-        println!("cargo::rustc-cfg=light_quickjs");
     }
     if env::var_os("CARGO_FEATURE_V8_MACROS").is_some()
         && matches!(arch.as_str(), "aarch64" | "x86_64")
@@ -108,13 +103,12 @@ fn main() {
 /// crate's sources (the embedded runtime, bootstrap, core macros and
 /// bundled first-party libraries are under `src/`), this script, the
 /// manifest and lock file (which pins the prebuilt V8 crate), and the
-/// vendored QuickJS and V8 headers.
-const IDENTITY_INPUTS: [&str; 6] = [
+/// vendored V8 headers.
+const IDENTITY_INPUTS: [&str; 5] = [
     "src",
     "build.rs",
     "Cargo.toml",
     "Cargo.lock",
-    "vendor/rquickjs-sys",
     "vendor/v8-headers",
 ];
 

@@ -12,7 +12,7 @@ use super::optimization::{execute, readable};
 use light_cljs::{
     ApplicationOptions, OptimizationLevel, Program, analyze, parse, prepare_application,
 };
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::{EvalOptions, EvalSession};
 
 fn program(source: &str) -> Program {
@@ -228,7 +228,7 @@ fn keyword_case_switches_on_the_spelling_without_printing_at_advanced() {
     ));
 }
 
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 #[test]
 fn literal_keyword_identity_holds_across_repl_inputs_and_redefinition() {
     // Each REPL input is its own unit over the session runtime, which interns

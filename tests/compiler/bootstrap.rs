@@ -1,5 +1,5 @@
 //! Core macros must expand through compiled source with native evaluation disabled.
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::Evaluator;
 use light_cljs::evaluator::EvaluatorOptions;
 use light_cljs::{MacroHost, analyze_with_macros, compile_with_macros, parse};
@@ -10,7 +10,7 @@ fn result(source: &str) -> String {
     let syntax = parse(source).unwrap();
     let program = analyze_with_macros(source, &syntax, &mut host)
         .unwrap_or_else(|error| panic!("{source}\n{error}"));
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let value = evaluator
@@ -18,7 +18,7 @@ fn result(source: &str) -> String {
             .unwrap_or_else(|error| panic!("{source}\n{error}"));
         evaluator.print(value).unwrap()
     }
-    #[cfg(not(any(light_v8, light_quickjs)))]
+    #[cfg(not(light_v8))]
     {
         let printed = crate::canonical_json::node_stdout(&format!(
             "const rt = {}; console.log(rt.core.prStr(({})(rt)));",
@@ -257,9 +257,9 @@ fn seed_bindings_assertions_and_reflection_remain_native_free() {
 #[test]
 fn default_compile_and_analyze_emit_have_identical_literal_results() {
     let source = "(reduce + (for [x [1 2 3]] (if-some [y x] (-> y inc) 0)))";
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     let js = light_cljs::compile(source).unwrap();
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(

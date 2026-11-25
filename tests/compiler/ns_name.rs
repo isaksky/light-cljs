@@ -1,7 +1,7 @@
 //! Public ns-name preserves the supplied Namespace slot and compiler metadata strings.
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::{EvalOptions, EvalSession};
 use light_cljs::{
     MacroHost, analyze_with_macros, emitter::emit_js_unit, evaluator::RUNTIME_SOURCE, parse,
@@ -25,7 +25,7 @@ fn ns_name_result_types_execute_in_both_engines_and_macro_phase() {
     let mut host = MacroHost::new();
     for _ in 0..2 {
         let program = analyze_with_macros(&source, &parse(&source).unwrap(), &mut host).unwrap();
-        #[cfg(any(light_v8, light_quickjs))]
+        #[cfg(light_v8)]
         {
             let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
             for _ in 0..2 {
@@ -65,7 +65,7 @@ fn ns_name_result_types_execute_in_both_engines_and_macro_phase() {
     light_cljs::compile_with_macros("(def unavailable (js/unavailable)) (defmacro inspect [] (let [n (:ns (meta #'unavailable))] (assert (symbol? n)) (assert (= \"cljs.user\" (ns-name n))) true)) (inspect)", &mut MacroHost::new()).unwrap();
 }
 
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 #[test]
 fn metadata_names_preserve_qualification_and_session_isolation() {
     let mut session = EvalSession::new(EvalOptions::default()).unwrap();

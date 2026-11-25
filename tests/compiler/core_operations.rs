@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use light_cljs::CoreFnId;
 use light_cljs::core_operations::{COLUMNS, Calls, Purity, TABLE, Type, operations};
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::runtime_manifest::{ANNOTATED_RUNTIME, CORE_CELLS, CoreReference, RuntimeManifest};
 
@@ -382,7 +382,7 @@ fn signatures_hold_on_sample_arguments() {
 }})()"#,
         rows = rows.join(",\n  ")
     );
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     let violations = {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let report = evaluator.evaluate_js(&script).unwrap();
@@ -390,7 +390,7 @@ fn signatures_hold_on_sample_arguments() {
     };
     // runtime. Sampled printing functions write to Node's stdout too, so the
     // report follows a marker line.
-    #[cfg(not(any(light_v8, light_quickjs)))]
+    #[cfg(not(light_v8))]
     let violations = {
         let output = crate::canonical_json::node_stdout(&format!(
             "const rt = {}; const report = {script}; process.stdout.write('\\n@@report@@\\n' + report);",

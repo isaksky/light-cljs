@@ -1,6 +1,6 @@
 //! Public sequence conversion, traversal and deferred contracts in both phases.
 use light_cljs::evaluator::RUNTIME_SOURCE;
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 use std::process::Command;
@@ -8,7 +8,7 @@ use std::process::Command;
 fn both(source: &str, expected: &str) {
     let p = analyze_with_macros(source, &parse(source).unwrap(), &mut MacroHost::new())
         .unwrap_or_else(|e| panic!("{source}: {e}"));
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(

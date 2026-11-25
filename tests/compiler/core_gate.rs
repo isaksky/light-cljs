@@ -1,6 +1,6 @@
 //! Complete retained core adapters and literal contracts in both JS phases.
 use light_cljs::evaluator::RUNTIME_SOURCE;
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 use std::{
@@ -51,7 +51,7 @@ fn both(source: &str, expected: &str, identity: &str) {
     let parsed = parse(source).unwrap_or_else(|error| panic!("{identity}: {error}"));
     let program = analyze_with_macros(source, &parsed, &mut MacroHost::new())
         .unwrap_or_else(|error| panic!("{identity}: {error}"));
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let value = evaluator

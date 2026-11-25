@@ -2737,6 +2737,7 @@ fn cache_lookup_respects_two_cpu_slots() {
     }
 }
 
+#[cfg(light_v8)]
 #[test]
 fn batched_cache_decode_cancellation_stops_the_build() {
     use light_cljs::analyzer::AnalysisOptions;

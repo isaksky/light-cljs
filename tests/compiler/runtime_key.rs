@@ -515,7 +515,7 @@ fn compile_time_runtime_loads_keep_their_own_brands() {
     let expected = format!(
         r#"[{{"kind":"vector","items":[1,2]}},null,{{"kind":"vector","items":[1,2]}},null,"encoded vector","{rejected}","encoded vector","{rejected}",2,2,"[1 2]"]"#
     );
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 

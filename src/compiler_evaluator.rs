@@ -1,8 +1,6 @@
 //! Engine-independent services used by compiler macro sessions.
-#[cfg(not(any(light_v8, light_quickjs)))]
+#[cfg(not(light_v8))]
 use crate::evaluator::Evaluator;
-#[cfg(light_quickjs)]
-use crate::evaluator::QuickJsEvaluator;
 use crate::evaluator::{EvalError, MacroEvaluator, ValueId};
 use std::rc::Rc;
 
@@ -59,7 +57,7 @@ pub(crate) trait CompilerEvaluator: MacroEvaluator {
         Ok(0)
     }
 }
-#[cfg(not(any(light_v8, light_quickjs)))]
+#[cfg(not(light_v8))]
 impl CompilerEvaluator for Evaluator {
     fn evaluate_js(&self, _: &str) -> Result<ValueId, EvalError> {
         match *self {}
@@ -69,46 +67,5 @@ impl CompilerEvaluator for Evaluator {
     }
     fn install_string_service(&self, _: &str, _: StringService) -> Result<(), EvalError> {
         match *self {}
-    }
-}
-#[cfg(light_quickjs)]
-impl CompilerEvaluator for QuickJsEvaluator {
-    fn export_data(
-        &self,
-        id: ValueId,
-        limits: crate::form_bridge::ConversionLimits,
-    ) -> Result<crate::compiler_data::Datum, EvalError> {
-        QuickJsEvaluator::export_data(self, id, limits)
-    }
-    fn evaluate_js(&self, expression: &str) -> Result<ValueId, EvalError> {
-        QuickJsEvaluator::evaluate_js(self, expression)
-    }
-    fn headroom_held(&self) -> usize {
-        QuickJsEvaluator::headroom_held(self)
-    }
-    fn collect_garbage(&self) {
-        QuickJsEvaluator::collect_garbage(self);
-    }
-    fn value_roots(&self) -> Result<usize, EvalError> {
-        QuickJsEvaluator::value_roots(self)
-    }
-    #[cfg(all(test, light_v8))]
-    fn number(&self, id: ValueId) -> Result<f64, EvalError> {
-        QuickJsEvaluator::number(self, id)
-    }
-    fn install_string_service(&self, name: &str, callback: StringService) -> Result<(), EvalError> {
-        self.install_callback(name, move |_, request| Ok(callback(&request)))
-    }
-    fn install_compiler_service(
-        self: Rc<Self>,
-        name: &str,
-        callback: UnitService,
-    ) -> Result<(), EvalError> {
-        let weak = Rc::downgrade(&self);
-        self.install_unit_service(name, move |ctx, id| {
-            let evaluator = weak.upgrade().ok_or("evaluator expired")?;
-            let active = evaluator.active(ctx).map_err(|e| e.to_string())?;
-            callback(&active, id)
-        })
     }
 }

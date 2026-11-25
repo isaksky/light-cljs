@@ -1,7 +1,7 @@
 //! Canonical ABI, compile-time execution and engine lifetime contracts for eager
 //! transduction. CLJS value/effect oracle cases live in compiler_transducers.
 use light_cljs::evaluator::RUNTIME_SOURCE;
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 use std::process::Command;
@@ -12,7 +12,7 @@ fn program(source: &str) -> light_cljs::Program {
 }
 fn both(source: &str, expected: &str) {
     let p = program(source);
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(
@@ -106,7 +106,7 @@ fn state_and_captures_survive_collection_and_failed_reentrant_completion() {
       aa = a(aa, 2); bb = b(bb);
       return c.vector(c.first(c.first(aa))(), c.nth(c.first(aa), 1), bb);
     })()"#;
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(
@@ -131,7 +131,7 @@ fn state_and_captures_survive_collection_and_failed_reentrant_completion() {
 }
 
 // Cancellation of the embedded evaluator is the subject.
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 #[test]
 fn cancellation_at_each_boundary_stops_exactly_and_keeps_session_terminal() {
     use std::sync::{Arc, Mutex};

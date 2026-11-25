@@ -1,6 +1,6 @@
 //! Complete receiver dispatch contracts; no native-function -invoke controls.
 use light_cljs::evaluator::RUNTIME_SOURCE;
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 use std::io::Write;
@@ -74,7 +74,7 @@ fn execute(identity: &str) {
                     .unwrap_or_else(|error| {
                         panic!("{identity} macro={macro_phase} reuse={reuse}: {error}")
                     });
-            #[cfg(any(light_v8, light_quickjs))]
+            #[cfg(light_v8)]
             let actual = {
                 let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
                 let actual = evaluator
@@ -93,7 +93,7 @@ fn execute(identity: &str) {
                 "ifn-observation\t{identity}\tmacro={macro_phase}\treuse={reuse}\tNode\t{actual_node}"
             );
             // Node's run above throws unless the value equals the expected literal.
-            #[cfg(any(light_v8, light_quickjs))]
+            #[cfg(light_v8)]
             assert_eq!(
                 actual_node, actual,
                 "{identity} macro={macro_phase} reuse={reuse}"

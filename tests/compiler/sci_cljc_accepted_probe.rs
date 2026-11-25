@@ -22,7 +22,7 @@ fn unhex(s: &str) -> String {
 }
 fn observe(script: &str, artifact: &std::path::Path) -> Vec<(String, String)> {
     let mut observed = Vec::new();
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let context = crate::embedded_js::EmbeddedJs::new();
         let embedded = match context.string(script) {
@@ -165,9 +165,9 @@ mod transport {
     // The embedded engine's entry comes before Node's when available.
     #[allow(clippy::vec_init_then_push)]
     fn observe(script: &str, root: &std::path::Path) -> Vec<(String, String)> {
-        #[cfg(any(light_v8, light_quickjs))]
+        #[cfg(light_v8)]
         let ctx = crate::embedded_js::EmbeddedJs::new();
-        #[cfg(any(light_v8, light_quickjs))]
+        #[cfg(light_v8)]
         let embedded = ctx.string(script).unwrap();
         let mut child = Command::new(std::env::var("NODE").unwrap())
             .arg("-")
@@ -187,7 +187,7 @@ mod transport {
         assert!(out.status.success());
         assert!(out.stderr.is_empty());
         fs::write(root.join("script.js"), script).unwrap();
-        #[cfg(any(light_v8, light_quickjs))]
+        #[cfg(light_v8)]
         fs::write(root.join("embedded.raw"), &embedded).unwrap();
         fs::write(root.join("node.stdin"), input).unwrap();
         fs::write(root.join("node.stdout"), &out.stdout).unwrap();
@@ -198,7 +198,7 @@ mod transport {
         )
         .unwrap();
         let mut observed = Vec::new();
-        #[cfg(any(light_v8, light_quickjs))]
+        #[cfg(light_v8)]
         observed.push(("embedded engine".into(), embedded));
         observed.push((
             "Node".into(),

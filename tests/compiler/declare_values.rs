@@ -1,6 +1,6 @@
 //! Canonical declaration values, with complete typed packets in both engines/phases.
 use light_cljs::MacroHost;
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use std::{
     io::Write,
@@ -42,7 +42,7 @@ fn host() -> MacroHost {
 #[test]
 fn complete_declaration_sources_execute_in_fresh_and_reused_hosts_and_both_phases() {
     let mut reused = host();
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     let evaluator = Evaluator::new(EvaluatorOptions {
         timeout: std::time::Duration::from_secs(120),
         ..EvaluatorOptions::default()
@@ -92,13 +92,13 @@ fn complete_declaration_sources_execute_in_fresh_and_reused_hosts_and_both_phase
                         let emitted = light_cljs::compile_with_macros(&computation, host).unwrap();
                         format!("eval({emitted:?})")
                     };
-                    #[cfg(any(light_v8, light_quickjs))]
+                    #[cfg(light_v8)]
                     let actual = evaluator
                         .string(evaluator.evaluate_js(&script).unwrap())
                         .unwrap();
-                    #[cfg(any(light_v8, light_quickjs))]
+                    #[cfg(light_v8)]
                     assert_eq!(actual, expected, "{id} {phase} {session} {_cycle}");
-                    #[cfg(any(light_v8, light_quickjs))]
+                    #[cfg(light_v8)]
                     {
                         let fresh_engine = Evaluator::new(EvaluatorOptions {
                             timeout: std::time::Duration::from_secs(120),
@@ -115,7 +115,7 @@ fn complete_declaration_sources_execute_in_fresh_and_reused_hosts_and_both_phase
                     assert_eq!(node(&script), expected, "Node {id} {phase} {session}");
                     node_batch.push_str(&format!("console.log({script});\n"));
                     expected_batch.push(expected.to_owned());
-                    #[cfg(any(light_v8, light_quickjs))]
+                    #[cfg(light_v8)]
                     println!("declare-value-packet\t{_cycle}\t{phase}\t{session}\t{id}\t{actual}");
                 }
             }
@@ -175,7 +175,7 @@ fn declaration_demand_failures_ownership_and_generations_recover() {
             node(&format!("eval({js:?})")),
             "[[[true [:pending]] 43 [:pending]] 43 [:pending :unrelated]]"
         );
-        #[cfg(any(light_v8, light_quickjs))]
+        #[cfg(light_v8)]
         {
             let evaluator = Evaluator::new(EvaluatorOptions {
                 timeout: std::time::Duration::from_secs(120),
@@ -196,7 +196,7 @@ fn declaration_demand_failures_ownership_and_generations_recover() {
         light_cljs::compile("(pr-str (let [d (declare single)] [(undefined? d) (nil? d)]))")
             .unwrap();
     assert_eq!(node(&format!("eval({direct:?})")), "[true true]");
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let direct_engine = Evaluator::new(EvaluatorOptions {
             timeout: std::time::Duration::from_secs(120),

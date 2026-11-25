@@ -14,7 +14,7 @@ fn execute(unit: &str, expected: &str, directory: &Path) {
         light_cljs::evaluator::RUNTIME_SOURCE,
         unit
     );
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let context = crate::embedded_js::EmbeddedJs::new();
         let embedded = context.string(&script).unwrap();
@@ -55,7 +55,7 @@ fn uncaught_application(failed_unit: &str, _recovery_unit: &str, message: &str, 
         light_cljs::evaluator::RUNTIME_SOURCE,
         failed_unit
     );
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let engine = crate::embedded_js::EmbeddedJs::interactive();
         let failure = engine.string(&script).unwrap_err();

@@ -2,7 +2,7 @@
 name = "light-cljs"
 version = "0.1.0"
 edition = "2024"
-description = "ClojureScript-to-JavaScript compiler and QuickJS runner written in Rust"
+description = "ClojureScript-to-JavaScript compiler and V8 runner written in Rust"
 authors = ["Isak Sky"]
 repository = "https://github.com/isaksky/light-cljs"
 readme = "README.md"
@@ -11,14 +11,10 @@ readme = "README.md"
 license = "MIT AND EPL-1.0"
 
 [workspace]
-exclude = ["vendor/rquickjs-sys", "playground/crate"]
+exclude = ["playground/crate"]
 resolver = "3"
 
-# QuickJS is available as an alternate native engine.
-# WebAssembly builds leave it out: their
-# embedder supplies the engine (`host_evaluator::ScriptHost`, light-cljs-357).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-rquickjs = { version = "=0.14.0", optional = true, default-features = false, features = ["std"] }
 mimalloc = "=0.1.52"
 
 # V8 is the stock prebuilt engine of the `v8` crate. Its release ships
@@ -35,8 +31,7 @@ v8 = { version = "=152.2.0", optional = true }
 cc = "=1.7.0"
 
 [features]
-default = ["v8-macros", "quickjs"]
-quickjs = ["dep:rquickjs"]
+default = ["v8-macros"]
 # Test-only scheduler perturbation in optimized builds of large projects.
 # Ordinary release builds omit it; no engine or production default changes.
 scheduling-stress = []
@@ -82,7 +77,3 @@ opt-level = 3
 [profile.release]
 lto = "thin"
 codegen-units = 1
-
-# Bundled QuickJS carries a local fix; see vendor/rquickjs-sys/PATCHES.md.
-[patch.crates-io]
-rquickjs-sys = { path = "vendor/rquickjs-sys" }

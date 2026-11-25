@@ -6279,22 +6279,7 @@ fn worker_view(
             }
             .map_err(|e| e.to_string())?,
         )),
-        // QuickJS-only builds: one QuickJS runtime per worker, made here on
-        // the worker's thread and freed on it, which no runtime leaves (the
-        // evaluator is neither `Send` nor `Sync`; light-cljs-436).
-        #[cfg(all(light_quickjs, not(light_v8)))]
-        PoolEngines::Persistent | PoolEngines::Fresh => Some(Rc::new(
-            match shared.resources() {
-                Some(resources) => crate::evaluator::Evaluator::new_for_build(
-                    environment.evaluator_options().clone(),
-                    resources,
-                    false,
-                ),
-                None => crate::evaluator::Evaluator::new(environment.evaluator_options().clone()),
-            }
-            .map_err(|e| e.to_string())?,
-        )),
-        #[cfg(not(any(light_v8, light_quickjs)))]
+        #[cfg(not(light_v8))]
         PoolEngines::Persistent | PoolEngines::Fresh => {
             return Err("compiler workers need an embedded engine".into());
         }
@@ -6807,7 +6792,7 @@ mod environment_bundle_tests {
     }
 
     /// What the compile-time engine noted of extensions its code installed.
-    #[cfg(any(feature = "quickjs", feature = "v8-macros"))]
+    #[cfg(light_v8)]
     fn noted(source: &str) -> crate::evaluator::EnvironmentExtensions {
         let mut host = MacroHost::new();
         crate::compile_with_macros(source, &mut host).unwrap();
@@ -6820,7 +6805,7 @@ mod environment_bundle_tests {
     /// native, core or unknown type or on any instance, whose type is not
     /// asked for, but not of a source protocol or on a user type
     /// (light-cljs-433).
-    #[cfg(any(feature = "quickjs", feature = "v8-macros"))]
+    #[cfg(light_v8)]
     #[test]
     fn compile_time_extensions_that_environment_data_could_reach_are_noted() {
         use crate::evaluator::EnvironmentExtensions;
@@ -6939,6 +6924,7 @@ mod worker_tests {
     }
 
     /// A fresh compile-time engine made on this thread.
+    #[cfg(light_v8)]
     fn engine(
         environment: &MacroEnvironment,
     ) -> Rc<dyn crate::compiler_evaluator::CompilerEvaluator> {
@@ -6947,6 +6933,7 @@ mod worker_tests {
     }
 
     /// The unit's prepared JavaScript as the main thread's session has it.
+    #[cfg(light_v8)]
     fn main_code(session: &CompilationSession, id: usize) -> String {
         let prepare = |program: &Program| {
             crate::emitter::DeferredUnit::prepare(program)
@@ -6965,6 +6952,7 @@ mod worker_tests {
         }
     }
 
+    #[cfg(light_v8)]
     #[test]
     fn a_worker_binds_a_sent_environment_and_analyzes_units_as_the_main_thread() {
         RETAINED.set(Some(Vec::new()));
@@ -7037,7 +7025,9 @@ mod worker_tests {
     }
 
     /// A catalog view whose every unit initializes to 42.
+    #[cfg(light_v8)]
     struct Answers(Cell<Option<usize>>);
+    #[cfg(light_v8)]
     impl CatalogView for Answers {
         fn compile_unit(&self, _: &dyn MacroEvaluator, id: usize) -> Result<String, String> {
             self.0.set(Some(id));
@@ -7051,6 +7041,7 @@ mod worker_tests {
         }
     }
 
+    #[cfg(light_v8)]
     #[test]
     fn a_bound_engine_reaches_the_catalog_view_its_thread_gives_it() {
         let environment = MacroHost::new().environment();
@@ -7087,6 +7078,7 @@ mod worker_tests {
         .unwrap();
     }
 
+    #[cfg(light_v8)]
     #[test]
     fn a_worker_runs_the_data_readers_its_environment_was_taken_with() {
         fn number(form: &Form) -> f64 {
@@ -7131,7 +7123,9 @@ mod worker_tests {
     }
 
     /// A catalog view that records what `light.build` asked of it.
+    #[cfg(light_v8)]
     struct Sources(RefCell<Vec<usize>>, Cell<bool>);
+    #[cfg(light_v8)]
     impl CatalogView for Sources {
         fn compile_unit(&self, _: &dyn MacroEvaluator, _: usize) -> Result<String, String> {
             Err("no units".into())
@@ -7146,6 +7140,7 @@ mod worker_tests {
         }
     }
 
+    #[cfg(light_v8)]
     #[test]
     fn a_bound_engine_asks_its_own_catalog_view_whom_build_requests_come_from() {
         let environment = MacroHost::new().environment();
@@ -7422,7 +7417,7 @@ mod worker_tests {
         assert_eq!(c.waiting, 0);
     }
 
-    #[cfg(any(feature = "quickjs", feature = "v8-macros"))]
+    #[cfg(light_v8)]
     #[test]
     fn a_worker_engine_installs_the_registrations_and_evaluates_what_the_catalog_prepared() {
         let mut host = MacroHost::new();
@@ -7459,7 +7454,7 @@ mod worker_tests {
         assert_eq!(shared.lock().units[id].analyses, analyses);
     }
 
-    #[cfg(any(feature = "quickjs", feature = "v8-macros"))]
+    #[cfg(light_v8)]
     #[test]
     fn roots_initialize_once_per_isolate() {
         // `counted`'s initializer counts its runs in its engine's globals.

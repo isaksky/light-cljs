@@ -22,7 +22,7 @@ fn unhex(s: &str) -> String {
 }
 fn observe(script: &str, artifact: &std::path::Path) -> Vec<(String, String)> {
     let mut observed = Vec::new();
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let context = crate::embedded_js::EmbeddedJs::new();
         let embedded = match context.string(script) {
@@ -184,7 +184,7 @@ use crate::canonical_json::canonical;
 
 #[test]
 fn map_value_equiv_preserves_exact_contracts_and_same_host_recovery() {
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     let context = crate::embedded_js::EmbeddedJs::new();
     let catalog = include_str!("../fixtures/contracts/map-value-equiv-contracts.json");
     let extract = format!(
@@ -222,7 +222,7 @@ fn map_value_equiv_preserves_exact_contracts_and_same_host_recovery() {
                 "(() => {{const observerRuntime={observer_runtime};const value={captured};return ({})(globalThis.lightRuntime)('{id}',()=>value);}})()",
                 include_str!("../support/sci_execution_observation.js")
             );
-            #[cfg(any(light_v8, light_quickjs))]
+            #[cfg(light_v8)]
             let raw = context
                 .string(&script)
                 .unwrap_or_else(|error| panic!("{id}, macro={phase}: {error}"));
@@ -233,7 +233,7 @@ fn map_value_equiv_preserves_exact_contracts_and_same_host_recovery() {
             );
             // Sort JSON object property names only. Collection tags, every
             // sequence position, effects and output remain exact and complete.
-            #[cfg(any(light_v8, light_quickjs))]
+            #[cfg(light_v8)]
             {
                 assert_eq!(canonical(&raw), canonical(expected), "{id}, macro={phase}");
                 context.collect_garbage();
@@ -256,7 +256,7 @@ fn map_value_equiv_preserves_exact_contracts_and_same_host_recovery() {
                 "(() => {{ try {{ const value={js}; return 'returned'; }} catch(e) {{ return e.message; }} }})()"
             );
             assert_eq!(node(&script), "value-equiv");
-            #[cfg(any(light_v8, light_quickjs))]
+            #[cfg(light_v8)]
             assert_eq!(context.string(&script).unwrap(), "value-equiv");
         }
         let js = light_cljs::compile_with_macros(
@@ -265,7 +265,7 @@ fn map_value_equiv_preserves_exact_contracts_and_same_host_recovery() {
         )
         .unwrap();
         assert_eq!(node(&js), "true");
-        #[cfg(any(light_v8, light_quickjs))]
+        #[cfg(light_v8)]
         assert!(context.boolean(&js).unwrap());
     }
     for source in [
@@ -300,7 +300,7 @@ fn map_value_equiv_preserves_exact_contracts_and_same_host_recovery() {
             )
             .unwrap();
             assert_eq!(node(&js), "42");
-            #[cfg(any(light_v8, light_quickjs))]
+            #[cfg(light_v8)]
             assert_eq!(context.number(&js).unwrap(), 42.0);
         }
     }

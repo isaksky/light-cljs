@@ -1,7 +1,7 @@
 //! Printing controls, writer options and output scopes in both canonical engines.
 use crate::temp_dir::TempDir;
 use light_cljs::evaluator::RUNTIME_SOURCE;
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 use std::process::Command;
@@ -17,7 +17,7 @@ fn both(source: &str, expected: &str) {
             &mut MacroHost::new(),
         )
         .unwrap();
-        #[cfg(any(light_v8, light_quickjs))]
+        #[cfg(light_v8)]
         {
             let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
             assert_eq!(e.print(e.evaluate_js(&js).unwrap()).unwrap(), expected);
@@ -48,7 +48,7 @@ fn both(source: &str, expected: &str) {
     }
     let p = analyze_with_macros(source, &parse(source).unwrap(), &mut MacroHost::new())
         .unwrap_or_else(|e| panic!("{source}: {e}"));
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(
@@ -160,7 +160,7 @@ fn javascript_object_prefixes_survive_depth_limits_in_both_phases_and_sessions()
     let expected = format!("[{OBSERVATIONS} 0 {OBSERVATIONS} 1]");
     both(SOURCE, &expected);
 
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let mut session = light_cljs::EvalSession::new(light_cljs::EvalOptions::default()).unwrap();
         for iteration in 0..2 {
@@ -309,7 +309,7 @@ fn utf16_strings_preserve_code_units_in_printing_and_captured_output() {
     );
 }
 
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 #[test]
 fn configured_host_output_and_error_sinks_remain_independent_after_failure() {
     use light_cljs::{EvalOptions, EvalSession};
@@ -409,7 +409,7 @@ fn public_writer_helpers_and_console_hooks_execute_in_both_phases() {
 }
 
 // Printing of embedded evaluator values is the subject.
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 #[test]
 fn rust_display_escapes_isolated_surrogates_and_preserves_valid_pairs() {
     let e = Evaluator::new(EvaluatorOptions::default()).unwrap();

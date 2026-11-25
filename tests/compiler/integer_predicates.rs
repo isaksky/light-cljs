@@ -1,13 +1,13 @@
 //! Number semantics and phase isolation without external Closure initialization.
 use light_cljs::evaluator::RUNTIME_SOURCE;
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 use std::process::Command;
 
 fn both(host: &mut MacroHost, source: &str, expected: &str) {
     let program = analyze_with_macros(source, &parse(source).unwrap(), host).unwrap();
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(
@@ -110,7 +110,7 @@ mod original_table {
         assert!(out.stderr.is_empty(), "unexpected Node stderr");
         String::from_utf8(out.stdout).unwrap()
     }
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     fn assert_complete_table(packet: &str) {
         let context = crate::embedded_js::EmbeddedJs::new();
         let passed = context.boolean(&format!(
@@ -173,7 +173,7 @@ mod original_table {
                 fs::write(folder.join("script.js"), &script).unwrap();
                 let input = format!("(0, eval)({script:?})");
                 fs::write(folder.join("embedded.stdin"), &input).unwrap();
-                #[cfg(any(light_v8, light_quickjs))]
+                #[cfg(light_v8)]
                 {
                     let context = crate::embedded_js::EmbeddedJs::new();
                     let embedded = match context.string(&script) {
@@ -190,7 +190,7 @@ mod original_table {
                 fs::write(folder.join("node.stdin"), &node_input).unwrap();
                 let raw = node(&node_input);
                 fs::write(folder.join("node.stdout"), &raw).unwrap();
-                #[cfg(any(light_v8, light_quickjs))]
+                #[cfg(light_v8)]
                 assert_complete_table(&raw);
                 println!(
                     "integer-table-observation\t{lifecycle}\t{phase}\tNode\t{}",

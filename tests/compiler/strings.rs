@@ -1,7 +1,7 @@
 //! Compiler-owned clojure.string contracts in the embedded engine, Node, and macro execution.
 use crate::temp_dir::TempDir;
 use light_cljs::compile_namespace;
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use std::{
     fs,
@@ -24,7 +24,7 @@ impl Sources {
 }
 fn check(name: &str, javascript: &str) {
     let expression = format!("JSON.stringify({javascript})");
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let value = evaluator.evaluate_js(&expression).unwrap();

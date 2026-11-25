@@ -1,6 +1,6 @@
 //! Namespace identity is resolved before lexical dotted property access.
 use crate::temp_dir::TempDir;
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, compile_namespace_with_macros};
 use std::{path::Path, process::Command};
@@ -25,7 +25,7 @@ impl Sources {
     }
 }
 fn both(js: &str, expected: &str) {
-    #[cfg(any(light_v8, light_quickjs))]
+    #[cfg(light_v8)]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(

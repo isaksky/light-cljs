@@ -2,9 +2,9 @@
 //! and diagnostics. Contract rows live in tests/fixtures/contracts.
 use crate::json::Json;
 use crate::temp_dir::TempDir;
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::EvalOptions;
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 use light_cljs::EvalSession;
 use light_cljs::analyzer::AnalysisOptions;
 use light_cljs::compiler::{
@@ -554,7 +554,7 @@ fn package_diagnostics_match_contract_probes() {
     }
 }
 
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 fn printed(s: &mut EvalSession, source: &str) -> String {
     let value = s.eval_string(source).unwrap().value;
     let text = s.print(value).unwrap();
@@ -562,12 +562,12 @@ fn printed(s: &mut EvalSession, source: &str) -> String {
     text
 }
 
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 const PRELUDE: &str = r#"(set! js/lightCljsPackages
   (js-obj "react" (js-obj "createElement" (fn [tag] (str "el:" tag)) "default" :react-default)
           "@scope/pkg" (js-obj "default" (fn [x] (str "scoped:" x)))))"#;
 
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 #[test]
 fn repl_requires_bind_packages_and_resolve_them_at_each_use() {
     let mut s = EvalSession::new(EvalOptions::default()).unwrap();
@@ -620,7 +620,7 @@ fn repl_requires_bind_packages_and_resolve_them_at_each_use() {
     assert_eq!(printed(&mut s, "(r/upper-case \"x\")"), "\"X\"");
 }
 
-#[cfg(any(light_v8, light_quickjs))]
+#[cfg(light_v8)]
 #[test]
 fn name_policy_checks_package_lookups_as_the_registry_global() {
     use light_cljs::compiler_data::Name;

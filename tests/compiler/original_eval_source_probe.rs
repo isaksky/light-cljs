@@ -1,6 +1,6 @@
 //! Diagnostic only: unchanged original eval expressions through installed EvalSession.
 //! No coverage registration and no replacement runtime evaluator.
-#![cfg(any(light_v8, light_quickjs))]
+#![cfg(light_v8)]
 
 use light_cljs::{EvalOptions, EvalSession, source_provider::SourceInput};
 use std::{fs, io::Write};
