@@ -50,3 +50,38 @@ recompilation it triggers. Binary sizes are for the unstripped executables.
 The branch binary is 1,662,208 bytes smaller at the median (2.14%). The
 clean-build median increased by 19.22 s, while the source-touch rebuild
 median fell by 6.74 s. Each timing range overlaps its counterpart.
+
+## 8. Emitted JavaScript
+
+The script extracts the 32 single-source and four namespace fixtures from
+`tests/support/ratchet_fixtures.rs` and compiles the same files with both
+release binaries at each optimization level. It compares the JavaScript
+with `cmp`. For TodoMVC it uses `release client --no-cache` on the shared
+read-only `research/todomvc-port` inputs, with output directed into the
+benchmark log tree.
+
+```sh
+bb benchmarks/remove-quickjs.bb output "$logs" "$master" "$branch"
+```
+
+| Output | Byte-identical | Master bytes | Branch bytes | Load range |
+| --- | ---: | ---: | ---: | ---: |
+| Size ratchet, none | 0 / 36 | | | 4.10–4.11 |
+| Size ratchet, prepare | 0 / 36 | | | 4.10–4.11 |
+| Size ratchet, advanced | 21 / 36 | | | 4.10–4.11 |
+| TodoMVC startup module, advanced | 0 / 1 | 349,574 | 349,392 | 4.10 |
+
+Every changed advanced ratchet is 44 bytes smaller. The first differing
+compiled runtime unit in the advanced vector example loses the
+`lightCljsWeakMapStores` switch removed by `b6f143e3`. At none and
+prepare the full readable runtime also loses Pants comments and branches
+from `36a2de8c`. These changes alter the keyed runtime identifiers
+embedded in the output. The branch additionally includes the live
+protocol-name fix and stable `satisfies?` optimization (`dbe6511f`,
+`fdb245dd`, `646d0f3f`).
+
+**Byte-identity check failed.** light-cljs-1152 tracks attribution of the
+remaining byte drift and the decision on whether to accept it. TodoMVC
+SHA-256 was `0bc64c35bdd4b5aaa28cfb755f2fc081ffe8e3ce39131bfd12a23a8870e2b8b3`
+on master and `cc7681507c8a03e5ca5e8785e47172331f0fb6ec9d433fa46036c7223c623a57`
+on the branch.
