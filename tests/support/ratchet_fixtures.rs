@@ -1486,6 +1486,20 @@
 //! `features`, `features-direct`) to the next 100 above, and
 //! `FEATURES_CHUNK_CEILINGS` `app.editor+app.reports.js` (`117,880` ->
 //! `117,900`).
+//!
+//! Deferred `lazyErrorStack` probe in `ExceptionInfo` (light-cljs-1121, on
+//! `54c3ce59`): moves the `lazyErrorStack` own-getter probe from top-level
+//! runtime factory evaluation into `ExceptionInfo`'s first construction using
+//! boot-captured `Error` and `Object.getOwnPropertyDescriptor` references so
+//! startup constructs no `Error` (eliminating ~23-25 ms of
+//! `V8.CollectSourcePositions` on TodoMVC release page load). Recomputed on
+//! `54c3ce59`, the readable runtime grows 36 bytes (`console-log-sum` at none
+//! `893,825` -> `893,861`), raising only the 3 crossed none/prepare ceilings
+//! (`rest-fn` none/prepare `894,000` -> `895,000`, `pure-defs` prepare
+//! `895,000` -> `896,000`, `extended-classes` none/prepare `895,000` ->
+//! `896,000`); no `:advanced` fixture or chunk ceiling moves, and re-frame
+//! `simple`, `todomvc`, and `flow` `:advanced` outputs grow by +37 raw bytes
+//! (+12 to +27 B gzip, <= +0.02%).
 
 pub struct Fixture {
     pub name: &'static str,
@@ -1548,7 +1562,7 @@ pub const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "rest-fn",
         source: "(fn [& xs] xs)",
-        ceilings: [894_000, 894_000, 17_600],
+        ceilings: [895_000, 895_000, 17_600],
         removed: [0, 0, 0],
         printed: "#function\n",
     },
@@ -1584,7 +1598,7 @@ pub const FIXTURES: &[Fixture] = &[
                  (def lookup (let [k :a] (get {:a 1} k)))
                  (def literal [1 2 3])
                  (:x (->Point 1 2))"#,
-        ceilings: [896_000, 895_000, 7_000],
+        ceilings: [896_000, 896_000, 7_000],
         removed: [0, 1, 6],
         printed: "1\n",
     },
@@ -1926,7 +1940,7 @@ pub const FIXTURES: &[Fixture] = &[
                    cljs.core/PersistentTreeSet (specize* [s] [:sorted (count s)])
                    default (specize* [x] :other))
                  (js/console.log (pr-str (map specize* [#{1 2} [3] (seq #{4}) (= #{5} #{5})])))",
-        ceilings: [895_000, 895_000, 82_700],
+        ceilings: [896_000, 896_000, 82_700],
         removed: [0, 0, 0],
         printed: "([:set 2] :other :other :other)\nundefined\n",
     },

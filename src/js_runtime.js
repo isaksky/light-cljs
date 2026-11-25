@@ -15500,7 +15500,7 @@
     target.fileName = error.fileName;
     target.lineNumber = error.lineNumber;
     target.columnNumber = error.columnNumber;
-    if (lazyErrorStack === undefined) lazyErrorStack = typeof Object.getOwnPropertyDescriptor(error, "stack")?.get === "function";
+    if (lazyErrorStack === undefined) lazyErrorStack = typeof ownDescriptor(new NativeError(), "stack")?.get === "function";
     if (lazyErrorStack) {
       Object.defineProperty(target, "stack", {
         enumerable: true,
@@ -15519,8 +15519,9 @@
     }
     return target;
   }
-  // Probed on first construction so runtime startup constructs no Error.
+  // Probed on first construction so startup constructs no Error.
   let lazyErrorStack;
+  const NativeError = Error, ownDescriptor = Object.getOwnPropertyDescriptor;
   // The printer installs `toString`.
   Object.setPrototypeOf(ExceptionInfo.prototype, Error.prototype);
   ExceptionInfo.prototype.cljs$lang$kind$$LKEY = 48;

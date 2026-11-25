@@ -1164,16 +1164,20 @@ for (const nonString of [null, undefined, 42]) {
     assert.throws(() => freshRt.core.exInfo(Symbol('first'), null), TypeError);
     assert.equal(errorConstructs, 1);
     const first = freshRt.core.exInfo('after-symbol', null);
-    assert.equal(errorConstructs, 2);
+    assert.equal(errorConstructs, 3);
+    assert.equal(prepareCalls, 0);
+    const second = freshRt.core.exInfo('second', null);
+    assert.equal(errorConstructs, 4);
     assert.equal(prepareCalls, 0);
     assert.equal(typeof Object.getOwnPropertyDescriptor(first, 'stack').get, 'function');
+    assert.equal(typeof Object.getOwnPropertyDescriptor(second, 'stack').get, 'function');
     assert.ok(first.stack.startsWith('fresh:after-symbol:'));
     assert.equal(prepareCalls, 1);
   } finally {
     globalThis.Error = RealError;
     RealError.prepareStackTrace = prevPrepare;
   }
-  // Simulated eager engine (own data property `stack`, like QuickJS/JSC).
+  // A temporary Error/descriptor override on the first ex-info call must not lock the runtime into eager mode.
   function EagerError(msg) {
     const err = new RealError(msg);
     Object.defineProperty(err, 'stack', {
@@ -1185,6 +1189,33 @@ for (const nonString of [null, undefined, 42]) {
     return err;
   }
   EagerError.prototype = RealError.prototype;
+  {
+    const realGetOwnPropDesc = Object.getOwnPropertyDescriptor;
+    const bootRt = (0, eval)(runtimeSrc);
+    let tempPrepareCalls = 0;
+    try {
+      globalThis.Error = EagerError;
+      Object.getOwnPropertyDescriptor = () => ({ value: 'fake' });
+      const wrapped = bootRt.core.exInfo('wrapped', null);
+      assert.equal(wrapped.stack, 'eager:wrapped');
+      globalThis.Error = RealError;
+      Object.getOwnPropertyDescriptor = realGetOwnPropDesc;
+      RealError.prepareStackTrace = (err, sites) => {
+        tempPrepareCalls++;
+        return `restored:${err.message}:${sites.length}`;
+      };
+      const restored = bootRt.core.exInfo('after-restore', null);
+      assert.equal(tempPrepareCalls, 0);
+      assert.equal(typeof realGetOwnPropDesc(restored, 'stack').get, 'function');
+      assert.ok(restored.stack.startsWith('restored:after-restore:'));
+      assert.equal(tempPrepareCalls, 1);
+    } finally {
+      globalThis.Error = RealError;
+      Object.getOwnPropertyDescriptor = realGetOwnPropDesc;
+      RealError.prepareStackTrace = prevPrepare;
+    }
+  }
+  // Simulated eager engine (own data property `stack`, like QuickJS/JSC).
   globalThis.Error = EagerError;
   try {
     const eagerRt = (0, eval)(runtimeSrc);

@@ -2793,14 +2793,79 @@ fn advanced_runtime_factory_constructs_no_error_during_startup() {
         assert.equal(errorConstructs, 0, 'runtime startup must not construct Error');
         assert.equal(prepareCalls, 0, 'runtime startup must not format stack');
         const ex = make();
-        assert.equal(errorConstructs, 1, 'first ex-info should construct exactly one Error');
+        assert.equal(errorConstructs, 2, 'first ex-info constructs its Error plus one lazyErrorStack probe');
         assert.equal(prepareCalls, 0, 'first ex-info should defer stack formatting');
+        const ex2 = make();
+        assert.equal(errorConstructs, 3, 'subsequent ex-info reuses cached probe');
+        assert.equal(prepareCalls, 0, 'second ex-info should defer stack formatting');
         assert.ok(ex instanceof RealError);
+        assert.ok(ex2 instanceof RealError);
         assert.ok(ex.stack.startsWith('formatted:boom:'));
         assert.equal(prepareCalls, 1);
         console.log('ok');
       }} finally {{
         globalThis.Error = RealError;
+        RealError.prepareStackTrace = prevPrepare;
+      }}
+    "#
+        )),
+        "ok\n"
+    );
+}
+
+#[test]
+fn exception_stack_probe_ignores_temporary_error_override() {
+    use light_cljs::{ApplicationOptions, OptimizationLevel, analyze, parse, prepare_application};
+    let source = r#"
+        (fn [msg] (ex-info msg {:k 1}))
+    "#;
+    let parsed = parse(source).unwrap();
+    let analyzed = analyze(source, &parsed).unwrap();
+    let advanced = prepare_application(
+        &analyzed,
+        ApplicationOptions::new(OptimizationLevel::Advanced),
+    )
+    .emit_js();
+    assert_eq!(
+        node(&format!(
+            r#"
+      const assert = require('node:assert/strict');
+      const RealError = globalThis.Error;
+      const realGetOwnPropDesc = Object.getOwnPropertyDescriptor;
+      const prevPrepare = RealError.prepareStackTrace;
+      const make = ({advanced});
+      function EagerError(msg) {{
+        const err = new RealError(msg);
+        Object.defineProperty(err, 'stack', {{
+          value: `eager:${{String(msg)}}`,
+          writable: true,
+          enumerable: false,
+          configurable: true,
+        }});
+        return err;
+      }}
+      EagerError.prototype = RealError.prototype;
+      let prepareCalls = 0;
+      try {{
+        globalThis.Error = EagerError;
+        Object.getOwnPropertyDescriptor = () => ({{ value: 'fake' }});
+        const wrapped = make('wrapped');
+        assert.equal(wrapped.stack, 'eager:wrapped');
+        globalThis.Error = RealError;
+        Object.getOwnPropertyDescriptor = realGetOwnPropDesc;
+        RealError.prepareStackTrace = (err, sites) => {{
+          prepareCalls++;
+          return `formatted:${{err.message}}:${{sites.length}}`;
+        }};
+        const restored = make('after-restore');
+        assert.equal(prepareCalls, 0, 'temporary Error override must not disable lazy stack mode');
+        assert.equal(typeof realGetOwnPropDesc(restored, 'stack').get, 'function');
+        assert.ok(restored.stack.startsWith('formatted:after-restore:'));
+        assert.equal(prepareCalls, 1);
+        console.log('ok');
+      }} finally {{
+        globalThis.Error = RealError;
+        Object.getOwnPropertyDescriptor = realGetOwnPropDesc;
         RealError.prepareStackTrace = prevPrepare;
       }}
     "#

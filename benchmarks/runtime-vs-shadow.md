@@ -6503,23 +6503,23 @@ Standalone gzip growth slightly above 0.5% on `simple` (+0.69%) and `todomvc` (+
 
 ## 2026-11-24: defer lazyErrorStack probe to first ExceptionInfo construction (light-cljs-1121)
 
-Measured on `master` `54c3ce59` (`light-cljs-base-54c3ce59`, SHA-256 `518d4a03cb85c5ed...`), pre-regression `4d8d02d5` (`light-cljs-4d8d02d5`, SHA-256 `c83ad3079129f3a4...`), and the fix (`debef950`, same `:advanced` output as `light-cljs-after`, SHA-256 `df3214808ebb62ff...`) against shadow-cljs 3.5.3 (Headless Chromium 156.0.8078.4, esbuild 0.25.10, Node v26.12.1, Apple M3 Ultra VM, 24 CPUs, 32 GiB; unreserved, compilers alternated).
+Measured on `master` `54c3ce59` (`light-cljs-base-54c3ce59`, SHA-256 `518d4a03cb85c5ed...`), pre-regression `4d8d02d5` (`light-cljs-4d8d02d5`, SHA-256 `c83ad3079129f3a4...`), and the fix (`light-cljs-after`, SHA-256 `df3214808ebb62ff...`; final sizes and CDP trace re-verified after the Sol #1 `NativeError`/`ownDescriptor` capture) against shadow-cljs 3.5.3 (Headless Chromium 156.0.8078.4, esbuild 0.25.10, Node v26.12.1, Apple M3 Ultra VM, 24 CPUs, 32 GiB; unreserved, compilers alternated).
 
-- **Change:** Replaced top-level `const lazyErrorStack = typeof Object.getOwnPropertyDescriptor(new Error(), "stack")?.get === "function";` inside the runtime factory with `let lazyErrorStack;` inside `//@unit ExceptionInfo`, populated on the first `ExceptionInfo` construction by inspecting the `new Error(message)` it already constructs (`if (lazyErrorStack === undefined) lazyErrorStack = typeof Object.getOwnPropertyDescriptor(error, "stack")?.get === "function";`), and tracked `lazyErrorStack` as per-task state in the shared-heap profile (`build.rs`, `src/js_shared_profile.js`).
+- **Change:** Replaced top-level `const lazyErrorStack = typeof Object.getOwnPropertyDescriptor(new Error(), "stack")?.get === "function";` inside the runtime factory with `let lazyErrorStack;` and boot-captured `const NativeError = Error, ownDescriptor = Object.getOwnPropertyDescriptor;` inside `//@unit ExceptionInfo`, populated on the first `ExceptionInfo` construction (`if (lazyErrorStack === undefined) lazyErrorStack = typeof ownDescriptor(new NativeError(), "stack")?.get === "function";`), and tracked `lazyErrorStack` as per-task state in the shared-heap profile (`build.rs`, `src/js_shared_profile.js`).
 
 ### TodoMVC release comparison (headless Chromium, 10 runs alternated each, unreserved)
 
 | Step | `4d8d02d5` pre-1114 ms (script ms) | `54c3ce59` before ms (script ms) | `light-cljs-1121` after ms (script ms) | shadow-cljs ms (script ms, paired w/ after) | after / shadow |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | page load to interactive | 42.20 [40.50-46.10] (21.74 [20.61-23.28]) | 64.70 [61.50-69.10] (43.93 [41.19-46.01]) | 43.05 [41.60-44.60] (21.97 [21.06-22.74]) | 35.30 [33.70-64.30] (14.86 [14.15-26.91]) | 1.22 |
-| add 1,000 todos | 789.65 [768.50-818.40] (743.74) | 772.80 [753.80-785.20] (729.44) | 776.80 [758.10-788.70] (733.77) | 956.20 [926.00-966.80] (907.47) | 0.81 |
-| toggle all | 47.40 [43.80-60.80] (26.94) | 46.75 [42.40-54.20] (23.13) | 47.55 [43.30-53.20] (23.48) | 48.20 [40.00-54.10] (21.50) | 0.99 |
-| edit one in 1,000 | 62.10 [55.80-69.40] (8.55) | 60.70 [57.50-63.70] (8.21) | 61.95 [58.30-64.00] (8.36) | 61.30 [58.40-70.10] (7.78) | 1.01 |
-| clear completed | 25.65 [24.40-27.20] (7.94) | 25.65 [24.00-27.90] (7.30) | 25.45 [24.60-27.20] (7.28) | 25.40 [23.50-26.40] (7.52) | 1.00 |
+| add 1,000 todos | 789.65 [768.50-818.40] (743.74 [725.63-756.85]) | 772.80 [753.80-785.20] (729.44 [710.83-741.61]) | 776.80 [758.10-788.70] (733.77 [716.33-746.86]) | 956.20 [926.00-966.80] (907.47 [884.32-923.86]) | 0.81 |
+| toggle all | 47.40 [43.80-60.80] (26.94 [24.55-27.95]) | 46.75 [42.40-54.20] (23.13 [22.36-24.49]) | 47.55 [43.30-53.20] (23.48 [22.40-26.33]) | 48.20 [40.00-54.10] (21.50 [20.83-22.73]) | 0.99 |
+| edit one in 1,000 | 62.10 [55.80-69.40] (8.55 [8.30-9.17]) | 60.70 [57.50-63.70] (8.21 [7.48-8.48]) | 61.95 [58.30-64.00] (8.36 [7.71-8.93]) | 61.30 [58.40-70.10] (7.78 [7.48-9.11]) | 1.01 |
+| clear completed | 25.65 [24.40-27.20] (7.94 [7.21-8.18]) | 25.65 [24.00-27.90] (7.30 [6.88-8.19]) | 25.45 [24.60-27.20] (7.28 [6.62-8.43]) | 25.40 [23.50-26.40] (7.52 [6.91-7.95]) | 1.00 |
 | whole run wall s | 1.36 [1.31-1.43] | 1.36 [1.32-1.39] | 1.34 [1.31-1.35] | 1.52 [1.47-1.86] | 0.88 |
 | 1-min load before | 5.38-5.82 | 5.46-5.77 | 6.37-6.57 | 6.37-6.57 | |
 
-Paired shadow-cljs medians were `34.90 ms` (`14.95 ms` script) with `4d8d02d5`, `34.10 ms` (`14.30 ms` script) with `54c3ce59`, and `35.30 ms` (`14.86 ms` script) with `after`. Deferring `lazyErrorStack` recovers `-21.65 ms` of page load (`-21.96 ms` script), restoring the `1.22x` ratio of pre-1114 `4d8d02d5` (`1.21x`).
+Paired shadow-cljs medians (with ranges) were `34.90 [32.90-66.50] ms` (`14.95 [14.12-26.06] ms` script) with `4d8d02d5`, `34.10 [32.70-61.10] ms` (`14.30 [13.86-24.99] ms` script) with `54c3ce59`, and `35.30 [33.70-64.30] ms` (`14.86 [14.15-26.91] ms` script) with `after`. Deferring `lazyErrorStack` recovers `-21.65 ms` of page load (`-21.96 ms` script), restoring the `1.22x` ratio of pre-1114 `4d8d02d5` (`1.21x`).
 
 ### CDP V8 trace and first post-load `ex-info` check
 
@@ -6534,7 +6534,7 @@ Paired shadow-cljs medians were `34.90 ms` (`14.95 ms` script) with `4d8d02d5`, 
 
 ### Generated workload, 200k lines (10 runs alternated, unreserved)
 
-- **Before (`54c3ce59`, load 4.48-4.89):** 1-iter first output `0.318 s (0.315-0.345)` / wall `0.322 s (0.319-0.349)` vs shadow `0.306 s` / `0.309 s` (`1.04x`); 10-iter wall `0.591 s (0.580-0.627)` vs `0.581 s` (`1.02x`); 40-iter wall `1.259 s (1.215-1.323)` vs `1.233 s` (`1.02x`); steady state `24.0 vs 23.7 ms/iter (1.01x)`.
+- **Before (`54c3ce59`, load 4.48-4.89):** 1-iter first output `0.318 s (0.315-0.345)` / wall `0.322 s (0.319-0.349)` vs shadow `0.306 s (0.298-0.314)` / `0.309 s (0.302-0.318)` (`1.04x`); 10-iter wall `0.591 s (0.580-0.627)` vs shadow `0.581 s (0.569-0.606)` (`1.02x`); 40-iter wall `1.259 s (1.215-1.323)` vs shadow `1.233 s (1.214-1.321)` (`1.02x`); steady state `24.0 vs 23.7 ms/iter (1.01x)`.
 - **After (`light-cljs-1121`, load 5.41-5.94):**
 
 | Iterations | Compiler | First output | Wall time | User CPU | System CPU | Peak memory | 1-minute load before |
@@ -6550,7 +6550,7 @@ Steady state (1- and 40-iter medians): **25.1 vs 26.3 ms/iter (0.95x shadow)**; 
 
 ### Generated workload, 800k lines (10 runs alternated, unreserved)
 
-- **Before (`54c3ce59`, load 4.76-5.92):** 1-iter first output `1.050 s (0.999-1.190)` / wall `1.059 s (1.008-1.200)` vs shadow `1.043 s` / `1.051 s` (`1.01x`); 4-iter wall `1.409 s (1.382-1.458)` vs `1.390 s` (`1.01x`); 16-iter wall `2.666 s (2.622-2.796)` vs `2.714 s` (`0.98x`); steady state `107.2 vs 110.8 ms/iter (0.97x)`.
+- **Before (`54c3ce59`, load 4.76-5.92):** 1-iter first output `1.050 s (0.999-1.190)` / wall `1.059 s (1.008-1.200)` vs shadow `1.043 s (0.987-1.077)` / `1.051 s (0.995-1.086)` (`1.01x`); 4-iter wall `1.409 s (1.382-1.458)` vs shadow `1.390 s (1.355-1.423)` (`1.01x`); 16-iter wall `2.666 s (2.622-2.796)` vs shadow `2.714 s (2.651-2.825)` (`0.98x`); steady state `107.2 vs 110.8 ms/iter (0.97x)`.
 - **After (`light-cljs-1121`, load 5.07-5.88):**
 
 | Iterations | Compiler | First output | Wall time | User CPU | System CPU | Peak memory | 1-minute load before |
@@ -6568,12 +6568,12 @@ Steady state (1- and 16-iter medians): **110.3 vs 114.0 ms/iter (0.97x shadow)**
 
 - **Core-ops gate:** `benchmarks/core-ops` omits `ExceptionInfo`; `core-ops.main.js` is byte-for-byte identical (`SHA-256 071edb48f0f004ede5e93bba3f31a4f485409677abdc401fe61afa73b8ccd2a3`).
 - **Browser checks (`bb benchmarks/re-frame.bb browser --compiler light`):** `todomvc` 10/10 pass, `simple` 4/4 pass, `flow` 2/2 pass.
-- **Sizes (`bb benchmarks/re-frame.bb size --light-only`):**
+- **Sizes (`bb benchmarks/re-frame.bb size --light-only`, final build after Sol #1):**
 
 | App | Before raw (without React) | After raw (without React) | Before gzip -9 | After gzip -9 | gzip delta (without React) | Whole bundle gzip -9 (+esbuild) |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `simple` | 281,807 | 281,818 (+11) | 75,824 | 75,827 | +3 B (+0.00%) | 121,936 -> 121,952 (+16 B, +0.01%) |
-| `todomvc` | 398,850 | 398,861 (+11) | 106,106 | 106,123 | +17 B (+0.02%) | 154,085 -> 154,090 (+5 B, +0.00%) |
-| `flow` | 1,260,929 | 1,260,940 (+11) | 293,516 | 293,529 | +13 B (+0.00%) | 346,662 -> 346,622 (-40 B, -0.01%) |
+| `simple` | 281,807 | 281,844 (+37) | 75,824 | 75,836 | +12 B (+0.02%) | 121,936 -> 121,951 (+15 B, +0.01%) |
+| `todomvc` | 398,850 | 398,887 (+37) | 106,106 | 106,131 | +25 B (+0.02%) | 154,085 -> 154,102 (+17 B, +0.01%) |
+| `flow` | 1,260,929 | 1,260,966 (+37) | 293,516 | 293,543 | +27 B (+0.01%) | 346,662 -> 346,723 (+61 B, +0.02%) |
 
-No size ratchet or chunk ceiling moved (`tests/support/ratchet_fixtures.rs`, `tests/compiler/chunks.rs` all pass unchanged).
+No `:advanced` fixture or chunk ceiling moved (`tests/compiler/chunks.rs` unchanged); 3 none/prepare ceilings in `tests/support/ratchet_fixtures.rs` (`rest-fn`, `pure-defs` prepare, `extended-classes`) moved up 1,000 bytes for the +36 readable bytes of boot-captured `NativeError` and `ownDescriptor`.
