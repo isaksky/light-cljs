@@ -10,13 +10,13 @@ fn program(source: &str) -> light_cljs::Program {
 }
 fn both(source: &str, expected: &str) {
     let p = program(source);
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(
             e.print(e.evaluate(&p).unwrap()).unwrap(),
             expected,
-            "QuickJS: {source}"
+            "embedded engine: {source}"
         );
     }
     let script = format!(
@@ -104,7 +104,7 @@ fn state_and_captures_survive_collection_and_failed_reentrant_completion() {
       aa = a(aa, 2); bb = b(bb);
       return c.vector(c.first(c.first(aa))(), c.nth(c.first(aa), 1), bb);
     })()"#;
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(
@@ -128,8 +128,8 @@ fn state_and_captures_survive_collection_and_failed_reentrant_completion() {
     );
 }
 
-// Cancellation of the QuickJS evaluator is the subject.
-#[cfg(feature = "quickjs")]
+// Cancellation of the embedded evaluator is the subject.
+#[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn cancellation_at_each_boundary_stops_exactly_and_keeps_session_terminal() {
     use std::sync::{Arc, Mutex};

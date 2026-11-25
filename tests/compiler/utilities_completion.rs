@@ -5,13 +5,13 @@ use light_cljs::{MacroHost, analyze_with_macros, emitter::emit_js_unit, parse};
 fn both(source: &str, expected: &str) {
     let p = analyze_with_macros(source, &parse(source).unwrap(), &mut MacroHost::new())
         .unwrap_or_else(|e| panic!("{source}: {e}"));
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(
             e.print(e.evaluate(&p).unwrap()).unwrap(),
             expected,
-            "QuickJS: {source}"
+            "embedded engine: {source}"
         );
     }
     assert_eq!(
@@ -152,7 +152,7 @@ fn seeded_number_parse_roundtrips_cover_one_hundred_thousand_inputs_in_both_phas
 }
 
 /// Complete sources in both compiler phases and both host lifecycles, each run in
-/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+/// the embedded engine and Node (see `tests/support/phase_oracle.rs`).
 mod phase_oracles {
     use crate::phase_oracle::{Case, run};
 

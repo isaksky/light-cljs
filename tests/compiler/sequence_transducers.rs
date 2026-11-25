@@ -68,7 +68,7 @@ fn node(script: &str) -> String {
 }
 
 #[test]
-fn lazy_sequence_values_effects_and_errors_match_in_quickjs_and_node() {
+fn lazy_sequence_values_effects_and_errors_match_in_embedded_and_node() {
     let cases = cases();
     let mut failures = Vec::new();
     for group in cases.chunks(8) {
@@ -83,7 +83,7 @@ fn lazy_sequence_values_effects_and_errors_match_in_quickjs_and_node() {
             let javascript =
                 compile(case.source).unwrap_or_else(|error| panic!("{}: {error}", case.id));
             // Each case receives its own runtime and reducer instances in both engines.
-            #[cfg(feature = "quickjs")]
+            #[cfg(any(light_v8, light_quickjs))]
             {
                 let evaluator = Evaluator::new(EvaluatorOptions {
                     timeout: Duration::from_secs(60),
@@ -95,7 +95,7 @@ fn lazy_sequence_values_effects_and_errors_match_in_quickjs_and_node() {
                     .and_then(|value| evaluator.string(value));
                 if actual.as_deref() != Ok(expected) {
                     failures.push(format!(
-                        "QuickJS {}: expected {}, got {:?}",
+                        "embedded engine {}: expected {}, got {:?}",
                         case.id, expected, actual
                     ));
                 }

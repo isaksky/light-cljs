@@ -3,7 +3,7 @@
 //! (light-cljs-260), which `src/compiler_core_macros.cljs` expands as
 //! `cljs/core.cljc` of the pinned checkout and of the 1.12.134 release do.
 //!
-//! Every program runs at every optimization level in Node and in QuickJS and
+//! Every program runs at every optimization level in Node and in the embedded engine and
 //! must give what ClojureScript 1.12.134 gave for the same source, compiled by
 //! `cljs.main -t node` with `:static-fns false` and run on Node 24 (October
 //! 14, 2026). `time` reads `system-time`, which both compilers take from
@@ -11,8 +11,10 @@
 //! advances 2.25 ms per read; `simple-benchmark` reads `Date`, so the programs
 //! replace its millisecond count with `N`.
 use super::optimization::execute;
+#[cfg(any(light_v8, light_quickjs))]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{ApplicationOptions, OptimizationLevel, analyze, parse, prepare_application};
+#[cfg(any(light_v8, light_quickjs))]
 use std::time::Duration;
 
 /// A `performance.now` that reads 12.25, 14.5, ... (2.25 ms per read).
@@ -20,9 +22,9 @@ const CLOCK: &str = r#"(set! (.-performance js/globalThis)
   (js-obj "now" (let [t (atom 10)] (fn [] (swap! t + 2.25)))))"#;
 
 /// The value of the JavaScript string expression `expression` in a fresh
-/// QuickJS evaluator.
-#[cfg(feature = "quickjs")]
-fn quickjs(expression: &str) -> String {
+/// embedded evaluator.
+#[cfg(any(light_v8, light_quickjs))]
+fn embedded(expression: &str) -> String {
     let evaluator = Evaluator::new(EvaluatorOptions {
         memory_limit: 1 << 30,
         timeout: Duration::from_secs(60),
@@ -36,7 +38,7 @@ fn quickjs(expression: &str) -> String {
 }
 
 /// The program, whose value is a string, gives `expected` at every level in
-/// Node and in QuickJS; returns the output of each level.
+/// Node and in the embedded engine; returns the output of each level.
 fn every_level(source: &str, expected: &str) -> Vec<String> {
     let program = analyze(source, &parse(source).unwrap())
         .unwrap_or_else(|error| panic!("{source}\n{error}"));
@@ -49,8 +51,12 @@ fn every_level(source: &str, expected: &str) -> Vec<String> {
                 format!("{expected}\n"),
                 "Node at {level}: {source}"
             );
-            #[cfg(feature = "quickjs")]
-            assert_eq!(quickjs(&js), expected, "QuickJS at {level}: {source}");
+            #[cfg(any(light_v8, light_quickjs))]
+            assert_eq!(
+                embedded(&js),
+                expected,
+                "embedded engine at {level}: {source}"
+            );
             js
         })
         .collect()

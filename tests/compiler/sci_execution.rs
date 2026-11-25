@@ -20,8 +20,8 @@ fn unhex(text: &str) -> String {
 }
 
 #[test]
-#[ignore = "explicit source-pinned SCI Node/QuickJS audit; Python checks every observation"]
-fn retained_sci_sources_execute_in_node_and_quickjs() {
+#[ignore = "explicit source-pinned SCI Node/embedded engine audit; Python checks every observation"]
+fn retained_sci_sources_execute_in_node_and_embedded() {
     let input = std::env::var("LIGHT_CLJS_SCI_EXECUTION_INPUT").expect("catalog TSV input");
     let output = std::env::var("LIGHT_CLJS_SCI_EXECUTION_OUTPUT").expect("raw output TSV");
     let rows = fs::read_to_string(input).unwrap();
@@ -83,25 +83,20 @@ fn retained_sci_sources_execute_in_node_and_quickjs() {
                 String::from_utf8_lossy(&result.stderr).replace(['\n', '\t'], " ")
             )
         };
-        #[cfg(feature = "quickjs")]
+        #[cfg(any(light_v8, light_quickjs))]
         {
-            let runtime = rquickjs::Runtime::new().unwrap();
-            runtime.set_memory_limit(128 * 1024 * 1024);
-            runtime.set_max_stack_size(4 * 1024 * 1024);
-            let context = rquickjs::Context::full(&runtime).unwrap();
-            let quickjs = context.with(|ctx| match ctx.eval::<String, _>(script.as_bytes()) {
+            let context = crate::embedded_js::EmbeddedJs::new();
+            let embedded = match context.string(&script) {
                 Ok(value) => value,
-                Err(error) => {
-                    format!("HARNESS:{error:?}: {:?}", ctx.catch()).replace(['\n', '\t'], " ")
-                }
-            });
-            writeln!(observations, "{id}\texecuted\t{node}\t{quickjs}").unwrap();
+                Err(error) => format!("HARNESS:{error:?}").replace(['\n', '\t'], " "),
+            };
+            writeln!(observations, "{id}\texecuted\t{node}\t{embedded}").unwrap();
         }
-        #[cfg(not(feature = "quickjs"))]
+        #[cfg(not(any(light_v8, light_quickjs)))]
         writeln!(observations, "{id}\texecuted\t{node}").unwrap();
         count += 1;
         if count % 100 == 0 {
-            eprintln!("SCI Node/QuickJS raw observations: {count}");
+            eprintln!("SCI Node/embedded engine raw observations: {count}");
         }
     }
     assert!(count > 0, "zero source executions");

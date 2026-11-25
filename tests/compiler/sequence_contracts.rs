@@ -8,7 +8,7 @@ fn program(source: &str) -> light_cljs::Program {
 }
 fn both(source: &str, expected: &str) {
     let p = program(source);
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(e.print(e.evaluate(&p).unwrap()).unwrap(), expected);
@@ -69,8 +69,8 @@ fn user_iterators_and_callable_transforms_preserve_source_order() {
     );
 }
 
-// Cancellation of the QuickJS evaluator is the subject.
-#[cfg(feature = "quickjs")]
+// Cancellation of the embedded evaluator is the subject.
+#[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn cancellation_in_sequence_construction_demand_and_completion_is_terminal() {
     use std::sync::{Arc, Mutex};
@@ -113,8 +113,8 @@ fn cancellation_in_sequence_construction_demand_and_completion_is_terminal() {
     }
 }
 
-// The QuickJS evaluator's heap retention is the subject.
-#[cfg(feature = "quickjs")]
+// The embedded evaluator's heap retention is the subject.
+#[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn abandoned_prefixes_and_reducer_cycles_are_collected_in_both_engines() {
     let batch = r#"(() => {
@@ -132,20 +132,24 @@ fn abandoned_prefixes_and_reducer_cycles_are_collected_in_both_engines() {
       }
       gc(); return 42;
     })()"#;
-    let e = light_cljs::evaluator::QuickJsEvaluator::new(EvaluatorOptions {
-        memory_limit: 8 * 1024 * 1024,
+    let e = Evaluator::new(EvaluatorOptions {
+        memory_limit: 16 << 20,
         timeout: std::time::Duration::from_secs(60),
         ..EvaluatorOptions::default()
     })
     .unwrap();
     e.install_gc_callback("gc").unwrap();
-    e.collect_garbage();
-    let before = e.memory_usage_bytes();
-    for _ in 0..3 {
+    let run_batch = || {
         let result = e.evaluate_js(batch).unwrap();
         assert_eq!(e.number(result).unwrap(), 42.0);
         e.release(result).unwrap();
         e.collect_garbage();
+    };
+    // Warm the V8 code paths before measuring retained heap across batches.
+    run_batch();
+    let before = e.memory_usage_bytes();
+    for _ in 0..3 {
+        run_batch();
         let after = e.memory_usage_bytes();
         assert!(
             after < before + 128 * 1024,

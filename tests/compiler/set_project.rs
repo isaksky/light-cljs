@@ -22,7 +22,7 @@ fn compile(
 
 fn both(host: &mut MacroHost, source: &str, expected: &str) {
     let js = compile(host, source).unwrap_or_else(|e| panic!("{e}"));
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(
@@ -57,7 +57,7 @@ fn both(host: &mut MacroHost, source: &str, expected: &str) {
         String::from_utf8(output.stdout).unwrap(),
         format!("{expected}\n")
     );
-    eprintln!("Node/QuickJS literal: {expected}");
+    eprintln!("Node/embedded engine literal: {expected}");
     assert!(output.stderr.is_empty());
 }
 

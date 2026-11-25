@@ -19,8 +19,8 @@
 //! runs a longer stress.
 //!
 //! The hook exists in debug builds only (`main.rs` leaves this suite out
-//! of release test builds). QuickJS-only builds run it on their pool of
-//! QuickJS runtimes (light-cljs-436).
+//! of release test builds). embedded engine-only builds run it on their pool of
+//! embedded engine runtimes (light-cljs-436).
 use crate::macro_free_units::{Built, Sources, build_configured, execute};
 use light_cljs::MacroHost;
 use light_cljs::scheduler::{Limits, Perturbation};
@@ -628,7 +628,7 @@ fn a_cross_worker_cycle_fails_the_build_at_the_same_unit_under_any_schedule() {
             .unwrap_or((error, ""));
         let path = rest
             .split_once("compile dependency cycle: ")
-            // QuickJS follows a message with the JavaScript stack, on the
+            // embedded engine follows a message with the JavaScript stack, on the
             // next lines.
             .map_or("", |(_, path)| path.split([';', '\n']).next().unwrap_or(""));
         // A cycle met on one thread's stack is printed with the demands
@@ -652,7 +652,7 @@ fn a_cross_worker_cycle_fails_the_build_at_the_same_unit_under_any_schedule() {
 }
 
 // Retires a per-worker engine isolate.
-#[cfg(any(feature = "quickjs", feature = "v8-macros"))]
+#[cfg(any(light_v8, light_quickjs))]
 /// A Rust panic inside `__lightCompileUnit`, the callback a running
 /// macro's nested demand enters, fails the unit whose macro ran, in
 /// whichever isolate ran it: the build fails with the one-slot error at
@@ -711,7 +711,7 @@ fn retired_for_some_seed(fixture: &Fixture, base: &Perturbation) {
 const HOG: &str = "(ns app.m) (defmacro hog [mb] (let [keep #js []] (dotimes [_ mb] (.push keep (.fill (js/Array. 131072) 1.5))) (.-length keep)))";
 
 // Retires a per-worker engine isolate.
-#[cfg(any(feature = "quickjs", feature = "v8-macros"))]
+#[cfg(any(light_v8, light_quickjs))]
 /// An isolate that runs out of memory is retired: the unit fails as with
 /// one slot, and a unit after it gets a new isolate.
 #[test]

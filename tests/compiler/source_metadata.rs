@@ -9,7 +9,7 @@ use light_cljs::{
 use std::process::Command;
 fn both(source: &str, host: &mut MacroHost, expected: &str) {
     let p = analyze_with_macros(source, &parse(source).unwrap(), host).unwrap();
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(e.print(e.evaluate(&p).unwrap()).unwrap(), expected);
@@ -56,8 +56,8 @@ fn reserved_metadata_and_macro_definitions_keep_source_sites_in_both_engines() {
         "[\"cljs.user\" 2]",
     );
 }
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+// Exercises the embedded engine through EvalSession.
+#[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn incremental_files_errors_and_fresh_sessions_preserve_source_identity() {
     let mut session = EvalSession::new(EvalOptions::default()).unwrap();
@@ -114,7 +114,7 @@ fn ordinary_namespace_files_and_macro_generated_definitions_keep_paths() {
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/source-metadata");
     let js = light_cljs::compile_namespace("metadata.main", std::slice::from_ref(&root)).unwrap();
     let expected = "true";
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(e.print(e.evaluate_js(&js).unwrap()).unwrap(), expected);

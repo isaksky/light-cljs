@@ -17,13 +17,13 @@ use std::{
 fn both(source: &str, expected: &str) {
     let mut host = MacroHost::new();
     let p = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(
             e.print(e.evaluate(&p).unwrap()).unwrap(),
             expected,
-            "QuickJS: {source}"
+            "embedded engine: {source}"
         );
     }
     let script = format!(
@@ -1328,7 +1328,7 @@ fn advanced_into_set_uses_direct_transient_set_path() {
 }
 
 /// Complete sources in both compiler phases and both host lifecycles, each run in
-/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+/// the embedded engine and Node (see `tests/support/phase_oracle.rs`).
 mod phase_oracles {
     use crate::phase_oracle::{Case, run};
 

@@ -44,15 +44,13 @@ fn original_closure_and_ownership_controls() {
                     let expected = if name == "explicit-global-control" { r#"{"$vector":[2,99,true]}"# } else { "40" };
                     let captured = javascript.replacen(" = // Original bounded runtime", " = globalThis.lightRuntime = // Original bounded runtime", 1);
                     let script = format!("(() => {{ const run = {captured}; return ({}) (globalThis.lightRuntime)('control',observe=>run(observe)); }})()", include_str!("../support/sci_execution_observation.js"));
-                    #[cfg(feature = "quickjs")]
-                    let runtime = rquickjs::Runtime::new().unwrap();
-                    #[cfg(feature = "quickjs")]
-                    let context = rquickjs::Context::full(&runtime).unwrap();
-                    #[cfg(feature = "quickjs")]
-                    let observation = context.with(|ctx| ctx.eval::<String, _>(script.as_bytes()).unwrap());
-                    #[cfg(feature = "quickjs")]
-                    fs::write(directory.join("quickjs.json"), &observation).unwrap();
-                    #[cfg(feature = "quickjs")]
+                    #[cfg(any(light_v8, light_quickjs))]
+                    let context = crate::embedded_js::EmbeddedJs::new();
+                    #[cfg(any(light_v8, light_quickjs))]
+                    let observation = context.string(&script).unwrap();
+                    #[cfg(any(light_v8, light_quickjs))]
+                    fs::write(directory.join("embedded.json"), &observation).unwrap();
+                    #[cfg(any(light_v8, light_quickjs))]
                     assert!(observation.contains(&format!("\"value\":{expected}")), "{variant}: {observation}");
                     use std::{io::Write, process::{Command, Stdio}};
                     let mut node = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into())).arg("-").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
@@ -63,9 +61,9 @@ fn original_closure_and_ownership_controls() {
                     assert!(result.status.success() && result.stderr.is_empty());
                     let node_observation = String::from_utf8(result.stdout).unwrap();
                     assert!(node_observation.contains(&format!("\"value\":{expected}")), "{variant}: {node_observation}");
-                    #[cfg(feature = "quickjs")]
+                    #[cfg(any(light_v8, light_quickjs))]
                     assert_eq!(node_observation.trim(), observation);
-                    println!("{variant}: actual MacroHost then Node/QuickJS observed {expected}");
+                    println!("{variant}: actual MacroHost then Node/embedded engine observed {expected}");
                 }
                 (Err(error), None) => panic!("{variant}: unexpected {error}"),
                 (Ok(_), Some(expected)) => panic!("{variant}: lost rejection {expected}"),

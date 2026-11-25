@@ -73,14 +73,19 @@ fn literal(identity: &str) {
         let parsed = parse(&observed_source).unwrap();
         let program =
             analyze_with_macros(&observed_source, &parsed, &mut MacroHost::new()).unwrap();
-        #[cfg(feature = "quickjs")]
+        #[cfg(any(light_v8, light_quickjs))]
         {
             let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
             let actual = evaluator
                 .string(evaluator.evaluate(&program).unwrap())
                 .unwrap();
-            println!("syntax-observation\t{identity}\tmacro={macro_phase}\tQuickJS\t{actual}");
-            assert_eq!(actual, expected, "{identity} macro={macro_phase} QuickJS");
+            println!(
+                "syntax-observation\t{identity}\tmacro={macro_phase}\tembedded engine\t{actual}"
+            );
+            assert_eq!(
+                actual, expected,
+                "{identity} macro={macro_phase} embedded engine"
+            );
         }
         let script = format!(
             "const rt = {RUNTIME_SOURCE}; console.log(({})(rt));",
@@ -145,14 +150,14 @@ fn syntax_namespace_context_executes_with_actual_macro_environment() {
             &mut MacroHost::new(),
         )
         .unwrap();
-        #[cfg(feature = "quickjs")]
+        #[cfg(any(light_v8, light_quickjs))]
         {
             let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
             let actual = evaluator
                 .string(evaluator.evaluate_js(&javascript).unwrap())
                 .unwrap();
             println!(
-                "syntax-observation\tnamespace-header-context\tmacro={macro_phase}\tQuickJS\t{actual}"
+                "syntax-observation\tnamespace-header-context\tmacro={macro_phase}\tembedded engine\t{actual}"
             );
             assert_eq!(actual, "true");
         }
@@ -191,13 +196,13 @@ fn syntax_raw_nsstar_alias_executes_in_fresh_and_reused_macro_hosts() {
                     host,
                 )
                 .unwrap();
-                #[cfg(feature = "quickjs")]
+                #[cfg(any(light_v8, light_quickjs))]
                 {
                     let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
                     let actual = evaluator
                         .string(evaluator.evaluate_js(&javascript).unwrap())
                         .unwrap();
-                    assert_eq!(actual, "true", "ns* macro={macro_phase} QuickJS");
+                    assert_eq!(actual, "true", "ns* macro={macro_phase} embedded engine");
                 }
                 assert_eq!(
                     node(&format!("console.log({javascript});")),
@@ -327,7 +332,7 @@ fn raw_nsstar_imports_keep_ordinary_cljs_macro_and_definition_ownership() {
                 host,
             )
             .unwrap();
-            #[cfg(feature = "quickjs")]
+            #[cfg(any(light_v8, light_quickjs))]
             {
                 let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
                 assert_eq!(

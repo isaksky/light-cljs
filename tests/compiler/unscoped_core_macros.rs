@@ -509,8 +509,7 @@ fn rejected_core_macro_calls_report_the_definitions_errors() {
 }
 
 /// `error` without the stack the QuickJS reference adds to an engine error
-/// (`    at call (...)` lines before `; definition`), which the V8 and Pants
-/// builds do not give.
+/// (`    at call (...)` lines before `; definition`).
 fn without_stack(error: &str) -> String {
     error
         .split('\n')

@@ -21,22 +21,16 @@ fn unhex(s: &str) -> String {
     )
     .unwrap()
 }
-// QuickJS's entry, in builds that embed it, comes before Node's.
+// The embedded engine's entry comes before Node's when available.
 #[allow(clippy::vec_init_then_push)]
 fn execute(script: &str) -> Vec<(String, String)> {
-    #[cfg(feature = "quickjs")]
-    let rt = rquickjs::Runtime::new().unwrap();
-    #[cfg(feature = "quickjs")]
-    rt.set_memory_limit(128 * 1024 * 1024);
-    #[cfg(feature = "quickjs")]
-    rt.set_max_stack_size(4 * 1024 * 1024);
-    #[cfg(feature = "quickjs")]
-    let context = rquickjs::Context::full(&rt).unwrap();
-    #[cfg(feature = "quickjs")]
-    let quickjs = context.with(|ctx| match ctx.eval::<String, _>(script.as_bytes()) {
+    #[cfg(any(light_v8, light_quickjs))]
+    let context = crate::embedded_js::EmbeddedJs::new();
+    #[cfg(any(light_v8, light_quickjs))]
+    let embedded = match context.string(script) {
         Ok(s) => s,
-        Err(e) => format!("HARNESS:{e:?}:{:?}", ctx.catch()),
-    });
+        Err(e) => format!("HARNESS:{e:?}"),
+    };
     let mut node = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
         .arg("-")
         .stdin(Stdio::piped())
@@ -60,8 +54,8 @@ fn execute(script: &str) -> Vec<(String, String)> {
         )
     };
     let mut observed = Vec::new();
-    #[cfg(feature = "quickjs")]
-    observed.push(("QuickJS".into(), quickjs));
+    #[cfg(any(light_v8, light_quickjs))]
+    observed.push(("embedded engine".into(), embedded));
     observed.push(("Node".into(), node));
     observed
 }
@@ -136,7 +130,7 @@ fn unchanged_seven_sources_execute_actual_phases_and_lifecycles() {
             );
             match result {
                 Err(e) => {
-                    for engine in ["QuickJS", "Node"] {
+                    for engine in ["embedded engine", "Node"] {
                         writeln!(
                             out,
                             "{id}\t{variant}\t{engine}\trejected\t{}\t-\t{}\t{}",

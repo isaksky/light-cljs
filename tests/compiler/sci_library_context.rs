@@ -74,22 +74,16 @@ fn execute(script: &str) -> (String, String) {
             String::from_utf8_lossy(&result.stderr).replace(['\n', '\t'], " ")
         )
     };
-    #[cfg(feature = "quickjs")]
-    let runtime = rquickjs::Runtime::new().unwrap();
-    #[cfg(feature = "quickjs")]
-    runtime.set_memory_limit(128 * 1024 * 1024);
-    #[cfg(feature = "quickjs")]
-    runtime.set_max_stack_size(4 * 1024 * 1024);
-    #[cfg(feature = "quickjs")]
-    let context = rquickjs::Context::full(&runtime).unwrap();
-    #[cfg(feature = "quickjs")]
-    let quickjs = context.with(|ctx| match ctx.eval::<String, _>(script.as_bytes()) {
+    #[cfg(any(light_v8, light_quickjs))]
+    let context = crate::embedded_js::EmbeddedJs::new();
+    #[cfg(any(light_v8, light_quickjs))]
+    let embedded = match context.string(script) {
         Ok(value) => value,
-        Err(error) => format!("HARNESS:{error:?}: {:?}", ctx.catch()).replace(['\n', '\t'], " "),
-    });
-    #[cfg(not(feature = "quickjs"))]
-    let quickjs = String::new();
-    (node, quickjs)
+        Err(error) => format!("HARNESS:{error:?}").replace(['\n', '\t'], " "),
+    };
+    #[cfg(not(any(light_v8, light_quickjs)))]
+    let embedded = String::new();
+    (node, embedded)
 }
 
 fn execute_case(line: &str, root: &std::path::Path) -> String {
@@ -107,8 +101,8 @@ fn execute_case(line: &str, root: &std::path::Path) -> String {
         &root.join(fields[0]),
     ) {
         Ok(script) => {
-            let (node, quickjs) = execute(&script);
-            format!("{}\texecuted\t{node}\t{quickjs}", fields[0])
+            let (node, embedded) = execute(&script);
+            format!("{}\texecuted\t{node}\t{embedded}", fields[0])
         }
         Err(error) => format!(
             "{}\trejected\t{}",
@@ -154,10 +148,10 @@ fn library_import_fixture_preserves_values_and_callbacks_in_both_engines() {
                 let root = &root;
                 scope.spawn(move || {
                     let script = script(id, declarations, source, &root.join(id)).unwrap();
-                    let (node, quickjs) = execute(&script);
+                    let (node, embedded) = execute(&script);
                     assert_eq!(node, expected, "Node {id}");
-                    #[cfg(feature = "quickjs")]
-                    assert_eq!(quickjs, expected, "QuickJS {id}");
+                    #[cfg(any(light_v8, light_quickjs))]
+                    assert_eq!(embedded, expected, "embedded engine {id}");
                 })
             })
             .collect();
@@ -169,7 +163,7 @@ fn library_import_fixture_preserves_values_and_callbacks_in_both_engines() {
 
 #[test]
 #[ignore = "explicit complete SCI library/import original-contract audit"]
-fn retained_library_sources_execute_in_node_and_quickjs() {
+fn retained_library_sources_execute_in_node_and_embedded() {
     let input = std::env::var("LIGHT_CLJS_SCI_LIBRARY_INPUT").expect("source TSV");
     let output = std::env::var("LIGHT_CLJS_SCI_LIBRARY_OUTPUT").expect("observation TSV");
     let root = std::path::Path::new(&output)
@@ -179,7 +173,7 @@ fn retained_library_sources_execute_in_node_and_quickjs() {
     let mut out = fs::File::create(output).unwrap();
     let input = fs::read_to_string(input).unwrap();
     let lines: Vec<_> = input.lines().collect();
-    // Each worker owns a fresh MacroHost, Node process and QuickJS heap per
+    // Each worker owns a fresh MacroHost, Node process and embedded heap per
     // original case. Joining in input order preserves the raw receipt protocol.
     // A single worker is available for literal serial/parallel fixture audits.
     let workers = std::env::var("LIGHT_CLJS_SCI_LIBRARY_WORKERS")

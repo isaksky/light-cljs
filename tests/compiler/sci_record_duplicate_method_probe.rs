@@ -26,13 +26,12 @@ fn execute(javascript: &str, expected_value: &str, directory: &std::path::Path) 
     let expected = format!(
         r#"{{"id":"duplicate-method","outcome":{{"status":"returned","value":{expected_value}}},"trace":[],"stdout":""}}"#
     );
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
-        let runtime = rquickjs::Runtime::new().unwrap();
-        let context = rquickjs::Context::full(&runtime).unwrap();
-        let quickjs = context.with(|ctx| ctx.eval::<String, _>(script.as_bytes()).unwrap());
-        fs::write(directory.join("quickjs.json"), &quickjs).unwrap();
-        assert_eq!(quickjs, expected);
+        let context = crate::embedded_js::EmbeddedJs::new();
+        let embedded = context.string(&script).unwrap();
+        fs::write(directory.join("embedded.json"), &embedded).unwrap();
+        assert_eq!(embedded, expected);
     }
     let mut node = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
         .arg("-")
@@ -141,7 +140,9 @@ fn original_duplicate_method_executes_with_last_dispatch_in_both_phases() {
                 );
                 fs::write(directory.join("error.txt"), error).unwrap();
                 light_cljs::compile_with_macros("(defmacro clean [] true) (clean)", host).unwrap();
-                println!("{name}: QuickJS/Node literal result {expected}; recovery succeeded");
+                println!(
+                    "{name}: embedded engine/Node literal result {expected}; recovery succeeded"
+                );
             }
         }
     }

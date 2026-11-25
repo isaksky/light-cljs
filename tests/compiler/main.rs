@@ -4,13 +4,6 @@
 //! Run one suite with `cargo nextest run --test compiler <feature>::` or
 //! `cargo test --test compiler <feature>::`.
 
-// Some checks use QuickJS when it is available. Their supporting code can be
-// unused in builds without QuickJS.
-#![cfg_attr(
-    not(feature = "quickjs"),
-    allow(unused_imports, unused_variables, unused_mut, unused_macros, dead_code)
-)]
-
 // `row_tests!` declares one test per fixture row, row range or share of the rows.
 #[macro_use]
 #[path = "../support/row_tests.rs"]

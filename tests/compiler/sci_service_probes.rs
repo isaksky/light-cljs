@@ -2,10 +2,11 @@
 //! Original SCI source operations have matching observations on both pins.
 //! Normal tests assert standalone and macro execution; the optional audit only
 //! records hosted diagnostics and supplies no coverage by itself.
+#[cfg(any(light_v8, light_quickjs))]
 use light_cljs::{EvalOptions, EvalSession};
 
-// Observes every probe in an interactive session, which runs in QuickJS.
-#[cfg(feature = "quickjs")]
+// Observes every probe in an interactive session, which runs in the embedded engine.
+#[cfg(any(light_v8, light_quickjs))]
 #[test]
 #[ignore = "explicit SCI service/phase diagnostic; records macro failures, no gate coverage"]
 fn audit_original_sci_macroexpand_phase_services() {
@@ -80,7 +81,7 @@ fn both(source: &str, expected: &str) {
     let mut host = MacroHost::new();
     let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host)
         .unwrap_or_else(|e| panic!("{source}\n{e}"));
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let value = evaluator
@@ -152,7 +153,7 @@ fn quoted_expansion_contract_and_dynamic_host_service_are_independent() {
         "(defmacro macroexpand-1 [x] :custom) (macroexpand-1 '(let [] 1))",
         ":custom",
     );
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let mut session = EvalSession::new(EvalOptions::default()).unwrap();
         let result = session

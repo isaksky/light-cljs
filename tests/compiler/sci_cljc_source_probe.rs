@@ -22,15 +22,14 @@ fn unhex(s: &str) -> String {
 }
 fn observe(script: &str) -> Vec<(String, String)> {
     let mut observed = Vec::new();
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
-        let runtime = rquickjs::Runtime::new().unwrap();
-        let context = rquickjs::Context::full(&runtime).unwrap();
-        let quickjs = context.with(|ctx| match ctx.eval::<String, _>(script.as_bytes()) {
+        let context = crate::embedded_js::EmbeddedJs::new();
+        let embedded = match context.string(script) {
             Ok(value) => value,
-            Err(error) => format!("HARNESS_ERROR:{error:?}: {:?}", ctx.catch()),
-        });
-        observed.push(("QuickJS".into(), quickjs));
+            Err(error) => format!("HARNESS_ERROR:{error:?}"),
+        };
+        observed.push(("embedded engine".into(), embedded));
     }
     let mut child = Command::new("node")
         .arg("-")

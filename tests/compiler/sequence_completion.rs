@@ -6,13 +6,13 @@ use std::process::Command;
 fn both(source: &str, expected: &str) {
     let p = analyze_with_macros(source, &parse(source).unwrap(), &mut MacroHost::new())
         .unwrap_or_else(|e| panic!("{source}: {e}"));
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(
             e.print(e.evaluate(&p).unwrap()).unwrap(),
             expected,
-            "QuickJS: {source}"
+            "embedded engine: {source}"
         );
     }
     let script = format!(

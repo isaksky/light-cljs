@@ -1,4 +1,4 @@
-//! Compiler-owned clojure.string contracts in QuickJS, Node, and macro execution.
+//! Compiler-owned clojure.string contracts in the embedded engine, Node, and macro execution.
 use crate::temp_dir::TempDir;
 use light_cljs::{
     compile_namespace,
@@ -25,11 +25,15 @@ impl Sources {
 }
 fn check(name: &str, javascript: &str) {
     let expression = format!("JSON.stringify({javascript})");
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let value = evaluator.evaluate_js(&expression).unwrap();
-        assert_eq!(evaluator.string(value).unwrap(), "true", "QuickJS {name}");
+        assert_eq!(
+            evaluator.string(value).unwrap(),
+            "true",
+            "embedded engine {name}"
+        );
     }
     let mut child = Command::new("node")
         .args(["--max-old-space-size=96", "-"])
@@ -58,7 +62,7 @@ fn check(name: &str, javascript: &str) {
 }
 
 #[test]
-fn public_string_contracts_execute_in_quickjs_and_node() {
+fn public_string_contracts_execute_in_embedded_and_node() {
     let sources = Sources::new();
     for (name, body) in [
         (

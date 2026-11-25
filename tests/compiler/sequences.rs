@@ -121,7 +121,7 @@ fn malformed_comprehensions_are_rejected_and_transducer_constructors_are_callabl
 }
 
 /// Complete sources in both compiler phases and both host lifecycles, each run in
-/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+/// the embedded engine and Node (see `tests/support/phase_oracle.rs`).
 mod phase_oracles {
     use crate::phase_oracle::{Case, run};
 
@@ -177,7 +177,7 @@ mod phase_oracles {
         ]);
     }
 
-    /// Compares 49 iterations of up to about a thousand steps two ways; QuickJS needs
+    /// Compares 49 iterations of up to about a thousand steps two ways; embedded engine needs
     /// several seconds for each of the four programs, so this case has its own test.
     #[test]
     fn iteration_seq_equals_reduce() {

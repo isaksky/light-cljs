@@ -14,13 +14,12 @@ fn execute(unit: &str, expected: &str, directory: &Path) {
         light_cljs::evaluator::RUNTIME_SOURCE,
         unit
     );
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
-        let runtime = rquickjs::Runtime::new().unwrap();
-        let context = rquickjs::Context::full(&runtime).unwrap();
-        let quickjs = context.with(|ctx| ctx.eval::<String, _>(script.as_bytes()).unwrap());
-        fs::write(directory.join("quickjs.txt"), &quickjs).unwrap();
-        assert_eq!(quickjs, expected);
+        let context = crate::embedded_js::EmbeddedJs::new();
+        let embedded = context.string(&script).unwrap();
+        fs::write(directory.join("embedded.txt"), &embedded).unwrap();
+        assert_eq!(embedded, expected);
     }
     let mut child = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
         .arg("-")
@@ -94,7 +93,7 @@ fn watch_key_effects_execute_in_fresh_and_reused_phases() {
                     expected.to_owned()
                 };
                 execute(&unit, &literal, &directory);
-                println!("{variant}: QuickJS/Node {literal}");
+                println!("{variant}: embedded engine/Node {literal}");
             }
         }
     }

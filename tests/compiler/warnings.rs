@@ -491,7 +491,7 @@ fn deferred_warning_placeholders_reuse_later_definition_identity() {
             .count(),
         1
     );
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let evaluator = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
         assert_eq!(

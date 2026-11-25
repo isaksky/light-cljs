@@ -1,5 +1,6 @@
 //! Executable definition metadata survives ordinary and demanded macro initialization.
 use crate::temp_dir::TempDir;
+#[cfg(any(light_v8, light_quickjs))]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, compile_namespace_with_macros};
 use std::io::Write;
@@ -35,7 +36,7 @@ fn node(source: &str) -> String {
 }
 fn both(source: &str, host: &mut MacroHost, expected: &str) {
     let js = light_cljs::compile_with_macros(source, host).unwrap();
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(
@@ -60,7 +61,7 @@ fn both_namespace(namespace: &str, source: &str, host: &mut MacroHost, expected:
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, source).unwrap();
     let js = compile_namespace_with_macros(namespace, &[root.to_path_buf()], host).unwrap();
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(

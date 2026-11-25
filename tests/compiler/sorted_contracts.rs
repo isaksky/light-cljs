@@ -121,7 +121,7 @@ const CONTRACT: &str = r#"
 fn both(source: &str) {
     let mut host = MacroHost::new();
     let p = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(
@@ -162,8 +162,8 @@ fn sorted_contract_executes_in_application_and_macro_phases() {
         "(defmacro sorted-contract [] {CONTRACT}) (sorted-contract)"
     ));
 }
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+// Exercises the embedded engine through EvalSession.
+#[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn sorted_callbacks_survive_reused_sessions_and_custom_protocol_dispatch() {
     let mut session = EvalSession::new(Default::default()).unwrap();
@@ -218,7 +218,7 @@ fn sorted_membership_does_not_hash_keys() {
 }
 
 /// Complete sources in both compiler phases and both host lifecycles, each run in
-/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+/// the embedded engine and Node (see `tests/support/phase_oracle.rs`).
 mod phase_oracles {
     use crate::phase_oracle::{Case, run};
 

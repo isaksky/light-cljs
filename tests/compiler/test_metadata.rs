@@ -1,5 +1,6 @@
 //! Executable definition metadata survives ordinary and demanded macro initialization.
 use crate::temp_dir::TempDir;
+#[cfg(any(light_v8, light_quickjs))]
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, compile_namespace_with_macros};
 use std::io::Write;
@@ -82,14 +83,16 @@ fn metadata_test_original_source_passes_both_phases_and_recovers() {
             {
                 let js = compiled.unwrap();
                 std::fs::write(root.join("compiled.js"), &js).unwrap();
-                #[cfg(feature = "quickjs")]
+                #[cfg(any(light_v8, light_quickjs))]
                 {
                     let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
                     let actual = evaluator
                         .string(evaluator.evaluate_js(&js).unwrap())
                         .unwrap();
                     assert_eq!(actual, "true");
-                    println!("test-metadata-observation\t{lifecycle}\t{phase}\tQuickJS\t{actual}");
+                    println!(
+                        "test-metadata-observation\t{lifecycle}\t{phase}\tembedded engine\t{actual}"
+                    );
                 }
                 let packet = node(&format!(
                     "const source = {js:?}; const program = {program:?}; const sha = x => require('node:crypto').createHash('sha256').update(x).digest('hex'); console.log(sha(source) + '\\t' + sha(program)); console.log(String(eval(source)));"
@@ -108,14 +111,14 @@ fn metadata_test_original_source_passes_both_phases_and_recovers() {
             let js = compile_namespace_with_macros("user", std::slice::from_ref(&recovery), host)
                 .unwrap();
             std::fs::write(recovery.join("compiled.js"), &js).unwrap();
-            #[cfg(feature = "quickjs")]
+            #[cfg(any(light_v8, light_quickjs))]
             {
                 let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
                 let actual = evaluator
                     .string(evaluator.evaluate_js(&js).unwrap())
                     .unwrap();
                 assert_eq!(actual, "42");
-                println!("test-metadata-recovery\t{lifecycle}\t{phase}\tQuickJS\t{actual}");
+                println!("test-metadata-recovery\t{lifecycle}\t{phase}\tembedded engine\t{actual}");
             }
             let packet = node(&format!(
                 "const source = {js:?}; const program = {program:?}; const sha = x => require('node:crypto').createHash('sha256').update(x).digest('hex'); console.log(sha(source) + '\\t' + sha(program)); console.log(String(eval(source)));"
@@ -130,7 +133,7 @@ fn metadata_test_original_source_passes_both_phases_and_recovers() {
 
 fn both(source: &str, host: &mut MacroHost, expected: &str) {
     let js = light_cljs::compile_with_macros(source, host).unwrap();
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(

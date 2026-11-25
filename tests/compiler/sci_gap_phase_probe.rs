@@ -21,12 +21,11 @@ fn unhex(text: &str) -> String {
 }
 fn observe(script: &str) -> Vec<(String, String)> {
     let mut observed = Vec::new();
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
-        let runtime = rquickjs::Runtime::new().unwrap();
-        let context = rquickjs::Context::full(&runtime).unwrap();
-        let quickjs = context.with(|ctx| ctx.eval::<String, _>(script.as_bytes()).unwrap());
-        observed.push(("QuickJS".into(), quickjs));
+        let context = crate::embedded_js::EmbeddedJs::new();
+        let embedded = context.string(script).unwrap();
+        observed.push(("embedded engine".into(), embedded));
     }
     let mut node = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
         .arg("-")
@@ -122,8 +121,12 @@ fn original_gap_sources_execute_through_actual_macro_hosts() {
     }
     assert!(!input.is_empty());
     // Two lifecycles times two phases, observed by Node and, in builds that
-    // embed it, QuickJS.
-    let engines = if cfg!(feature = "quickjs") { 2 } else { 1 };
+    // embed it, embedded engine.
+    let engines = if cfg!(any(light_v8, light_quickjs)) {
+        2
+    } else {
+        1
+    };
     assert_eq!(input.lines().count() * 4 * engines, count);
     output.flush().unwrap();
 }

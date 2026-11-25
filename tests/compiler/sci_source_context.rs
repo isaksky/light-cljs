@@ -1,5 +1,5 @@
 //! Original source positions and an explicit SCI user namespace, with source
-//! declarations compiled before application execution in fresh Node/QuickJS heaps.
+//! declarations compiled before application execution in fresh Node/embedded heaps.
 use light_cljs::analyzer::NamespaceInput;
 use std::{
     fs,
@@ -77,22 +77,16 @@ fn execute(script: &str) -> (String, String) {
             String::from_utf8_lossy(&result.stderr).replace(['\n', '\t'], " ")
         )
     };
-    #[cfg(feature = "quickjs")]
-    let runtime = rquickjs::Runtime::new().unwrap();
-    #[cfg(feature = "quickjs")]
-    runtime.set_memory_limit(128 * 1024 * 1024);
-    #[cfg(feature = "quickjs")]
-    runtime.set_max_stack_size(4 * 1024 * 1024);
-    #[cfg(feature = "quickjs")]
-    let context = rquickjs::Context::full(&runtime).unwrap();
-    #[cfg(feature = "quickjs")]
-    let quickjs = context.with(|ctx| match ctx.eval::<String, _>(script.as_bytes()) {
+    #[cfg(any(light_v8, light_quickjs))]
+    let context = crate::embedded_js::EmbeddedJs::new();
+    #[cfg(any(light_v8, light_quickjs))]
+    let embedded = match context.string(script) {
         Ok(value) => value,
-        Err(error) => format!("HARNESS:{error:?}: {:?}", ctx.catch()).replace(['\n', '\t'], " "),
-    });
-    #[cfg(not(feature = "quickjs"))]
-    let quickjs = String::new();
-    (node, quickjs)
+        Err(error) => format!("HARNESS:{error:?}").replace(['\n', '\t'], " "),
+    };
+    #[cfg(not(any(light_v8, light_quickjs)))]
+    let embedded = String::new();
+    (node, embedded)
 }
 
 #[test]
@@ -125,10 +119,10 @@ fn original_source_macro_declarations_execute_phase_and_application_contracts() 
         ),
     ] {
         let script = script(id, source).unwrap();
-        let (node, quickjs) = execute(&script);
+        let (node, embedded) = execute(&script);
         assert_eq!(node, expected, "{id}: Node");
-        #[cfg(feature = "quickjs")]
-        assert_eq!(quickjs, expected, "{id}: QuickJS");
+        #[cfg(any(light_v8, light_quickjs))]
+        assert_eq!(embedded, expected, "{id}: embedded engine");
     }
 }
 
@@ -151,9 +145,9 @@ fn retained_sources_execute_with_original_namespace_and_positions() {
         let source = unhex(fields[1]);
         match script(fields[0], &source) {
             Ok(script) => {
-                // Without QuickJS its column is empty; Node's is still recorded.
-                let (node, quickjs) = execute(&script);
-                writeln!(out, "{}\texecuted\t{node}\t{quickjs}", fields[0]).unwrap();
+                // Without embedded engine its column is empty; Node's is still recorded.
+                let (node, embedded) = execute(&script);
+                writeln!(out, "{}\texecuted\t{node}\t{embedded}", fields[0]).unwrap();
                 executed += 1;
             }
             Err(error) => writeln!(

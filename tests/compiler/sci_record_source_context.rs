@@ -107,21 +107,15 @@ fn original_record_contexts_execute_in_both_phases_and_lifecycles() {
                 "(() => {{ const run = {captured}; return ({}) (globalThis.lightRuntime)('{id}',observe=>run(observe)); }})()",
                 include_str!("../support/sci_execution_observation.js")
             );
-            #[cfg(feature = "quickjs")]
-            let runtime = rquickjs::Runtime::new().unwrap();
-            #[cfg(feature = "quickjs")]
-            runtime.set_memory_limit(128 * 1024 * 1024);
-            #[cfg(feature = "quickjs")]
-            runtime.set_max_stack_size(4 * 1024 * 1024);
-            #[cfg(feature = "quickjs")]
-            let context = rquickjs::Context::full(&runtime).unwrap();
-            #[cfg(feature = "quickjs")]
-            let quickjs = context.with(|ctx| ctx.eval::<String, _>(script.as_bytes()).unwrap());
-            #[cfg(feature = "quickjs")]
+            #[cfg(any(light_v8, light_quickjs))]
+            let context = crate::embedded_js::EmbeddedJs::new();
+            #[cfg(any(light_v8, light_quickjs))]
+            let embedded = context.string(&script).unwrap();
+            #[cfg(any(light_v8, light_quickjs))]
             assert_eq!(
-                canonical(&quickjs),
+                canonical(&embedded),
                 canonical(&expected),
-                "{variant} QuickJS"
+                "{variant} embedded engine"
             );
             let mut node = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
                 .arg("-")
@@ -141,8 +135,8 @@ fn original_record_contexts_execute_in_both_phases_and_lifecycles() {
             let node = String::from_utf8(result.stdout).unwrap();
             assert_eq!(canonical(&node), canonical(&expected), "{variant} Node");
             let mut observed = vec![("Node", node)];
-            #[cfg(feature = "quickjs")]
-            observed.insert(0, ("QuickJS", quickjs));
+            #[cfg(any(light_v8, light_quickjs))]
+            observed.insert(0, ("embedded engine", embedded));
             for (engine, raw) in observed {
                 writeln!(
                     output,

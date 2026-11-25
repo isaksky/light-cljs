@@ -22,16 +22,15 @@ fn unhex(s: &str) -> String {
 }
 fn observe(script: &str, artifact: &std::path::Path) -> Vec<(String, String)> {
     let mut observed = Vec::new();
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
-        let runtime = rquickjs::Runtime::new().unwrap();
-        let context = rquickjs::Context::full(&runtime).unwrap();
-        let quickjs = context.with(|ctx| match ctx.eval::<String, _>(script.as_bytes()) {
+        let context = crate::embedded_js::EmbeddedJs::new();
+        let embedded = match context.string(script) {
             Ok(value) => value,
-            Err(error) => format!("HARNESS_ERROR:{error:?}: {:?}", ctx.catch()),
-        });
-        fs::write(artifact.join("quickjs.raw"), &quickjs).unwrap();
-        observed.push(("QuickJS".into(), quickjs));
+            Err(error) => format!("HARNESS_ERROR:{error:?}"),
+        };
+        fs::write(artifact.join("embedded.raw"), &embedded).unwrap();
+        observed.push(("embedded engine".into(), embedded));
     }
     let mut child = Command::new(std::env::var("NODE").unwrap())
         .arg("-")
@@ -163,15 +162,13 @@ mod transport {
         path::PathBuf,
         process::{Command, Stdio},
     };
-    // QuickJS's entry, in builds that embed it, comes before Node's.
+    // The embedded engine's entry comes before Node's when available.
     #[allow(clippy::vec_init_then_push)]
     fn observe(script: &str, root: &std::path::Path) -> Vec<(String, String)> {
-        #[cfg(feature = "quickjs")]
-        let rt = rquickjs::Runtime::new().unwrap();
-        #[cfg(feature = "quickjs")]
-        let ctx = rquickjs::Context::full(&rt).unwrap();
-        #[cfg(feature = "quickjs")]
-        let quickjs = ctx.with(|ctx| ctx.eval::<String, _>(script.as_bytes()).unwrap());
+        #[cfg(any(light_v8, light_quickjs))]
+        let ctx = crate::embedded_js::EmbeddedJs::new();
+        #[cfg(any(light_v8, light_quickjs))]
+        let embedded = ctx.string(script).unwrap();
         let mut child = Command::new(std::env::var("NODE").unwrap())
             .arg("-")
             .stdin(Stdio::piped())
@@ -190,8 +187,8 @@ mod transport {
         assert!(out.status.success());
         assert!(out.stderr.is_empty());
         fs::write(root.join("script.js"), script).unwrap();
-        #[cfg(feature = "quickjs")]
-        fs::write(root.join("quickjs.raw"), &quickjs).unwrap();
+        #[cfg(any(light_v8, light_quickjs))]
+        fs::write(root.join("embedded.raw"), &embedded).unwrap();
         fs::write(root.join("node.stdin"), input).unwrap();
         fs::write(root.join("node.stdout"), &out.stdout).unwrap();
         fs::write(root.join("node.stderr"), &out.stderr).unwrap();
@@ -201,8 +198,8 @@ mod transport {
         )
         .unwrap();
         let mut observed = Vec::new();
-        #[cfg(feature = "quickjs")]
-        observed.push(("QuickJS".into(), quickjs));
+        #[cfg(any(light_v8, light_quickjs))]
+        observed.push(("embedded engine".into(), embedded));
         observed.push((
             "Node".into(),
             String::from_utf8(out.stdout).unwrap().trim().into(),
