@@ -3171,7 +3171,9 @@ fn terse_chunks_write_their_runtime_units_at_module_level() {
     // user-protocol single/multi-arity host `extendType`; 146,663), and
     // light-cljs-1117 direct `cljs$lang$applyTo` via 2-arg `fnApplyTo` and
     // `apply`/`applyDirect`/`applyFixed` fast paths for variadics, MultiFn,
-    // and seq tails (148,611).
+    // and seq tails (148,611), and light-cljs-1120 fast `keywordOf`/`arrayIndex`,
+    // unfrozen `vectorChunk` with copy-on-read public seq/chunk array getters,
+    // and direct `seq`/`LazySeq` fast paths (150,111).
     assert!(
         total + 1_000
             <= 73_207
@@ -3203,7 +3205,8 @@ fn terse_chunks_write_their_runtime_units_at_module_level() {
                 + 4_000
                 + 1_000
                 + 1_000
-                + 2_000,
+                + 2_000
+                + 1_000,
         "{total} bytes\n{listing}"
     );
     // Startup's `lazy$` is 242 bytes since light-cljs-353 (687 before).
