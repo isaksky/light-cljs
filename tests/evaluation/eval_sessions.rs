@@ -628,6 +628,19 @@ fn exception_diagnostics_preserve_original_messages() {
         ),
         "[true \"fmt:fmt-msg\"]"
     );
+    // Lazy own getter on V8, eager own string data property on QuickJS.
+    let expected_lazy = !matches!(engine(), EvalEngine::QuickJs);
+    assert_eq!(
+        printed(
+            &mut s,
+            r#"(let [e (ex-info "desc-check" nil)
+                     d (js/Object.getOwnPropertyDescriptor e "stack")]
+                 [(fn? (.-get d))
+                  (.-enumerable d)
+                  (if (fn? (.-get d)) true (string? (.-value d)))])"#
+        ),
+        format!("[{expected_lazy} true true]")
+    );
 }
 #[test]
 fn name_policy_preserves_local_and_global_shadowing() {

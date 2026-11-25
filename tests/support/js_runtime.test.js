@@ -1134,6 +1134,70 @@ for (const nonString of [null, undefined, 42]) {
     Error.prepareStackTrace = prevPrepare;
   }
 }
+// Booting the runtime constructs no Error; lazyErrorStack is probed on the first
+// successful ExceptionInfo construction (both lazy V8 and eager fallback engines).
+{
+  const runtimeSrc = fs.readFileSync(path.join(__dirname, '../../src/js_runtime.js'), 'utf8');
+  const RealError = globalThis.Error;
+  const prevPrepare = RealError.prepareStackTrace;
+  let errorConstructs = 0;
+  let prepareCalls = 0;
+  RealError.prepareStackTrace = (err, sites) => {
+    prepareCalls++;
+    return `fresh:${err.message}:${sites.length}`;
+  };
+  globalThis.Error = new Proxy(RealError, {
+    construct(target, args, newTarget) {
+      errorConstructs++;
+      return Reflect.construct(target, args, newTarget === globalThis.Error ? target : newTarget);
+    },
+    apply(target, thisArg, args) {
+      errorConstructs++;
+      return Reflect.apply(target, thisArg, args);
+    },
+  });
+  try {
+    const freshRt = (0, eval)(runtimeSrc);
+    assert.equal(errorConstructs, 0);
+    assert.equal(prepareCalls, 0);
+    // A Symbol message throws before caching lazyErrorStack; the next valid call still probes lazily.
+    assert.throws(() => freshRt.core.exInfo(Symbol('first'), null), TypeError);
+    assert.equal(errorConstructs, 1);
+    const first = freshRt.core.exInfo('after-symbol', null);
+    assert.equal(errorConstructs, 2);
+    assert.equal(prepareCalls, 0);
+    assert.equal(typeof Object.getOwnPropertyDescriptor(first, 'stack').get, 'function');
+    assert.ok(first.stack.startsWith('fresh:after-symbol:'));
+    assert.equal(prepareCalls, 1);
+  } finally {
+    globalThis.Error = RealError;
+    RealError.prepareStackTrace = prevPrepare;
+  }
+  // Simulated eager engine (own data property `stack`, like QuickJS/JSC).
+  function EagerError(msg) {
+    const err = new RealError(msg);
+    Object.defineProperty(err, 'stack', {
+      value: `eager:${String(msg)}`,
+      writable: true,
+      enumerable: false,
+      configurable: true,
+    });
+    return err;
+  }
+  EagerError.prototype = RealError.prototype;
+  globalThis.Error = EagerError;
+  try {
+    const eagerRt = (0, eval)(runtimeSrc);
+    const ex = eagerRt.core.exInfo('quickjs-like', null);
+    const desc = Object.getOwnPropertyDescriptor(ex, 'stack');
+    assert.equal(desc.get, undefined);
+    assert.equal(desc.value, 'eager:quickjs-like');
+    assert.equal(desc.enumerable, true);
+    assert.equal(desc.writable, true);
+  } finally {
+    globalThis.Error = RealError;
+  }
+}
 console.log('exception value assertions passed');
 
 // Metadata lives outside equality/hash payloads, and is never observed from

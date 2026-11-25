@@ -2752,6 +2752,64 @@ fn advanced_exception_info_defers_stack_formatting() {
 }
 
 #[test]
+fn advanced_runtime_factory_constructs_no_error_during_startup() {
+    use light_cljs::{ApplicationOptions, OptimizationLevel, analyze, parse, prepare_application};
+    let source = r#"
+        (fn []
+          (let [e (ex-info "boom" {:k 1})]
+            e))
+    "#;
+    let parsed = parse(source).unwrap();
+    let analyzed = analyze(source, &parsed).unwrap();
+    let advanced = prepare_application(
+        &analyzed,
+        ApplicationOptions::new(OptimizationLevel::Advanced),
+    )
+    .emit_js();
+    assert_eq!(
+        node(&format!(
+            r#"
+      const assert = require('node:assert/strict');
+      const RealError = globalThis.Error;
+      const prevPrepare = RealError.prepareStackTrace;
+      let errorConstructs = 0;
+      let prepareCalls = 0;
+      RealError.prepareStackTrace = (err, sites) => {{
+        prepareCalls++;
+        return `formatted:${{err.message}}:${{sites.length}}`;
+      }};
+      globalThis.Error = new Proxy(RealError, {{
+        construct(target, args, newTarget) {{
+          errorConstructs++;
+          return Reflect.construct(target, args, newTarget === globalThis.Error ? target : newTarget);
+        }},
+        apply(target, thisArg, args) {{
+          errorConstructs++;
+          return Reflect.apply(target, thisArg, args);
+        }},
+      }});
+      try {{
+        const make = ({advanced});
+        assert.equal(errorConstructs, 0, 'runtime startup must not construct Error');
+        assert.equal(prepareCalls, 0, 'runtime startup must not format stack');
+        const ex = make();
+        assert.equal(errorConstructs, 1, 'first ex-info should construct exactly one Error');
+        assert.equal(prepareCalls, 0, 'first ex-info should defer stack formatting');
+        assert.ok(ex instanceof RealError);
+        assert.ok(ex.stack.startsWith('formatted:boom:'));
+        assert.equal(prepareCalls, 1);
+        console.log('ok');
+      }} finally {{
+        globalThis.Error = RealError;
+        RealError.prepareStackTrace = prevPrepare;
+      }}
+    "#
+        )),
+        "ok\n"
+    );
+}
+
+#[test]
 #[ignore = "requires Clojure CLI, Java, Node, and both explicitly pinned references"]
 fn compiled_control_matches_pinned_values_effects_and_stdout() {
     let cases = cases()

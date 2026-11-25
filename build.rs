@@ -627,6 +627,8 @@ const SHARED_TASK_STATE: &[&str] = &[
     // of the namespaces it adds while the compiler reads it.
     "namespaces",
     "namespaceLog",
+    // Lazy probe of whether native `Error#stack` is an own getter.
+    "lazyErrorStack",
 ];
 
 /// The state the `reader` unit keeps at the top of its own function (the

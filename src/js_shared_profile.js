@@ -43,6 +43,8 @@
     tapDraining: false, tapDelivered: 0, tapPending: 0, tapLimit: 1024,
     // Whether the task has branded a class's prototype (`ClassBrand`).
     classBrands: false,
+    // Cached probe of whether native `Error#stack` is an own getter.
+    lazyErrorStack: undefined,
     // The slot-name memo of `protocolSlot`: a pure function's cache, which
     // the boot task fills for the runtime's own keys (`sharedProfileBoot`)
     // and every task fills for the keys it meets.

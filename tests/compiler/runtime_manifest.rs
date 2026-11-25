@@ -289,6 +289,7 @@ fn shared_profile_swaps_units_by_name_and_keeps_every_other_unit_verbatim() {
         "reifySites",
         "namespaces",
         "namespaceLog",
+        "lazyErrorStack",
         // The reader's own state, declared at the top of its function
         // (`SHARED_READER_STATE` in build.rs).
         "streams",

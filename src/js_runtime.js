@@ -15483,11 +15483,7 @@
   const exceptionMessages = new WeakMap();
   //@unit compilerExceptionMessage compile-time requires: exceptionMessages
   const compilerExceptionMessage = value => exceptionMessages.get(value);
-  //@unit lazyErrorStack
-  // Whether native `Error#stack` is an own getter (V8), so `ExceptionInfo`
-  // can defer formatting stack frames until `.stack` is actually read.
-  const lazyErrorStack = typeof Object.getOwnPropertyDescriptor(new Error(), "stack")?.get === "function";
-  //@unit ExceptionInfo effect requires: lazyErrorStack
+  //@unit ExceptionInfo effect
   // Match the CLJS constructor: preserve the supplied message/data/cause values,
   // native Error coercion, construction-time stack text, and enumerable own
   // `stack` property while deferring stack formatting on lazy engines.
@@ -15504,6 +15500,7 @@
     target.fileName = error.fileName;
     target.lineNumber = error.lineNumber;
     target.columnNumber = error.columnNumber;
+    if (lazyErrorStack === undefined) lazyErrorStack = typeof Object.getOwnPropertyDescriptor(error, "stack")?.get === "function";
     if (lazyErrorStack) {
       Object.defineProperty(target, "stack", {
         enumerable: true,
@@ -15522,6 +15519,8 @@
     }
     return target;
   }
+  // Probed on first construction so runtime startup constructs no Error.
+  let lazyErrorStack;
   // The printer installs `toString`.
   Object.setPrototypeOf(ExceptionInfo.prototype, Error.prototype);
   ExceptionInfo.prototype.cljs$lang$kind$$LKEY = 48;
