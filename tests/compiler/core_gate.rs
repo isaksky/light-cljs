@@ -49,16 +49,16 @@ fn both(source: &str, expected: &str, identity: &str) {
     let parsed = parse(source).unwrap_or_else(|error| panic!("{identity}: {error}"));
     let program = analyze_with_macros(source, &parsed, &mut MacroHost::new())
         .unwrap_or_else(|error| panic!("{identity}: {error}"));
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let value = evaluator
             .evaluate(&program)
-            .unwrap_or_else(|error| panic!("QuickJS {identity}: {error}"));
+            .unwrap_or_else(|error| panic!("embedded engine {identity}: {error}"));
         assert_eq!(
             evaluator.print(value).unwrap(),
             expected,
-            "QuickJS {identity}"
+            "embedded engine {identity}"
         );
     }
     let script = format!(

@@ -27,4 +27,11 @@ impl EmbeddedJs {
         self.0.release(value)?;
         result
     }
+
+    pub(crate) fn number(&self, source: &str) -> Result<f64, EvalError> {
+        let value = self.evaluate(source)?;
+        let result = self.0.number(value);
+        self.0.release(value)?;
+        result
+    }
 }

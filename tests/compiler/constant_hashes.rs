@@ -9,7 +9,7 @@
 //! lookup too. The embedded hashes must be the runtime's own, bit for bit:
 //! [`checks`] rewrites the output's `hashed` to compare the embedded hash with
 //! the one the runtime computes instead of storing it, and runs the output in
-//! Node and in QuickJS. That covers hand-picked edge cases, seeded random
+//! Node and in the embedded engine. That covers hand-picked edge cases, seeded random
 //! scalars, every constant literal of the language and execution corpora and
 //! the generated programs of light-cljs-217. The generator's literal reads
 //! also check that `=` implies equal hashes across pooled and built values.
@@ -78,9 +78,9 @@ fn node(script: &str) -> String {
 }
 
 /// The value of the JavaScript string expression `expression` in a fresh
-/// QuickJS evaluator.
-#[cfg(feature = "quickjs")]
-fn quickjs(expression: &str) -> String {
+/// embedded evaluator.
+#[cfg(any(light_v8, light_quickjs))]
+fn embedded(expression: &str) -> String {
     let evaluator = Evaluator::new(EvaluatorOptions {
         memory_limit: 1 << 30,
         poll_budget: u64::MAX,
@@ -132,7 +132,7 @@ fn shape_hashes(js: &str) -> usize {
 }
 
 /// Run `Advanced` output `js` with its `hashed` rewritten by [`CHECK`] and its
-/// map key shape constructors by [`SHAPE_CHECK`], in Node and in QuickJS, and
+/// map key shape constructors by [`SHAPE_CHECK`], in Node and in the embedded engine, and
 /// return what each saw. Whatever the program does after building its
 /// constants (it may throw) is ignored.
 fn checks(js: &str) -> Vec<Checks> {
@@ -165,8 +165,8 @@ fn checks(js: &str) -> Vec<Checks> {
         }
     };
     let mut seen = vec![parse(&node(&format!("console.log({expression});")))];
-    #[cfg(feature = "quickjs")]
-    seen.push(parse(&quickjs(&expression)));
+    #[cfg(any(light_v8, light_quickjs))]
+    seen.push(parse(&embedded(&expression)));
     seen
 }
 
@@ -179,7 +179,7 @@ pub(crate) fn agrees(js: &str, context: &str) -> usize {
     if embedded == 0 {
         return 0;
     }
-    for (engine, checks) in ["Node", "QuickJS"].into_iter().zip(checks(js)) {
+    for (engine, checks) in ["Node", "embedded engine"].into_iter().zip(checks(js)) {
         let declarations: Vec<_> = checks
             .mismatches
             .iter()

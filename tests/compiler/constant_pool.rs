@@ -179,7 +179,7 @@ fn empty_literals_read_the_runtime_singletons_at_every_level() {
             .all(|line| !line.contains("EMPTY"))
     );
 
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let mut session = EvalSession::new(EvalOptions::default()).unwrap();
         let value = session

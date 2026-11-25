@@ -61,12 +61,11 @@ fn original_case_char_string_rejection_and_actual_macro_recovery() {
             fs::write(folder.join("recovery.cljs"), control).unwrap();
             let js = light_cljs::compile_with_macros(control, host).unwrap();
             fs::write(folder.join("recovery.js"), &js).unwrap();
-            #[cfg(feature = "quickjs")]
+            #[cfg(any(light_v8, light_quickjs))]
             {
-                let runtime = rquickjs::Runtime::new().unwrap();
-                let context = rquickjs::Context::full(&runtime).unwrap();
-                let value = context.with(|ctx| ctx.eval::<i32, _>(js.as_bytes()).unwrap());
-                assert_eq!(value, 42);
+                let context = crate::embedded_js::EmbeddedJs::new();
+                let value = context.number(&js).unwrap();
+                assert_eq!(value, 42.0);
             }
             let input = format!("console.log({js});");
             fs::write(folder.join("node.stdin"), &input).unwrap();

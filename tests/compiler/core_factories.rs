@@ -7,7 +7,7 @@ use std::process::{Command, Stdio};
 fn both(source: &str, expected: &str) {
     let program = analyze_with_macros(source, &parse(source).unwrap(), &mut MacroHost::new())
         .unwrap_or_else(|e| panic!("{source}: {e}"));
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(
@@ -15,7 +15,7 @@ fn both(source: &str, expected: &str) {
                 .print(evaluator.evaluate(&program).unwrap())
                 .unwrap(),
             expected,
-            "QuickJS: {source}"
+            "embedded engine: {source}"
         );
     }
     let script = format!(
@@ -101,7 +101,7 @@ fn factory_phase_isolation_diagnostics_and_bounded_repetition() {
         );
         let source = "(defmacro good [] (str (->UUID \"ABC\" nil))) (good)";
         let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
-        #[cfg(feature = "quickjs")]
+        #[cfg(any(light_v8, light_quickjs))]
         {
             let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
             assert_eq!(

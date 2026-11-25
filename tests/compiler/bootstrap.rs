@@ -2,13 +2,13 @@
 use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{MacroHost, analyze_with_macros, compile_with_macros, parse};
 
-/// The printed value of `source`: in QuickJS when available, otherwise in Node.
+/// The printed value of `source`: in the embedded engine when available, otherwise in Node.
 fn result(source: &str) -> String {
     let mut host = MacroHost::new();
     let syntax = parse(source).unwrap();
     let program = analyze_with_macros(source, &syntax, &mut host)
         .unwrap_or_else(|error| panic!("{source}\n{error}"));
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let value = evaluator
@@ -16,7 +16,7 @@ fn result(source: &str) -> String {
             .unwrap_or_else(|error| panic!("{source}\n{error}"));
         evaluator.print(value).unwrap()
     }
-    #[cfg(not(feature = "quickjs"))]
+    #[cfg(not(any(light_v8, light_quickjs)))]
     {
         let printed = crate::canonical_json::node_stdout(&format!(
             "const rt = {}; console.log(rt.core.prStr(({})(rt)));",
@@ -166,7 +166,7 @@ fn volatile_swap_rechecks_target_after_evaluating_the_function() {
 }
 
 #[test]
-fn interop_macros_execute_in_quickjs() {
+fn interop_macros_execute_in_embedded() {
     assert_eq!(
         result(
             r#"
@@ -256,7 +256,7 @@ fn seed_bindings_assertions_and_reflection_remain_native_free() {
 fn default_compile_and_analyze_emit_have_identical_literal_results() {
     let source = "(reduce + (for [x [1 2 3]] (if-some [y x] (-> y inc) 0)))";
     let js = light_cljs::compile(source).unwrap();
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(

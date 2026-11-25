@@ -10,7 +10,7 @@ fn both(source: &str, expected: &str) {
     let mut host = MacroHost::new();
     let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host)
         .unwrap_or_else(|error| panic!("{source}\n{error}"));
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let value = evaluator.evaluate(&program).unwrap();
@@ -78,8 +78,8 @@ fn failed_atom_equiv_leaves_fresh_and_reused_hosts_usable() {
     const FAILURE: &str = "(.equiv v 13)";
     const RECOVERY: &str = "[(.equiv v v) (.equiv v (atom 1)) (= v v) (swap! v inc) @v]";
     for reused in [false, true] {
-        // Interactive sessions run in QuickJS; the macro-host checks below run in every build.
-        #[cfg(feature = "quickjs")]
+        // The macro-host checks below also run without an embedded evaluator.
+        #[cfg(any(light_v8, light_quickjs))]
         {
             let mut session = light_cljs::EvalSession::new(Default::default()).unwrap();
             if reused {
@@ -113,7 +113,7 @@ fn failed_atom_equiv_leaves_fresh_and_reused_hosts_usable() {
             "(defmacro restored-atom-equiv [] {SETUP} (pr-str {RECOVERY})) (restored-atom-equiv)"
         );
         let js = light_cljs::compile_with_macros(&source, &mut host).unwrap();
-        #[cfg(feature = "quickjs")]
+        #[cfg(any(light_v8, light_quickjs))]
         {
             let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
             let value = evaluator.evaluate_js(&js).unwrap();

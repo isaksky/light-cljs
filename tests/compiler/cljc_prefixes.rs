@@ -18,7 +18,7 @@ impl Sources {
     }
 }
 fn both(js: &str, expected: &str) {
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let e = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();
         assert_eq!(e.string(e.evaluate_js(js).unwrap()).unwrap(), expected);
@@ -97,8 +97,8 @@ fn scalar_splice_and_nested_prefix_controls_execute_both_phases_and_lifecycles()
 fn located_active_and_missing_target_errors_recover_in_hosts_and_sessions() {
     let sources = Sources::new();
     let mut host = MacroHost::new();
-    // Interactive sessions run in QuickJS.
-    #[cfg(feature = "quickjs")]
+    // Exercises the embedded engine through EvalSession.
+    #[cfg(any(light_v8, light_quickjs))]
     let mut session = EvalSession::new(EvalOptions::default()).unwrap();
     for (original, location) in [
         ("[0 '#?@(:cljs 1) 2]", "#?@(:cljs 1)"),
@@ -128,8 +128,8 @@ fn located_active_and_missing_target_errors_recover_in_hosts_and_sessions() {
                 "[42]",
             );
         }
-        // Interactive sessions run in QuickJS; the host checks above run in every build.
-        #[cfg(feature = "quickjs")]
+        // The host checks above also run without an embedded engine.
+        #[cfg(any(light_v8, light_quickjs))]
         {
             let error = session
                 .eval_source(&SourceInput::new("bad.cljc", format!("\n{original}")))
@@ -146,15 +146,15 @@ fn located_active_and_missing_target_errors_recover_in_hosts_and_sessions() {
     }
     let error = sources.compile("(ns user) #?(:cljs 1)", &mut host);
     assert!(error.is_ok());
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     assert!(
         session
             .eval_source(&SourceInput::new("plain.cljs", "[#?(:cljs 1)]"))
             .is_err()
     );
 }
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+// Exercises the embedded engine through EvalSession.
+#[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn selected_targets_keep_metadata_quote_ownership_and_source_locations() {
     let mut session = EvalSession::new(EvalOptions::default()).unwrap();
@@ -177,8 +177,8 @@ fn selected_targets_keep_metadata_quote_ownership_and_source_locations() {
     assert_eq!(selected[0].span().source().name(), "ownership.cljc");
 }
 
-// Interactive sessions (EvalSession, --eval, --repl) run in QuickJS.
-#[cfg(feature = "quickjs")]
+// Exercises the embedded engine through EvalSession.
+#[cfg(any(light_v8, light_quickjs))]
 #[test]
 fn nested_discarded_readers_keep_canonical_effect_order() {
     use light_cljs::compiler_data::Name;
@@ -257,16 +257,14 @@ mod original_reader_rejections {
         )
         .unwrap()
     }
-    // QuickJS's entry, in builds that embed it, comes before Node's.
+    // The embedded engine's entry comes before Node's when available.
     #[allow(clippy::vec_init_then_push)]
     fn observe(js: &str) -> Vec<(&'static str, String)> {
         let script = format!("JSON.stringify({js})");
-        #[cfg(feature = "quickjs")]
-        let rt = rquickjs::Runtime::new().unwrap();
-        #[cfg(feature = "quickjs")]
-        let ctx = rquickjs::Context::full(&rt).unwrap();
-        #[cfg(feature = "quickjs")]
-        let q = ctx.with(|cx| cx.eval::<String, _>(script.as_bytes()).unwrap());
+        #[cfg(any(light_v8, light_quickjs))]
+        let engine = crate::embedded_js::EmbeddedJs::new();
+        #[cfg(any(light_v8, light_quickjs))]
+        let embedded = engine.string(&script).unwrap();
         let mut child = Command::new("node")
             .arg("-")
             .stdin(Stdio::piped())
@@ -284,8 +282,8 @@ mod original_reader_rejections {
         assert!(out.status.success());
         assert!(out.stderr.is_empty());
         let mut observed = Vec::new();
-        #[cfg(feature = "quickjs")]
-        observed.push(("QuickJS", q));
+        #[cfg(any(light_v8, light_quickjs))]
+        observed.push(("embedded engine", embedded));
         observed.push(("Node", String::from_utf8(out.stdout).unwrap().trim().into()));
         observed
     }

@@ -9,7 +9,7 @@ use std::{
 fn both(host: &mut MacroHost, source: &str, expected: &str) {
     let program = analyze_with_macros(source, &parse(source).unwrap(), host)
         .unwrap_or_else(|error| panic!("{source}\n{error}"));
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let value = evaluator.evaluate(&program).unwrap();

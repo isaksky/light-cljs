@@ -17,7 +17,7 @@ fn recovered_core_var_metadata_executes_in_applications_and_macros() {
     );
     let program = analyze_with_macros(&source, &parse(&source).unwrap(), &mut MacroHost::new())
         .unwrap_or_else(|e| panic!("{e}"));
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         assert_eq!(

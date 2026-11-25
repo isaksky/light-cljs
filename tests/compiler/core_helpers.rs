@@ -84,11 +84,11 @@ fn applied_partial_and_juxt_constructors_preserve_lazy_tails_in_both_phases() {
     for _ in 0..2 {
         for (source, expected) in cases {
             let program = analyze_with_macros(source, &parse(source).unwrap(), &mut host).unwrap();
-            #[cfg(feature = "quickjs")]
+            #[cfg(any(light_v8, light_quickjs))]
             {
                 let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
                 let value = evaluator.evaluate(&program).unwrap();
-                assert_eq!(evaluator.print(value).unwrap(), expected, "QuickJS");
+                assert_eq!(evaluator.print(value).unwrap(), expected, "embedded engine");
             }
             let output = Command::new("node")
                 .args([
@@ -112,7 +112,7 @@ fn applied_partial_and_juxt_constructors_preserve_lazy_tails_in_both_phases() {
 }
 
 /// Complete sources in both compiler phases and both host lifecycles, each run in
-/// QuickJS and Node (see `tests/support/phase_oracle.rs`).
+/// the embedded engine and Node (see `tests/support/phase_oracle.rs`).
 mod phase_oracles {
     use crate::phase_oracle::{Case, run};
 

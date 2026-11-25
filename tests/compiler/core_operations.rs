@@ -381,7 +381,7 @@ fn signatures_hold_on_sample_arguments() {
 }})()"#,
         rows = rows.join(",\n  ")
     );
-    #[cfg(feature = "quickjs")]
+    #[cfg(any(light_v8, light_quickjs))]
     let violations = {
         let evaluator = Evaluator::new(EvaluatorOptions::default()).unwrap();
         let report = evaluator.evaluate_js(&script).unwrap();
@@ -389,7 +389,7 @@ fn signatures_hold_on_sample_arguments() {
     };
     // runtime. Sampled printing functions write to Node's stdout too, so the
     // report follows a marker line.
-    #[cfg(not(feature = "quickjs"))]
+    #[cfg(not(any(light_v8, light_quickjs)))]
     let violations = {
         let output = crate::canonical_json::node_stdout(&format!(
             "const rt = {}; const report = {script}; process.stdout.write('\\n@@report@@\\n' + report);",

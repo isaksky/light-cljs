@@ -11,7 +11,7 @@
 //! by index, or fold when the key is absent; an `if` on membership in a small
 //! set of keywords is a `switch` on the tested value's spelling.
 //!
-//! Every program runs at every level in Node and in QuickJS and must give
+//! Every program runs at every level in Node and in the embedded engine and must give
 //! what `None` gives; the `Advanced` text is checked for what folded and what
 //! stayed.
 use super::optimization::{execute, readable};
@@ -29,11 +29,11 @@ fn emit(program: &Program, level: OptimizationLevel) -> String {
     prepare_application(program, ApplicationOptions::new(level)).emit_js()
 }
 
-// Runs the program in QuickJS.
-#[cfg(feature = "quickjs")]
+// Runs the program in the embedded engine.
+#[cfg(any(light_v8, light_quickjs))]
 /// The value of the JavaScript string expression `expression` in a fresh
-/// QuickJS evaluator.
-fn quickjs(expression: &str) -> String {
+/// embedded evaluator.
+fn embedded(expression: &str) -> String {
     let evaluator = Evaluator::new(EvaluatorOptions {
         memory_limit: 1 << 30,
         timeout: Duration::from_secs(60),
@@ -47,7 +47,7 @@ fn quickjs(expression: &str) -> String {
 }
 
 /// The program, whose value is a string, gives `expected` at every level in
-/// Node and in QuickJS; returns the program part of the readable `Advanced`
+/// Node and in the embedded engine; returns the program part of the readable `Advanced`
 /// output (what follows the runtime slice and the constant table).
 fn every_level(source: &str, expected: &str) -> String {
     let program = program(source);
@@ -58,8 +58,12 @@ fn every_level(source: &str, expected: &str) -> String {
             format!("{expected}\n"),
             "Node at {level}: {source}"
         );
-        #[cfg(feature = "quickjs")]
-        assert_eq!(quickjs(&js), expected, "QuickJS at {level}: {source}");
+        #[cfg(any(light_v8, light_quickjs))]
+        assert_eq!(
+            embedded(&js),
+            expected,
+            "embedded engine at {level}: {source}"
+        );
     }
     let advanced = prepare_application(&program, readable(OptimizationLevel::Advanced)).emit_js();
     let start = advanced
