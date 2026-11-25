@@ -9966,7 +9966,7 @@ fn hygienic_js(
 
 /// Interactive application roots live in the application heap, never the
 /// macro heap. The unit registers every namespace of the program.
-#[cfg(all(test, light_quickjs))]
+#[cfg(all(test, light_v8))]
 pub(crate) fn emit_interactive_unit(program: &Program) -> String {
     emit_interactive(program, None, &[], false, 0, None).0
 }

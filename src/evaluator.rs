@@ -226,11 +226,6 @@ impl ExecutionControl {
         self.0.remaining.store(remaining, Ordering::Relaxed);
         result
     }
-    /// What is left of the current operation's poll budget.
-    #[cfg(all(test, light_quickjs))]
-    pub(crate) fn remaining_polls(&self) -> u64 {
-        self.0.remaining.load(Ordering::Relaxed)
-    }
     pub fn cancel(&self) {
         self.0.cancelled.store(true, Ordering::Relaxed);
     }

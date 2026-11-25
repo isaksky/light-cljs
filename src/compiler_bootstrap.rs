@@ -1,7 +1,5 @@
 //! First-party bootstrap compiled by the same Rust analyzer/emitter as applications.
 //! Only immutable bootstrap artifacts are cached; every compilation has a fresh JS heap.
-#[cfg(all(test, light_quickjs))]
-use crate::evaluator::Evaluator;
 use crate::{
     MacroHost,
     compiler_data::{DataBuilder, Datum, ExpansionOrigin, Form, Name, Source},
@@ -1377,8 +1375,9 @@ impl MacroHost {
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
+    #[cfg(light_v8)]
+    use crate::evaluator::Evaluator;
 
     fn collection(kind: crate::parser::CollectionKind, children: Vec<Datum>) -> Datum {
         Datum::new(crate::compiler_data::DatumKind::Collection {
@@ -1504,29 +1503,6 @@ mod tests {
         assert!(sizes.borrow().recent.is_empty());
     }
 
-    /// Compiling the bootstrap units, as a process's first build does,
-    /// spends none of the build engine's poll budget (or deadline): the
-    /// engine is charged what installing them costs, as when another build
-    /// compiled them before (light-cljs-378). Use QuickJS's deterministic
-    /// poll count to check that the two costs match exactly.
-    #[cfg(light_quickjs)]
-    #[test]
-    fn compiling_the_units_charges_nothing_to_the_build_engine() {
-        use crate::evaluator::QuickJsEvaluator;
-
-        let options = crate::evaluator::EvaluatorOptions::default();
-        let remaining = |cache| {
-            let evaluator = Rc::new(QuickJsEvaluator::interactive(options.clone()).unwrap());
-            let bootstrap = build_in(evaluator, cache).unwrap();
-            bootstrap.evaluator.control().remaining_polls()
-        };
-        // The first build may compile the units, the second installs them.
-        remaining(true);
-        let installed = remaining(true);
-        assert!(installed < options.poll_budget);
-        assert_eq!(remaining(false), installed);
-    }
-
     #[test]
     fn bootstrap_environment_reads_follow_resolved_locals_and_reflection() {
         for (body, expected) in [
@@ -1620,7 +1596,7 @@ mod tests {
         }
     }
 
-    #[cfg(any(feature = "quickjs", feature = "v8-macros"))]
+    #[cfg(light_v8)]
     #[test]
     fn reader_view_projects_under_work_measurement_and_charges_full_env_budget() {
         let mut host = MacroHost::new();
@@ -1686,7 +1662,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(light_quickjs)]
+    #[cfg(light_v8)]
     fn unused_core_environment_keeps_conversion_limits_and_host_recovery() {
         let mut host = MacroHost::new();
         host.limits.generated_nodes = 200;
@@ -1728,7 +1704,7 @@ mod tests {
     /// A function evaluated through the handle a callback receives, which is
     /// not the bootstrap's evaluator but the same heap, is owned too, and
     /// released only once its last owner is gone (light-cljs-381).
-    #[cfg(any(feature = "quickjs", feature = "v8-macros"))]
+    #[cfg(light_v8)]
     #[test]
     fn a_function_evaluated_in_a_callback_is_released_after_its_last_owner() {
         let mut host = MacroHost::new();
@@ -1822,7 +1798,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(light_quickjs)]
+    #[cfg(light_v8)]
     fn asynchronous_bootstrap_cancellation_recovers_reused_host() {
         use std::time::Duration;
 
@@ -1865,7 +1841,7 @@ mod tests {
         assert_eq!(fresh.number(value).unwrap(), 42.0);
     }
 
-    #[cfg(any(feature = "quickjs", feature = "v8-macros"))]
+    #[cfg(light_v8)]
     #[test]
     fn declaration_products_are_atomic_and_unfinished_value_reads_cycle() {
         let mut host = MacroHost::new();
@@ -1943,7 +1919,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(light_quickjs)]
+    #[cfg(light_v8)]
     fn regenerate_from_first_party_sources_and_collect_during_bootstrap() {
         let mut outputs = Vec::new();
         for collect in [false, true] {

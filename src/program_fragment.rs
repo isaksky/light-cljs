@@ -2348,14 +2348,11 @@ mod tests {
             source_index: 0,
         });
         target.root = ExprId(target.exprs.len() - 1);
-        #[cfg(light_quickjs)]
+        #[cfg(light_v8)]
         {
-            let runtime = rquickjs::Runtime::new().unwrap();
-            let context = rquickjs::Context::full(&runtime).unwrap();
-            context.with(|ctx| {
-                let value: String = ctx.eval(crate::emit_js(&target)).unwrap();
-                assert_eq!(value, "1-body");
-            });
+            let evaluator = crate::evaluator::Evaluator::new(Default::default()).unwrap();
+            let value = evaluator.evaluate_js(&crate::emit_js(&target)).unwrap();
+            assert_eq!(evaluator.string(value).unwrap(), "1-body");
         }
     }
 
@@ -2602,19 +2599,16 @@ mod tests {
         original.root = old_metadata;
         let mut copied = snapshot.clone();
         copied.root = new_metadata;
-        #[cfg(light_quickjs)]
+        #[cfg(light_v8)]
         {
-            let runtime = rquickjs::Runtime::new().unwrap();
-            let context = rquickjs::Context::full(&runtime).unwrap();
-            context.with(|ctx| {
-                let old: String = ctx
-                    .eval(format!("JSON.stringify({})", crate::emit_js(&original)))
+            let evaluator = crate::evaluator::Evaluator::new(Default::default()).unwrap();
+            let snapshot = |program| {
+                let value = evaluator
+                    .evaluate_js(&format!("JSON.stringify({})", crate::emit_js(program)))
                     .unwrap();
-                let new: String = ctx
-                    .eval(format!("JSON.stringify({})", crate::emit_js(&copied)))
-                    .unwrap();
-                assert_eq!(old, new);
-            });
+                evaluator.string(value).unwrap()
+            };
+            assert_eq!(snapshot(&original), snapshot(&copied));
         }
     }
 
@@ -2688,20 +2682,14 @@ mod tests {
     /// A unit's references to snapshot metadata resolve to the metadata the
     /// target already holds, and its own code and literals are appended.
     #[test]
-    #[cfg(light_quickjs)]
+    #[cfg(light_v8)]
     fn deferred_definitions_share_snapshot_metadata() {
         let program = analyze(
             "(def ^{:doc \"kept\"} x 1) (def k (case 1 1 2 3)) (def y (str (:doc (meta (var x))) \"-\" k)) y",
         );
-        #[cfg(light_quickjs)]
-        {
-            let runtime = rquickjs::Runtime::new().unwrap();
-            let context = rquickjs::Context::full(&runtime).unwrap();
-            context.with(|ctx| {
-                let value: String = ctx.eval(crate::emit_js(&program)).unwrap();
-                assert_eq!(value, "kept-2");
-            });
-        }
+        let evaluator = crate::evaluator::Evaluator::new(Default::default()).unwrap();
+        let value = evaluator.evaluate_js(&crate::emit_js(&program)).unwrap();
+        assert_eq!(evaluator.string(value).unwrap(), "kept-2");
     }
     #[test]
     fn deferred_prefix_allows_patched_initializers() {

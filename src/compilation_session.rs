@@ -6938,20 +6938,12 @@ mod worker_tests {
         });
     }
 
-    /// A fresh compile-time engine of the build's kind, made on this thread.
+    /// A fresh compile-time engine made on this thread.
     fn engine(
         environment: &MacroEnvironment,
     ) -> Rc<dyn crate::compiler_evaluator::CompilerEvaluator> {
         let options = environment.evaluator_options().clone();
-        #[cfg(light_v8)]
-        return Rc::new(crate::v8_evaluator::V8Evaluator::new(options).unwrap());
-        #[cfg(all(not(light_v8), light_quickjs))]
-        return Rc::new(crate::evaluator::Evaluator::new(options).unwrap());
-        #[cfg(not(any(light_v8, light_quickjs)))]
-        {
-            let _ = options;
-            panic!("no compile-time engine enabled")
-        }
+        Rc::new(crate::evaluator::Evaluator::new(options).unwrap())
     }
 
     /// The unit's prepared JavaScript as the main thread's session has it.
