@@ -1790,17 +1790,13 @@ fn resolved_numeric_functions_evaluate_each_argument_once_in_order() {
 }
 
 #[test]
-fn numeric_fixture_applications_match_expected_outcomes_in_quickjs_and_node() {
+fn numeric_fixture_applications_match_expected_outcomes_in_embedded_engine_and_node() {
     let numeric = cases()
         .into_iter()
         .filter(|case| case.id.starts_with("numeric-"))
         .collect::<Vec<_>>();
     let actual = compiled_cases(&numeric);
-    for (_index, (case, line)) in numeric
-        .iter()
-        .zip(outcomes(&actual, &numeric).unwrap())
-        .enumerate()
-    {
+    for (case, line) in numeric.iter().zip(outcomes(&actual, &numeric).unwrap()) {
         assert_eq!(
             line,
             format!(
@@ -1813,7 +1809,6 @@ fn numeric_fixture_applications_match_expected_outcomes_in_quickjs_and_node() {
         );
         #[cfg(light_quickjs)]
         {
-            let index = _index;
             use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
             let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
             e.evaluate_js(&format!(
@@ -1821,7 +1816,7 @@ fn numeric_fixture_applications_match_expected_outcomes_in_quickjs_and_node() {
                 include_str!("support/numeric_observation.js")
             ))
             .unwrap();
-            let namespace = format!("semantic.case{index}");
+            let namespace = format!("semantic.{}", case.id);
             let source = format!(
                 "(ns {namespace} (:require [cljs.core :as c]))\n(js/numericObservation (fn* [observe] {}))",
                 case.source
