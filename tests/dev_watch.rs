@@ -1521,9 +1521,8 @@ fn a_replaced_symbolic_link_is_still_its_namespace_source() {
     );
 }
 
-#[cfg(feature = "quickjs")]
-/// `--watch` needs an entry, a source root and an out dir, and exits with
-/// the error of a first build that fails.
+#[cfg(any(light_v8, feature = "quickjs"))]
+/// An uncached watch reports the startup build and session load timings.
 #[test]
 fn stats_report_the_startup_build_and_the_session_load() {
     let mut watch = Watch::start_with_args("dev-watch-stats", &["--stats"], |_| {});
@@ -1747,6 +1746,32 @@ fn each_macro_limit_flag_bounds_the_startup_build() {
             );
         }
     }
+}
+
+#[cfg(light_v8)]
+#[test]
+fn watch_rejects_a_heap_below_the_v8_minimum_before_writing_a_macro_free_build() {
+    let dir = TempDir::new("dev-watch-heap-minimum");
+    let root = dir.join("src");
+    fs::create_dir_all(root.join("app")).unwrap();
+    fs::write(root.join("app/main.cljs"), "(ns app.main)\n").unwrap();
+    let out = dir.join("dev");
+    let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+        .args(["--watch", "--entry", "app.main", "--source-root"])
+        .arg(root)
+        .arg("--out-dir")
+        .arg(&out)
+        .args(["--no-cache", "--macro-memory-limit", "100000"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("JavaScript memory limit must be at least"),
+        "{stderr}"
+    );
+    assert!(!out.exists(), "the invalid watch wrote a build");
 }
 
 #[test]
@@ -2414,7 +2439,7 @@ fn a_watch_starts_from_the_default_cache_directory() {
     assert_eq!(stat(&warm, "macro-calls"), "0");
 }
 
-#[cfg(feature = "quickjs")]
+#[cfg(any(light_v8, feature = "quickjs"))]
 /// Steps that each run a changed macro again in the watch's session, after a
 /// start from the persistent cache that installed every namespace, hold no
 /// artifact and the same engines and engine handles after each step, and
@@ -2423,19 +2448,24 @@ fn a_watch_starts_from_the_default_cache_directory() {
 /// `DevSession::value_roots`), and the same values rooted in the session
 /// engine's registry after each step, since a redefinition releases the
 /// replaced macro's function (light-cljs-381). The payloads grow
-/// by those of the macro environments each step imports until the bridge's
-/// bounded cache of environments (64 slots and 128 child slots) is full,
-/// after about 64 steps here, since each step's macro is given only the
-/// entries of its environment it reads (light-cljs-433) and so fills one
-/// slot, so the last ten of 75 steps are flat. The
-/// startup report, made once the start has dropped the artifacts it
-/// installed, counts nothing live.
+/// with the macro environments until they fill the bridge's 64 environment
+/// slots (with a separate 128-slot child cache). This fixture reaches that
+/// plateau by step 64 and holds it as later imports recycle slots. The startup
+/// report counts nothing live after dropping the artifacts it installed.
 #[test]
 fn repeated_steps_hold_bounded_engine_state_and_no_artifact() {
+    const CACHE_FILL_STEPS: usize = 64;
     let mut watch = Watch::start("dev-watch-live");
     let cache = watch.dir.join("cache");
     let cache = cache.to_str().unwrap().to_owned();
-    let args = ["--stats", "--cache-dir", &cache];
+    // This many recompilations exceed the session's default expansion budget.
+    let args = [
+        "--stats",
+        "--cache-dir",
+        &cache,
+        "--macro-expansions",
+        "4096",
+    ];
     watch.restart(&args);
     watch.restart(&args);
     let report = watch.startup.join("\n");
@@ -2454,7 +2484,7 @@ fn repeated_steps_hold_bounded_engine_state_and_no_artifact() {
     // Per step: artifacts, engines, engine handles, bridge payloads and the
     // values the session engine's registry roots.
     let mut counts = Vec::new();
-    for step in 1..=75 {
+    for step in 1..=320 {
         let edited = macros.replace("~label \": \"", &format!("~label \" {step}: \""));
         assert_ne!(edited, macros);
         let (lines, summary) = watch.save("app/macros.cljs", &edited);
@@ -2492,8 +2522,11 @@ fn repeated_steps_hold_bounded_engine_state_and_no_artifact() {
     // A redefinition releases the function of the macro it replaces, so
     // the session engine roots as many values after every step.
     assert!(counts.iter().all(|c| c[4] == counts[0][4]), "{counts:?}");
-    let last = &counts[counts.len() - 10..];
-    assert!(last.iter().all(|c| c[3] == last[0][3]), "{counts:?}");
+    let payloads = counts[CACHE_FILL_STEPS - 1][3];
+    assert!(payloads > counts[0][3], "the cache did not warm up");
+    for (step, count) in counts.iter().enumerate().skip(CACHE_FILL_STEPS - 1) {
+        assert_eq!(count[3], payloads, "bridge payloads at step {}", step + 1);
+    }
 }
 
 /// `light-cljs watch features` (docs/build-configuration.md, "Commands"),
