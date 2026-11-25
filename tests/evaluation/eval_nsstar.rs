@@ -171,7 +171,6 @@ fn source_macros_referrals_imports_and_ordered_effects_keep_the_declared_owner()
     std::fs::write(root.join("syntax/owner.cljs"), source).unwrap();
     let javascript =
         light_cljs::compile_namespace("syntax.owner", std::slice::from_ref(root.path())).unwrap();
-    // The Pants build embeds no QuickJS; Node still runs the program below.
     #[cfg(feature = "quickjs")]
     {
         let engine = light_cljs::evaluator::Evaluator::new(Default::default()).unwrap();

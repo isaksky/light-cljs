@@ -6,8 +6,7 @@
 //! server compiles each form with the watch's session and runs it in a
 //! runtime, which prints the value.
 
-// The Pants build compiles out the tests that need QuickJS, which leaves
-// some of their helpers and imports unused there.
+// Some helpers and imports are used only by tests that require QuickJS.
 #![cfg_attr(
     not(feature = "quickjs"),
     allow(unused_imports, unused_variables, unused_mut, unused_macros, dead_code)
@@ -315,7 +314,6 @@ impl Repl {
     }
 }
 
-// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
 #[cfg(feature = "quickjs")]
 /// `(+ 1 2)` goes from the terminal to the server, which compiles it, to the
 /// runtime, which runs and prints it, and back; the runtime keeps `*1`,
@@ -408,7 +406,6 @@ fn a_form_round_trips_through_a_node_runtime() {
     assert_eq!(short.value("*2"), "nil");
 }
 
-// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
 #[cfg(feature = "quickjs")]
 /// A watch started warm from `--cache-dir` compiles REPL forms in an
 /// installed namespace as a cold one does: with the aliases, refers and
@@ -460,7 +457,6 @@ fn repl_forms_compile_in_installed_namespaces() {
     assert_eq!(printed[0], printed[1]);
 }
 
-// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
 #[cfg(feature = "quickjs")]
 /// A cached namespace whose file adds requires after its `ns` form, with
 /// `ns*` and a top-level `require`, keeps their aliases in a warm-started
@@ -502,7 +498,6 @@ fn repl_forms_keep_the_later_directives_of_installed_namespaces() {
     assert_eq!(printed[0], printed[1]);
 }
 
-// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
 #[cfg(feature = "quickjs")]
 /// A definition made at the REPL is seen by a namespace a save reloads, and
 /// a definition the reload makes is seen at the REPL: they share the
@@ -534,7 +529,6 @@ fn definitions_cross_between_the_repl_and_reloads() {
     );
 }
 
-// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
 #[cfg(feature = "quickjs")]
 /// An error thrown in the runtime comes back with its stack mapped to the
 /// sources, of the REPL form and of a reloaded namespace, and is `*e` there;
@@ -596,7 +590,6 @@ fn errors_come_back_located() {
     );
 }
 
-// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
 #[cfg(feature = "quickjs")]
 /// Forms go to the most recently connected runtime unless
 /// `light.dev/select!` chose another; a save's load and what a REPL form
@@ -687,7 +680,6 @@ fn two_runtimes_and_selection() {
     );
 }
 
-// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
 #[cfg(feature = "quickjs")]
 /// A session that closes takes its history out of the runtimes, and a
 /// session belongs to one server: after a restart, a client of the old
@@ -728,7 +720,6 @@ fn sessions_belong_to_one_server() {
     );
 }
 
-// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
 #[cfg(feature = "quickjs")]
 /// A page cannot use the REPL endpoint: a request with an `Origin`, or
 /// without a JSON content type, which a page could send to another site, is
@@ -829,7 +820,6 @@ fn watch_features_binds_its_sessions_with_light_dev_repl() {
     assert_eq!(repl.value("(str *ns*)"), "\"app.main\"");
 }
 
-// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
 #[cfg(feature = "quickjs")]
 /// A flag-only `--watch` runs one unnamed build: `(light.dev/repl ...)` is
 /// an exact error saying so, and `light.dev/runtimes` names no build.
@@ -865,7 +855,6 @@ const MULTI: &str = concat!(
     "/tests/fixtures/build-configuration/multi"
 );
 
-// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
 #[cfg(feature = "quickjs")]
 /// `light-cljs watch app worker` on a temporary copy of the multi fixture:
 /// a `--repl --connect` session evaluates in the app's runtime, then after
@@ -948,7 +937,6 @@ fn run_in(
     )
 }
 
-// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
 #[cfg(feature = "quickjs")]
 /// `light-cljs cljs-repl worker` (docs/build-configuration.md, "Commands")
 /// against a running `watch app worker` of a temporary copy of the multi
@@ -1090,7 +1078,6 @@ fn cljs_repl_reads_the_cache_root_and_takes_the_print_flags() {
     );
 }
 
-// --watch, the dev server and the REPL compile in a QuickJS session; the Pants build has none yet (light-cljs-476).
 #[cfg(feature = "quickjs")]
 /// A `cljs-repl` session the server forgot, because the watch was started
 /// again on its port, is opened again bound to the same build: the next

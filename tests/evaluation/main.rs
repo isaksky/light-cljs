@@ -2,8 +2,7 @@
 //! linked into a single test binary. Add a suite as `tests/evaluation/<name>.rs` and
 //! register it below.
 
-// The Pants build compiles out the QuickJS half of cross-engine checks, which
-// leaves some of their imports, helpers and inputs unused there.
+// Some imports, helpers and inputs are used only by the QuickJS checks.
 #![cfg_attr(
     not(feature = "quickjs"),
     allow(unused_imports, unused_variables, unused_mut, unused_macros, dead_code)
