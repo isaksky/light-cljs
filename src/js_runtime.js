@@ -13278,7 +13278,8 @@
   function fnApplyTo(delegate, fixed, args) {
     if (arguments.length === 2) {
       const applyToFn = rest => fnApplyTo(delegate, fixed, rest);
-      applyToFn.direct$LKEY = true;
+      applyToFn.delegate$LKEY = delegate;
+      applyToFn.fixed$LKEY = fixed;
       return applyToFn;
     }
     const prefix = [];
@@ -14341,43 +14342,45 @@
     for (let i = 0; i < n; i++, args = rest(args)) values.push(first(args));
     return fn.call(null, ...values);
   }
-  //@unit applyDirect requires: call0, call1, call2, ConsCell
+  //@unit applyDirect requires: ConsCell, ListCell
   function applyDirect(fn, p, a, b, c, len, at, tailSeq) {
     const fixed = fn.cljs$lang$maxFixedArity, total = p + len;
     if (total <= fixed) {
-      if (total === 0) return call0(fn);
-      if (total === 1) return call1(fn, p ? a : at(0));
-      if (total === 2) return call2(fn, p ? a : at(0), p === 2 ? b : at(p ? 0 : 1));
-      if (total === 3) return fn(p ? a : at(0), p > 1 ? b : at(1 - p), p > 2 ? c : at(2 - p));
-      if (total === 4) return fn(p ? a : at(0), p > 1 ? b : at(1 - p), p > 2 ? c : at(2 - p), at(3 - p));
+      if (total > 20) throw new Error("Only up to 20 arguments supported on functions");
+      if (total === 0) return fn.call(null);
+      if (total === 1) return fn.call(null, p ? a : at(0));
+      if (total === 2) return fn.call(null, p ? a : at(0), p === 2 ? b : at(p ? 0 : 1));
+      if (total === 3) return fn.call(null, p ? a : at(0), p > 1 ? b : at(1 - p), p > 2 ? c : at(2 - p));
+      if (total === 4) return fn.call(null, p ? a : at(0), p > 1 ? b : at(1 - p), p > 2 ? c : at(2 - p), at(3 - p));
       const out = new Array(total);
       if (p > 0) out[0] = a;
       if (p > 1) out[1] = b;
       if (p > 2) out[2] = c;
       for (let i = 0; i < len; i++) out[p + i] = at(i);
-      return fn.apply(null, out);
+      return fn.call(null, ...out);
     }
     const delegate = fn.cljs$core$IFn$_invoke$arity$variadic;
     if (p <= fixed) {
       const need = fixed - p, more = tailSeq(need);
-      if (fixed === 0) return delegate(more);
-      if (fixed === 1) return p === 0 ? delegate(at(0), more) : delegate(a, more);
-      if (fixed === 2) return p === 0 ? delegate(at(0), at(1), more) : p === 1 ? delegate(a, at(0), more) : delegate(a, b, more);
-      if (fixed === 3) return p === 0 ? delegate(at(0), at(1), at(2), more) : p === 1 ? delegate(a, at(0), at(1), more) : p === 2 ? delegate(a, b, at(0), more) : delegate(a, b, c, more);
+      if (fixed === 0) return delegate.call(null, more);
+      if (fixed === 1) return p === 0 ? delegate.call(null, at(0), more) : delegate.call(null, a, more);
+      if (fixed === 2) return p === 0 ? delegate.call(null, at(0), at(1), more) : p === 1 ? delegate.call(null, a, at(0), more) : delegate.call(null, a, b, more);
+      if (fixed === 3) return p === 0 ? delegate.call(null, at(0), at(1), at(2), more) : p === 1 ? delegate.call(null, a, at(0), at(1), more) : p === 2 ? delegate.call(null, a, b, at(0), more) : delegate.call(null, a, b, c, more);
       const args = new Array(fixed + 1);
       if (p > 0) args[0] = a;
       if (p > 1) args[1] = b;
       if (p > 2) args[2] = c;
       for (let i = 0; i < need; i++) args[p + i] = at(i);
       args[fixed] = more;
-      return delegate.apply(null, args);
+      return delegate.call(null, ...args);
     }
     let more = len ? tailSeq(0) : null;
-    if (p === 3 && fixed < 3) more = new ConsCell(c, more);
-    if (p >= 2 && fixed < 2) more = new ConsCell(b, more);
-    if (fixed === 0) return delegate(new ConsCell(a, more));
-    if (fixed === 1) return delegate(a, more);
-    return delegate(a, b, more);
+    const nilTail = len === 0 && tailSeq === null;
+    if (p === 3 && fixed < 3) more = nilTail && more === null ? new ListCell(c, null, 1) : new ConsCell(c, more);
+    if (p >= 2 && fixed < 2) more = nilTail && more === null ? new ListCell(b, null, 1) : new ConsCell(b, more);
+    if (fixed === 0) return delegate.call(null, nilTail && more === null ? new ListCell(a, null, 1) : new ConsCell(a, more));
+    if (fixed === 1) return delegate.call(null, a, more);
+    return delegate.call(null, a, b, more);
   }
   //@unit applyFixed
   function applyFixed(fn, p, a, b, c, len, at) {
@@ -14396,6 +14399,18 @@
     const e = fn["cljs$core$IFn$_invoke$arity$" + total];
     return e ? e.call(fn, ...out) : fn.call(fn, ...out);
   }
+  //@unit applyFixedLiveArray
+  function applyFixedLiveArray(fn, p, a, b, c, arr, start) {
+    const out = [];
+    if (p > 0) out.push(a);
+    if (p > 1) out.push(b);
+    if (p > 2) out.push(c);
+    for (let i = start; i < arr.length; i++) out.push(arr[i]);
+    const total = out.length;
+    if (total > 20) return fn.apply(fn, out);
+    const e = fn["cljs$core$IFn$_invoke$arity$" + total];
+    return e ? e.call(fn, ...out) : fn.call(fn, ...out);
+  }
   //@unit makeVector.apply effect: makeVector, mapEntry when: apply requires: applyDirect,
   //@ applyFixed, ChunkedSeqCell, IndexedSeqCell, kindHooks, vectorChunk, vectorNth
   kindHooks.applyVector = (fn, p, a, b, c, tail, fixedOnly) => {
@@ -14406,59 +14421,58 @@
           i => len <= 32 ? new IndexedSeqCell(vectorChunk(tail, 0), i, true, "indexed")
             : new ChunkedSeqCell(vectorChunk(tail, i & -32), i & 31, tail, i & -32));
   };
-  //@unit apply requires: applyDirect, applyFixed, applyTo, boundedCount, call0, call1, call2, cons,
+  //@unit apply requires: applyDirect, applyFixed, applyFixedLiveArray, applyTo, boundedCount, cons,
   //@ fieldComparisons, fnCall, hostExt, IndexedSeqCell, kindHooks, ownSeqs, protocolSentinel, seq,
   //@ slotFirst, toArray
   function apply(fn, a, b, c, d) {
     const argc = arguments.length;
     if (argc >= 2 && argc <= 5 && fn != null && slotFirst.on && !ownSeqs.on && !hostExt.seq) {
       const applyToFn = fn.cljs$lang$applyTo;
-      if (!applyToFn || (applyToFn.direct$LKEY === true && fn.call === fnCall)) {
+      if (!applyToFn || (applyToFn.delegate$LKEY !== undefined && applyToFn.delegate$LKEY === fn.cljs$core$IFn$_invoke$arity$variadic && applyToFn.fixed$LKEY === fn.cljs$lang$maxFixedArity && fn.call === fnCall)) {
         let p = argc - 2, a0 = a, a1 = b, a2 = c, tail = argc === 2 ? a : argc === 3 ? b : argc === 4 ? c : d;
         const limit = applyToFn ? Math.min(3, fn.cljs$lang$maxFixedArity) : 3;
         while (p < limit && tail != null && fieldComparisons.on) {
           const k = tail.cljs$lang$kind$$LKEY;
-          if ((k === 14 || k === 12) && tail.rest$LKEY !== undefined) {
+          if (k === 14 && tail.rest$LKEY !== undefined) {
             const v = tail.first$LKEY;
             if (p === 0) a0 = v; else if (p === 1) a1 = v; else a2 = v;
             p++;
-            tail = k === 12 && tail.count$LKEY === 1 ? null : tail.rest$LKEY;
+            tail = tail.rest$LKEY;
+          } else if (k === 12 && tail.rest$LKEY !== undefined) {
+            const cnt = tail.count$LKEY, r = tail.rest$LKEY;
+            if (cnt === 1 ? (r == null || r.cljs$lang$kind$$LKEY === 13) : (cnt > 1 && r != null && r.cljs$lang$kind$$LKEY === 12 && r.count$LKEY === cnt - 1)) {
+              const v = tail.first$LKEY;
+              if (p === 0) a0 = v; else if (p === 1) a1 = v; else a2 = v;
+              p++;
+              tail = cnt === 1 ? null : r;
+            } else break;
           } else break;
         }
         if (tail == null) {
           return applyToFn ? applyDirect(fn, p, a0, a1, a2, 0, null, null) : applyFixed(fn, p, a0, a1, a2, 0, null);
         }
         const kind = tail.cljs$lang$kind$$LKEY;
-        if (applyToFn && (kind === 14 || kind === 12) && fieldComparisons.on && tail.rest$LKEY !== undefined) {
+        if (applyToFn && (kind === 14 || (kind === 12 && tail.count$LKEY > 0)) && fieldComparisons.on && tail.rest$LKEY !== undefined) {
           const fixed = fn.cljs$lang$maxFixedArity, restTail = tail.rest$LKEY;
-          if (p >= fixed && (restTail == null || restTail.cljs$lang$kind$$LKEY === 5 || restTail.cljs$lang$kind$$LKEY === 12 || restTail.cljs$lang$kind$$LKEY === 14)) {
+          if (p >= fixed && (restTail == null || restTail.cljs$lang$kind$$LKEY === 5 || restTail.cljs$lang$kind$$LKEY === 12 || restTail.cljs$lang$kind$$LKEY === 13 || restTail.cljs$lang$kind$$LKEY === 14)) {
             return applyDirect(fn, p, a0, a1, a2, 1, null, () => tail);
           }
         }
         if (kind === 5 && fieldComparisons.on && tail.view$LKEY === "indexed" && Array.isArray(tail.arr$LKEY)) {
           const arr = tail.arr$LKEY, start = tail.i$LKEY, len = arr.length - start;
-          if (len >= 0) {
+          if (start >= 0 && len >= 0) {
             return applyToFn
               ? applyDirect(fn, p, a0, a1, a2, len, i => arr[start + i], i => i === 0 ? tail : new IndexedSeqCell(arr, start + i, true, "indexed"))
-              : applyFixed(fn, p, a0, a1, a2, len, i => arr[start + i]);
+              : applyFixedLiveArray(fn, p, a0, a1, a2, arr, start);
           }
         }
         if (kind === 1 && fieldComparisons.on && tail.tail$LKEY !== undefined && tail.callerTail$LKEY === undefined) {
           const cnt = tail.cnt$LKEY;
           if (cnt <= 32 && tail.tail$LKEY.length === cnt) {
             const arr = tail.tail$LKEY;
-            if (!applyToFn) return applyFixed(fn, p, a0, a1, a2, cnt, i => arr[i]);
-            if (p === 0) {
-              if (cnt === 0) return call0(fn);
-              if (cnt === 1) return call1(fn, arr[0]);
-              if (cnt === 2) return call2(fn, arr[0], arr[1]);
-              if (cnt === 3) return fn(arr[0], arr[1], arr[2]);
-              if (cnt === 4) return fn(arr[0], arr[1], arr[2], arr[3]);
-              return fn.apply(null, arr);
-            }
-            if (p === 1 && cnt <= 3) return cnt === 0 ? call1(fn, a0) : cnt === 1 ? call2(fn, a0, arr[0]) : cnt === 2 ? fn(a0, arr[0], arr[1]) : fn(a0, arr[0], arr[1], arr[2]);
-            if (p === 2 && cnt <= 2) return cnt === 0 ? call2(fn, a0, a1) : cnt === 1 ? fn(a0, a1, arr[0]) : fn(a0, a1, arr[0], arr[1]);
-            if (p === 3 && cnt <= 1) return cnt === 0 ? fn(a0, a1, a2) : fn(a0, a1, a2, arr[0]);
+            return applyToFn
+              ? applyDirect(fn, p, a0, a1, a2, cnt, i => arr[i], i => new IndexedSeqCell(arr, i, true, "indexed"))
+              : applyFixed(fn, p, a0, a1, a2, cnt, i => arr[i]);
           }
           if (kindHooks.applyVector) return kindHooks.applyVector(fn, p, a0, a1, a2, tail, !applyToFn);
         }
@@ -14469,7 +14483,7 @@
           && tail.cljs$core$ISeqable$$LKEY !== protocolSentinel && tail.cljs$core$ICounted$$LKEY !== protocolSentinel) {
           return applyToFn
             ? applyDirect(fn, p, a0, a1, a2, tail.length, i => tail[i], i => new IndexedSeqCell(tail, i, true, "indexed"))
-            : applyFixed(fn, p, a0, a1, a2, tail.length, i => tail[i]);
+            : applyFixedLiveArray(fn, p, a0, a1, a2, tail, 0);
         }
       }
     }

@@ -21,10 +21,22 @@ fn both(source: &str, expected: &str) {
             let e = Evaluator::new(EvaluatorOptions::default()).unwrap();
             assert_eq!(e.print(e.evaluate_js(&js).unwrap()).unwrap(), expected);
         }
-        let out = Command::new("node")
-            .args(["-e", &format!("console.log({js});")])
-            .output()
+        use std::io::Write as _;
+        use std::process::Stdio;
+        let script = format!("console.log({js});");
+        let mut child = Command::new("node")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
             .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(script.as_bytes())
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
         assert!(
             out.status.success(),
             "{}",

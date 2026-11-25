@@ -468,6 +468,20 @@ fn apply_direct_array_tails_preserve_indexed_reads() {
              (apply + 1 2 3 iter-long)]))"#),
         "\"[false 9 10 12 15 596 601]\"\n"
     );
+
+    // Sol #5: fixed-only apply keeps mutable JS array length live during traversal
+    // for both raw JS arrays and IndexedSeq views over them.
+    assert_eq!(
+        run(r#"
+        (let [make-shrinking (fn []
+                               (js* "(() => { const a = [0, 2]; Object.defineProperty(a, 0, { enumerable: true, get() { a.length = 1; return 1; } }); return a; })()"))
+              js-argc (js* "(function() { return arguments.length; })")]
+          (pr-str [(apply js-argc (make-shrinking))
+                   (apply js-argc (seq (make-shrinking)))
+                   (apply js-argc 99 (make-shrinking))
+                   (apply js-argc 99 (seq (make-shrinking)))]))"#),
+        "\"[1 1 2 2]\"\n"
+    );
 }
 
 #[test]
@@ -916,14 +930,34 @@ fn apply_variadic_multifn_and_seq_tails_preserve_semantics_and_identity() {
         "\"[[:f0 []] [:f0 [1 2]] [:f0 [:a 1 2]] [:f0 [:a :b 1 2]] [:f1 :a []] [:f1 :a [1 2]] [:f1 :a [:b 1 2]] [:f1 :a [:b]] [:f1 :a []] [:f1 :a [:b :c]] [:f2-1 :a] [:f2-2 :a :b] [:f2-v :a :b [3 4]] [:f2-2 :a :b] [:f2-v :a :b [:c]] [:f3 :a :b :c []] [:f3 :a :b :c [1 2]] [:fx1 :x] [:fx2 :x :y] [:fx3 :x :y :z] [:f3 :todos :sub :q [:fn1 :fn2]] [:f3 :todos :sub :q []] [:plain :p1 :p2] [:plain :p1 :p2] true true true 20 99]\"\n"
     );
 
-    // Custom cljs$lang$applyTo on an emitted variadic function and custom
-    // extend-type / specify! on IndexedSeq, Cons, and List disable fast paths.
+    // Custom cljs$lang$applyTo on an emitted variadic function (including one
+    // borrowed from another variadic function, or a reassigned variadic entry),
+    // prefixed rest types (nil -> List, empty/nonempty vector -> Cons), and
+    // custom extend-type / specify! on IndexedSeq, Cons, and List.
     assert_eq!(
         run(r#"
         (defn vf [a & xs] [a (vec xs)])
         (set! (.-cljs$lang$applyTo vf) (fn [args] [:override (vec args)]))
-        (pr-str [(apply vf 1 (seq [2 3])) (apply vf 1 nil)])"#),
-        "\"[[:override [1 2 3]] [1 []]]\"\n"
+        (defn f-a [& xs] [:a (vec xs)])
+        (defn f-b [& xs] [:b (vec xs)])
+        (set! (.-cljs$lang$applyTo f-a) (.-cljs$lang$applyTo f-b))
+        (defn f-re [& xs] [:orig (vec xs)])
+        (set! (.-cljs$core$IFn$_invoke$arity$variadic f-re) (fn [xs] [:mutated (vec xs)]))
+        (defn rest-type [& xs] [(instance? List xs) (instance? Cons xs) (vec xs)])
+        (defn rest-type1 [a & xs] [a (instance? List xs) (instance? Cons xs) (vec xs)])
+        (pr-str [(apply vf 1 (seq [2 3]))
+                 (apply vf 1 nil)
+                 (apply f-a (list 1 2))
+                 (apply f-a [1 2])
+                 (apply f-re (list 1 2))
+                 (apply rest-type :x nil)
+                 (apply rest-type :x :y nil)
+                 (apply rest-type :x [])
+                 (apply rest-type :x [1])
+                 (apply rest-type1 :a :b nil)
+                 (apply rest-type1 :a :b [])
+                 (apply rest-type1 :a :b [1])])"#),
+        "\"[[:override [1 2 3]] [1 []] [:b [1 2]] [:b [1 2]] [:orig [1 2]] [true false [:x]] [false true [:x :y]] [false true [:x]] [false true [:x 1]] [:a true false [:b]] [:a false true [:b]] [:a false true [:b 1]]]\"\n"
     );
 
     assert_eq!(
@@ -999,5 +1033,136 @@ fn lazy_method_key_marker_and_core_method_preserve_protocols() {
              (mm :k)
              (persistent! t)]))"#),
         "\"[true true 5 [5 :k] [5 :k :nf] 8 14 true true 77 (:a :b) [:hit :k] [1 2]]\"\n"
+    );
+}
+
+#[test]
+fn apply_variadic_preserves_null_receiver() {
+    let run = |source: &str| super::optimization::json_at_every_level(source);
+
+    // Sol #2: fixed overloads and variadic delegates receive a null receiver
+    // (globalThis in sloppy mode, null in strict mode), matching applyTo/fnApplyTo.
+    assert_eq!(
+        run(r#"
+        (let [f (fn ([x] (this-as r (identical? r js/globalThis)))
+                    ([x & more] (this-as r [(identical? r js/globalThis) x (vec more)])))]
+          (pr-str
+            [(apply f (list 10))
+             (apply f [10])
+             (apply f (seq [10]))
+             (apply f 10 nil)
+             (apply f 10 [20 30])
+             (apply f 10 (seq [20 30]))
+             (apply f (list 10 20))]))"#),
+        "\"[true true true true [true 10 [20 30]] [true 10 [20 30]] [true 10 [20]]]\"\n"
+    );
+
+    // Strict-mode variadic body observing raw `this` (must be `null`, not `undefined` or `fn`).
+    assert_eq!(
+        run(r#"
+        (let [f (fn ([x] (js* "(function() { 'use strict'; return this === null; }).call(this)"))
+                    ([x & more] [(js* "(function() { 'use strict'; return this === null; }).call(this)") x (count more)]))]
+          (pr-str
+            [(apply f (list 1))
+             (apply f [1])
+             (apply f 1 [2 3])
+             (apply f 1 (seq [2 3]))]))"#),
+        "\"[false false [false 1 2] [false 1 2]]\"\n"
+    );
+}
+
+#[test]
+fn apply_preserves_public_list_count() {
+    let run = |source: &str| super::optimization::json_at_every_level(source);
+
+    // Sol #6: public List. constructor retains its supplied count; apply must
+    // match boundedCount's count-driven dispatch for zero-count and
+    // mismatched-count lists.
+    assert_eq!(
+        run(r#"
+        (let [z (List. nil :a (list :b) 0 nil)
+              over (List. nil :a nil 5 nil)
+              under (List. nil :a (list :b) 1 nil)
+              f0 (fn [& xs] (nil? xs))
+              f2 (fn ([a] [:one a])
+                     ([a b] [:two a b])
+                     ([a b & xs] [:var a b (vec xs)]))]
+          (pr-str
+            [(apply f0 z)
+             (apply f2 z)
+             (apply f2 over)
+             (apply f2 under)]))"#),
+        "\"[true [:var nil nil []] [:var :a nil []] [:one :a]]\"\n"
+    );
+}
+
+#[test]
+fn apply_variadic_preserves_apply_to_arity_limit() {
+    let run = |source: &str| super::optimization::json_at_every_level(source);
+
+    // Sol #7: emitted variadic with 21 required parameters throws applyTo's
+    // 20-argument error at 21 args (<= maxFixedArity), succeeds at 20 (via
+    // 20-arity) and at 22 (> maxFixedArity, variadic dispatch).
+    assert_eq!(
+        run(r#"
+        (defn f21
+          ([a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11 a12 a13 a14 a15 a16 a17 a18 a19 a20]
+           [:fixed20 a20])
+          ([a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11 a12 a13 a14 a15 a16 a17 a18 a19 a20 a21 & more]
+           [:var21 a21 (vec more)]))
+        (let [try-apply (fn [xs]
+                          (try
+                            (apply f21 xs)
+                            (catch :default e (.-message e))))
+              v20 (vec (range 20))
+              v21 (vec (range 21))
+              v22 (vec (range 22))]
+          (pr-str
+            [(try-apply v20)
+             (try-apply (seq v20))
+             (try-apply v21)
+             (try-apply (seq v21))
+             (try-apply v22)
+             (try-apply (seq v22))]))"#),
+        "\"[[:fixed20 19] [:fixed20 19] \\\"Only up to 20 arguments supported on functions\\\" \\\"Only up to 20 arguments supported on functions\\\" [:var21 20 [21]] [:var21 20 [21]]]\"\n"
+    );
+}
+
+#[test]
+fn advanced_apply_bypasses_slow_for_startup_shapes() {
+    // Sol #8: assert emitted variadics and MultiFns bypass applySlow on
+    // IndexedSeq (fnRest), Cons, List, and vector tails, including after a
+    // user-only protocol extension, while a core sequence override falls back.
+    let source = r#"
+        (defprotocol UserMarker (mark-val [this]))
+        (extend-type PersistentVector UserMarker (mark-val [this] (count this)))
+        (defn vf [a b & more] (+ a b (count more)))
+        (defmulti mm (fn [k & _] k))
+        (defmethod mm :k [_ a & more] (+ a (count more)))
+        (defn wrap-vf [a & args] (apply vf a args))
+        (defn wrap-mm [k & args] (apply mm k args))
+        (let [slow #(aget js/globalThis "__applySlow")
+              before (slow)
+              r1 (wrap-vf 10 20 30 40)
+              r2 (wrap-mm :k 5 6 7)
+              r3 (apply vf 1 (cons 2 (list 3 4)))
+              r4 (apply vf 1 [2 3 4])
+              r5 (apply mm :k (list 5 6))
+              after-fast (slow)
+              _ (extend-type IndexedSeq ISeq (-first [_] 99) (-rest [_] nil) INext (-next [_] nil))
+              r6 (apply vf 1 (seq [2 3]))
+              after-override (slow)]
+          (str (- after-fast before) "," (> after-override after-fast) ","
+               r1 "," r2 "," r3 "," r4 "," r5 "," r6))"#;
+    let program = analyze(source, &parse(source).unwrap()).unwrap();
+    let mut options = ApplicationOptions::new(OptimizationLevel::Advanced);
+    options.pseudo_names = true;
+    let mut js = prepare_application(&program, options).emit_js();
+    let head = "function applySlow(fn, ...args) {";
+    assert!(js.contains(head), "missing {head}");
+    js = js.replace(head, &format!("{head} globalThis.__applySlow++;"));
+    assert_eq!(
+        execute(&format!("globalThis.__applySlow = 0; console.log({js});")),
+        "0,true,32,7,5,5,6,100\n"
     );
 }

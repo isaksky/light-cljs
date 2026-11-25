@@ -32,7 +32,21 @@ fn recovered_core_var_metadata_executes_in_applications_and_macros() {
         "const rt = {RUNTIME_SOURCE}; console.log(rt.core.prStr(({})(rt)));",
         emit_js_unit(&program)
     );
-    let out = Command::new("node").args(["-e", &script]).output().unwrap();
+    use std::io::Write as _;
+    use std::process::Stdio;
+    let mut child = Command::new("node")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(script.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
     assert!(
         out.status.success(),
         "{}",
