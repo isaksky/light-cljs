@@ -59,10 +59,18 @@ fn uncaught_application(failed_unit: &str, _recovery_unit: &str, message: &str, 
     {
         let engine = crate::embedded_js::EmbeddedJs::interactive();
         let failure = engine.string(&script).unwrap_err();
-        assert_eq!(
-            failure.0.lines().next().unwrap(),
-            format!("Error: {message}")
-        );
+        let diagnostic = failure.0.as_str();
+        // The QuickJS-only build appends stack frames to the diagnostic.
+        let diagnostic = if cfg!(light_v8) {
+            diagnostic
+        } else {
+            diagnostic
+                .split("\n    at ")
+                .next()
+                .unwrap()
+                .trim_end_matches('\n')
+        };
+        assert_eq!(diagnostic, format!("Error: {message}"));
         fs::write(directory.join("application-embedded-failure.txt"), message).unwrap();
         let recovery = format!("rt.core.prStr(({_recovery_unit})(rt));");
         let actual = engine.string(&recovery).unwrap();
