@@ -211,6 +211,11 @@ impl DevSession {
         session.set_warning_mode(true);
         Ok(session)
     }
+    /// Check the V8 macro heap limit before starting a build or session.
+    #[cfg(light_v8)]
+    pub fn validate_macro_memory_limit(limit: usize) -> Result<(), EvalDiagnostic> {
+        crate::v8_evaluator::V8Evaluator::validate_memory_limit(limit).map_err(EvalDiagnostic::from)
+    }
     /// A session [`Self::new`] makes that has loaded `start.entry` and its
     /// dependencies from `start.roots`, compiled once as `--compile --entry`
     /// compiles them, in the session's own macro host and engine, with the
@@ -382,7 +387,7 @@ impl DevSession {
         control: Option<ExecutionControl>,
     ) -> Result<Self, EvalDiagnostic> {
         #[cfg(light_v8)]
-        crate::v8_evaluator::V8Evaluator::validate_memory_limit(options.engine.memory_limit)?;
+        Self::validate_macro_memory_limit(options.engine.memory_limit)?;
         let (control, operation) = match control {
             Some(control) => (control, None),
             None => (

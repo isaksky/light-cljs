@@ -717,15 +717,6 @@ fn start(
     roots: Vec<PathBuf>,
     begun: Instant,
 ) -> Result<(Watch, Vec<Diagnostic>)> {
-    let mut host = MacroHost::new();
-    host.set_assertions(options.assertions);
-    host.set_build_configuration(options.configuration.clone());
-    // Macros see stub packages, as with --compile: only the application
-    // has the host's packages.
-    host.opaque_packages = true;
-    options
-        .macro_limits
-        .apply(&mut host.limits, &mut host.evaluator_options);
     // Dev compilation reports undeclared Vars and arity conflicts as
     // warnings (docs/dev-workflow.md, "Dev-mode contract").
     let analysis = AnalysisOptions {
@@ -777,9 +768,21 @@ fn start(
                 manifest: Some(&mut graph),
             },
             &mut warnings,
-        ),
+        )
+        .map(|(session, program, sources)| (Some(session), program, sources)),
         None => {
-            let session = DevSession::new(&session_options)?;
+            // Reject invalid heap limits before the build, even when it
+            // uses no macros and would never start a V8 isolate.
+            #[cfg(light_v8)]
+            DevSession::validate_macro_memory_limit(session_options.engine.memory_limit)?;
+            let mut host = MacroHost::new();
+            host.set_assertions(options.assertions);
+            host.set_build_configuration(options.configuration.clone());
+            // Macros see stub packages, as with --compile.
+            host.opaque_packages = true;
+            options
+                .macro_limits
+                .apply(&mut host.limits, &mut host.evaluator_options);
             crate::analyze_entry(
                 &options.entry,
                 &options.roots,
@@ -799,12 +802,12 @@ fn start(
                     })
                 },
             )
-            .map(|(program, sources)| (session, program, sources))
+            .map(|(program, sources)| (None, program, sources))
         }
     };
     let tag = tag(options);
     crate::print_tagged_warnings(&tag, &warnings);
-    let (session, mut program, sources) = compiled?;
+    let (seeded, mut program, sources) = compiled?;
     // The build's warnings, located for the server, which shows them to the
     // runtimes that connect before the first step.
     let startup = warnings
@@ -837,7 +840,7 @@ fn start(
     let manifest = DevManifest::new(&program);
     drop(program);
     let session_started = stats.is_some().then(Instant::now);
-    if cache.is_some() {
+    let session = if let Some(session) = seeded {
         // The session has the build's program. Record each namespace's
         // resolved file as a load through the provider would, including
         // symbolic link targets outside the roots.
@@ -847,7 +850,10 @@ fn start(
                 files.insert(record.name.clone(), PathBuf::from(&record.source.file));
             }
         }
-    }
+        session
+    } else {
+        DevSession::new(&session_options)?
+    };
     // The build's key, which its runtime.js loaded with: every unit, step
     // and REPL form the session writes for the page has it.
     session.set_page_key(light_cljs::dev_build::dev_key(
