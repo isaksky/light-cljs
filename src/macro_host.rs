@@ -4137,6 +4137,55 @@ mod compiler_default_reader_tests {
 
     #[cfg(light_v8)]
     #[test]
+    fn compiler_data_reader_allocates_40_mib_at_the_default_build_limit() {
+        use crate::{
+            compile_stats::CompileStats,
+            compiler::{EntryRecorders, analyze_namespace_entry_recorded_with_provider},
+            scheduler::Slots,
+            source_provider::{LoadRequest, SourceInput},
+            v8_evaluator::V8Evaluator,
+        };
+
+        let sources = |_: &LoadRequest| {
+            Ok(Some(SourceInput::new(
+                "reader.cljs",
+                "(ns reader) #size 40",
+            )))
+        };
+        // At 64 MiB total, the coordinator reserves the entire macro budget,
+        // so three jobs still plan no worker isolates. The coordinator's
+        // reader has its own full 64 MiB allowance, with no shared headroom
+        // needed for this allocation.
+        for jobs in [1, 3] {
+            let mut host = MacroHost::new();
+            host.register_compiler_data_reader(
+                Name::new(None, "size"),
+                "(fn [mib] (.-byteLength (js/ArrayBuffer. (* mib 1024 1024))))",
+            )
+            .unwrap();
+            let mut stats = CompileStats::default();
+            let (program, _) = analyze_namespace_entry_recorded_with_provider(
+                "reader",
+                &sources,
+                &mut host,
+                Default::default(),
+                &mut Vec::new(),
+                EntryRecorders {
+                    stats: Some(&mut stats),
+                    slots: Slots::new(jobs).unwrap(),
+                    ..Default::default()
+                },
+            )
+            .unwrap_or_else(|error| panic!("{jobs} jobs: {error}"));
+            assert_eq!(stats.deferred_units.pool_engine_workers, 0);
+            let evaluator = V8Evaluator::new(Default::default()).unwrap();
+            let result = evaluator.evaluate(&program).unwrap();
+            assert_eq!(evaluator.number(result).unwrap(), (40 << 20) as f64);
+        }
+    }
+
+    #[cfg(light_v8)]
+    #[test]
     fn parallel_readers_grow_only_into_shared_headroom() {
         use crate::{compilation_session::PoolEngines, scheduler::Slots};
 
