@@ -160,7 +160,9 @@ impl State {
         }
     }
 }
-pub(crate) struct V8Evaluator {
+/// A synchronous V8 isolate running units against one canonical runtime.
+/// Its values are owned by the isolate and can only leave it as opaque IDs.
+pub struct V8Evaluator {
     context: Option<bridge::Root<v8::Context>>,
     isolate: RefCell<v8::OwnedIsolate>,
     state: Rc<State>,
@@ -368,8 +370,78 @@ impl V8Evaluator {
         Ok(())
     }
 
-    pub(crate) fn new(options: EvaluatorOptions) -> Result<Self, EvalError> {
+    /// Allocate a fresh heap. An engine failure ends the heap's session.
+    pub fn new(options: EvaluatorOptions) -> Result<Self, EvalError> {
         Self::new_with_startup(options, Self::startup_source)
+    }
+
+    pub fn control(&self) -> ExecutionControl {
+        self.state.control.clone()
+    }
+
+    /// Emit and execute a compiler unit against this heap's runtime.
+    pub fn evaluate(&self, program: &crate::Program) -> Result<ValueId, EvalError> {
+        self.state.control.poll()?;
+        let source = crate::emitter::emit_js_unit(program);
+        self.state.control.poll()?;
+        self.evaluate_unit(&source)
+    }
+
+    /// Execute a compiler unit produced by `emit_js_unit`.
+    pub fn evaluate_unit(&self, source: &str) -> Result<ValueId, EvalError> {
+        self.with_active(|e| e.evaluate_unit(source))
+    }
+
+    /// Evaluate a JavaScript expression with `rt` bound to the heap's runtime.
+    pub fn evaluate_js(&self, expression: &str) -> Result<ValueId, EvalError> {
+        self.evaluate_unit(&format!("(rt) => ({expression}\n)"))
+    }
+
+    pub fn call(&self, function: ValueId, arguments: &[ValueId]) -> Result<ValueId, EvalError> {
+        self.with_active(|e| e.call(function, arguments))
+    }
+
+    pub fn release(&self, id: ValueId) -> Result<(), EvalError> {
+        self.with_active(|e| e.release(id))
+    }
+
+    pub fn import_form(&self, form: &Form, limits: ConversionLimits) -> Result<ValueId, EvalError> {
+        self.with_active(|e| e.import_form(form, limits))
+    }
+
+    pub fn import_data(
+        &self,
+        data: &Datum,
+        limits: ConversionLimits,
+    ) -> Result<ValueId, EvalError> {
+        self.with_active(|e| e.import_data(data, limits))
+    }
+
+    pub fn export_form(
+        &self,
+        id: ValueId,
+        call: &Form,
+        origin: ExpansionOrigin,
+        limits: ConversionLimits,
+    ) -> Result<Form, EvalError> {
+        self.with_active(|e| e.export_form(id, call, origin, limits))
+    }
+
+    /// Request a full collection at an outer boundary.
+    pub fn collect_garbage(&self) {
+        let mut isolate = self.isolate.borrow_mut();
+        Entered::new(&mut isolate).0.low_memory_notification();
+    }
+
+    /// Count the values rooted by their outstanding IDs.
+    pub fn value_roots(&self) -> Result<usize, EvalError> {
+        self.with_active(|e| {
+            e.enter(|scope| {
+                let count = invoke(scope, e.state, "valueCount", &[])?;
+                bridge::number(scope, count)
+            })
+        })
+        .map(|count| count as usize)
     }
 
     fn startup_source() -> String {
@@ -1126,7 +1198,7 @@ impl MacroEvaluator for Active<'_, '_, '_> {
 }
 impl MacroEvaluator for V8Evaluator {
     fn control(&self) -> ExecutionControl {
-        self.state.control.clone()
+        self.control()
     }
     fn register_compiler_root(
         &self,
@@ -1154,7 +1226,7 @@ impl MacroEvaluator for V8Evaluator {
         self.with_active(|e| e.evaluate_registration(source, chunks))
     }
     fn evaluate_unit(&self, source: &str) -> Result<ValueId, EvalError> {
-        self.with_active(|e| e.evaluate_unit(source))
+        self.evaluate_unit(source)
     }
     fn compiler_frontier(&self, next: Option<usize>) -> Result<(), EvalError> {
         self.with_active(|e| e.compiler_frontier(next))
@@ -1180,10 +1252,10 @@ impl MacroEvaluator for V8Evaluator {
         self.with_active(|e| e.gensym_scope(serial, prefix, retired, native))
     }
     fn call(&self, function: ValueId, arguments: &[ValueId]) -> Result<ValueId, EvalError> {
-        self.with_active(|e| e.call(function, arguments))
+        self.call(function, arguments)
     }
     fn import_form(&self, form: &Form, limits: ConversionLimits) -> Result<ValueId, EvalError> {
-        self.with_active(|e| e.import_form(form, limits))
+        self.import_form(form, limits)
     }
     fn import_macro_form(
         &self,
@@ -1201,7 +1273,7 @@ impl MacroEvaluator for V8Evaluator {
         self.with_active(|e| e.macro_arguments(form, call, limits))
     }
     fn import_data(&self, data: &Datum, limits: ConversionLimits) -> Result<ValueId, EvalError> {
-        self.with_active(|e| e.import_data(data, limits))
+        self.import_data(data, limits)
     }
     fn import_environment(
         &self,
@@ -1217,10 +1289,10 @@ impl MacroEvaluator for V8Evaluator {
         origin: ExpansionOrigin,
         limits: ConversionLimits,
     ) -> Result<Form, EvalError> {
-        self.with_active(|e| e.export_form(id, call, origin, limits))
+        self.export_form(id, call, origin, limits)
     }
     fn release(&self, id: ValueId) -> Result<(), EvalError> {
-        self.with_active(|e| e.release(id))
+        self.release(id)
     }
 }
 fn compile_unit(
@@ -1341,17 +1413,10 @@ impl CompilerEvaluator for V8Evaluator {
         self.state.buffers.headroom_held()
     }
     fn collect_garbage(&self) {
-        let mut isolate = self.isolate.borrow_mut();
-        Entered::new(&mut isolate).0.low_memory_notification();
+        self.collect_garbage()
     }
     fn value_roots(&self) -> Result<usize, EvalError> {
-        self.with_active(|e| {
-            e.enter(|scope| {
-                let count = invoke(scope, e.state, "valueCount", &[])?;
-                bridge::number(scope, count)
-            })
-        })
-        .map(|count| count as usize)
+        self.value_roots()
     }
     fn install_string_service(
         &self,
@@ -1377,18 +1442,11 @@ impl CompilerEvaluator for V8Evaluator {
         })
     }
     fn evaluate_js(&self, expression: &str) -> Result<ValueId, EvalError> {
-        self.evaluate_unit(&format!("(rt) => ({expression}\n)"))
+        self.evaluate_js(expression)
     }
     #[cfg(test)]
     fn number(&self, id: ValueId) -> Result<f64, EvalError> {
-        self.with_active(|e| {
-            let id = e.check(id)?;
-            e.enter(|scope| {
-                let id = v8::Number::new(scope, id as f64);
-                let value = invoke(scope, e.state, "number", &[id.into()])?;
-                bridge::number(scope, value)
-            })
-        })
+        self.number(id)
     }
     fn install_compiler_service(
         self: Rc<Self>,

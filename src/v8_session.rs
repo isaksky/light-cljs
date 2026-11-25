@@ -57,7 +57,7 @@ impl V8Evaluator {
     /// A heap for an interactive session: language exceptions leave it
     /// usable, promise rejections with no handler are tracked, and the
     /// session's jobs run in [`SessionEvaluator::run_jobs`].
-    pub(crate) fn interactive(options: EvaluatorOptions) -> Result<Self, EvalError> {
+    pub fn interactive(options: EvaluatorOptions) -> Result<Self, EvalError> {
         let control = ExecutionControl::new(&options)?;
         let evaluator = Self::interactive_with_control(options, control)?;
         evaluator
@@ -73,12 +73,40 @@ impl V8Evaluator {
         Ok(evaluator)
     }
 
-    pub(super) fn export_data(
-        &self,
-        id: ValueId,
-        limits: ConversionLimits,
-    ) -> Result<Datum, EvalError> {
+    pub fn export_data(&self, id: ValueId, limits: ConversionLimits) -> Result<Datum, EvalError> {
         self.with_active(|e| e.export_data(id, limits))
+    }
+
+    pub fn number(&self, id: ValueId) -> Result<f64, EvalError> {
+        self.with_active(|e| e.number(id))
+    }
+
+    pub fn string(&self, id: ValueId) -> Result<String, EvalError> {
+        self.with_active(|e| e.string(id))
+    }
+
+    pub fn print(&self, id: ValueId) -> Result<String, EvalError> {
+        self.with_active(|e| e.print(id))
+    }
+
+    /// Create an explicit synchronous input capability. Providers return
+    /// nonempty chunks or `None` at EOF.
+    pub fn input_provider(
+        &self,
+        name: &str,
+        provider: impl Fn(ExecutionControl) -> Result<Option<String>, EvalError> + 'static,
+    ) -> Result<ValueId, EvalError> {
+        SessionEvaluator::input_provider(self, name, Rc::new(provider))
+    }
+
+    /// Live V8 heap bytes and charged buffer backing storage.
+    pub fn memory_usage_bytes(&self) -> i64 {
+        let used = self
+            .isolate
+            .borrow_mut()
+            .get_heap_statistics()
+            .used_heap_size();
+        i64::try_from(used.saturating_add(self.state.buffers.used())).unwrap_or(i64::MAX)
     }
 }
 
@@ -164,7 +192,7 @@ impl Active<'_, '_, '_> {
 
 impl SessionEvaluator for V8Evaluator {
     fn control(&self) -> ExecutionControl {
-        self.state.control.clone()
+        self.control()
     }
     /// Begin an operation, first emptying V8's compilation caches when the
     /// heap holds more than half the limit. A session evaluates a new source
@@ -181,28 +209,28 @@ impl SessionEvaluator for V8Evaluator {
         Ok(())
     }
     fn evaluate_unit(&self, source: &str) -> Result<ValueId, EvalError> {
-        MacroEvaluator::evaluate_unit(self, source)
+        self.evaluate_unit(source)
     }
     fn call(&self, function: ValueId, arguments: &[ValueId]) -> Result<ValueId, EvalError> {
-        MacroEvaluator::call(self, function, arguments)
+        self.call(function, arguments)
     }
     fn number(&self, id: ValueId) -> Result<f64, EvalError> {
-        self.with_active(|e| e.number(id))
+        self.number(id)
     }
     fn string(&self, id: ValueId) -> Result<String, EvalError> {
-        self.with_active(|e| e.string(id))
+        self.string(id)
     }
     fn print(&self, id: ValueId) -> Result<String, EvalError> {
-        self.with_active(|e| e.print(id))
+        self.print(id)
     }
     fn release(&self, id: ValueId) -> Result<(), EvalError> {
-        MacroEvaluator::release(self, id)
+        self.release(id)
     }
     fn import_data(&self, data: &Datum, limits: ConversionLimits) -> Result<ValueId, EvalError> {
-        MacroEvaluator::import_data(self, data, limits)
+        self.import_data(data, limits)
     }
     fn export_data(&self, id: ValueId, limits: ConversionLimits) -> Result<Datum, EvalError> {
-        V8Evaluator::export_data(self, id, limits)
+        self.export_data(id, limits)
     }
     fn validate(&self, id: ValueId) -> Result<(), EvalError> {
         self.with_active(|e| e.service("validate", &[e.of(id)?], |_, _| Ok(())))
@@ -317,12 +345,7 @@ impl SessionEvaluator for V8Evaluator {
         })
     }
     fn memory_usage_bytes(&self) -> i64 {
-        let used = self
-            .isolate
-            .borrow_mut()
-            .get_heap_statistics()
-            .used_heap_size();
-        i64::try_from(used.saturating_add(self.state.buffers.used())).unwrap_or(i64::MAX)
+        self.memory_usage_bytes()
     }
 }
 

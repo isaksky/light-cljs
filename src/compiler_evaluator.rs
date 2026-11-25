@@ -1,5 +1,9 @@
 //! Engine-independent services used by compiler macro sessions.
-use crate::evaluator::{EvalError, Evaluator, MacroEvaluator, ValueId};
+#[cfg(not(any(light_v8, light_quickjs)))]
+use crate::evaluator::Evaluator;
+#[cfg(light_quickjs)]
+use crate::evaluator::QuickJsEvaluator;
+use crate::evaluator::{EvalError, MacroEvaluator, ValueId};
 use std::rc::Rc;
 
 pub(crate) type UnitService = Rc<dyn Fn(&dyn MacroEvaluator, u64) -> Result<String, String>>;
@@ -50,7 +54,7 @@ pub(crate) trait CompilerEvaluator: MacroEvaluator {
         Ok(0)
     }
 }
-#[cfg(not(light_quickjs))]
+#[cfg(not(any(light_v8, light_quickjs)))]
 impl CompilerEvaluator for Evaluator {
     fn evaluate_js(&self, _: &str) -> Result<ValueId, EvalError> {
         match *self {}
@@ -61,35 +65,31 @@ impl CompilerEvaluator for Evaluator {
     fn install_string_service(&self, _: &str, _: StringService) -> Result<(), EvalError> {
         match *self {}
     }
-    #[cfg(all(test, light_v8))]
-    fn number(&self, _: ValueId) -> Result<f64, EvalError> {
-        match *self {}
-    }
 }
 #[cfg(light_quickjs)]
-impl CompilerEvaluator for Evaluator {
+impl CompilerEvaluator for QuickJsEvaluator {
     fn export_data(
         &self,
         id: ValueId,
         limits: crate::form_bridge::ConversionLimits,
     ) -> Result<crate::compiler_data::Datum, EvalError> {
-        Evaluator::export_data(self, id, limits)
+        QuickJsEvaluator::export_data(self, id, limits)
     }
     fn evaluate_js(&self, expression: &str) -> Result<ValueId, EvalError> {
-        Evaluator::evaluate_js(self, expression)
+        QuickJsEvaluator::evaluate_js(self, expression)
     }
     fn headroom_held(&self) -> usize {
-        Evaluator::headroom_held(self)
+        QuickJsEvaluator::headroom_held(self)
     }
     fn collect_garbage(&self) {
-        Evaluator::collect_garbage(self);
+        QuickJsEvaluator::collect_garbage(self);
     }
     fn value_roots(&self) -> Result<usize, EvalError> {
-        Evaluator::value_roots(self)
+        QuickJsEvaluator::value_roots(self)
     }
     #[cfg(all(test, light_v8))]
     fn number(&self, id: ValueId) -> Result<f64, EvalError> {
-        Evaluator::number(self, id)
+        QuickJsEvaluator::number(self, id)
     }
     fn install_string_service(&self, name: &str, callback: StringService) -> Result<(), EvalError> {
         self.install_callback(name, move |_, request| Ok(callback(&request)))

@@ -6,6 +6,20 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 const CORPUS: &str = include_str!("../fixtures/sci-outcomes.tsv");
 
+#[cfg(light_v8)]
+#[test]
+fn public_evaluator_executes_units_in_v8() {
+    use light_cljs::evaluator::Evaluator;
+
+    let evaluator = Evaluator::new(Default::default()).unwrap();
+    let function = evaluator
+        .evaluate_js("text => text + (globalThis.lightCljsWeakMapStores ? ' QuickJS' : ' V8')")
+        .unwrap();
+    let text = evaluator.evaluate_js("'Hello'").unwrap();
+    let value = evaluator.call(function, &[text]).unwrap();
+    assert_eq!(evaluator.string(value).unwrap(), "Hello V8");
+}
+
 fn adapted_source(source: &str) -> String {
     let mut adapted = source
         .replace("(catch Exception ", "(catch :default ")
