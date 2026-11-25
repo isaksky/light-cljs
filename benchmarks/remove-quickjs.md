@@ -147,11 +147,45 @@ after subtracting each revision's runtime and normalizing its key and hash.
 #### Advanced builds
 
 The Pants checkpoint produces the same bytes for all 36 advanced
-ratchets and all three projects. The protocol alias fix and live-name
-guard also leave the advanced ratchets byte-identical. In the three
-projects both commits change only `protocolPredicate` in the rekeyed
-`--pseudo-names` code. Their changes in the compact output are -43 and
-+17 bytes per project respectively.
+ratchets and all three projects. The protocol alias fix, live-name guard,
+marker cache and stable-protocol inlining all leave the advanced ratchets
+byte-identical.
+
+Each project produces one ES module. The stock `--size-report` for these
+builds measures the expression layout. A diagnostic build in a detached
+worktree switches only `PreparedApplication::retention` from
+`self.emit(false, false)` to `self.emit(true, false)` to count the emitted
+module layout. `cmp` verifies the JavaScript against the corresponding
+unmodified executable. `--pseudo-names` shows the changed call sites and
+runtime functions after restoring the runtime key and hash to placeholders.
+
+| Change | Emitted code | TodoMVC bytes | Workload 200k bytes | Re-frame 200k bytes |
+| --- | --- | ---: | ---: | ---: |
+| Pants removal (`36a2de8c`) | Runtime comments | 0 | 0 | 0 |
+| Alias fix (`1899b743`) | `protocolPredicate` | -43 | -43 | -43 |
+| Live-name guard (`dbe6511f`) | `protocolPredicate` | +17 | +17 | +17 |
+| Marker cache (`fdb245dd`) | `ProtocolMarker` | +238 | +238 | +238 |
+| Marker cache (`fdb245dd`) | `protocolPredicate` | +23 | +23 | +24 |
+| Stable-protocol inlining (`646d0f3f`) | `ProtocolMarker` | -238 | -238 | -238 |
+| Stable-protocol inlining (`646d0f3f`) | `protocolPredicate` | -243 | -243 | -245 |
+| Stable-protocol inlining (`646d0f3f`) | `protocolFallback` | +42 | +42 | +42 |
+| Stable-protocol inlining (`646d0f3f`) | `protocolSlotCodes` | +30 | +4,688 | +2,036 |
+| Stable-protocol inlining (`646d0f3f`) | Compact name reassignment in 20 other retained runtime units | 0 | 0 | -24 |
+| Stable-protocol inlining (`646d0f3f`) | Application and wrapper bytes outside the runtime units | +36 | +4,298 | +1,751 |
+
+Inlining replaces two `protocolPredicate` calls in TodoMVC, 234 in the
+plain workload and 98 in the re-frame workload. TodoMVC's two calls come
+from the chunked and unchunked branches of `doseq` in
+`re-frame.subs.alpha/cleanup-input-signals!`. Each rewritten test captures
+the protocol and receiver once, compares the receiver's marker and
+keeps `protocolFallback`. The direct marker reads add one entry for
+`reagent.ratom/IDisposable` to TodoMVC's `protocolSlotCodes`, 152 entries
+to the plain workload and 66 to the re-frame workload.
+
+Inlining alone changes TodoMVC by -373 bytes, the plain workload by
++8,547 bytes and the re-frame workload by +3,322 bytes. The re-frame
+workload grew by 3,584 bytes across light-cljs-1142 when the marker cache
+is included (`8817bcbb` to `646d0f3f`).
 
 ## 4. Interactive sessions
 
