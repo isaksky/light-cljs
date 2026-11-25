@@ -422,7 +422,19 @@ fn interactive_data_readers_have_an_independent_64_mib_cap() {
 
     let error = session.eval_string("#size 65").unwrap_err();
     assert!(error.message.contains("while reading #size"), "{error}");
-    assert!(error.message.contains("memory limit exhausted"), "{error}");
+
+    let result = session.eval_string("(+ 2 3)").unwrap();
+    assert_eq!(session.print(result.value).unwrap(), "5");
+    session.release(result.value).unwrap();
+    let result = session.eval_string("#size 40").unwrap();
+    assert_eq!(session.print(result.value).unwrap(), "41943040");
+    session.release(result.value).unwrap();
+    assert!(
+        error
+            .message
+            .contains("data reader exceeded its own 64 MiB memory cap"),
+        "{error}"
+    );
 }
 
 #[cfg(light_v8)]

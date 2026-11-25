@@ -1229,28 +1229,31 @@ impl MacroHost {
             use crate::{evaluator::ExecutionControl, v8_evaluator::V8Evaluator};
 
             let options = self.evaluator_options.clone();
-            let evaluator = if self.tables.interactive {
+            let evaluator = if data_reader {
+                let interactive = self.tables.interactive;
+                let resources = if interactive {
+                    None
+                } else {
+                    self.v8_build_resources()?
+                };
+                let parent = if interactive {
+                    self.engine.interactive_control.as_ref()
+                } else {
+                    resources.as_ref().map(|resources| {
+                        if self.engine.catalog.is_some() {
+                            &resources.workers
+                        } else {
+                            &resources.control
+                        }
+                    })
+                };
+                V8Evaluator::new_data_reader(options, parent, interactive)?
+            } else if self.tables.interactive {
                 let control = match &self.engine.interactive_control {
                     Some(control) => control.clone(),
                     None => ExecutionControl::new(&options)?,
                 };
-                if data_reader {
-                    V8Evaluator::new_data_reader(options, control, true)?
-                } else {
-                    V8Evaluator::interactive_with_control(options, control)?
-                }
-            } else if data_reader {
-                let control = if let Some(resources) = self.v8_build_resources()? {
-                    let build = if self.engine.catalog.is_some() {
-                        &resources.workers
-                    } else {
-                        &resources.control
-                    };
-                    ExecutionControl::linked(&options, build)?
-                } else {
-                    ExecutionControl::new(&options)?
-                };
-                V8Evaluator::new_data_reader(options, control, false)?
+                V8Evaluator::interactive_with_control(options, control)?
             } else if let Some(resources) = self.v8_build_resources()? {
                 V8Evaluator::new_for_build(options, &resources, true)?
             } else {
@@ -4177,9 +4180,13 @@ mod compiler_default_reader_tests {
     #[cfg(light_v8)]
     #[test]
     fn reader_memory_limit_errors_name_the_tag_in_serial_and_parallel_builds() {
-        for (jobs, limit, size) in [(1, 192, 65), (3, 192, 65), (1, 24, 25)] {
+        for (jobs, limit, cap, size) in [
+            (1, 192 << 20, "64", 65),
+            (3, 192 << 20, "64", 65),
+            (1, 49 << 19, "24.5", 25),
+        ] {
             let mut host = MacroHost::new();
-            host.evaluator_options.memory_limit = limit << 20;
+            host.evaluator_options.memory_limit = limit;
             host.register_compiler_data_reader(Name::new(None, "size"), SIZE_READER)
                 .unwrap();
             host.begin_compilation();
@@ -4188,8 +4195,19 @@ mod compiler_default_reader_tests {
             let error = host
                 .read_compiler_form(&Source::new("reader.cljs", literal.as_str()))
                 .unwrap_err();
-            assert!(error.message.contains("memory limit exhausted"), "{error}");
             assert!(error.message.contains("#size"), "{error}");
+            assert!(
+                error.message.contains(&format!(
+                    "data reader exceeded its own {cap} MiB memory cap"
+                )),
+                "{error}"
+            );
+            assert!(
+                error
+                    .message
+                    .contains("The macro memory limit cannot raise this cap above 64 MiB"),
+                "{error}"
+            );
             assert_eq!(error.span.text(), literal);
         }
     }
@@ -4374,39 +4392,40 @@ mod compiler_default_reader_tests {
 
     #[cfg(light_v8)]
     #[test]
-    fn a_reader_loop_obeys_the_compilation_deadline() {
+    fn a_reader_loop_obeys_the_build_or_interactive_deadline() {
+        use crate::evaluator::{EvaluatorOptions, ExecutionControl};
         use std::time::{Duration, Instant};
 
-        let mut host = MacroHost::new();
-        host.register_compiler_default_data_reader("(fn [tag x] (if x (loop [] (recur)) 42))")
-            .unwrap();
-        host.begin_compilation();
-        let macro_heap = host.new_compiler_evaluator().unwrap();
-        host.read_compiler_form(&Source::new("reader.cljs", "#reader false"))
-            .unwrap();
-        let session = host.session_handle().unwrap();
-        let control = &session.shared().resources().unwrap().control;
-        let started = Instant::now();
-        control
-            .begin(&crate::evaluator::EvaluatorOptions {
-                timeout: Duration::from_millis(100),
-                ..host.evaluator_options.clone()
-            })
-            .unwrap();
-        let error = host
-            .read_compiler_form(&Source::new("reader.cljs", "#reader true"))
-            .unwrap_err();
-        assert!(error.message.contains("deadline exceeded"), "{error}");
-        assert_eq!(error.span.text(), "#reader true");
-        assert!(started.elapsed() < Duration::from_secs(5));
-        assert!(
-            macro_heap
-                .control()
-                .poll()
-                .unwrap_err()
-                .0
-                .contains("deadline exceeded")
-        );
+        for interactive in [false, true] {
+            let mut host = MacroHost::new();
+            host.register_compiler_default_data_reader("(fn [tag x] (if x (loop [] (recur)) 42))")
+                .unwrap();
+            if interactive {
+                host.tables.interactive = true;
+                host.engine.interactive_control =
+                    Some(ExecutionControl::new(&host.evaluator_options).unwrap());
+            } else {
+                host.begin_compilation();
+            }
+            let macro_heap = host.new_compiler_evaluator().unwrap();
+            host.read_compiler_form(&Source::new("reader.cljs", "#reader false"))
+                .unwrap();
+            let control = macro_heap.control();
+            let started = Instant::now();
+            control
+                .begin(&EvaluatorOptions {
+                    timeout: Duration::from_millis(100),
+                    ..host.evaluator_options.clone()
+                })
+                .unwrap();
+            let error = host
+                .read_compiler_form(&Source::new("reader.cljs", "#reader true"))
+                .unwrap_err();
+            assert!(error.message.contains("deadline exceeded"), "{error}");
+            assert_eq!(error.span.text(), "#reader true");
+            assert!(started.elapsed() < Duration::from_secs(5));
+            assert!(control.poll().unwrap_err().0.contains("deadline exceeded"));
+        }
     }
 
     #[cfg(light_v8)]
@@ -4466,7 +4485,12 @@ mod compiler_default_reader_tests {
         let error = reader_heap
             .evaluate_js("new ArrayBuffer(65 * 1024 * 1024)")
             .unwrap_err();
-        assert!(error.0.contains("memory limit exhausted"), "{error}");
+        assert!(
+            error
+                .0
+                .contains("data reader exceeded its own 64 MiB memory cap"),
+            "{error}"
+        );
         assert!(macro_heap.control().poll().is_ok());
     }
 

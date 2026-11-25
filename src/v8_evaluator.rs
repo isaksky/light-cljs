@@ -3,8 +3,8 @@ use crate::{
     compiler_data::{Datum, ExpansionOrigin, Form},
     compiler_evaluator::{CompilerEvaluator, UnitService},
     evaluator::{
-        BuildResources, EvalError, EvaluatorOptions, ExecutionControl, MacroEvaluator,
-        NEXT_SESSION, RUNTIME_SOURCE, ValueId, WORKER_SHARE,
+        BuildResources, DATA_READER_MEMORY_CAP, EvalError, EvaluatorOptions, ExecutionControl,
+        MacroEvaluator, NEXT_SESSION, RUNTIME_SOURCE, ValueId,
     },
     form_bridge::ConversionLimits,
     v8_bridge::{self as bridge, BridgeState},
@@ -526,13 +526,14 @@ impl V8Evaluator {
         )
     }
 
-    /// Give a reader its own allowance, capped at one worker share.
+    /// Give a reader its own allowance and keep its memory failures local.
     pub(crate) fn new_data_reader(
         mut options: EvaluatorOptions,
-        control: ExecutionControl,
+        parent: Option<&ExecutionControl>,
         interactive: bool,
     ) -> Result<Self, EvalError> {
-        options.memory_limit = options.memory_limit.min(WORKER_SHARE);
+        options.memory_limit = options.memory_limit.min(DATA_READER_MEMORY_CAP);
+        let control = ExecutionControl::for_data_reader(&options, parent, interactive)?;
         let evaluator = Self::create(
             options,
             control,

@@ -61,6 +61,9 @@ pub(crate) const DEFAULT_MEMORY_LIMIT: usize = 64 * 1024 * 1024;
 /// ran at the limit and the build took 1.6x as long with twice the
 /// isolates (light-cljs-441).
 pub(crate) const WORKER_SHARE: usize = 64 << 20;
+/// The ceiling for a compiler data reader's independent V8 allowance.
+#[cfg(light_v8)]
+pub(crate) const DATA_READER_MEMORY_CAP: usize = 64 << 20;
 
 #[derive(Clone, Debug)]
 pub struct EvaluatorOptions {
@@ -98,10 +101,17 @@ struct ControlState {
     /// How many more [`ExecutionControl::check`]s pass before one cancels
     /// ([`ExecutionControl::cancel_after_checks`]).
     checks_left: AtomicU64,
-    /// The control of the build this one's isolate belongs to, whose
-    /// cancellation and deadline apply to this one too, and transitively
-    /// its own build's ([`ExecutionControl::linked`]).
-    build: Option<ExecutionControl>,
+    link: Option<ControlLink>,
+    #[cfg(light_v8)]
+    reader_memory_cap: Option<usize>,
+}
+
+enum ControlLink {
+    /// Inherit the build's cancellation and deadline.
+    Build(ExecutionControl),
+    /// Spend the current session operation's poll budget and deadline.
+    #[cfg(light_v8)]
+    Session(ExecutionControl),
 }
 /// Clones share sticky cancellation, deadline and fuel across nested Rust work.
 #[derive(Clone)]
@@ -119,7 +129,9 @@ impl ExecutionControl {
                     .map_err(|_| EvalError("invalid session timeout".into()))?,
             ),
             checks_left: AtomicU64::new(u64::MAX),
-            build: None,
+            link: None,
+            #[cfg(light_v8)]
+            reader_memory_cap: None,
         })))
     }
     /// A control with a poll budget of its own, from `options`, that is
@@ -132,14 +144,35 @@ impl ExecutionControl {
         build: &ExecutionControl,
     ) -> Result<Self, EvalError> {
         let mut control = Self::new(options)?;
-        Arc::get_mut(&mut control.0).expect("a new control").build = Some(build.clone());
+        Arc::get_mut(&mut control.0).expect("a new control").link =
+            Some(ControlLink::Build(build.clone()));
+        Ok(control)
+    }
+    /// Keep reader failures local. Interactive readers persist between
+    /// operations, so they poll the session's current budget and deadline.
+    #[cfg(light_v8)]
+    pub(crate) fn for_data_reader(
+        options: &EvaluatorOptions,
+        parent: Option<&Self>,
+        interactive: bool,
+    ) -> Result<Self, EvalError> {
+        let mut control = Self::new(options)?;
+        let state = Arc::get_mut(&mut control.0).expect("a new control");
+        state.link = parent.cloned().map(|parent| {
+            if interactive {
+                ControlLink::Session(parent)
+            } else {
+                ControlLink::Build(parent)
+            }
+        });
+        state.reader_memory_cap = Some(options.memory_limit);
         Ok(control)
     }
     /// Why the build this control is linked to has ended: 1 when it is
     /// cancelled, 2 when its deadline has passed, else 0.
     fn build_cause(&self) -> u8 {
-        let mut build = self.0.build.as_ref();
-        while let Some(control) = build {
+        let mut link = &self.0.link;
+        while let Some(ControlLink::Build(control)) = link {
             if control.0.cancelled.load(Ordering::Relaxed) {
                 return 1;
             }
@@ -148,7 +181,7 @@ impl ExecutionControl {
             {
                 return 2;
             }
-            build = control.0.build.as_ref();
+            link = &control.0.link;
         }
         0
     }
@@ -181,8 +214,8 @@ impl ExecutionControl {
     /// starts ([`crate::compiler_bootstrap::prepare`]).
     pub(crate) fn exempt<T>(&self, work: impl FnOnce() -> T) -> T {
         debug_assert!(
-            self.0.build.is_none(),
-            "exempt work in an isolate of a build would still spend the build's deadline"
+            self.0.link.is_none(),
+            "exempt work in a linked isolate would still spend its parent's deadline"
         );
         let started = self.0.clock_origin.elapsed();
         let deadline = self.0.deadline_nanos.swap(u64::MAX, Ordering::Relaxed);
@@ -208,11 +241,14 @@ impl ExecutionControl {
     }
     #[allow(deprecated)] // fetch_update supports the stable compiler used in CI.
     pub fn poll(&self) -> Result<(), EvalError> {
-        let build = if self.0.build.is_some() {
-            self.build_cause()
-        } else {
-            0
-        };
+        #[cfg(light_v8)]
+        if let Some(ControlLink::Session(session)) = &self.0.link
+            && !self.0.cancelled.load(Ordering::Relaxed)
+        {
+            self.status()?;
+            return session.poll();
+        }
+        let build = self.build_cause();
         let cause = if self.0.cancelled.load(Ordering::Relaxed) {
             1
         } else if self.0.clock_origin.elapsed().as_nanos()
@@ -253,15 +289,18 @@ impl ExecutionControl {
         {
             self.cancel();
         }
-        if self.0.cancelled.load(Ordering::Relaxed)
-            || (self.0.build.is_some() && self.build_cause() == 1)
-        {
+        if self.0.cancelled.load(Ordering::Relaxed) || self.build_cause() == 1 {
             let _ = self
                 .0
                 .terminal
                 .compare_exchange(0, 1, Ordering::Relaxed, Ordering::Relaxed);
         }
-        self.status()
+        self.status()?;
+        #[cfg(light_v8)]
+        if let Some(ControlLink::Session(session)) = &self.0.link {
+            return session.check();
+        }
+        Ok(())
     }
     fn status(&self) -> Result<(), EvalError> {
         match self.0.terminal.load(Ordering::Relaxed) {
@@ -269,9 +308,20 @@ impl ExecutionControl {
             1 => Err(EvalError("JavaScript session cancelled".into())),
             2 => Err(EvalError("JavaScript session deadline exceeded".into())),
             3 => Err(EvalError("JavaScript session poll budget exhausted".into())),
-            5 => Err(EvalError(
-                "JavaScript session memory limit exhausted".into(),
-            )),
+            5 => {
+                #[cfg(light_v8)]
+                if let Some(cap) = self.0.reader_memory_cap {
+                    const MIB: usize = 1 << 20;
+                    let cap = cap as f64 / MIB as f64;
+                    let maximum = DATA_READER_MEMORY_CAP / MIB;
+                    return Err(EvalError(format!(
+                        "data reader exceeded its own {cap} MiB memory cap. The macro memory limit cannot raise this cap above {maximum} MiB."
+                    )));
+                }
+                Err(EvalError(
+                    "JavaScript session memory limit exhausted".into(),
+                ))
+            }
             _ => Err(EvalError(
                 "JavaScript session invalidated after engine or callback failure".into(),
             )),
@@ -1811,6 +1861,31 @@ mod bridge_interrupt_tests {
 #[cfg(test)]
 mod control_tests {
     use super::*;
+
+    #[cfg(light_v8)]
+    #[test]
+    fn an_interactive_reader_uses_the_current_session_operation_limits() {
+        let options = EvaluatorOptions::default();
+        let session = ExecutionControl::new(&options).unwrap();
+        let reader = ExecutionControl::for_data_reader(
+            &EvaluatorOptions {
+                timeout: Duration::ZERO,
+                poll_budget: 0,
+                ..options.clone()
+            },
+            Some(&session),
+            true,
+        )
+        .unwrap();
+
+        reader.poll().unwrap();
+        session.begin(&options).unwrap();
+        reader.poll().unwrap();
+        session.cancel();
+        assert!(reader.check().unwrap_err().0.contains("cancelled"));
+        assert!(reader.poll().unwrap_err().0.contains("cancelled"));
+    }
+
     /// Exempt work spends neither the deadline nor the poll budget, and
     /// the control goes on with what it had left.
     #[test]
