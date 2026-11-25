@@ -6912,7 +6912,7 @@ Growth above +0.5% gzip on `simple` (+1.34%) and `todomvc` (+0.92%) is accounted
 
 ### Core-ops gate (80 operations)
 
-5 runs per compiler, alternated, seed 7, unreserved (1-minute load 3.80-5.98 before each run). Every operation's checksum was identical across all runs of both compilers. **76 of 80 operations are at or below 1.00x shadow-cljs** (up from 71 of 80 in `light-cljs-1019` on `4d8d02d5`), down to `0.16x` on `hash-fresh-map-7` and `0.17x` on `keys-hash100` and `reduce-kv-small`. Nothing exceeds `1.10x`, and only one operation (`closure-alloc-call`, `1.05x`) lies outside shadow-cljs's run-to-run range.
+5 runs per compiler, alternated, seed 7, unreserved (1-minute load 3.80-5.98 before each run). Every operation's checksum was identical across all runs of both compilers. **76 of 80 operations are at or below 1.00x shadow-cljs** (up from 71 of 80 in `light-cljs-1019` on `4d8d02d5`), down to `0.16x` on `hash-fresh-map-7` and `0.17x` on `keys-hash100` and `reduce-kv-small`. The highest median ratio rounds to `1.10x` (`reduce-entries-small`, `84.4` vs `76.7` ns, raw `1.1004x`, ranges overlap), and only one operation (`closure-alloc-call`, `1.05x`) lies outside shadow-cljs's run-to-run range.
 
 Every operation above 1.00x shadow-cljs:
 
@@ -7051,11 +7051,11 @@ Steady state, from the median wall times at 1 and 40 iterations: light-cljs 39.3
 | whole run, peak memory of the largest process, MB | 295.93 (291.55-303.45) | 269.40 (268.62-272.73) | 0.91 (0.93) | | |
 | 1-minute load average before the run | 4.14 (3.89-4.21) | 4.06 (3.89-4.21) | | | |
 
-`add 1,000 todos` is now at parity (`1.02x`, down from `1.82x` in `light-cljs-1019`; both wall and script ranges overlap shadow-cljs's). `toggle all` (`1.23x`, down from `1.33x`) has overlapping wall ranges (`56.50-72.40` vs `51.20-62.70 ms`) and disjoint script ranges (`40.76` vs `34.16 ms`), covered by `light-cljs-1124`. `page load to interactive` (`0.69x`), `edit` (`0.93x`), `clear completed` (`0.98x`), whole-run wall (`0.98x`), peak memory (`0.91x`), and JS heap (`0.42x`/`0.51x`) are all below shadow-cljs.
+`add 1,000 todos` is now at parity (`1.02x`, down from `1.82x` in `light-cljs-1019`; both wall and script ranges overlap shadow-cljs's). `toggle all` (`1.23x`, down from `1.33x`) is at parity on wall time (overlapping ranges `56.50-72.40` vs `51.20-62.70 ms`) and disjointly slower on script time (`40.76`, `38.06-47.79` vs `34.16`, `32.15-37.96 ms`), covered by `light-cljs-1124`. `page load to interactive` (`0.69x`), peak memory (`0.91x`), and JS heap (`0.42x`/`0.51x`) are disjointly below shadow-cljs; `edit` (`0.93x`), `clear completed` (`0.98x`), and whole-run wall (`0.98x`) have lower medians with overlapping ranges (parity).
 
 ### Release output sizes (`simple`, `todomvc`, `flow`)
 
-Clean release builds (`bb benchmarks/re-frame.bb size simple todomvc flow --light target/light-cljs-d7281fe8`, fresh ports with `shadow-port-tool-983`, esbuild 0.25.10, shadow-cljs 3.5.3), using the same method as `light-cljs-1019`.
+Clean release builds (`bb benchmarks/re-frame.bb size simple todomvc flow --light target/light-cljs-d7281fe8`, fresh ports with `shadow-port-tool-983`, esbuild 0.25.10, shadow-cljs 3.5.3), using the same method as `light-cljs-1019` (each `app code (difference)` row subtracts that toolchain's separately built React-only bundle from its whole bundle, which is a compressed subtraction estimate rather than an externalized shadow-cljs artifact; `light-cljs output as written, without React` is light-cljs's own emitted JS module before esbuild).
 
 #### `simple`
 
@@ -7063,14 +7063,14 @@ Clean release builds (`bb benchmarks/re-frame.bb size simple todomvc flow --ligh
 | --- | ---: | ---: | ---: |
 | shadow-cljs: whole release file | 372,279 | 101,065 | 85,573 |
 | shadow-cljs: React alone | 143,360 | 47,091 | 40,609 |
-| shadow-cljs: app code (difference) | 228,919 | 53,974 | 44,964 |
+| shadow-cljs: app code (difference, estimate) | 228,919 | 53,974 | 44,964 |
 | light-cljs + esbuild: whole bundle | 408,281 | 123,388 | 107,144 |
 | esbuild: React alone | 142,385 | 45,617 | 39,919 |
-| light-cljs: app code (difference) | 265,896 | 77,771 | 67,225 |
+| light-cljs: app code (difference, estimate) | 265,896 | 77,771 | 67,225 |
 | light-cljs output as written, without React | 287,730 | 77,251 | 66,093 |
 | light-cljs + esbuild `--target=es2015`: whole bundle | 416,729 | 125,614 | 108,847 |
 
-Whole bundle, light-cljs against shadow-cljs: +9.7% raw, **+22.1% gzip -9** (up from +19.2% in `light-cljs-1019`), +25.2% brotli -q 11 (app code difference: +16.2% raw, +44.1% gzip -9). Light-cljs output as written (without React): `287,730` B raw / `77,251` B gzip -9 (vs `275,458` / `74,362` in `light-cljs-1019`, +3.9% gzip).
+Whole bundle, light-cljs against shadow-cljs: +9.7% raw, **+22.1% gzip -9** (up from +19.2% in `light-cljs-1019`), +25.2% brotli -q 11 (app code difference estimate: +16.2% raw, +44.1% gzip -9). Light-cljs output as written (without React): `287,730` B raw / `77,251` B gzip -9 (vs `275,458` / `74,362` in `light-cljs-1019`, +3.9% gzip).
 
 #### `todomvc`
 
@@ -7078,14 +7078,14 @@ Whole bundle, light-cljs against shadow-cljs: +9.7% raw, **+22.1% gzip -9** (up 
 | --- | ---: | ---: | ---: |
 | shadow-cljs: whole release file | 500,588 | 137,105 | 114,618 |
 | shadow-cljs: React alone | 143,360 | 47,091 | 40,609 |
-| shadow-cljs: app code (difference) | 357,228 | 90,014 | 74,009 |
+| shadow-cljs: app code (difference, estimate) | 357,228 | 90,014 | 74,009 |
 | light-cljs + esbuild: whole bundle | 519,789 | 155,545 | 134,677 |
 | esbuild: React alone | 142,385 | 45,617 | 39,919 |
-| light-cljs: app code (difference) | 377,404 | 109,928 | 94,758 |
+| light-cljs: app code (difference, estimate) | 377,404 | 109,928 | 94,758 |
 | light-cljs output as written, without React | 404,935 | 107,568 | 91,793 |
 | light-cljs + esbuild `--target=es2015`: whole bundle | 530,686 | 158,339 | 136,777 |
 
-Whole bundle, light-cljs against shadow-cljs: +3.8% raw, **+13.5% gzip -9** (up from +11.3% in `light-cljs-1019`), +17.5% brotli -q 11 (app code difference: +5.6% raw, +22.1% gzip -9). Light-cljs output as written (without React): `404,935` B raw / `107,568` B gzip -9 (vs `392,669` / `104,594` in `light-cljs-1019`, +2.8% gzip).
+Whole bundle, light-cljs against shadow-cljs: +3.8% raw, **+13.4% gzip -9** (+13.45% from bytes; up from +11.3% in `light-cljs-1019`), +17.5% brotli -q 11 (app code difference estimate: +5.6% raw, +22.1% gzip -9). Light-cljs output as written (without React): `404,935` B raw / `107,568` B gzip -9 (vs `392,669` / `104,594` in `light-cljs-1019`, +2.8% gzip).
 
 #### `flow`
 
@@ -7093,55 +7093,75 @@ Whole bundle, light-cljs against shadow-cljs: +3.8% raw, **+13.5% gzip -9** (up 
 | --- | ---: | ---: | ---: |
 | shadow-cljs: whole release file | 1,557,351 | 358,677 | 284,124 |
 | shadow-cljs: React alone | 143,360 | 47,091 | 40,609 |
-| shadow-cljs: app code (difference) | 1,413,991 | 311,586 | 243,515 |
+| shadow-cljs: app code (difference, estimate) | 1,413,991 | 311,586 | 243,515 |
 | light-cljs + esbuild: whole bundle | 1,347,097 | 348,059 | 286,707 |
 | esbuild: React alone | 142,385 | 45,617 | 39,919 |
-| light-cljs: app code (difference) | 1,204,712 | 302,442 | 246,788 |
+| light-cljs: app code (difference, estimate) | 1,204,712 | 302,442 | 246,788 |
 | light-cljs output as written, without React | 1,267,063 | 294,888 | 236,455 |
 | light-cljs + esbuild `--target=es2015`: whole bundle | 1,359,463 | 351,267 | 288,918 |
 
-Whole bundle, light-cljs against shadow-cljs: -13.5% raw, **-3.0% gzip -9** (light-cljs smaller; -7.0% at `light-cljs-1049`), +0.9% brotli -q 11 (app code difference: -14.8% raw, -2.9% gzip -9). Light-cljs output as written (without React): `1,267,063` B raw / `294,888` B gzip -9.
+Whole bundle, light-cljs against shadow-cljs: -13.5% raw, **-3.0% gzip -9** (light-cljs smaller; -7.0% at `light-cljs-1049`), +0.9% brotli -q 11 (app code difference estimate: -14.8% raw, -2.9% gzip -9). Light-cljs output as written (without React): `1,267,063` B raw / `294,888` B gzip -9.
+
+#### Generated workload 50k (for README size paragraph)
+
+Clean release builds (`workload-50k-seed42`, `light-cljs-d7281fe8` vs shadow-cljs 3.5.3): light-cljs `1,106,700` B raw / `269,872` B gzip -9 (116/1,130 waste markers retained, 0 removable) against shadow-cljs `1,167,005` B raw / `280,980` B gzip -9 (light/shadow **0.96** gzip -9, confirming the `4cb35725` ratio; 200k is `888,670` vs `1,002,919` B gzip -9 = **0.89**).
 
 ### Summary
 
-Every row measured on the same immutable release binary `d7281fe8` (`light-cljs-d7281fe8`, SHA-256 `95ddbc641dd7d110...`) against shadow-cljs 3.5.3, unreserved, with `light-cljs-1019` (`4d8d02d5`) beside it for comparison:
+Every row measured on the same immutable release binary `d7281fe8` (`light-cljs-d7281fe8`, SHA-256 `95ddbc641dd7d110...`) against shadow-cljs 3.5.3, unreserved, with `light-cljs-1019` (`4d8d02d5`) beside it for comparison. Rows whose run-to-run ranges (or conservative two-point steady-state bounds) overlap shadow-cljs's are reported as **parity**, with any disjoint sub-metrics called out separately:
 
 | Workload | light/shadow (`1019`) | light-cljs, shadow-cljs | Ranges / status |
 | --- | ---: | --- | --- |
-| Core-ops gate (80 ops, 5 runs) | 76/80 <= 1.00x (71/80) | worst median 1.10x (`reduce-entries-small`) | 3 of 4 above 1.00x overlap (`reduce-entries-small` 1.10x, `variadic-call` 1.04x, `vec-invoke-1024` 1.02x); only `closure-alloc-call` (1.05x) is disjoint (`light-cljs-1112`; `reduce-entries-small` also in `light-cljs-1113`) |
-| workload 200k (release), first output at 1 iteration | 1.01 (1.06) | 0.323 s, 0.321 s | ranges overlap (0.304-0.398 vs 0.294-0.341 s) — parity |
-| workload 200k (release), steady state per iteration | 0.90 (1.11) | 22.7 ms, 25.2 ms | below shadow-cljs (40-iter wall 1.141-1.334 vs 1.217-1.426 s, conservative 1/40-iter bounds 18.93-26.33 vs 22.37-28.95 ms/iter, overlap) |
-| workload 200k (release), peak memory at 40 iterations | 0.92 (0.97) | 0.250 GB, 0.271 GB | disjoint below shadow-cljs (0.246-0.255 vs 0.265-0.277 GB); 1-iter peak 0.140 vs 0.122 GB (1.14x, disjoint) |
-| workload 800k (release), first output at 1 iteration | 0.98 (1.05) | 1.006 s, 1.023 s | ranges overlap (0.995-1.139 vs 0.997-1.081 s) — parity / faster |
-| workload 800k (release), steady state per iteration | 0.92 (1.12) | 101.5 ms, 109.9 ms | below shadow-cljs (16-iter wall disjoint 2.502-2.628 vs 2.629-2.977 s; conservative 1/16-iter bounds 90.31-108.32 vs 102.68-131.52 ms/iter overlap) |
-| workload 800k (release), peak memory at 16 iterations | 0.90 (0.92) | 0.503 GB, 0.555 GB | below shadow-cljs (0.479-0.529 vs 0.521-0.581 GB, overlap) |
-| re-frame-shaped 200k (release), first output at 1 iteration | 1.03 (1.12) | 1.420 s, 1.374 s | ranges overlap (1.393-1.621 vs 1.333-1.458 s) — parity |
-| re-frame-shaped 200k (release), steady state per iteration | 1.10 (1.20) | 276.3 ms, 251.7 ms | 4-iter wall/first-output disjoint (2.261-2.413 vs 2.131-2.244 s); 10-iter wall overlaps via 1 shadow outlier (3.808-4.026 vs 3.586-3.856 s; shadow 9 fastest 3.586-3.767 s); conservative 1/10-iter bounds overlap (241.65-291.17 vs 235.02-278.95 ms/iter); covered by `light-cljs-1125` |
-| re-frame-shaped 200k (release), peak memory at 10 iterations | 1.02 (1.09) | 0.739 GB, 0.722 GB | ranges overlap (0.613-0.753 vs 0.702-0.731 GB) — parity |
-| TodoMVC (release), page load to interactive | 1.23 (1.26) | 41.40 ms, 33.75 ms | overlaps only via shadow run-0 cold start (62.40 ms; runs 1-9 disjoint: 40.30-48.20 vs 32.30-36.00 ms wall, 20.44-25.72 vs 13.63-15.85 ms script); covered by `light-cljs-1127` |
-| TodoMVC (release), add 1,000 todos | 0.81 (0.84) | 752.95 ms, 935.15 ms | disjoint below shadow-cljs (wall and script 711.53 vs 893.92 ms) |
-| TodoMVC (release), toggle all | 1.01 (0.97) | 51.25 ms, 50.55 ms | ranges overlap on wall and script (22.16 vs 21.43 ms) — parity |
-| TodoMVC (release), edit one in 1,000 | 1.02 (0.96) | 62.15 ms, 60.80 ms | ranges overlap on wall and script (7.89 vs 7.31 ms) — parity |
-| TodoMVC (release), clear completed | 1.02 (0.96) | 26.55 ms, 26.05 ms | ranges overlap on wall and script (6.85 vs 6.87 ms) — parity |
-| TodoMVC (release), JavaScript heap after load / 1,000 todos | 1.17 / 1.10 (1.16 / 1.10) | 3.19 / 8.31 MB, 2.74 / 7.52 MB | disjoint above shadow-cljs; covered by `light-cljs-1127` |
-| workload 200k (dev), first output at 1 iteration | 0.87 (1.11) | 0.820 s, 0.938 s | below shadow-cljs (light round-0 cold start 1.142 s; rounds 1-9 disjoint below shadow: 0.789-0.845 vs 0.914-0.985 s) |
-| workload 200k (dev), steady state per iteration | 1.11 (1.47) | 39.3 ms, 35.4 ms | 40-iter wall ranges overlap (2.267-2.559 vs 2.198-2.602 s) and conservative 1/40-iter bounds overlap (28.62-45.18 vs 30.89-43.04 ms/iter), while 1->40 median slope is 1.11x; covered by `light-cljs-1124` |
-| TodoMVC (dev), page load to interactive | 0.69 (0.77) | 83.05 ms, 120.45 ms | disjoint below shadow-cljs (static-served with `/__light_bundle.js` fallback and 20 recorded HTTP 404s) |
-| TodoMVC (dev), add 1,000 todos | 1.02 (1.82) | 1,039.15 ms, 1,022.65 ms | ranges overlap on wall and script (997.44 vs 982.49 ms) — parity |
-| TodoMVC (dev), toggle all | 1.23 (1.33) | 67.20 ms, 54.50 ms | wall ranges overlap (56.50-72.40 vs 51.20-62.70 ms), script disjoint (40.76, 38.06-47.79 vs 34.16, 32.15-37.96 ms); covered by `light-cljs-1124` |
-| TodoMVC (dev), edit one in 1,000 / clear completed | 0.93 / 0.98 (0.93 / 0.96) | 61.30 / 26.00 ms, 66.00 / 26.45 ms | below shadow-cljs on wall time (ranges overlap) |
-| Release size (gzip -9, whole bundle with React): `simple` / `todomvc` / `flow` | +22.1% / +13.5% / -3.0% (+19.2% / +11.3% / —) | 123,388 / 155,545 / 348,059 B vs 101,065 / 137,105 / 358,677 B | small apps grew ~2-3 pp from second-round fast paths; `flow` remains smaller than shadow-cljs |
+| Core-ops gate (80 ops, 5 runs) | 76/80 <= 1.00x (71/80) | worst median 1.10x (`reduce-entries-small`, raw 1.1004x) | 3 of 4 above 1.00x overlap (`reduce-entries-small` 1.10x, `variadic-call` 1.04x, `vec-invoke-1024` 1.02x — parity; `reduce-entries-small` also in `light-cljs-1113`); only `closure-alloc-call` (1.05x) is disjoint slower (`light-cljs-1112`) |
+| workload 200k (release), first output at 1 iteration | 1.01 (1.06) | 0.323 s, 0.321 s | parity: ranges overlap (0.304-0.398 vs 0.294-0.341 s) |
+| workload 200k (release), steady state per iteration | 0.90 (1.11) | 22.7 ms, 25.2 ms | parity: 40-iter wall ranges overlap (1.141-1.334 vs 1.217-1.426 s) and conservative 1/40-iter bounds overlap (18.93-26.33 vs 22.37-28.95 ms/iter) |
+| workload 200k (release), peak memory at 40 iterations | 0.92 (0.97) | 0.250 GB, 0.271 GB | disjoint win (0.246-0.255 vs 0.265-0.277 GB); 1-iter peak 0.140 vs 0.122 GB (1.14x, disjoint loss; covered by `light-cljs-1128`) |
+| workload 800k (release), first output at 1 iteration | 0.98 (1.05) | 1.006 s, 1.023 s | parity: ranges overlap (0.995-1.139 vs 0.997-1.081 s) |
+| workload 800k (release), steady state per iteration | 0.92 (1.12) | 101.5 ms, 109.9 ms | parity on conservative 1/16-iter bounds (90.31-108.32 vs 102.68-131.52 ms/iter overlap); 16-iter wall is a disjoint win (2.502-2.628 vs 2.629-2.977 s, 0.95x) |
+| workload 800k (release), peak memory at 16 iterations | 0.90 (0.92) | 0.503 GB, 0.555 GB | parity: ranges overlap (0.479-0.529 vs 0.521-0.581 GB) |
+| re-frame-shaped 200k (release), first output at 1 iteration | 1.03 (1.12) | 1.420 s, 1.374 s | parity: ranges overlap (1.393-1.621 vs 1.333-1.458 s) |
+| re-frame-shaped 200k (release), steady state per iteration | 1.10 (1.20) | 276.3 ms, 251.7 ms | parity on conservative 1/10-iter bounds (241.65-291.17 vs 235.02-278.95 ms/iter overlap) and 10-iter wall (3.808-4.026 vs 3.586-3.856 s, 1 shadow outlier); 4-iter wall/first-output is disjoint slower (2.261-2.413 vs 2.131-2.244 s, 1.06x); covered by `light-cljs-1125` |
+| re-frame-shaped 200k (release), peak memory at 10 iterations | 1.02 (1.09) | 0.739 GB, 0.722 GB | parity: ranges overlap (0.613-0.753 vs 0.702-0.731 GB) |
+| TodoMVC (release), page load to interactive | 1.23 (1.26) | 41.40 ms, 33.75 ms | full 10-run ranges overlap only via shadow run-0 cold start (62.40 ms); runs 1-9 disjoint slower (40.30-48.20 vs 32.30-36.00 ms wall, 20.44-25.72 vs 13.63-15.85 ms script); covered by `light-cljs-1127` |
+| TodoMVC (release), add 1,000 todos | 0.81 (0.84) | 752.95 ms, 935.15 ms | disjoint win (wall and script 711.53 vs 893.92 ms) |
+| TodoMVC (release), toggle all | 1.01 (0.97) | 51.25 ms, 50.55 ms | parity: ranges overlap on wall and script (22.16 vs 21.43 ms) |
+| TodoMVC (release), edit one in 1,000 | 1.02 (0.96) | 62.15 ms, 60.80 ms | parity: ranges overlap on wall and script (7.89 vs 7.31 ms) |
+| TodoMVC (release), clear completed | 1.02 (0.96) | 26.55 ms, 26.05 ms | parity: ranges overlap on wall and script (6.85 vs 6.87 ms) |
+| TodoMVC (release), JavaScript heap after load / 1,000 todos | 1.17 / 1.10 (1.16 / 1.10) | 3.19 / 8.31 MB, 2.74 / 7.52 MB | disjoint loss; covered by `light-cljs-1127` |
+| workload 200k (dev), first output at 1 iteration | 0.87 (1.11) | 0.820 s, 0.938 s | full 10-run ranges overlap via light round-0 cold start (1.142 s); rounds 1-9 disjoint win (0.789-0.845 vs 0.914-0.985 s) |
+| workload 200k (dev), steady state per iteration | 1.11 (1.47) | 39.3 ms, 35.4 ms | parity on 40-iter wall (2.267-2.559 vs 2.198-2.602 s) and conservative 1/40-iter bounds (28.62-45.18 vs 30.89-43.04 ms/iter); median slope 1.11x covered by `light-cljs-1124` |
+| TodoMVC (dev), page load to interactive | 0.69 (0.77) | 83.05 ms, 120.45 ms | disjoint win (static-served with `/__light_bundle.js` fallback and 20 recorded HTTP 404s) |
+| TodoMVC (dev), add 1,000 todos | 1.02 (1.82) | 1,039.15 ms, 1,022.65 ms | parity: ranges overlap on wall and script (997.44 vs 982.49 ms) |
+| TodoMVC (dev), toggle all | 1.23 (1.33) | 67.20 ms, 54.50 ms | parity on wall (56.50-72.40 vs 51.20-62.70 ms overlap), disjoint loss on script (40.76, 38.06-47.79 vs 34.16, 32.15-37.96 ms); covered by `light-cljs-1124` |
+| TodoMVC (dev), edit one in 1,000 / clear completed | 0.93 / 0.98 (0.93 / 0.96) | 61.30 / 26.00 ms, 66.00 / 26.45 ms | parity: ranges overlap on wall and script |
+| Release size (gzip -9, whole bundle with React): `simple` / `todomvc` / `flow` | +22.1% / +13.4% / -3.0% (+19.2% / +11.3% / —) | 123,388 / 155,545 / 348,059 B vs 101,065 / 137,105 / 358,677 B | small apps grew ~2-3 pp from second-round fast paths; `flow` remains smaller than shadow-cljs |
+| Release size (gzip -9, generated Node): `50k` / `200k` / `800k` | 0.96 / 0.89 / 0.86 | 269,872 / 888,670 / 3,356,512 B vs 280,980 / 1,002,919 / 3,894,325 B | light-cljs smaller across all generated sizes |
 
 ### Per-row coverage and follow-up pellets
 
 Every row above shadow-cljs's run-to-run range is covered by a deferred pellet in group `output-speed-parity` (`--maybe-later`):
 
-- **Core-ops gate (`closure-alloc-call` 1.05x, disjoint; `reduce-entries-small` 1.10x, overlaps):** covered by **`light-cljs-1112`** (per-iteration `BlockContext` allocation for closures in `loop`/`recur`) and **`light-cljs-1113`** (in-order IC profiling for gate gaps including `reduce-entries-small`). `variadic-call` (`1.04x`) and `vec-invoke-1024` (`1.02x`) overlap shadow-cljs's ranges (parity).
-- **re-frame-shaped 200k release (4-iter wall/first-output 1.06x disjoint, 10-iter 1.07x, steady state 1.10x):** covered by **`light-cljs-1125`** (single-read nil-fast `*Site` helpers and GC-pressure reductions on `re-frame-200k`).
-- **TodoMVC release `page load to interactive` (1.23x, runs 1-9 disjoint: 40.30-48.20 vs 32.30-36.00 ms wall, 20.44-25.72 vs 13.63-15.85 ms script) and startup JS heap (3.19 vs 2.74 MB after load, 1.17x; 8.31 vs 7.52 MB with 1,000 todos, 1.10x; workload 200k 1-iter peak memory 0.140 vs 0.122 GB, 1.14x):** filed as **`light-cljs-1127`**. In `research/output-speed/confirm-1126/todomvc-load-profile.txt` (100 us CDP sampling on `d7281fe8`), light-cljs `--pseudo-names` load totals 108.87 ms (654 samples; active JS 48.19 ms, including runtime factory `(anonymous) [client.js:7253]` 2.34 ms self, bundle wrapper `(anonymous) [client.js:1]` 2.12 ms, esbuild `__require` 1.95 ms, GC 1.85 ms, scheduler/react-dom 3.15 ms, top-level namespace init `(anonymous) [client.js:7248]` 0.82 ms, `mungeMember [client.js:7794]` 0.63 ms, React mount `lk [client.js:5593]` 6.78 ms) against shadow-cljs 62.86 ms (373 samples; active JS 23.72 ms, `(anonymous) [client.js:2]` 2.76 ms, `shadow$provide` 0.86 ms, GC 0.71 ms).
-- **Dev-build steady state — workload 200k dev steady state (1.11x median slope) and TodoMVC dev `toggle all` (1.23x wall overlapping, script disjoint 40.76 vs 34.16 ms):** covered by **`light-cljs-1124`**.
+- **Core-ops gate (`closure-alloc-call` 1.05x, disjoint; `reduce-entries-small` 1.10x raw `1.1004x`, overlaps):** covered by **`light-cljs-1112`** (per-iteration `BlockContext` allocation for closures in `loop`/`recur`) and **`light-cljs-1113`** (in-order IC profiling for gate gaps including `reduce-entries-small`). `variadic-call` (`1.04x`) and `vec-invoke-1024` (`1.02x`) overlap shadow-cljs's ranges (parity).
+- **re-frame-shaped 200k release (4-iter wall/first-output 1.06x disjoint, 10-iter 1.07x overlapping via 1 shadow outlier, steady-state median 1.10x overlapping conservative bounds):** covered by **`light-cljs-1125`** (single-read nil-fast `*Site` helpers and GC-pressure reductions on `re-frame-200k`).
+- **TodoMVC release `page load to interactive` (1.23x, full ranges overlap via shadow run-0 cold start `62.40 ms`, runs 1-9 disjoint: 40.30-48.20 vs 32.30-36.00 ms wall, 20.44-25.72 vs 13.63-15.85 ms script) and TodoMVC JS heap (3.19 vs 2.74 MB after load, 1.17x; 8.31 vs 7.52 MB with 1,000 todos, 1.10x):** filed as **`light-cljs-1127`**. In `research/output-speed/confirm-1126/todomvc-load-profile.txt` (100 us CDP sampling on `d7281fe8`), light-cljs `--pseudo-names` load totals 108.87 ms (654 samples; active JS 48.19 ms, including runtime factory `(anonymous) [client.js:7253]` 2.34 ms self, bundle wrapper `(anonymous) [client.js:1]` 2.12 ms, esbuild `__require` 1.95 ms, GC 1.85 ms, scheduler/react-dom 3.15 ms, top-level namespace init `(anonymous) [client.js:7248]` 0.82 ms, `mungeMember [client.js:7794]` 0.63 ms, React mount `lk [client.js:5593]` 6.78 ms) against shadow-cljs 62.86 ms (373 samples; active JS 23.72 ms, `(anonymous) [client.js:2]` 2.76 ms, `shadow$provide` 0.86 ms, GC 0.71 ms).
+- **Generated workload 200k release 1-iteration peak memory (0.140 vs 0.122 GB, 1.14x, disjoint; 10- and 40-iter peak memory are 0.92x disjoint wins):** filed as **`light-cljs-1128`**. In `research/output-speed/confirm-1126/workload-200k-1iter-mem-profile.txt` (`node --expose-gc` on `d7281fe8`), post-GC live heap after 1 iteration is `26.6 MB` vs `24.9 MB` (`+1.7 MB`), while Node emits `[MODULE_TYPELESS_PACKAGE_JSON]` and reparses `out/light/workload.main.js` as ESM, driving the transient +18 MB peak RSS delta.
+- **Dev-build steady state — workload 200k dev steady state (1.11x median slope, overlapping conservative bounds) and TodoMVC dev `toggle all` (1.23x wall overlapping, script disjoint 40.76 vs 34.16 ms):** covered by **`light-cljs-1124`**.
 
-All other rows are either faster than shadow-cljs or within shadow-cljs's run-to-run range (parity).
+All other rows are either disjoint wins or within shadow-cljs's run-to-run range (parity).
+
+### README handoff (confirmed on `d7281fe8`, README.md not edited)
+
+- Generated 200k / 800k release steady state: `0.90x` / `0.92x` (conservative bounds overlap — parity; 800k 16-iter wall `0.95x` disjoint win)
+- Generated 200k release first output (1 iter): `1.01x` (ranges overlap — parity)
+- Generated re-frame-shaped 200k release steady state: `1.10x` (conservative bounds overlap; 4-iter wall/first-output `1.06x` disjoint loss; `light-cljs-1125`)
+- TodoMVC release add 1,000 todos: `0.81x` (disjoint win, wall and script)
+- TodoMVC release toggle all / edit / clear completed: `1.01x` / `1.02x` / `1.02x` (wall and script ranges overlap — parity)
+- TodoMVC release page load to interactive: `1.23x` (overlaps via shadow run-0 cold start; runs 1-9 disjoint loss; `light-cljs-1127`)
+- TodoMVC dev add 1,000 todos / toggle all: `1.02x` (parity, wall and script overlap) / `1.23x` (wall overlaps, script disjoint loss; `light-cljs-1124`)
+- Generated 200k dev steady state: `1.11x` (conservative bounds and 40-iter wall overlap; `light-cljs-1124`)
+- Generated 200k dev first output (1 iter): `0.87x` (full ranges overlap via light round-0; rounds 1-9 disjoint win)
+- Output size after gzip -9: generated 50k `0.96x` (`269,872` vs `280,980` B), generated 200k `0.89x` (`888,670` vs `1,002,919` B), `simple` `+22.1%` (`123,388` vs `101,065` B), `todomvc` `+13.4%` (`155,545` vs `137,105` B), `flow` `-3.0%` (`348,059` vs `358,677` B) with React.
+- Core-ops gate: `76/80` at or below `1.00x`; worst median `reduce-entries-small` at `1.10x` (raw `1.1004x`, ranges overlap; `closure-alloc-call` `1.05x` is the only disjoint loss, `light-cljs-1112`).
 
 ### Correctness checks
 
