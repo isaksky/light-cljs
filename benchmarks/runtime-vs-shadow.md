@@ -6899,3 +6899,49 @@ Load `3.78-4.72` before, `2.49-3.91` after; every checksum matched across all 80
 - `flow`: raw `1,262,981 -> 1,267,327` (+4,346 B), gzip -9 `294,010 -> 294,918` (+908 B, +0.31%).
 
 Growth above +0.5% gzip on `simple` (+1.34%) and `todomvc` (+0.92%) is accounted for by the per-type inline own-field fast paths and single-read slot fallbacks in `LazySeq.{firstSlot,restSlot,nextSlot}` (+82 net lines), `ChunkedCons.{next,rest,first}` (+71 net lines plus Sol fixes `#4`/`#5`/`#7`), `Cons.nextSlot` (+21 net lines), and `first`/`firstOf`/`rest`/`restOf`/`next` (+18 net lines). A consolidation attempt extracting `lazyForceSeq`, `chunkedConsDrop`, and `emptyListSeq` cut the delta by ~241 B gzip (`simple` +0.89%, `todomvc` +0.63%, `flow` +0.22%), but routing `LazySeq` inner seqs back through `first`/`rest`/`next` polluted V8 inline caches and regressed `seq-walk-vec-1000` (+12%), `apply-vec` (+9%), `select-keys-3` (+5%), and `lazy-walk-1000` (+5%) outside their ranges, so it was reverted. Size ratchet ceilings are recomputed on master `845f5cb0` in `tests/support/ratchet_fixtures.rs` and `tests/compiler/chunks.rs`.
+
+## 2026-11-24: the real workloads after the second round (light-cljs-1126)
+
+### Setup
+
+- **light-cljs:** `d7281fe8`, one immutable release V8 build at `target/light-cljs-d7281fe8` (SHA-256 `95ddbc641dd7d11029d571aeb4a11330054b13a840b2b8dbc5b2f6680a05499c`), used for every light-cljs figure in this section.
+- **shadow-cljs:** 3.5.3 with Closure Compiler v20260907.
+- **Runtimes and tools:** Node v26.12.1, Headless Chromium 156.0.8078.4 (Playwright revision 1248) via playwright-core 1.64.1, esbuild 0.25.10, OpenJDK 25.0.2, Clojure CLI 1.12.4.1618, Babashka 1.13.229.
+- **Machine:** macOS 15.7.3 (24G419), Apple M3 Ultra (VirtualMac2,1), 24 CPUs, 32 GiB. **Unreserved:** no run waited for a quiet machine; this was the quietest session of the day (no other worker or heavy job running), and the 1-minute load average before every run is recorded in each table.
+- **Raw results:** `research/output-speed/confirm-1126/`.
+
+### Core-ops gate (80 operations)
+
+5 runs per compiler, alternated, seed 7, unreserved (1-minute load 3.80-5.98 before each run). Every operation's checksum was identical across all runs of both compilers. **76 of 80 operations are at or below 1.00x shadow-cljs** (up from 71 of 80 in `light-cljs-1019` on `4d8d02d5`), down to `0.16x` on `hash-fresh-map-7` and `0.17x` on `keys-hash100` and `reduce-kv-small`. Nothing exceeds `1.10x`, and only one operation (`closure-alloc-call`, `1.05x`) lies outside shadow-cljs's run-to-run range.
+
+Every operation above 1.00x shadow-cljs:
+
+| Operation | light-cljs ns/op (range) | shadow-cljs ns/op (range) | light/shadow | `light-cljs-1019` (`4d8d02d5`) | Ranges / coverage |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `reduce-entries-small` | 84.4 (82.3-84.8) | 76.7 (74.7-84.7) | 1.10 | 1.10 | overlap (`light-cljs-1113`) |
+| `closure-alloc-call` | 9.18 (9.06-9.26) | 8.75 (8.33-8.90) | 1.05 | 1.07 | disjoint (`light-cljs-1112`) |
+| `variadic-call` | 14.5 (13.9-14.6) | 14.0 (13.8-15.3) | 1.04 | 1.01 | overlap (parity) |
+| `vec-invoke-1024` | 5.09 (5.04-5.49) | 4.97 (4.72-5.41) | 1.02 | 1.08 | overlap (parity) |
+
+Previously above 1.00x in `light-cljs-1019` and now at or below 1.00x: `filter-count-1000` (`1.08` -> `0.87`), `update-in-3` (`1.03` -> `0.84`), `assoc-small-new` (`1.01` -> `0.95`), `vec-conj-64` (`1.01` -> `0.95`), and `vec-peek` (`1.05` -> `1.00`, `3.58` vs `3.58` ns).
+
+### Generated workload, 200k lines (release, Node)
+
+Output sizes: light-cljs 3,735,910 bytes raw (888,670 gzip -9; 455/4,526 waste markers retained, 0 removable), shadow-cljs 4,067,637 bytes raw (1,002,919 gzip -9; light/shadow 0.89 gzip). 10 runs per iteration count, compilers alternated, unreserved (1-minute load 3.33-4.29). Every run matched oracle checksum.
+
+| Iterations | Compiler | First output | Wall time | User CPU | System CPU | Peak memory | 1-minute load before |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | light-cljs | 0.323 s (0.304-0.398) | 0.327 s (0.307-0.402) | 0.37 s (0.35-0.40) | 0.03 s (0.02-0.05) | 0.140 GB (0.132-0.143) | 3.33-3.44 |
+| 1 | shadow-cljs | 0.321 s (0.294-0.341) | 0.324 s (0.297-0.345) | 0.37 s (0.33-0.38) | 0.03 s (0.02-0.04) | 0.122 GB (0.114-0.126) | 3.33-3.44 |
+| 10 | light-cljs | 0.580 s (0.557-0.640) | 0.586 s (0.563-0.646) | 0.80 s (0.77-0.87) | 0.06 s (0.05-0.08) | 0.190 GB (0.183-0.196) | 3.33-3.75 |
+| 10 | shadow-cljs | 0.599 s (0.571-0.633) | 0.605 s (0.578-0.639) | 0.80 s (0.77-0.84) | 0.07 s (0.06-0.08) | 0.207 GB (0.202-0.208) | 3.33-3.75 |
+| 40 | light-cljs | 1.192 s (1.125-1.315) | 1.210 s (1.141-1.334) | 1.65 s (1.56-1.80) | 0.11 s (0.08-0.14) | 0.250 GB (0.246-0.255) | 3.69-4.29 |
+| 40 | shadow-cljs | 1.299 s (1.210-1.417) | 1.306 s (1.217-1.426) | 1.78 s (1.68-1.92) | 0.11 s (0.09-0.17) | 0.271 GB (0.265-0.277) | 3.69-4.29 |
+
+| Iterations | light/shadow first output (`1019`) | light/shadow wall time (`1019`) | light/shadow CPU (`1019`) | light/shadow peak memory (`1019`) |
+| --- | --- | --- | --- | --- |
+| 1 | 1.01 (1.06) | 1.01 (1.06) | 1.01 (1.07) | 1.14 (1.17) |
+| 10 | 0.97 (1.10) | 0.97 (1.11) | 0.98 (1.15) | 0.92 (1.11) |
+| 40 | 0.92 (1.10) | 0.93 (1.10) | 0.93 (1.08) | 0.92 (0.97) |
+
+Steady state, from the median wall times at 1 and 40 iterations: light-cljs 22.7 ms per iteration, shadow-cljs 25.2 ms per iteration (light/shadow **0.90**, down from 1.11 in `light-cljs-1019`).
