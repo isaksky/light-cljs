@@ -20,6 +20,53 @@ Library, no `cljs.pprint`/`core.async`/`test.check`, no package resolution (npm
 packages come from the host or a bundler), and numbers are always JavaScript
 Numbers. See [known boundaries](#known-boundaries).
 
+**Performance against shadow-cljs 3.5.3 (November 24, 2026).** Every figure is
+light-cljs's median divided by shadow-cljs's, so below 1.00 means light-cljs is
+faster or smaller. Both compilers build the same source in release mode
+(`:advanced`) unless a row says dev. The machine was busy during every run, the
+compilers alternated, and the large programs are ones this project generates
+itself. Details, ranges and commands are in
+[benchmarks/shadow-comparison.md](benchmarks/shadow-comparison.md) and
+[benchmarks/runtime-vs-shadow.md](benchmarks/runtime-vs-shadow.md).
+
+Build time, command-line release builds (`4cb35725`, three rounds each):
+
+| Build | Lines | light-cljs | shadow-cljs | light/shadow |
+| --- | --- | --- | --- | --- |
+| Clean | 50k | 1.37 s | 18.02 s | 0.08 |
+| Nothing changed | 50k | 0.25 s | 13.75 s | 0.02 |
+| One file edited | 50k | 0.15 s | 13.52 s | 0.01 |
+| Clean | 200k | 5.89 s | 52.73 to 213.19 s | 0.03 to 0.11 |
+| Nothing changed | 200k | 1.09 s | 36.62 s | 0.03 |
+| One file edited | 200k | 2.01 s | 36.47 s | 0.06 |
+
+shadow-cljs pays its JVM startup in each of these builds, and its 200k clean
+build varied widely under load, so that row gives its range. Peak memory for
+the clean builds was 0.35 GB against 2.36 GB at 50k lines and 0.91 GB against
+3.02 GB at 200k, with shadow-cljs on its default heap.
+
+Speed of the compiled output (ten alternated runs per row, measured as each
+change landed between `956e908e` and `713fe449`):
+
+| Program | Measure | light/shadow |
+| --- | --- | --- |
+| Generated 200k and 800k lines, Node | steady state | 0.93 to 0.97 |
+| Generated 200k lines, Node | first output | 1.04 to 1.05 |
+| Generated re-frame-shaped 200k lines, Node | steady state | 1.15 |
+| re-frame TodoMVC, Chromium | add 1,000 todos | 0.81 |
+| re-frame TodoMVC, Chromium | toggle all, edit, clear completed | 0.99 to 1.01 |
+| re-frame TodoMVC, Chromium | page load to interactive | 1.22 |
+| re-frame TodoMVC, dev build, Chromium | add 1,000 todos / toggle all | 1.04 / 1.00 |
+| Generated 200k lines, dev build, Node | steady state | 1.06 |
+
+Output size after gzip: 0.96 of shadow-cljs's on the generated 50k-line
+program and 0.89 on the 200k-line one (`4cb35725`). Small apps come out larger:
+re-frame's simple example was 19% larger and TodoMVC 11% larger, React included
+(`4d8d02d5`), and the output-speed work since then has added about 2% more.
+
+**Where light-cljs still loses:** steady state on the re-frame-shaped program,
+TodoMVC's page load, and the size of small apps.
+
 ## Architecture
 
 ```text
