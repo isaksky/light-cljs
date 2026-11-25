@@ -1,5 +1,7 @@
 # Three real native macro fixtures
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 `bb benchmarks/native-macros.bb OUTPUT` builds the explicit native-only release
 compiler with `cargo build --locked --release --no-default-features --features
 bbp-macros --target HOST --target-dir REPO/target` and three build jobs, then starts

@@ -254,11 +254,12 @@ do not log every runtime read, discover a general call graph, or replay writes.
 *As built (light-cljs-312):* the resource and declaration rows are
 `light.build/resource`, `resource?` and `depend!`, documented in
 [compiler.md](compiler.md), "Compile-time services: light.build";
-configuration and the broad views are light-cljs-313's (below). Both compile-time
-engines run one JavaScript object, `lightCljsBuild` (`src/build_services.js`),
-over a string service that `src/build_services.rs` answers, so V8 and QuickJS
-behave identically: the session heap gets it when the compilation session
-attaches, and the data-reader heap when it is created. These choices settle
+configuration and the broad views are light-cljs-313's (below). The macro
+and compiler data-reader isolates run the same JavaScript service object,
+`lightCljsBuild` (`src/build_services.js`), over a string interface that
+`src/build_services.rs` answers. The macro isolate gets it when the
+compilation session attaches, and the reader isolate when it is created.
+These choices settle
 what the section leaves open:
 
 - The caller is described by the JavaScript side. `compiler_roots.js` keeps a
@@ -286,9 +287,8 @@ what the section leaves open:
   `./x.txt` to `my_app/ui/x.txt`. Each source's site is its namespace and
   file by source index, so a deferred unit analyzed later resolves against
   the namespace that defined it.
-- Service arguments must be well-formed text: a NUL or a lone surrogate is
-  refused in `src/build_services.js` before any request, because V8's bridge
-  would replace a lone surrogate and QuickJS's refuse it.
+- `src/build_services.js` rejects NUL and lone surrogates in service arguments
+  before sending a request. V8's bridge would replace a lone surrogate.
 - A read when the provider supplies no resources at all is an error, and is
   recorded as a non-cacheable absent resource, since a macro can catch it.
 - Interactive compilation (`EvalSession`, `DevSession` and so a watch's
@@ -328,7 +328,7 @@ service. These choices settle what the section leaves open:
   one form or a key given twice is an error. Each value is kept as canonical
   text (numbers as the JavaScript number they read as, strings re-escaped,
   collections single-spaced, discards dropped), which `config` reads back
-  with the EDN reader, so V8 and QuickJS see the same data.
+  with the EDN reader.
 - The fingerprint is the SHA-256 of the whole map's canonical text, keys
   ascending: `{}` for the empty map, which differs from every non-empty
   one. `cache_key::KeyEnvironment::new` takes it from the host as the key's
@@ -586,8 +586,9 @@ changed" or "earlier namespaces changed". The components:
   `RUSTFLAGS` and `rustc -vV`. Any edit, even to a comment, is another
   compiler. The key adds the artifact `SCHEMA_VERSION`, the core operation
   table and the macro engine. V8 includes its version and a script host
-  provides its engine identifier. A no-engine build has its own marker.
-  Interactive compilations add a separate mode marker.
+  provides its engine identifier. A no-engine build uses `no-embedded-engine`.
+  Interactive compilations add an `interactive` marker. Clean compilations
+  omit it.
   Hashing about 16 MB adds 0.4 s to a debug build-script run (1.1 s to
   1.5 s), which reruns on any edit under `src/`.
 - **Options.** Every `AnalysisOptions` field (the warning mode among them),
@@ -1642,17 +1643,18 @@ build is a supported debugging and comparison path.
 
 ## Development sessions and engine boundaries
 
-Start with persistent reuse for native entry compilation. Existing running
-sessions already retain compiler state; cache integration must preserve their
-reload rules and use the same declared dependency and policy information.
-Invalidate always-compile sets before consulting retained output. Ordinary
-disk bypass, including the cache-blocker set, leaves otherwise valid
-in-memory output usable.
+Clean builds and development sessions use V8 for macros. Their cache keys
+distinguish clean compilation from interactive compilation. Watch startup
+with caching enabled compiles once in the session's macro host and installs
+matching artifacts without re-running their macro expansions. With
+`--no-cache`, watch runs the startup build first and then loads the program
+into the session. Each watch step uses the retained program and macro host.
+Steps neither read nor write artifacts. Registering cached definitions installs
+declarations and lazy helpers without transferring live engine handles or
+mutated roots.
 
-The current [watch startup](../src/dev_watch.rs) compiles a clean build, writes
-output, then loads the entry again into `DevSession`. Measure this separately and
-evaluate a common startup compilation path. It is useful work, but not a
-prerequisite for the binary cache.
+The following startup measurements and rollout notes describe earlier
+implementations. QuickJS was removed from light-cljs.
 
 *As built (light-cljs-326):* measured, and the startup path is kept
 ([benchmarks/compiler-cache.md](../benchmarks/compiler-cache.md), "Watch
@@ -1744,15 +1746,6 @@ worked around in an uncommitted overlay, `--watch --cache-dir` starts on
 Penpot: numbers in
 [benchmarks/compiler-cache.md](../benchmarks/compiler-cache.md), "Macro
 limits under watch".
-
-Native clean compilation uses V8 and the interactive session currently uses
-QuickJS. Registering cached definitions in a new evaluator does not transfer
-mutated roots or live function handles. Initial session loading may skip cached
-expansions under the cache contract, but must install compatible declarations,
-source contexts, lazy helpers, and session registrations for future edits.
-Validate first edits and opt-out behavior explicitly; do not simply attach the
-clean-build catalog to another engine. Engine heap migration and application-state
-persistence remain out of scope.
 
 ## Implementation sequence
 
@@ -2113,12 +2106,11 @@ cache:
 - The modes name `--optimize none` where they mean it: the default level
   is `prepare`.
 
-The suite passes on the default and the QuickJS-only build. The
-single-file driver now reads values without the runtime's `inspect` when a
+The single-file driver reads values without the runtime's `inspect` when a
 `prepare` or `advanced` build keeps none.
 
-Run the full compiler/evaluator suites for default V8 and QuickJS-only builds,
-the Node execution workflows, and relevant playground checks as implementation
+Run the compiler and evaluator suites in the V8 build, the Node execution
+workflows, and relevant playground checks as implementation
 touches those paths. Large-project validation includes bundling and browser smoke
 tests; successful compilation alone does not establish application correctness.
 
@@ -2175,7 +2167,7 @@ what a build registers and must release
 artifact counts it from capture, decode or clone until it is dropped),
 JavaScript engines, V8 `Global` handles Rust holds into an isolate (a
 context, its services, cached namespace functions, the bridge's provenance
-template, a failed unit's exception; QuickJS keeps none), and bridge
+template, a failed unit's exception), and bridge
 payloads, the provenance data an engine's imported objects own. Each is one
 relaxed atomic add when made and when dropped; a Penpot cold build makes
 2.1 million payloads, and the cache-off cold build stays within its gates
@@ -2185,8 +2177,8 @@ after each step, once the session's engines have collected their garbage.
 `tests/cache_matrix.rs` `repeated_builds_and_teardown` builds a fixture ten
 times in one process through `analyze_namespace_entry_cached` (the first
 filling the cache, the others installing all five namespaces) and asserts
-every count is zero after each build, with V8 and with QuickJS;
-`examples/cache_repeat.rs` prints them after each Penpot build, all zero.
+every count is zero after each build. `examples/cache_repeat.rs` prints them
+after each Penpot build, all zero.
 `tests/dev_watch.rs` `repeated_steps_hold_bounded_engine_state_and_no_artifact`
 runs 45 macro-recompiling steps after a start from the cache: no artifact
 after any, the same engine and handles after each, and bridge payloads that

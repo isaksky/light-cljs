@@ -77,7 +77,7 @@ apps.
 source ─▶ Tokenizer ─▶ Parser ─▶ compiler reader ─▶ Analyzer ─▶ application prep ─▶ Emitter ─▶ JavaScript
           (lib.rs)    (parser.rs) (compiler_reader.rs) (analyzer.rs) (application.rs)   (emitter.rs)  + js_runtime.js
                                          ▲                    │
-                                         └── macro expansion ◀┘ compiled to JS, run in an embedded engine
+                                         └── macro expansion ◀┘ compiled to JS, run in V8
 ```
 
 - **Tokenizer** (`src/lib.rs`) borrows the source and yields raw tokens with byte
@@ -87,7 +87,8 @@ source ─▶ Tokenizer ─▶ Parser ─▶ compiler reader ─▶ Analyzer ─
   [docs/parser.md](docs/parser.md).
 - **Compiler reader** (`src/compiler_reader.rs`, `compiler_data.rs`) turns syntax
   into immutable compiler forms: reader conditionals, syntax quote, `#()`,
-  namespaced maps, tagged literals and namespace-aware symbol resolution.
+  namespaced maps, tagged literals and namespace-aware symbol resolution. Custom
+  compiler data readers run in a V8 isolate separate from the macro isolate.
 - **Analyzer** (`src/analyzer.rs`) resolves names to stable binding IDs and
   lowers forms into an expression arena (`Program`). Binding/destructuring
   macros are expanded in Rust (`compiler_binding_macros.rs`,
@@ -117,11 +118,11 @@ source ─▶ Tokenizer ─▶ Parser ─▶ compiler reader ─▶ Analyzer ─
 ## Building
 
 The V8 build requires Rust 1.91+, babashka (`bb`), Git and a C/C++
-toolchain. V8 is the stock prebuilt engine of the pinned `v8` crate, which its build
-script downloads on the first build (pointer compression is on, so the prebuilt
-engines cover macOS and x86_64 Linux). Its macro realm has no `WebAssembly` and
-rejects `maxByteLength`, because stock V8 maps resizable buffers and Wasm memory
-outside the allocator that charges the macro memory limit (`RESTRICTED_BUFFERS` in
+toolchain. The build script downloads the pinned `v8` crate's prebuilt engine
+on the first build. Prebuilt engines cover x86_64 and arm64 on macOS, Linux and
+Windows. The macro realm disables `WebAssembly` and rejects `maxByteLength`
+because stock V8 maps WebAssembly memory and resizable buffers outside the
+allocator that charges the macro memory limit (`RESTRICTED_BUFFERS` in
 `src/v8_evaluator.rs`). Node.js is needed for parts of the test suite and for
 running emitted JavaScript outside the embedded evaluator.
 
@@ -129,7 +130,8 @@ running emitted JavaScript outside the embedded evaluator.
 cargo build --release
 ```
 
-Builds with `--no-default-features` and WebAssembly builds embed no engine.
+V8 is the only embedded engine. Builds with `--no-default-features`,
+WebAssembly builds and targets without a prebuilt V8 embed no engine.
 A `host_evaluator::ScriptHost` can execute macros for clean compilations, as
 the browser playground does. Interactive sessions and compiler data readers
 require a V8 build.
@@ -159,7 +161,8 @@ stderr). Namespaces are loaded only from explicit `--source-root DIR` options
 (`.cljs` is preferred over `.cljc`); `.clj` files are rejected. Resource limits:
 `--poll-budget`, `--memory-limit`, `--stack-limit`, `--timeout-ms`,
 `--source-limit`, `--output-limit`, plus `--print-length`/`--print-level` for the
-printed result. Existing commands can specify `--engine v8` explicitly.
+printed result. The V8 heap needs at least 16 MiB (16,777,216 bytes) at startup.
+`--engine` accepts only `v8`. Legacy `--engine quickjs` commands report that QuickJS was removed.
 `--warnings` analyzes as `--compile --warnings` does, printing
 undeclared Vars and arity conflicts to stderr instead of rejecting the form, so
 `(require 'app.view :reload)` of a file that uses a Var another file defines
@@ -240,23 +243,23 @@ namespaces that read it, every step recompiles the namespaces marked
 `^:dev/always` and those that depend on them, and a form that fails prints its
 error and leaves the previous unit. The watch starts from the persistent
 compiler cache (below), in `.light-cljs/cache` or in `--cache-dir DIR`: its
-startup build runs once, in
-the session's own engine, installing every namespace whose artifact is
-current instead of analyzing it, and the session compiles later edits
-against that build as if it had loaded the namespaces itself. Steps neither
-read nor write the cache, so a restart analyzes what changed since the
-cache was last filled; a fresh uncached start is a restart with
-`--no-cache`, and deleting the directory never touches a running watch.
+startup build runs once in the session's V8 macro host. The build installs
+each namespace whose artifact is current instead of analyzing it. The session
+uses the resulting program to compile later edits. With `--no-cache`, the
+compiler writes the startup build first, then loads the program into a separate
+session. Only startup reads or writes the cache. A restart analyzes what changed
+since the cache was last filled. Deleting the cache directory leaves a running
+watch intact.
 `--cache-blocker NS` (repeatable) keeps NS and its compilation consumers
 out of the cache; a blocker never makes a step recompile. A large program
 raises the macro limits with the flags `--compile` takes,
 `--macro-expansions N`, `--macro-nodes N`, `--macro-timeout-ms N`,
 `--macro-memory-limit N` and `--macro-poll-budget N` (by default 1,024
 expansions and 100,000 generated form nodes per compilation, a 10 s deadline,
-a 64 MiB heap and a poll budget of 1,000,000): they bound the startup build
-and the watch's session, whose load of the program at startup is one
-operation under the deadline and poll budget, as is each namespace a step
-compiles again. As with `--compile`, macros see stub JavaScript
+a 64 MiB heap and a poll budget of 1,000,000). Macro expansion and generated-node
+counts start over at each watch step and are shared by the namespaces it
+recompiles. Each namespace reload has its own deadline and poll budget.
+As with `--compile`, macros see stub JavaScript
 packages, which only the application has. One line per step goes to stderr
 ([Watch](docs/evaluation.md#watch)).
 
@@ -716,10 +719,8 @@ light-cljs built for `wasm32-unknown-unknown` compiles several in-memory
 namespaces at any `--optimize` level, and the emitted JavaScript runs in the
 browser's own engine inside a worker.
 A dropdown offers examples from a single namespace to a calculator in several.
-Its macros run in the browser's own engine too, about three times faster than
-the QuickJS the module embedded until light-cljs-357, which made the module
-1.2 MB larger, with a watchdog that ends a compile whose macro runs past the 10 s
-deadline ([docs/browser-macros.md](docs/browser-macros.md)).
+Its macros run in the browser's own engine too. A watchdog ends a compile
+whose macro runs past the 10 s deadline ([docs/browser-macros.md](docs/browser-macros.md)).
 `bb playground/build.bb` builds and serves it; see
 [playground/README.md](playground/README.md) for the toolchain it needs.
 
@@ -891,9 +892,10 @@ tests at a time, starts the slowest tests first and sets the slow-test timeout;
 the `ci` profile (`cargo nextest run --profile ci`) uses every CPU and reports
 every failure.
 
-CI runs the V8 suite and strict Clippy in
-[the conformance workflow](.github/workflows/conformance.yml). The V8 jobs
-download the prebuilt engine as a local build does.
+The `fast-tests` job in [the conformance workflow](.github/workflows/conformance.yml)
+runs the V8 suite, strict Clippy and the Node tests. It downloads the prebuilt
+engine as a local build does. The `playground` job builds and checks the
+WebAssembly compiler with the browser macro host.
 
 `size_ratchet` (`tests/compiler/size_ratchet.rs`) pins the emitted size of a few
 small programs (`tests/support/ratchet_fixtures.rs`) at each `--optimize` level
@@ -955,7 +957,7 @@ unused code for optimizer checks. See [the generator guide](benchmarks/generated
   `--eval`/`--repl` commands.
 - [docs/evaluator.md](docs/evaluator.md) — the V8 evaluator, compile-time
   phase contract, form bridge, resource controls.
-- [docs/compiler-cache.md](docs/compiler-cache.md) — proposed persistent binary
+- [docs/compiler-cache.md](docs/compiler-cache.md) — persistent binary
   cache, explicit dependencies, opt-outs, and development-session reuse.
 - [docs/build-configuration.md](docs/build-configuration.md) — `light-cljs.edn`,
   the configuration file of named builds, and the `compile`, `watch` and

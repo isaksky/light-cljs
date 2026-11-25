@@ -1,5 +1,7 @@
 # Restrict the compiler reader's temporary binding table
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 The compiler's private reader view only qualifies names. Previously, every new
 view allocated binding names and hash-table entries for all declared globals,
 including namespaces that could not affect qualification. The view now keeps

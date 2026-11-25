@@ -1,7 +1,12 @@
 # Value layout: classes with secret-key protocol slots
 
-Design of light-cljs-1008 (2026-11-14), for the output-speed-parity group
-(pl group 1661): every later pellet of the group follows it. It replaces the
+Historical design notes for the runtime layout migration. The QuickJS
+reference and the Pants build described here were removed from this branch.
+See the compiler reference for the runtime layout in use today.
+[Runtime values](compiler.md#immutable-collection-data-and-the-core-runtime)
+
+The design originated in light-cljs-1008 (2026-11-14) for the
+output-speed-parity group (pl group 1661). It replaced the
 runtime's private-field payloads (`payloads`, `privateStore`, `kindedStore`
 and the `WeakMap` stores at the top of `src/js_runtime.js`) and its layered
 dispatch (`behindProtocol`, `publicMethod`, kind tables) with upstream-style
@@ -3214,6 +3219,8 @@ keywords and symbols their `-equiv`; mixed comparisons keep their answers.
 
 ## 4. Profiles
 
+This table describes the profiles considered during the migration.
+
 | profile | layout | key | brand |
 |---|---|---|---|
 | release (`:advanced` and the other levels' output) | classes | per build | none |
@@ -3639,8 +3646,8 @@ names (the last by light-cljs-1015):
 
 ## 6. Migration order
 
-Every step lands with the full suite, the QuickJS reference and the Pants
-build tests passing, while converted and unconverted kinds coexist.
+The migration used the full suite, the QuickJS reference and the Pants build
+tests while converted and unconverted kinds coexisted.
 
 **What coexists, and how.**
 
@@ -3701,8 +3708,8 @@ build tests passing, while converted and unconverted kinds coexist.
 6. light-cljs-1014, per-class `-equiv` and `-hash`.
 7. light-cljs-1015, removal of the old layers and stores from the release
    and dev units; what stays is section 4's: the compile-time `stamp`,
-   `TypeBrand`, `ClassBrand`, `defineClass`, and whatever
-   `src/js_shared_profile.js` holds.
+   `TypeBrand`, `ClassBrand`, `defineClass`, and the shared profile used at
+   that stage.
 8. light-cljs-1016, direct slot calls at `:advanced` (dotted keyed names,
    which section 1 measured as fast as upstream's).
 9. light-cljs-1017, startup (section 7).

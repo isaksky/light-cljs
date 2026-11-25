@@ -1,5 +1,7 @@
 # Compiler-global read diagnostic
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 This phase only instruments reads through `__lightCompilerRoots`; no cache
 or production source change was retained. Both complete outputs match phase29.
 

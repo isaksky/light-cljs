@@ -1,5 +1,7 @@
 # Validated QuickJS allocator and registration quoting
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 The native CLI uses mimalloc 0.1.52 (`libmimalloc-sys` 0.1.49, bundled v3).
 The library does not select a global allocator, and the WebAssembly normal
 dependency tree excludes mimalloc. Compile-time registration strings use the

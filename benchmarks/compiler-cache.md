@@ -1,5 +1,7 @@
 # Compiler cache measurements
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 Numbers for the persistent compiler cache
 ([design](../docs/compiler-cache.md), "Settled decisions" for the rollout
 gates). Every row is Penpot `app.main --optimize none` built by

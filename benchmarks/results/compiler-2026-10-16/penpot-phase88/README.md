@@ -1,5 +1,7 @@
 # Phase88: QuickJS namespace registration cache — not retained
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 Isolated phase87 variant. It splits namespace registration from deferred unit
 code and caches the latest compiled registration function per namespace, bounded
 to 1,024 entries and 4 MiB of UTF-16 source. Every registration still executes

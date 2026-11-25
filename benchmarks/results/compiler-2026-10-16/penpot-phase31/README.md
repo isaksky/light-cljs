@@ -1,5 +1,7 @@
 # Capture and replay the Instaparse grammar macro
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 An isolated compiler based on phase29 records the real
 `instaparse.abnf/precompile-cljs-grammar` invocation while compiling the
 unchanged Penpot port's `instaparse.abnf` entry. It records emitted sources,

@@ -1,5 +1,7 @@
 # Lazy bridge diagnostic paths — rejected
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 Isolated from validated V8 phase102. The bridge records reusable path components
 and formats a path only on conversion failure, instead of concatenating strings
 at every successful node. No descriptor or provenance representation changes.

@@ -1,5 +1,7 @@
 # Compact registration strings with the production QuickJS backend
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 This isolated candidate applies only phase44's compile-time registration
 string-quoting change to production phase47. Printable ASCII uses the existing
 readable quoting routine; quotes, backslashes, non-ASCII and control units keep

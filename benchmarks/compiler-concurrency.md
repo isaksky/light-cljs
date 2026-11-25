@@ -1,5 +1,7 @@
 # Compiler concurrency measurements
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 Numbers for multi-threaded compilation
 ([design](../docs/compiler-concurrency.md), "Gates and first steps"; the
 research kit behind the design is in [concurrency/](concurrency/README.md)).

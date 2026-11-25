@@ -1,5 +1,7 @@
 # Macro argument traversal replay — V8 trial, not retained
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 Phase58 with only a compiler form bridge change: record the initial descriptor
 postorder and replay each argument's range, instead of constructing another
 explicit traversal stack. Metadata/provenance restoration still precedes each

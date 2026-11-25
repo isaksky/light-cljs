@@ -1,5 +1,7 @@
 # Phase90: native profile of promoted QuickJS production
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 The exact phase87 production binary was sampled every 10 ms during a complete
 main-none build. This diagnostic run took 93.336 seconds; its output matches
 phase42, including the known main ESM defect. No source changes were made.

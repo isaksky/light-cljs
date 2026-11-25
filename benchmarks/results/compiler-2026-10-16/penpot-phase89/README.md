@@ -1,5 +1,7 @@
 # Phase89: QuickJS detached registration without caching — not retained
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 The exact phase88 binary with `LIGHT_QJS_NAMESPACE_CACHE=0`. Registration remains
 separate from deferred unit code, but each registration is evaluated normally.
 

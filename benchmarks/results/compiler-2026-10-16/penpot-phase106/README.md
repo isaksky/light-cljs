@@ -1,5 +1,7 @@
 # QuickJS lazy bridge diagnostic paths — rejected
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 The phase105 runtime-only change was applied to validated production phase101
 in an isolated directory. Cold main none takes **96.12 s / 815,857,664 bytes
 RSS**, versus an immediately following frozen phase101 build at **95.27 s /

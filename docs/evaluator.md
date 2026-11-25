@@ -5,22 +5,26 @@ low-level `evaluator::Evaluator` executes compiler units against a single
 runtime. Applications that need interactive compiler symbol state use
 `EvalSession`.
 
-V8 builds expose the V8 isolate as `Evaluator`. Clean compilations and
-interactive sessions share that engine implementation through their respective
-traits. The V8 bridge
-preserves immutable form identity and namespace snapshots while releasing
-session roots on completion. Its interrupt scheduler runs on a shared thread.
+The V8 build exposes `V8Evaluator` as `Evaluator`. Clean compilations and
+interactive sessions use V8 for macros. Compiler data readers run in their own
+V8 isolate, with a separate registry and access to the compiler's reader build
+services. In a build, the reader shares the build deadline and cancellation.
+The V8 bridge preserves immutable form identity and namespace
+snapshots while releasing session roots on completion. Its interrupt scheduler
+runs on a shared thread.
 Heap and buffer storage, including shared buffers, draw on a cooperative memory
 budget. Stock V8 maps resizable and growable buffers and Wasm memory
 outside the allocator the budget charges, so the macro realm has no
 `WebAssembly` and rejects `maxByteLength` (`RESTRICTED_BUFFERS` in
 `src/v8_evaluator.rs`). The initial collection threshold is at most 256 MiB;
 live heaps can grow toward the configured budget. Startup requires at least
-16 MiB.
-The WebAssembly implementation, `host_evaluator::HostEvaluator`, drives the same
-services in an engine the embedder supplies through `ScriptHost`; the browser
-playground uses it to run macros in the browser
-([browser macros](browser-macros.md), the playground's default).
+16 MiB (16,777,216 bytes). See the memory limits for builds with multiple
+isolates. [Parallel compilation](compiler-concurrency.md#parallel-compilation)
+
+`host_evaluator::HostEvaluator` drives the same macro services for clean
+compilations in an engine the embedder supplies through `ScriptHost`. The
+WebAssembly compiler embeds no engine and the playground supplies the browser's
+engine. [Browser macros](browser-macros.md)
 
 Embedded execution runs in-process. Node remains an independent runtime in
 execution tests.
@@ -331,6 +335,10 @@ deadline. Nested operations share execution control. The interactive evaluator
 starts a new deadline and poll budget for each operation while the session is
 usable. Rust callbacks poll cooperatively. A clone of the control can cancel
 from another thread.
+
+The compiler resets macro expansion and generated-node counts for each
+outermost REPL operation and for each watch step. Nested compilation shares
+the current operation's counts.
 
 V8's interrupt scheduler charges the poll budget for JavaScript work. Promise
 reaction jobs also charge it. The host checks execution control on return.

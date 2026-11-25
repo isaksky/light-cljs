@@ -1,5 +1,7 @@
 # Phase72: production unit hygiene
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 QuickJS production now uses the raw-JavaScript hygiene pass for the generated
 shared-runtime parameter. It no longer searches all accumulated string literals
 for a safe parameter name before emitting each deferred unit. This ports only

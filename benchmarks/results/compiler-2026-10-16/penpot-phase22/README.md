@@ -1,5 +1,7 @@
 # Phase22 intrinsic list construction
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 `listFromArray` builds nodes with their known stored counts. Previously every
 node called general `count` on its newly created tail, triggering protocol lookup
 and compiler declaration-demand work. Besides wasting time, a public ICounted

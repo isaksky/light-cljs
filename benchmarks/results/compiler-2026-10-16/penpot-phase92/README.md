@@ -1,5 +1,7 @@
 # Phase92: QuickJS function samples
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 Diagnostic-only engine instrumentation of production phase87. Interpreter
 safepoints capture up to 24 frames when at least 10 ms have elapsed, reading
 bytecode names and declaration lines directly without executing JavaScript.

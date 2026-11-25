@@ -28,7 +28,7 @@
       <code>.cljs</code>/<code>.cljc</code> source, resolves and analyzes it in Rust, and emits
       a single self-contained JavaScript expression that carries its own persistent-collection
       runtime. The same compiler powers a script runner, a REPL and an embedding API that
-      execute the emitted JavaScript in an embedded QuickJS engine, so no Node, JVM or
+      execute the emitted JavaScript in the embedded V8 engine, so no Node, JVM or
       installed <code>cljs.core</code> is needed to run code.</p>
 
     <p><strong>Status:</strong> ClojureScript support is substantial but partial. Core special
@@ -37,9 +37,9 @@
       interop work, and behavior is regularly compared against standard ClojureScript. It is
       not a drop-in replacement; the differences are below.</p>
 
-    <p>The <a href="playground/">playground</a> runs the compiler itself in your browser,
-      built for WebAssembly: edit a few namespaces, compile them at any optimization level,
-      read the JavaScript and run it.</p>
+    <p>The <a href="playground/">playground</a> runs the WebAssembly compiler in your browser.
+      Edit a few namespaces, compile them at any optimization level, read the JavaScript and
+      run it. The playground uses the browser's JavaScript engine for both macros and output.</p>
 
     <section id="differences">
       <h2>How it differs from ClojureScript</h2>
@@ -61,9 +61,9 @@
         <li><strong>Output</strong> is one JavaScript expression, or one ES module with
           <code>--esm</code>; there are no per-namespace modules. Source maps (v3) are
           supported at every optimization level.</li>
-        <li><strong>Macros</strong> are written in <code>.cljs</code>/<code>.cljc</code> and
-          run in the embedded QuickJS engine, not the JVM; <code>.clj</code> macro files are
-          never loaded.</li>
+        <li><strong>Macros</strong> are written in <code>.cljs</code>/<code>.cljc</code>.
+          The compiler runs them as JavaScript in V8, including during a REPL session.
+          Custom compiler data readers run in a separate V8 isolate.</li>
         <li><strong>Optimization:</strong> the release mode, <code>--optimize
           advanced</code>, is light-cljs's own and still being built. Today
           <code>(js/console.log (+ 1 2))</code> compiles to about 150 bytes, a small record and
@@ -95,7 +95,7 @@
           and embedding</a>: the <code>EvalSession</code> API, <code>--eval</code> and
           <code>--repl</code>.</li>
         <li><a href="https://github.com/isaksky/light-cljs/blob/master/docs/evaluator.md">Evaluator</a>:
-          the QuickJS evaluator and the compile-time phase contract.</li>
+          the V8 evaluator and the compile-time phase contract.</li>
         <li><a href="https://github.com/isaksky/light-cljs/blob/master/docs/parser.md">Parser</a> and
           <a href="https://github.com/isaksky/light-cljs/blob/master/docs/lexer.md">tokenizer</a>:
           the syntax layers.</li>

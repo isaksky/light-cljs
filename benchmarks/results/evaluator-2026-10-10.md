@@ -1,5 +1,7 @@
 # Synchronous evaluator baseline — 2026-10-10
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 Host: macOS arm64, Rust 1.99.0 (Homebrew), Node v24.18.0. This is a
 focused startup/size baseline for pinned rquickjs 0.14.0, not an engine comparison.
 

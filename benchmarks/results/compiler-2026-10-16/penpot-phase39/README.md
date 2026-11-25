@@ -1,5 +1,7 @@
 # Time-gated JavaScript sampling and diagnostic upper bounds
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 Production remains phase33. An isolated QuickJS build samples the JavaScript
 stack at interrupt checks at least 1 ms apart, using CLOCK_MONOTONIC. The
 captured grammar replay returns the exact expected descriptor in both trials

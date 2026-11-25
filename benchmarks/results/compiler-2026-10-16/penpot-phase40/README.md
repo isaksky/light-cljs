@@ -1,5 +1,7 @@
 # Native QuickJS profile-guided compilation diagnostic
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 Production remains phase33. Clean isolated sources are built with Clang
 instrumentation (-fprofile-instr-generate), trained on the two captured
 grammar invocations, merged with llvm-profdata, then rebuilt with

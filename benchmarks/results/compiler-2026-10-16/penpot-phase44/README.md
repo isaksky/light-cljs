@@ -1,5 +1,7 @@
 # Isolated embedded V8 compiler experiment
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 This is an experiment, **not a production backend change**. At the end of
 phase44, production source, Cargo manifest and lockfile remained at phase42.
 Phase45 subsequently promotes an independent namespace-count snapshot fix.

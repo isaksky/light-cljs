@@ -1,5 +1,7 @@
 # Phase 100: release completed unit IR after application assembly
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 The QuickJS production compiler now uses the prepared-source handoff validated
 with V8 in phase99. Once application assembly consumes a deferred unit's analyzed
 body, the session retains its generated JavaScript and immutable namespace

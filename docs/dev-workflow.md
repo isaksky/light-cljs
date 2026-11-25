@@ -1,5 +1,10 @@
 # Development workflow design
 
+The development workflow uses a V8 macro isolate to compile forms for the
+embedded session or a connected browser or Node runtime. Embedded sessions
+execute those forms in a separate V8 isolate. For current command-line options
+and the embedding API, see the evaluation reference. [Evaluation](evaluation.md)
+
 Give light-cljs the edit-save-reload loop and the connected REPL that
 ClojureScript developers expect from shadow-cljs and figwheel: a watch
 command that recompiles a changed namespace in milliseconds and replaces its
@@ -14,13 +19,13 @@ later code reads at each use, which is exactly the storage model reloading
 needs. And the compiler is fast enough that a watch loop can start by
 recompiling whole namespaces rather than caching anything. What is missing
 is packaging (compiled applications seal their definitions inside one
-closure), a transport (the session evaluates synchronously inside QuickJS),
+closure), a transport (the embedded session evaluates synchronously),
 and the policy layer (what to reload after a change, and when to run
 lifecycle hooks).
 
 The plan is incremental: Phase 0 produces a reloadable build that can be
 exercised by hand and from Node, Phase 1 separates the incremental compiler
-from the QuickJS heap, Phase 2 adds the watch loop, Phase 3 the server,
+from the application heap, Phase 2 adds the watch loop, Phase 3 the server,
 client and reload policy, and Phase 4 the connected REPL and the editor
 protocol. Each phase has a measurable exit criterion.
 
@@ -132,13 +137,13 @@ Citations are into `research/shadow-cljs/src/main/shadow/`.
   covered by the SCI reference rows (`tests/fixtures/sci-outcomes.tsv:2030`,
   `:2428-2429`, `:2460`). No Rust test exercises `:reload` itself; the
   fixture rows that did are retired or marked as gaps (`:1463-1487`).
-- **The session is bound to the QuickJS heap.** `EvalSession`
+- **The embedded session owns its application heap.** `EvalSession`
   (`src/eval_session.rs:197`) evaluates each unit synchronously
   (`evaluate`, `:450`), keeps the current namespace in sync through a JS
   function (`namespace_update`, `:198`), returns value handles, and serves
   runtime `require`, `load-file` and `eval` by calling back into the
-  compiler during execution (`callback_source`, `:964`). Nothing in the
-  crate speaks to another process: the only dependency is `rquickjs`.
+  compiler during execution (`callback_source`, `:964`). These callbacks run
+  in the same process as the compiler.
 - **The session's `ns` is narrower than the compiler's.** `directive_inner`
   (`src/eval_compiler.rs:584`) accepts `:require` with `:as` and `:refer`
   and `:refer-clojure :exclude`; other clauses are rejected (`:665`, `:716`).
@@ -172,7 +177,7 @@ code-splitting.md:
 15. **The compiler produces actions; runtimes interpret them.** Compiling a
     form or a file yields a list of actions (invoke this unit, load these
     units, the current namespace is now X, these warnings, this error).
-    QuickJS, a browser tab and a Node process are interchangeable
+    An embedded V8 session, a browser tab and a Node process are
     interpreters. The compiler never waits on a runtime.
 16. **Recompile, do not cache.** A watch step recompiles the changed
     namespace's forms against the retained program. There is no on-disk
@@ -270,12 +275,10 @@ and return actions:
 | `Warnings` | located warnings | Analysis warnings for the input. |
 | `Error` | located diagnostic | The input did not compile; nothing was emitted for it. |
 
-`EvalSession` becomes one interpreter: it evaluates `Invoke` and `Load`
-units in its QuickJS heap, applies `Namespace` to `*ns*`, and keeps its
-public API, value handles and `*1`/`*2`/`*3`/`*e` exactly as today. The
-runtime callbacks for `require` and `load-file` inside QuickJS keep working
-through the same `DevSession` because the heap is in-process; a browser
-runtime does not get runtime `eval` or `load-file` (see the contract).
+`EvalSession` interprets `Invoke` and `Load` in its V8 application heap and
+applies `Namespace` to `*ns*`. It owns value handles and `*1`/`*2`/`*3`/`*e`.
+In-process callbacks for `require` and `load-file` go through the same
+`DevSession`, which compiles with its own V8 macro isolate.
 
 As built (light-cljs-283; the API is in
 [evaluation.md](evaluation.md#actions)), a unit is one top-level form:
@@ -638,7 +641,7 @@ CLI's `--repl` and `--eval` rebuilt on it, and the session gaps closed.
   `--repl --warnings` and `--eval --warnings` expose it; warnings are an
   action, printed to stderr by the CLI.
 - **Source maps.** Every `Invoke` and `Load` unit carries a source map;
-  the QuickJS session ignores it.
+  the embedded session ignores it.
 - **Tests.** `tests/evaluation/dev_session.rs`: action sequences for a
   form, a `require`, a `require :reload` whose source changed between
   loads, a `load-file`, an `ns` with every clause, and a failing form after
@@ -655,7 +658,7 @@ loaded/loading sets; `EvalSession` and its runtime `load-file` callback are
 interpreters of the actions, and the two copies of the loading code they
 had are one. `tests/evaluation/dev_session.rs` covers a form, a `require`,
 a `require :reload` whose source changed, a `load-file` and a failing form
-after a successful one by applying the units in a fresh QuickJS heap, a
+after a successful one by applying the units in a fresh embedded session, a
 unit that throws while a namespace loads (in the session and through the
 runtime `load-file`), and a standalone `DevSession` idle past its deadline;
 and it applies the actions of a `require` of an edited `app.view`, compiled
@@ -677,7 +680,8 @@ match (`portable`). A `DevSession` is in warning mode by default
 (`set_warning_mode`); an `EvalSession` takes `EvalOptions::warning_mode` and
 hands warnings to `EvalOptions::warnings`, and `--repl --warnings` and
 `--eval --warnings` print them to stderr. Every unit carries a source map
-(`emit_js_mode`'s mapped path), which the QuickJS session ignores; loading a
+(`emit_js_mode`'s mapped path), which the embedded session ignores. At the
+time of the change, loading a
 500-definition namespace through `--eval` took the same time with and without
 the maps (5.5 s and 5.7 s, debug build). `tests/evaluation/dev_session.rs`
 adds an `ns` with every clause (its units print what `--compile` output of
@@ -1046,10 +1050,13 @@ The deliberate differences between a dev build (and the session) and a
   later.
 - Analysis uses warning mode: undeclared Vars and arity conflicts are
   warnings, and the code runs as upstream's would.
+- Watch resets the macro expansion and generated-node counts at the start of
+  each step. All namespaces in the step share those limits. Each namespace
+  reload gets a fresh macro deadline and poll budget.
 - Reflection is always available: namespaces register themselves as below
   `advanced`.
-- Runtime `eval` and `load-file` work only where the compiler is in
-  process (QuickJS); in a browser or Node runtime they throw with a message
+- Runtime `eval` and `load-file` work in the embedded V8 session, where the
+  compiler is in process. In a browser or Node runtime they throw with a message
   naming the REPL as the alternative. `read-string` works everywhere.
 - Output is never terse or sliced; dev builds are larger and slower than
   `prepare`, and the runtime is served as one file.

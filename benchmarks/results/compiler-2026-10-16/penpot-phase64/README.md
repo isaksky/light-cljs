@@ -1,5 +1,7 @@
 # Active ancestor stack — QuickJS negative result
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 Phase52's production-equivalent QuickJS candidate with phase63's active-ancestor
 stack. Main none takes **94.22 s / 1,048,231,936 bytes peak RSS**, versus the
 retained production's **93.83 s / 993,214,464 bytes**. This does not improve

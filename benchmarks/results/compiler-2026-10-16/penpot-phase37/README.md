@@ -1,5 +1,7 @@
 # Primitive brand rejection: no measurable gain
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 An isolated runtime adds an early object/function check to storesPredicate,
 avoiding the fixed private-brand inventory for primitive values. It changes
 no protocol masks or public method slots. Both trials reproduce the captured

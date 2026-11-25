@@ -1,5 +1,7 @@
 # Phase13 protocol dispatch and updated profile
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 Public protocol consumers now retain their initial membership decision while
 selecting a method. They still perform direct/native method lookup and reject
 missing methods, but no longer repeat satisfies? afterward. Besides avoiding

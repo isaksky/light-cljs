@@ -1,5 +1,7 @@
 # Native dispatch and private-store experiments
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 These isolated runtime variants replay the captured Instaparse grammar macro
 from phase31 against a phase33 baseline. Every replay's encoded result matches
 the capture. None of these variants is retained in production, and these are

@@ -125,7 +125,7 @@ distributions, allocation counts and an unchanged primitive baseline.
 The later [language integration measurement](compiler.md#language-integration-october-10-2026)
 records expanded runtime size and validated parse/initialize/execute timings.
 [Startup and steady state by optimization level](compiler.md#startup-and-steady-state-by-optimization-level--october-13-2026)
-times the size-ratchet programs at every `--optimize` level in Node and QuickJS,
+times the size-ratchet programs at every `--optimize` level in Node,
 with upstream ClojureScript's `:advanced` sizes beside them.
 
 Archived native runtime measurements are documented in [interpreter.md](interpreter.md).
@@ -133,7 +133,7 @@ The interpreter, its benchmark harnesses and four Python runner scripts have bee
 removed. Retained results and fixtures describe historical native semantics and
 are not current evaluator coverage or performance claims.
 Use [evaluator measurements](../docs/evaluator.md#verification-and-measurements)
-for the compiler-backed QuickJS path. Run
+for the embedded V8 path. Run
 `cargo bench --locked --bench evaluator -- --iterations 20` for validated fresh,
 reused and bounded-loop/reset/recovery scenarios.
 

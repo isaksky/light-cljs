@@ -1,5 +1,7 @@
 # Macro argument traversal replay — QuickJS negative result
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 Phase52's production-equivalent QuickJS candidate with the phase61 replay-order
 change. Main none takes **94.49 s / 998,801,408 bytes peak RSS**, versus the
 retained production's 93.83 s / 993,214,464 bytes. This does not improve production

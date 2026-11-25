@@ -1,5 +1,7 @@
 # Active ancestor stack — V8 trial, not retained
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 An isolated phase58 trial replaces the compiler form encoder's active-ancestor
 WeakSet with an array stack. Only the path's bounded ancestors are searched;
 the separate arbitrary-length sequence cycle detector remains a WeakSet.

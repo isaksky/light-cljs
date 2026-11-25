@@ -7,11 +7,13 @@ Plain names for things that come up in reports, benchmarks and pellets.
 light-cljs runs ClojureScript macros by executing JavaScript while it
 compiles.
 
-- **V8 build**: macros run on V8, Google's engine, which compiles hot code to
-  machine code while it runs. This is the build that ships today (formerly
-  "default build", "default backend").
+- **V8 build**: the standard build. V8 is its only embedded engine and runs
+  compile-time macros and data readers as well as interactive sessions.
 - **No-engine build**: embeds no JavaScript engine. Build with
-  `--no-default-features`. An embedder can provide a `ScriptHost` for macros.
+  `--no-default-features`. The WebAssembly compiler is also a no-engine build.
+  An embedder can provide a `ScriptHost` for macros in clean compilations.
+- **QuickJS reference**: a label in historical measurements. QuickJS and the
+  experimental Pants build have been removed from this branch.
 
 ## Measurements
 

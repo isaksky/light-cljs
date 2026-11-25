@@ -1,5 +1,7 @@
 # Phase87: validated production reader lookup and shared compiler storage
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 Promoted production-phase72 variant. It carries phase76's demand-based private
 reader binding lookup and the storage changes validated in the V8 phase85
 candidate, preserving QuickJS's own namespace-global bookkeeping.

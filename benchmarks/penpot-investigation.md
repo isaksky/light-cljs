@@ -1,5 +1,7 @@
 # Penpot compiler performance investigation — October 16–17, 2026
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 See the [October 27 regression check and repair](#default-v8-regression-check-october-27-2026)
 for the later default-compiler slowdown and restored Penpot timings, and the
 [October 29 comparison with shadow-cljs, cached and uncached](#re-measured-against-shadow-cljs-cached-and-uncached-october-29-2026-at-0ad2514f)

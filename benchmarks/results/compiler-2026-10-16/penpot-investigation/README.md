@@ -1,5 +1,7 @@
 # Evidence for the Penpot investigation
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 Read [the report](../../../penpot-investigation.md) for conclusions, interpretation
 and limitations. Source revision: `4d2a0d69004dd1c993aab3a65e3080079858e4bc`.
 

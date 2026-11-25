@@ -1,5 +1,7 @@
 # Unread core macro `&form` — QuickJS trial, not retained
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 Phase52 with phase65's conservative unread-form shortcut, including its final
 focused test sources. Both crate roots and `build.rs` were touched before the
 build to avoid stale shared-target code or generated runtime artifacts.

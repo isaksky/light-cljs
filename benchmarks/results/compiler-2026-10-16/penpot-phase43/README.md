@@ -1,5 +1,7 @@
 # Embedded V8 feasibility probe
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 This standalone Rust executable embeds pinned `v8 = 152.2.0`, using the
 same phase31 captured Instaparse grammar invocation and phase38/current
 runtime as the QuickJS replay. It has no Node runtime dependency. The

@@ -1,5 +1,7 @@
 # Generated projects: light-cljs vs shadow-cljs, advanced builds (October 22, 2026)
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 Projects from [the generator](generated-project/README.md), seed 42, at 5k, 200k
 and 800k nonblank lines. Both compilers build at advanced: `light-cljs release
 bench` (default `:advanced`) and `clojure -M:shadow release bench` (Closure

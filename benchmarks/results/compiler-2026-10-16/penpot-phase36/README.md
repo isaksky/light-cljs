@@ -1,5 +1,7 @@
 # Sample the current native execution
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 macOS sample observed the frozen phase33 production executable compiling
 app.main, requesting a sample every 10 milliseconds. The compiler exited
 successfully after 121.357 seconds. The complete output is byte-identical

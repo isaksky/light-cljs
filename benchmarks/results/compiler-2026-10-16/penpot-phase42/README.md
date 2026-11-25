@@ -1,5 +1,7 @@
 # Keep reader validation out of executable literal tables
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 Reader identity validation now resolves keyword/symbol names without inserting
 unused entries into executable literal tables. Actual lowering uses the same
 name-resolution helpers and still inserts its literals. Exact UTF-16 names,

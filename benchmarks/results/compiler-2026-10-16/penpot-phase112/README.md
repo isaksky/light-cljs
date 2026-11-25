@@ -1,5 +1,7 @@
 # Native V8 macro backend — integrated and validated
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 Clean native compilations now select V8 by default. Interactive sessions and
 WebAssembly retain QuickJS; `--no-default-features` selects the QuickJS-only
 native compiler. Both engines execute the same emitted macro bodies and runtime.

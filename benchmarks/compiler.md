@@ -1,5 +1,7 @@
 # Compiler collection costs — October 9, 2026
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 > Measurements below describe their recorded revisions. Native macro phases,
 > `Context` APIs and native-disable environment variables are historical only:
 > the interpreter and its harnesses have been removed. The current compiler

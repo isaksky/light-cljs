@@ -1,5 +1,7 @@
 # Phase21 interpreter interrupt profile
 
+QuickJS was removed from light-cljs. Results that use it are historical.
+
 Diagnostic instrumentation of the phase20 production source, in an isolated
 project under `/private/tmp/light-cljs-phase21/`. No production code changes.
 The temporary C hook samples the current JS stack at QuickJS interrupt checks.

@@ -966,10 +966,12 @@ metadata while definition metadata remains available to macros and Vars.
 
 Embedding handlers registered with
 `MacroHost::register_compiler_data_reader(tag, function_source)` execute compiled
-JavaScript over immutable compiler-owned reader data. Only finite form-domain
-results cross the typed boundary; functions, mutable references, opaque host
-objects and cycles are rejected at the original tag span. Handler closures keep
-state within a compilation and reset before the next compilation. Unknown tags
+JavaScript over immutable compiler-owned reader data in a separate V8 isolate.
+The isolate owns its reader registry and has access to the reader build services.
+Only finite form-domain results cross the typed boundary. Functions, mutable
+references, opaque host objects and cycles produce errors at the original tag
+span. Handler closures keep state within a compilation and reset before the
+next compilation. Unknown tags
 fail without dynamic class, filesystem or namespace lookup. Handlers read resources only through `light.build` ("Compile-time services: light.build"). Reader handlers run
 once in source order, including discarded forms and unselected runtime branches.
 Evaluation sessions can instead register source data readers (see
@@ -2538,13 +2540,13 @@ compilation, with 64 nested macro expansions (also the hard cap). Generated
 runtime analysis has a 128-frame nesting bound. `evaluator_options` configures
 engine memory, stack, timeout and polling bounds. V8 starts with a collection
 threshold of at most 256 MiB and allows live heaps to grow toward the configured
-budget. Its cooperative storage budget combines JavaScript heap and buffer
-backing stores, including resizable/shared buffers and Wasm memory; it is not a
-process-RSS ceiling. V8 sessions require at least 16 MiB for startup. Failures discard the
-JavaScript bootstrap session and produce no partial application output. A caught
-host cancellation or terminal limit still aborts the compilation. Later clean
-compilations allocate fresh roots, heaps and dispatch tables while retaining host
-configuration.
+budget. The budget combines the JavaScript heap and fixed-length buffer backing
+stores, including shared buffers. The macro realm restricts resizable buffers
+and WebAssembly memory. V8 sessions require at least 16 MiB for startup.
+Failures discard the JavaScript bootstrap session and produce no partial
+application output. A caught host cancellation or terminal limit still aborts
+the compilation. Later clean compilations allocate fresh roots, heaps and
+dispatch tables while retaining host configuration.
 
 ### Compile-time services: light.build
 

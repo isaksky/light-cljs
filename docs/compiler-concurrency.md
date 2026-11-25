@@ -1,5 +1,34 @@
 # Multi-threaded compilation: research and design
 
+## Parallel compilation
+
+`--jobs N` sets the number of work slots, including the coordinator. The
+default is one. Workers can read and parse sources and analyze deferred
+definition bodies. The coordinator handles top-level namespace analysis,
+merges results in source order and emits the build. Workers with V8 isolates
+can expand macros. Workers without isolates analyze only bodies that need no
+JavaScript macro expansion. The WebAssembly compiler runs on one thread.
+
+`--macro-memory-limit` covers the macro isolates' heaps and fixed-length buffer
+backing stores. The coordinator gets the first 64 MiB or the full limit if it
+is smaller. Each worker isolate needs another 64 MiB, so with the default
+limit of 64 MiB only the coordinator can run macros. Worker shares stay
+reserved during cache lookup. A fully cached build releases those unused shares.
+
+Custom compiler data readers run in separate V8 isolates. When the build plans
+worker isolates, their reader startup allowances bring the combined macro and
+reader budget to at most 125% of the configured limit. When the coordinator runs
+all JavaScript, its reader gets a separate allowance equal to the configured
+limit, for a total of twice that limit. Without reader calls, the configured
+limit covers all JavaScript memory.
+Process peak memory also includes engine overhead and the compiler's own data.
+[Command-line usage](../README.md#compile-to-javascript)
+
+## Historical research and design
+
+The notes below describe earlier implementations, experiments and proposals.
+QuickJS and the experimental Pants build were removed from this branch.
+
 Status, October 19, 2026: stage A is built behind `--jobs N` and stays
 experimental with a default of 1, because the stage A gate was missed on
 Penpot (0.79x of `--jobs 1` at eight jobs, 1.8x peak RSS, and source maps
@@ -2512,8 +2541,8 @@ one worker however many slots it was given.
   not promised byte-identical across job counts ("Semantics and determinism", Limits),
   and the test now runs with a worker isolate, which it is about.
 
-*As built (light-cljs-436), a pool of QuickJS runtimes in QuickJS-only
-builds.* A build without V8 (`--no-default-features`) used to keep one
+*Historical implementation (light-cljs-436), a pool of QuickJS runtimes.*
+A QuickJS-only build used to keep one
 slot whatever `--jobs` said. It now has the parse queue and the unit pool
 of a V8 build, with a QuickJS runtime where a V8 build has an isolate:
 

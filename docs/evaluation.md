@@ -52,8 +52,9 @@ The session is two parts: a `DevSession` (`light_cljs::dev_session`), the
 incremental compiler with its macro host and the namespaces the session has
 loaded, and the V8 isolate, which executes the emitted JavaScript
 (light-cljs-283; the design is "Actions" in
-[dev-workflow.md](dev-workflow.md#actions)). A `DevSession` also works with no
-heap at all, for a runtime in another process:
+[dev-workflow.md](dev-workflow.md#actions)). A `DevSession` can compile forms
+with its V8 macro heap and hand the resulting actions to a runtime in another
+process:
 
 ```rust
 use light_cljs::dev_session::{Action, DevSession};
@@ -269,6 +270,7 @@ before using that session again. A separate clean compilation/session remains
 usable. Long host callbacks must poll `HostCall::control()` cooperatively.
 
 `compiler` bounds macro expansions, generated nodes and expansion depth.
+Expansion and generated-node counts start over at each outermost REPL operation.
 `max_source_bytes` and `max_output_bytes` bound input and emitted/returned print
 text. Conversion also has finite node/depth bounds. Rust compiler allocation
 is not measured by the JS heap limit. Input providers return a nonempty chunk,
@@ -292,9 +294,8 @@ no-op stub; `newline` invokes it when newline flushing is enabled.
 ## Engines
 
 Evaluation and the session's compiler macros run in separate V8 isolates.
-`EvalOptions::backend` selects `EvalEngine::V8`. The command line accepts
-`--engine v8` for compatibility. Builds without V8 report that interactive
-sessions require a V8 build.
+`EvalOptions::backend` selects `EvalEngine::V8`. The command line's `--engine`
+flag accepts only `v8`. Interactive sessions require a V8 build.
 
 Definitions persist, host functions can reenter the compiler, and language
 exceptions leave the session usable. Cancellation, deadline, poll budget and
@@ -415,7 +416,7 @@ makes the first one the error of the form, or of `run_jobs`, with its
 | Flag | Default | Unit/behavior |
 | --- | ---: | --- |
 | `--poll-budget N` | 1000000 | Cooperative engine/compiler polls per operation |
-| `--memory-limit N` | 67108864 | JS heap bytes; minimum 1048576 for startup |
+| `--memory-limit N` | 67108864 | JavaScript heap and backing store bytes, minimum 16777216 for V8 startup |
 | `--stack-limit N` | 1048576 | JS engine stack bytes |
 | `--timeout-ms N` | 10000 | Deadline per operation in milliseconds |
 | `--source-limit N` | 4194304 | UTF-8 bytes per source/input window |
@@ -498,6 +499,10 @@ a reader sees the old text or the new. Namespaces are compiled in load order, so
 
 A rewritten namespace's value is its last form's, or nil when that is a
 directive, as in the first build.
+
+Each watch step resets the macro expansion and generated-node counts once.
+The namespaces recompiled in that step share those limits. Each namespace
+reload starts a new deadline and poll budget.
 
 A file outside the build changes nothing until a namespace requires it, and
 a deleted file is reported and otherwise ignored: its namespace keeps its
