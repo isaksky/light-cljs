@@ -1520,7 +1520,7 @@ mod tests {
             ..Default::default()
         };
         let resources = BuildResources::new(&options, 1, false).unwrap();
-        let evaluator = Rc::new(Evaluator::new_for_build(options, &resources, 0, false).unwrap());
+        let evaluator = Rc::new(Evaluator::new_for_build(options, &resources, true).unwrap());
         build_in(evaluator, false, &sequence_source).unwrap();
         resources.control.poll().unwrap();
     }

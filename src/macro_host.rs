@@ -779,10 +779,6 @@ impl MacroEnvironment {
     pub(crate) fn evaluator_options(&self) -> &crate::evaluator::EvaluatorOptions {
         &self.evaluator_options
     }
-    #[cfg(light_v8)]
-    pub(crate) fn has_data_readers(&self) -> bool {
-        self.tables.data_readers.len() != 0
-    }
     /// The limits the host was made with.
     pub(crate) fn limits(&self) -> &MacroLimits {
         &self.limits
@@ -1185,14 +1181,6 @@ impl MacroHost {
             evaluator.collect_garbage();
         }
     }
-    pub(crate) fn reader_headroom_held(&self) -> usize {
-        self.engine
-            .data_readers
-            .borrow()
-            .evaluator
-            .as_ref()
-            .map_or(0, |evaluator| evaluator.headroom_held())
-    }
     /// The values the host's macro engine roots for their `ValueId`s
     /// ([`crate::compiler_evaluator::CompilerEvaluator::value_roots`]), 0
     /// before it starts, once it has released the functions of macros no
@@ -1246,26 +1234,25 @@ impl MacroHost {
                     Some(control) => control.clone(),
                     None => ExecutionControl::new(&options)?,
                 };
-                V8Evaluator::interactive_with_control(options, control)?
-            } else if let Some(resources) = self.v8_build_resources()? {
                 if data_reader {
-                    let slot = if self.engine.catalog.is_some() {
-                        self.engine
-                            .bootstrap
-                            .as_ref()
-                            .and_then(|bootstrap| bootstrap.evaluator.v8_memory_slot())
-                    } else {
-                        Some(0)
-                    };
-                    V8Evaluator::new_for_build_reader(options, &resources, slot)?
+                    V8Evaluator::new_data_reader(options, control, true)?
                 } else {
-                    V8Evaluator::new_for_build(
-                        options,
-                        &resources,
-                        0,
-                        self.data_reader_count() != 0,
-                    )?
+                    V8Evaluator::interactive_with_control(options, control)?
                 }
+            } else if data_reader {
+                let control = if let Some(resources) = self.v8_build_resources()? {
+                    let build = if self.engine.catalog.is_some() {
+                        &resources.workers
+                    } else {
+                        &resources.control
+                    };
+                    ExecutionControl::linked(&options, build)?
+                } else {
+                    ExecutionControl::new(&options)?
+                };
+                V8Evaluator::new_data_reader(options, control, false)?
+            } else if let Some(resources) = self.v8_build_resources()? {
+                V8Evaluator::new_for_build(options, &resources, true)?
             } else {
                 V8Evaluator::new(options)?
             };
@@ -1581,9 +1568,6 @@ impl MacroHost {
             return Ok(Some(resources.clone()));
         }
         let isolates = session.v8_isolate_count();
-        if isolates == 1 && self.data_reader_count() == 0 {
-            return Ok(None);
-        }
         if isolates > 1 {
             // The coordinator can start before a cache miss starts the pool.
             // Prepare the bootstrap before the shared deadline starts.
@@ -4160,9 +4144,8 @@ mod compiler_default_reader_tests {
                 "(ns reader) #size 40",
             )))
         };
-        // At the default 64 MiB, no worker gets an engine and the reader has
-        // its own 64 MiB allowance. At 192 MiB, the three reserved macro
-        // shares leave no shared headroom and the reader needs its slot's share.
+        // At the default 64 MiB, no worker gets an engine. At 192 MiB, the
+        // three reserved macro shares leave no shared macro headroom.
         for (jobs, limit, workers) in [(1, None, 0), (3, None, 0), (3, Some(192 << 20), 2)] {
             let mut host = MacroHost::new();
             if let Some(limit) = limit {
@@ -4189,6 +4172,68 @@ mod compiler_default_reader_tests {
             let result = evaluator.evaluate(&program).unwrap();
             assert_eq!(evaluator.number(result).unwrap(), (40 << 20) as f64);
         }
+    }
+
+    #[cfg(light_v8)]
+    #[test]
+    fn reader_memory_limit_errors_name_the_tag_in_each_compilation_mode() {
+        for (interactive, jobs, limit, size) in [
+            (false, 1, 192, 65),
+            (false, 3, 192, 65),
+            (true, 1, 192, 65),
+            (false, 1, 24, 25),
+        ] {
+            let mut host = MacroHost::new();
+            host.tables.interactive = interactive;
+            host.evaluator_options.memory_limit = limit << 20;
+            host.register_compiler_data_reader(Name::new(None, "size"), SIZE_READER)
+                .unwrap();
+            host.begin_compilation();
+            host.session_handle().unwrap().plan_v8_pool(jobs);
+            let literal = format!("#size {size}");
+            let error = host
+                .read_compiler_form(&Source::new("reader.cljs", literal.as_str()))
+                .unwrap_err();
+            assert!(error.message.contains("memory limit exhausted"), "{error}");
+            assert!(error.message.contains("#size"), "{error}");
+            assert_eq!(error.span.text(), literal);
+        }
+    }
+
+    #[cfg(light_v8)]
+    #[test]
+    fn parallel_macro_heap_starts_at_the_same_limit_with_an_unused_reader() {
+        let start = |register_reader| {
+            let mut host = MacroHost::new();
+            assert_eq!(host.data_reader_count(), 0);
+            host.evaluator_options.memory_limit = 192 << 20;
+            if register_reader {
+                host.register_compiler_data_reader(Name::new(None, "size"), SIZE_READER)
+                    .unwrap();
+            }
+            host.begin_compilation();
+            host.session_handle().unwrap().plan_v8_pool(3);
+            let macro_heap = host.new_compiler_evaluator().unwrap();
+            host.read_compiler_form(&Source::new(
+                "reader.cljs",
+                r#"#uuid "550e8400-e29b-41d4-a716-446655440000""#,
+            ))
+            .unwrap();
+            assert!(host.engine.data_readers.borrow().evaluator.is_none());
+            let session = host.session_handle().unwrap();
+            let memory = &session.shared().resources().unwrap().memory;
+            assert_eq!(memory.main_base(), 64 << 20);
+            let heap_limit = macro_heap.v8_heap_limit();
+            let buffer = macro_heap
+                .evaluate_js("new ArrayBuffer(56 * 1024 * 1024)")
+                .unwrap();
+            assert_eq!(macro_heap.headroom_held(), 0);
+            macro_heap.release(buffer).unwrap();
+            heap_limit
+        };
+        let without_reader = start(false);
+        assert!(without_reader >= 64 << 20);
+        assert_eq!(start(true), without_reader);
     }
 
     #[cfg(light_v8)]
@@ -4224,90 +4269,66 @@ mod compiler_default_reader_tests {
                 assert!(context.has_engine);
                 let mut worker = MacroHost::from_parts(environment, context.view.engine_frame());
                 let result = worker.read_compiler_form(&Source::new("reader.cljs", "#size 40"));
-                send.send(result).unwrap();
+                let macro_heap = &worker.engine.bootstrap.as_ref().unwrap().evaluator;
+                let allocation = macro_heap
+                    .evaluate_js("new ArrayBuffer(56 * 1024 * 1024)")
+                    .and_then(|id| macro_heap.release(id));
+                send.send((result, allocation)).unwrap();
                 false
             }),
         ));
-        let form = receive.recv().unwrap().unwrap().unwrap();
+        let (form, allocation) = receive.recv().unwrap();
+        let form = form.unwrap().unwrap();
         assert!(matches!(
             form.data().kind(),
             DatumKind::Integer(41_943_040) | DatumKind::Double(41_943_040.0)
         ));
+        allocation.unwrap();
         session.finish_pool();
     }
 
     #[cfg(light_v8)]
     #[test]
-    fn reader_cannot_spend_its_slots_live_macro_memory() {
+    fn a_reader_can_keep_live_memory_while_macros_use_their_full_share() {
         let mut host = MacroHost::new();
         host.evaluator_options.memory_limit = 192 << 20;
-        host.register_compiler_data_reader(Name::new(None, "size"), SIZE_READER)
-            .unwrap();
+        host.register_compiler_data_reader(
+            Name::new(None, "held"),
+            "(fn [mib]
+               (if (pos? mib)
+                 (do (set! (.-held js/globalThis) (js/ArrayBuffer. (* mib 1024 1024))) mib)
+                 (let [bytes (.-byteLength (.-held js/globalThis))]
+                   (set! (.-held js/globalThis) nil)
+                   bytes)))",
+        )
+        .unwrap();
         host.begin_compilation();
         host.session_handle().unwrap().plan_v8_pool(3);
         let macro_heap = host.new_compiler_evaluator().unwrap();
-        let buffer = macro_heap
+        host.engine.bootstrap = Some(crate::compiler_bootstrap::bind(macro_heap.clone()).unwrap());
+        let initial_limit = macro_heap.v8_heap_limit();
+
+        let buffer_before = macro_heap
             .evaluate_js("new ArrayBuffer(48 * 1024 * 1024)")
             .unwrap();
+        host.read_compiler_form(&Source::new("reader.cljs", "#held 40"))
+            .unwrap();
+        assert_eq!(macro_heap.v8_heap_limit(), initial_limit);
+        macro_heap.release(buffer_before).unwrap();
+        macro_heap.collect_garbage();
+        let buffer = macro_heap
+            .evaluate_js("new ArrayBuffer(56 * 1024 * 1024)")
+            .unwrap();
 
-        let error = host
-            .read_compiler_form(&Source::new("reader.cljs", "#size 40"))
-            .unwrap_err();
-        assert!(error.message.contains("memory limit exhausted"), "{error}");
-        assert!(macro_heap.control().check().is_ok());
+        let form = host
+            .read_compiler_form(&Source::new("reader.cljs", "#held 0"))
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            form.data().kind(),
+            DatumKind::Integer(41_943_040) | DatumKind::Double(41_943_040.0)
+        ));
         macro_heap.release(buffer).unwrap();
-    }
-
-    #[cfg(light_v8)]
-    #[test]
-    fn readers_without_a_macro_slot_compete_for_shared_headroom() {
-        use crate::{compilation_session::PoolEngines, scheduler::Slots};
-
-        let mut host = MacroHost::new();
-        host.evaluator_options.memory_limit = 224 << 20;
-        host.begin_compilation();
-        let session = host.session_handle().unwrap();
-        session.plan_v8_pool(3);
-        session
-            .start_pool(
-                Slots::new(3).unwrap(),
-                PoolEngines::Persistent,
-                3,
-                host.environment(),
-                Default::default(),
-            )
-            .unwrap();
-        let resources = session.shared().resources().unwrap();
-        let worker = || {
-            let mut worker = MacroHost::bind(host.environment(), None).unwrap();
-            worker.engine.catalog = Some(session.shared().clone());
-            worker
-        };
-        let first = worker();
-        let second = worker();
-
-        let first_reader = first.new_data_reader_evaluator().unwrap();
-        let second_reader = second.new_data_reader_evaluator().unwrap();
-        let buffer = first_reader
-            .evaluate_js("new ArrayBuffer(39 * 1024 * 1024)")
-            .unwrap();
-        assert!(resources.memory.headroom() < 9 << 20);
-        let error = second_reader
-            .evaluate_js("new ArrayBuffer(26 * 1024 * 1024)")
-            .unwrap_err();
-        assert!(error.0.contains("memory limit exhausted"), "{error}");
-        assert!(first_reader.control().check().is_ok());
-        assert!(resources.control.check().is_ok());
-        drop(second_reader);
-        first_reader.release(buffer).unwrap();
-        drop(first_reader);
-        assert_eq!(resources.memory.headroom(), 32 << 20);
-        let second_reader = second.new_data_reader_evaluator().unwrap();
-        let buffer = second_reader
-            .evaluate_js("new ArrayBuffer(26 * 1024 * 1024)")
-            .unwrap();
-        second_reader.release(buffer).unwrap();
-        session.finish_pool();
     }
 
     #[cfg(light_v8)]
@@ -4340,8 +4361,7 @@ mod compiler_default_reader_tests {
         let worker_macro = crate::v8_evaluator::V8Evaluator::new_for_build(
             host.evaluator_options.clone(),
             resources,
-            1,
-            true,
+            false,
         )
         .unwrap();
         let mut worker = MacroHost::bind(host.environment(), None).unwrap();

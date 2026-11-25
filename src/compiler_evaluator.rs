@@ -35,16 +35,15 @@ pub(crate) trait CompilerEvaluator: MacroEvaluator {
     }
     #[cfg(all(test, light_v8))]
     fn number(&self, id: ValueId) -> Result<f64, EvalError>;
+    #[cfg(all(test, light_v8))]
+    fn v8_heap_limit(&self) -> usize {
+        0
+    }
     /// The memory the engine took from its build's shared budget beyond
     /// its base ([`crate::evaluator::MemoryPool`]), which it gives back
     /// only when it is destroyed.
     fn headroom_held(&self) -> usize {
         0
-    }
-    /// The reserved share a parallel V8 macro isolate can share with its reader.
-    #[cfg(light_v8)]
-    fn v8_memory_slot(&self) -> Option<usize> {
-        None
     }
     /// Collect the engine's garbage in full, between operations, so that
     /// what it still holds is what is reachable (`--watch --stats`).

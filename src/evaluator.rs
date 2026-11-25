@@ -299,8 +299,7 @@ impl ExecutionControl {
 /// The macro memory limit of one build. The coordinator and its workers
 /// have base shares and can grow into the shared headroom, which they give
 /// back on destruction. Worker shares stay reserved while the pool can
-/// still start. Parallel V8 readers have their own startup allowances and
-/// grow into their slot's reserved share and the build's shared headroom.
+/// still start.
 #[derive(Debug)]
 #[cfg_attr(not(light_v8), allow(dead_code))]
 pub(crate) struct MemoryPool {
@@ -309,47 +308,9 @@ pub(crate) struct MemoryPool {
     keep: usize,
     headroom: AtomicUsize,
     #[cfg(light_v8)]
-    reader_base_headroom: AtomicUsize,
-    #[cfg(light_v8)]
-    v8_slots: Vec<V8MemorySlot>,
+    reserved_workers: AtomicUsize,
 }
 
-/// A parallel build's coordinator or worker share. Keep a macro startup
-/// reservation even if its slot's reader runs first. Both isolates can grow
-/// into the rest, returning their grants when their allocators are dropped.
-#[cfg(light_v8)]
-#[derive(Debug)]
-pub(crate) struct V8MemorySlot {
-    macro_startup: AtomicUsize,
-    headroom: AtomicUsize,
-}
-#[cfg(light_v8)]
-impl V8MemorySlot {
-    fn new(share: usize) -> Self {
-        // Reserve half of the minimum parallel macro share for startup,
-        // leaving room for the reader without shrinking an existing heap.
-        let startup = share.min(WORKER_SHARE / 2);
-        Self {
-            macro_startup: AtomicUsize::new(startup),
-            headroom: AtomicUsize::new(share - startup),
-        }
-    }
-    pub(crate) fn take_macro_startup(&self) -> usize {
-        self.macro_startup.swap(0, Ordering::Relaxed)
-    }
-    pub(crate) fn give_macro_startup(&self, bytes: usize) {
-        self.macro_startup.fetch_add(bytes, Ordering::Relaxed);
-    }
-    pub(crate) fn take(&self, wanted: usize) -> usize {
-        take_headroom(&self.headroom, wanted, 1)
-    }
-    pub(crate) fn give(&self, bytes: usize) {
-        self.headroom.fetch_add(bytes, Ordering::Relaxed);
-    }
-    pub(crate) fn headroom(&self) -> usize {
-        self.headroom.load(Ordering::Relaxed)
-    }
-}
 #[cfg_attr(not(light_v8), allow(dead_code))]
 impl MemoryPool {
     #[cfg(test)]
@@ -385,44 +346,13 @@ impl MemoryPool {
                 limit - main
             }),
             #[cfg(light_v8)]
-            reader_base_headroom: AtomicUsize::new(limit / 4),
-            #[cfg(light_v8)]
-            v8_slots: std::iter::once(V8MemorySlot::new(main))
-                .chain(
-                    (1..isolates)
-                        .map(|_| V8MemorySlot::new(if reserve_workers { base } else { 0 })),
-                )
-                .collect(),
+            reserved_workers: AtomicUsize::new(if reserve_workers { workers } else { 0 }),
         })
-    }
-    /// Parallel readers' base allowances together can add up to 25% of
-    /// the configured limit. Further growth uses the macro budget.
-    #[cfg(light_v8)]
-    #[allow(deprecated)] // fetch_update supports the stable compiler used in CI.
-    pub(crate) fn take_reader_base(&self, bytes: usize) -> bool {
-        self.reader_base_headroom
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |left| {
-                left.checked_sub(bytes)
-            })
-            .is_ok()
-    }
-    #[cfg(light_v8)]
-    pub(crate) fn give_reader_base(&self, bytes: usize) {
-        self.reader_base_headroom
-            .fetch_add(bytes, Ordering::Relaxed);
-    }
-    #[cfg(light_v8)]
-    pub(crate) fn v8_slot(&self, slot: usize) -> &V8MemorySlot {
-        &self.v8_slots[slot]
     }
     /// The build was fully cached, so no worker will use these reservations.
     #[cfg(light_v8)]
     pub(crate) fn release_unused_worker_shares(&self) {
-        let bytes = self.v8_slots[1..]
-            .iter()
-            .map(|slot| slot.take_macro_startup() + slot.headroom.swap(0, Ordering::Relaxed))
-            .sum();
-        self.give(bytes);
+        self.give(self.reserved_workers.swap(0, Ordering::Relaxed));
     }
     /// The bytes each worker isolate is allowed before it takes headroom.
     pub(crate) fn base(&self) -> usize {
@@ -440,8 +370,16 @@ impl MemoryPool {
     }
     /// Take up to `wanted` bytes of headroom, but nothing unless at least
     /// `needed` are left: what was taken.
+    #[allow(deprecated)] // fetch_update supports the stable compiler used in CI.
     pub(crate) fn take(&self, wanted: usize, needed: usize) -> usize {
-        take_headroom(&self.headroom, wanted, needed)
+        let mut taken = 0;
+        let _ = self
+            .headroom
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |left| {
+                taken = if left >= needed { left.min(wanted) } else { 0 };
+                (taken > 0).then(|| left - taken)
+            });
+        taken
     }
     /// Give back `bytes` taken before.
     pub(crate) fn give(&self, bytes: usize) {
@@ -454,17 +392,8 @@ impl MemoryPool {
     }
 }
 
-#[allow(deprecated)] // fetch_update supports the stable compiler used in CI.
-fn take_headroom(headroom: &AtomicUsize, wanted: usize, needed: usize) -> usize {
-    let mut taken = 0;
-    let _ = headroom.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |left| {
-        taken = if left >= needed { left.min(wanted) } else { 0 };
-        (taken > 0).then(|| left - taken)
-    });
-    taken
-}
 /// A build's deadline and cancellation, a linked control for workers,
-/// and the memory pool for its macro and parallel reader isolates.
+/// and the memory pool for its macro isolates.
 #[derive(Clone)]
 #[cfg_attr(not(light_v8), allow(dead_code))]
 pub(crate) struct BuildResources {

@@ -1876,3 +1876,55 @@ from 5.35 to 7.25; rounds 1–2 ran `357.1` / `394.0 ms` vs `474.4` / `609.4 ms`
   `--jobs 1` and `--jobs 8` configurations (`884.7` / `1,060.0 MiB` plain;
   `1,127.3` / `1,301.5 MiB` re-frame), and lower than `6f50f0b09` on 6 of 8
   configurations (-19.8 to +12.0 MiB).
+
+## Unused custom reader in a parallel V8 build (light-cljs-1149)
+
+Six alternating rounds on an unreserved Apple M3 Ultra VM with 24 logical
+CPUs, 32 GiB RAM, macOS 15.7.3 and Homebrew Rust/Cargo 1.99.1. Each revision
+was built in a separate detached worktree with the locked V8 release profile
+and stock V8 152.2.0 pointer-compressed archive. The fix was measured on
+`e03ee67a` before rebasing onto the QuickJS removal, so all three binaries
+used the same engine configuration.
+
+The release driver registered `unused-bench-tag` with a reader that throws if
+called. It compiled `workload.main` from the seed-42 generated 200k project's
+`src` and `macros` roots using `analyze_namespace_entry_recorded` with
+statistics enabled, three slots, a 2 GiB macro memory limit and no cache.
+Assertions were elided, with the generated project's usual expansion, node,
+poll and timeout limits. The driver prepared the program at advanced
+optimization and emitted a single ES module. `/usr/bin/time -l` measured each
+fresh process through output writing with filesystem caches retained. Each run
+recorded 93,543 macro calls and two engine workers, and all 18 outputs had
+SHA-256 `4bc02c91e5955262f1d1edbcbb893fa1d4786ae53cc72e16e48cb199601d4c2b`.
+
+| Revision | Wall seconds, median [range] | Peak memory MiB, median [range] | 1-minute pre-run load range |
+| --- | ---: | ---: | ---: |
+| Before, `c41b8869` | 7.17 [6.44–14.78] | 1295.9 [1204.7–1344.3] | 9.82–24.27 |
+| After, `e03ee67a` | 7.09 [6.60–18.88] | 1169.8 [1081.6–1196.0] | 12.80–27.49 |
+| Fix, `74bb063f` | 7.10 [6.61–17.73] | 1299.4 [1166.3–1334.5] | 14.23–25.77 |
+
+The fix's median wall time was within the before range and its median peak
+memory was close to the before revision's. The `e03ee67a` runs used less peak
+memory on this workload and their wall times overlapped both other revisions
+under load.
+
+| Round | Revision | Wall seconds | Peak memory MiB | Pre-run load (1/5/15 minutes) |
+| ---: | --- | ---: | ---: | --- |
+| 1 | Before | 14.78 | 1303.2 | 9.82/20.32/21.61 |
+| 1 | After | 18.88 | 1196.0 | 12.80/20.48/21.65 |
+| 1 | Fix | 17.73 | 1288.0 | 24.98/22.82/22.46 |
+| 2 | After | 7.08 | 1195.3 | 27.49/23.55/22.73 |
+| 2 | Fix | 6.92 | 1315.5 | 25.77/23.26/22.63 |
+| 2 | Before | 7.28 | 1288.6 | 24.27/22.99/22.54 |
+| 3 | Fix | 6.61 | 1266.7 | 21.38/22.41/22.34 |
+| 3 | Before | 6.44 | 1271.7 | 20.07/22.12/22.24 |
+| 3 | After | 6.60 | 1144.3 | 19.10/21.89/22.16 |
+| 4 | Before | 6.85 | 1204.7 | 16.78/21.30/21.94 |
+| 4 | Fix | 6.98 | 1166.3 | 16.00/21.06/21.86 |
+| 4 | After | 6.96 | 1082.1 | 14.69/20.61/21.69 |
+| 5 | Fix | 8.06 | 1310.8 | 14.23/20.42/21.61 |
+| 5 | After | 7.46 | 1195.4 | 14.85/20.34/21.57 |
+| 5 | Before | 7.33 | 1344.3 | 14.14/20.10/21.48 |
+| 6 | After | 7.10 | 1081.6 | 13.44/19.76/21.34 |
+| 6 | Before | 7.06 | 1331.7 | 13.57/19.68/21.30 |
+| 6 | Fix | 7.21 | 1334.5 | 14.72/19.81/21.34 |

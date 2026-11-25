@@ -1,7 +1,7 @@
 //! The V8 heap of an interactive session (`EvalSession`, `--eval`, `--repl`):
 //! host functions, an input provider, promise jobs and rejection tracking on
 //! top of the macro evaluator's isolate, with the interactive session contract.
-use super::{Active, INITIAL_HEAP_LIMIT, State, V8Evaluator, bridge, invoke};
+use super::{Active, INITIAL_HEAP_LIMIT, State, V8Evaluator, bridge, buffers::BudgetKind, invoke};
 use crate::{
     compiler_data::{Datum, DatumKind, ExpansionOrigin, Form},
     eval_session::{HostCallback, Input},
@@ -55,7 +55,7 @@ impl V8Evaluator {
         let evaluator = Self::create(
             options,
             control,
-            None,
+            BudgetKind::Standalone,
             INITIAL_HEAP_LIMIT,
             Self::startup_source,
         )?;

@@ -5,7 +5,7 @@ fn with_initial_heap_limit(options: EvaluatorOptions) -> V8Evaluator {
     V8Evaluator::create(
         options,
         control,
-        None,
+        super::buffers::BudgetKind::Standalone,
         16 * 1024 * 1024,
         V8Evaluator::startup_source,
     )

@@ -468,18 +468,14 @@ namespace has installed from the cache, the coordinator can use the unused
 worker shares for any later compile-time work in that session. Installing a
 cached artifact leaves its macro functions unevaluated.
 
-Without custom data-reader calls, the total JavaScript memory budget is
-`--macro-memory-limit` for any job count. When the build plans worker isolates,
-the coordinator and each engine worker can lazily start one reader isolate
-with a 16 MiB base allowance. The pool caps the sum of these allowances at
-25% of the configured limit. With readers registered, each macro isolate
-starts with 32 MiB of its slot's reserved share. The macro and reader isolates
-can both grow into the remainder of that share, then into the build's shared
-headroom. Memory they take stays charged until their allocators are dropped,
-so the total budget is at most 125% of the limit. A serial build or one with
-no worker isolates planned gives its single reader an independent allowance
-equal to `--macro-memory-limit`, for a total of twice that limit when the reader
-is used. An isolate that exhausts its allowance and the available headroom
+The coordinator, workers, and interactive sessions start their data-reader
+isolates on the first custom tag they read. Each reader starts with an
+independent 16 MiB allowance and can grow to 64 MiB or
+`--macro-memory-limit`, whichever is smaller. Macro allowances are independent
+of readers, so the total compile-time JavaScript memory budget is at most
+`--macro-memory-limit` plus 64 MiB per reader engine used.
+
+An isolate that exhausts its allowance and the available headroom
 reports a memory-limit error. Process peak memory also includes native engine
 overhead and the compiler's own data.
 

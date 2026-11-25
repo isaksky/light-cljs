@@ -7,39 +7,27 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-pub(super) enum Share {
-    Macro {
-        slot: usize,
-        readers_registered: bool,
-    },
-    Reader(Option<usize>),
-}
-
-impl Share {
-    fn slot(&self) -> Option<usize> {
-        match *self {
-            Self::Macro { slot, .. } => Some(slot),
-            Self::Reader(slot) => slot,
-        }
-    }
-}
-
-struct PooledBudget {
-    memory: Arc<MemoryPool>,
-    share: Share,
-    base: usize,
-    slot_held: AtomicUsize,
+pub(super) enum BudgetKind {
+    Standalone,
+    Reader,
+    Build { pool: Arc<MemoryPool>, main: bool },
 }
 
 pub(super) struct Budget {
     used: AtomicUsize,
     heap: AtomicUsize,
     /// What the isolate's heap and backing stores may hold together: the
-    /// session's memory limit, or with a build's [`MemoryPool`] its base
-    /// plus headroom taken from the slot and build. The headroom is given
-    /// back when the budget is dropped.
+    /// current allowance. A reader grows from V8's startup minimum to its
+    /// own cap. A pooled macro grows past its base using shared headroom,
+    /// which it gives back when the budget is dropped.
     allowance: AtomicUsize,
-    pool: Option<PooledBudget>,
+    limit: usize,
+    /// The build's pool and the isolate's base in it: the main isolate's
+    /// or a worker's.
+    pool: Option<(Arc<MemoryPool>, usize)>,
+    /// The allowance a worker isolate keeps between jobs, its base and
+    /// [`MemoryPool::keep`]; unbounded for any other.
+    kept: usize,
     /// The length of the last reservation the budget refused, or 0. V8
     /// retries a refused allocation after collecting garbage; a retry that
     /// fits clears it, and one still set when the evaluator next checks
@@ -64,72 +52,26 @@ unsafe extern "C" {
 }
 
 impl Budget {
-    /// The budget of `limit` bytes, or a base allowance with growth
-    /// charged to the build's pool.
-    pub(super) fn new(
-        limit: usize,
-        control: ExecutionControl,
-        pool: Option<(Arc<MemoryPool>, Share)>,
-    ) -> Result<Arc<Self>, EvalError> {
-        let (pool, allowance) = if let Some((memory, share)) = pool {
-            let startup = match share {
-                Share::Macro {
-                    slot,
-                    readers_registered,
-                } => {
-                    let reserved = if slot == 0 {
-                        memory.main_base()
-                    } else {
-                        memory.base()
-                    };
-                    let budget = memory.v8_slot(slot);
-                    let base = budget.take_macro_startup();
-                    if base >= super::MINIMUM_HEAP_LIMIT {
-                        // Keep the original heap threshold in builds without
-                        // readers. At 32 MiB larger macro workloads can spend
-                        // too much time collecting (light-cljs-441).
-                        let local = if readers_registered {
-                            0
-                        } else {
-                            budget.take(reserved - base)
-                        };
-                        Some((base, local))
-                    } else {
-                        budget.give_macro_startup(base);
-                        None
-                    }
-                }
-                Share::Reader(_) => {
-                    let base = super::MINIMUM_HEAP_LIMIT;
-                    memory.take_reader_base(base).then_some((base, 0))
-                }
-            };
-            let Some((base, local)) = startup else {
-                control.memory_exhausted();
-                return Err(EvalError(
-                    "JavaScript session memory limit exhausted".into(),
-                ));
-            };
-            (
-                Some(PooledBudget {
-                    memory,
-                    share,
-                    base,
-                    slot_held: AtomicUsize::new(local),
-                }),
-                base + local,
-            )
-        } else {
-            (None, limit)
+    pub(super) fn new(limit: usize, control: ExecutionControl, kind: BudgetKind) -> Arc<Self> {
+        let (allowance, pool, kept) = match kind {
+            BudgetKind::Standalone => (limit, None, usize::MAX),
+            BudgetKind::Reader => (super::MINIMUM_HEAP_LIMIT, None, usize::MAX),
+            BudgetKind::Build { pool, main } => {
+                let base = if main { pool.main_base() } else { pool.base() };
+                let kept = if main { usize::MAX } else { base + pool.keep() };
+                (base, Some((pool, base)), kept)
+            }
         };
-        Ok(Arc::new(Self {
+        Arc::new(Self {
             used: AtomicUsize::new(0),
             heap: AtomicUsize::new(0),
             allowance: AtomicUsize::new(allowance),
+            limit,
             pool,
+            kept,
             refused: AtomicUsize::new(0),
             control,
-        }))
+        })
     }
 
     /// What the heap and backing stores may hold together now.
@@ -137,59 +79,34 @@ impl Budget {
         self.allowance.load(Ordering::Relaxed)
     }
 
-    /// Take up to `wanted` bytes from the slot and then the shared pool.
-    /// If they cannot cover `needed`, leave both balances as they were.
+    /// Grow by up to `wanted` bytes, provided at least `needed` are available.
+    #[allow(deprecated)] // fetch_update supports the stable compiler used in CI.
     pub(super) fn grow(&self, wanted: usize, needed: usize) -> bool {
-        let Some(pool) = &self.pool else {
-            return false;
-        };
-        let slot = pool.share.slot().map(|slot| pool.memory.v8_slot(slot));
-        let local = slot.map_or(0, |slot| slot.take(wanted));
         let needed = needed.max(1);
-        let shared = pool
-            .memory
-            .take(wanted - local, needed.saturating_sub(local));
-        let taken = local + shared;
-        if taken < needed {
-            if let Some(slot) = slot {
-                slot.give(local);
-            }
-            return false;
+        if let Some((pool, _)) = &self.pool {
+            let taken = pool.take(wanted, needed);
+            self.allowance.fetch_add(taken, Ordering::Relaxed);
+            return taken > 0;
         }
-        pool.slot_held.fetch_add(local, Ordering::Relaxed);
-        self.allowance.fetch_add(taken, Ordering::Relaxed);
-        true
+        self.allowance
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |allowance| {
+                let growth = wanted.min(self.limit - allowance);
+                (growth >= needed).then_some(allowance + growth)
+            })
+            .is_ok()
     }
 
-    pub(super) fn slot(&self) -> Option<usize> {
-        self.pool.as_ref().and_then(|pool| pool.share.slot())
-    }
-
-    /// The headroom taken outside the slot's reserved share.
+    /// The headroom the budget took from its build's pool.
     pub(super) fn headroom_held(&self) -> usize {
-        self.pool.as_ref().map_or(0, |pool| {
-            self.allowance()
-                .saturating_sub(pool.base + pool.slot_held.load(Ordering::Relaxed))
-        })
+        self.pool
+            .as_ref()
+            .map_or(0, |(_, base)| self.allowance().saturating_sub(*base))
     }
 
     /// The allowance a worker isolate keeps between jobs
     /// ([`MemoryPool::keep`]): it grows toward it before past it.
     pub(super) fn kept(&self) -> usize {
-        let Some(pool) = &self.pool else {
-            return usize::MAX;
-        };
-        if matches!(pool.share, Share::Macro { slot: 0, .. }) {
-            return usize::MAX;
-        }
-        let local = pool
-            .share
-            .slot()
-            .map_or(0, |slot| pool.memory.v8_slot(slot).headroom());
-        self.allowance()
-            .saturating_sub(self.headroom_held())
-            .saturating_add(local)
-            .saturating_add(pool.memory.keep())
+        self.kept
     }
 
     /// Whether an allocation was refused and not satisfied by a retry.
@@ -247,9 +164,8 @@ unsafe extern "C" fn reserve(state: *const c_void, length: usize) -> bool {
             .allowance()
             .saturating_sub(state.heap.load(Ordering::Relaxed));
         if next > room {
-            // A build's isolate takes what it lacks from the pool, or V8
-            // may collect garbage and retry. Failure becomes terminal only
-            // when no retry fits (`refused`).
+            // Try growing the allowance before V8 collects garbage and
+            // retries. Failure becomes terminal only when no retry fits.
             if state.grow(next - room, next - room) {
                 continue;
             }
@@ -286,19 +202,8 @@ unsafe extern "C" fn drop_budget(state: *const c_void) {
 
 impl Drop for Budget {
     fn drop(&mut self) {
-        if let Some(pool) = &self.pool {
-            pool.memory.give(self.headroom_held());
-            if let Some(slot) = pool.share.slot() {
-                pool.memory
-                    .v8_slot(slot)
-                    .give(pool.slot_held.load(Ordering::Relaxed));
-            }
-            match pool.share {
-                Share::Macro { slot, .. } => {
-                    pool.memory.v8_slot(slot).give_macro_startup(pool.base)
-                }
-                Share::Reader(_) => pool.memory.give_reader_base(pool.base),
-            }
+        if let Some((pool, base)) = &self.pool {
+            pool.give(self.allowance().saturating_sub(*base));
         }
     }
 }
@@ -306,76 +211,50 @@ impl Drop for Budget {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::evaluator::{DEFAULT_MEMORY_LIMIT, EvaluatorOptions, WORKER_SHARE};
+    use crate::evaluator::{EvaluatorOptions, WORKER_SHARE};
 
     #[test]
-    fn parallel_reader_bases_fit_and_cannot_exceed_a_quarter_of_the_build_limit() {
-        let workers = 16;
-        let limit = DEFAULT_MEMORY_LIMIT + workers * WORKER_SHARE;
-        let pool = MemoryPool::new(limit, 1 + workers);
-        let budget = |share| {
-            Budget::new(
-                limit,
-                ExecutionControl::new(&EvaluatorOptions::default()).unwrap(),
-                Some((pool.clone(), share)),
-            )
-        };
-        let mut readers: Vec<_> = (0..=workers)
-            .map(|slot| budget(Share::Reader(Some(slot))).unwrap())
-            .collect();
-        let base_bytes: usize = readers.iter().map(|reader| reader.allowance()).sum();
-        assert_eq!(base_bytes, limit / 4);
-        assert_eq!(pool.headroom(), 0);
-        assert!(budget(Share::Reader(None)).is_err());
-
-        let macros: Vec<_> = (0..=workers)
+    fn the_macro_limit_and_one_worker_share_per_used_reader_bound_the_total() {
+        let limit = 17 * WORKER_SHARE + (32 << 20);
+        let pool = MemoryPool::new(limit, 17);
+        let control = ExecutionControl::new(&EvaluatorOptions::default()).unwrap();
+        let macros: Vec<_> = (0..17)
             .map(|slot| {
-                budget(Share::Macro {
-                    slot,
-                    readers_registered: true,
-                })
-                .unwrap()
+                Budget::new(
+                    limit,
+                    control.clone(),
+                    BudgetKind::Build {
+                        pool: pool.clone(),
+                        main: slot == 0,
+                    },
+                )
             })
             .collect();
-        for (reader, macros) in readers.iter().zip(&macros) {
-            // A rejected growth leaves the slot's memory available for a retry.
+        let headroom = pool.headroom();
+        assert!(headroom > 0);
+        let readers: Vec<_> = (0..17)
+            .map(|_| Budget::new(WORKER_SHARE, control.clone(), BudgetKind::Reader))
+            .collect();
+        for reader in &readers {
+            let initial = super::super::MINIMUM_HEAP_LIMIT;
+            assert_eq!(reader.allowance(), initial);
             assert!(!reader.grow(WORKER_SHARE, WORKER_SHARE));
-            let free = WORKER_SHARE - macros.allowance();
-            assert!(reader.grow(free, free));
-            assert!(!macros.grow(1, 1));
+            assert_eq!(reader.allowance(), initial);
+            assert!(reader.grow(WORKER_SHARE, WORKER_SHARE - initial));
+            assert_eq!(reader.allowance(), WORKER_SHARE);
+            assert!(!reader.grow(1, 1));
         }
-        let allowances: usize = macros
-            .iter()
-            .chain(&readers)
-            .map(|budget| budget.allowance())
-            .sum();
-        assert_eq!(allowances, limit + limit / 4);
-
-        drop(readers.pop().unwrap());
-        let reader = budget(Share::Reader(Some(workers))).unwrap();
-        let free = WORKER_SHARE - macros[workers].allowance();
-        assert!(reader.grow(free, free));
-    }
-
-    #[test]
-    fn parallel_macros_with_no_readers_start_with_the_full_slot_share() {
-        let limit = 2 << 30;
-        let pool = MemoryPool::new(limit, 3);
-        for slot in [0, 1] {
-            let budget = Budget::new(
-                limit,
-                ExecutionControl::new(&EvaluatorOptions::default()).unwrap(),
-                Some((
-                    pool.clone(),
-                    Share::Macro {
-                        slot,
-                        readers_registered: false,
-                    },
-                )),
-            )
-            .unwrap();
-            assert_eq!(budget.allowance(), 256 << 20);
-            assert_eq!(budget.headroom_held(), 0);
-        }
+        assert_eq!(pool.headroom(), headroom);
+        assert!(macros[0].grow(headroom, headroom));
+        assert!(!macros[1].grow(1, 1));
+        assert_eq!(macros.iter().map(|m| m.allowance()).sum::<usize>(), limit);
+        assert_eq!(
+            macros
+                .iter()
+                .chain(&readers)
+                .map(|budget| budget.allowance())
+                .sum::<usize>(),
+            limit + readers.len() * WORKER_SHARE
+        );
     }
 }

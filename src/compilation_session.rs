@@ -5699,7 +5699,7 @@ impl WorkerView {
             .sync_catalog(total, bundles, &new_protocols)
             .map_err(|e| e.to_string())
     }
-    /// Whether the view's macro and reader isolates took more headroom from the build's
+    /// Whether the view's macro isolate took more headroom from the build's
     /// memory budget than a worker keeps between jobs
     /// ([`crate::evaluator::MemoryPool::keep`]), which only destroying it
     /// gives back: its worker retires it after the job, so what one unit
@@ -5715,7 +5715,7 @@ impl WorkerView {
             .bootstrap
             .as_ref()
             .map_or(0, |b| b.evaluator.headroom_held());
-        macro_headroom + self.host.reader_headroom_held() > keep
+        macro_headroom > keep
     }
     /// Whether the view's engine failed for good, such as by running out of
     /// memory or time: its worker retires it.
@@ -6254,7 +6254,6 @@ fn worker_view(
     shared: &Arc<SharedCatalog>,
     engines: PoolEngines,
     environment: &MacroEnvironment,
-    #[cfg_attr(not(light_v8), allow(unused_variables))] slot: usize,
 ) -> Result<Rc<WorkerView>, String> {
     let started = std::time::Instant::now();
     let engine: Option<Rc<dyn crate::compiler_evaluator::CompilerEvaluator>> = match engines {
@@ -6267,8 +6266,7 @@ fn worker_view(
                 Some(resources) => crate::v8_evaluator::V8Evaluator::new_for_build(
                     environment.evaluator_options().clone(),
                     resources,
-                    slot,
-                    environment.has_data_readers(),
+                    false,
                 ),
                 None => {
                     crate::v8_evaluator::V8Evaluator::new(environment.evaluator_options().clone())
@@ -6350,7 +6348,7 @@ fn execute_pool_job(
             };
             let view = match kept {
                 Some(view) => view,
-                None => match worker_view(shared, engines, environment, worker.slot()) {
+                None => match worker_view(shared, engines, environment) {
                     Ok(view) => view,
                     Err(_) => {
                         run(None);
@@ -6403,7 +6401,7 @@ fn execute_pool_job(
     // an idle one, or makes way for a view that boots one.
     let view = match kept {
         Some(view) => view,
-        None => match worker_view(shared, engines, environment, worker.slot()) {
+        None => match worker_view(shared, engines, environment) {
             Ok(view) => view,
             Err(error) => {
                 shared.fail_unstarted(id, error);

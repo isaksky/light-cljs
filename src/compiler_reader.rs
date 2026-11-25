@@ -808,7 +808,7 @@ impl Lowerer<'_> {
             let location = self.source.span(span.clone()).unwrap();
             if let Some(value) =
                 reader(&tag, &self.values[data.0], &location).map_err(|message| ReadError {
-                    message,
+                    message: format!("while reading #{tag_text}: {message}"),
                     span: location.clone(),
                     related: None,
                 })?

@@ -3,8 +3,8 @@ use crate::{
     compiler_data::{Datum, ExpansionOrigin, Form},
     compiler_evaluator::{CompilerEvaluator, UnitService},
     evaluator::{
-        BuildResources, EvalError, EvaluatorOptions, ExecutionControl, MacroEvaluator, MemoryPool,
-        NEXT_SESSION, RUNTIME_SOURCE, ValueId,
+        BuildResources, EvalError, EvaluatorOptions, ExecutionControl, MacroEvaluator,
+        NEXT_SESSION, RUNTIME_SOURCE, ValueId, WORKER_SHARE,
     },
     form_bridge::ConversionLimits,
     v8_bridge::{self as bridge, BridgeState},
@@ -243,9 +243,8 @@ extern "C" fn near_heap_limit(data: *mut std::ffi::c_void, current: usize, _: us
     }
     let used = state.buffers.used();
     let mut available = state.buffers.allowance().saturating_sub(used);
-    // A build's isolate grows past its allowance only by taking from the
-    // build's pool what the others left (docs/compiler-concurrency.md, "As
-    // built (light-cljs-341)"); the session's limit stays its own cap.
+    // A macro in a parallel build can take unused headroom from the macro
+    // pool. A reader can instead grow toward its independent cap.
     let mut wanted = current
         .saturating_add((current / 2).max(16 * 1024 * 1024))
         .min(state.maximum.saturating_sub(used));
@@ -484,27 +483,32 @@ impl V8Evaluator {
         source: impl FnOnce() -> String,
     ) -> Result<Self, EvalError> {
         let control = ExecutionControl::new(&options)?;
-        Self::create(options, control, None, INITIAL_HEAP_LIMIT, source)
+        Self::create(
+            options,
+            control,
+            buffers::BudgetKind::Standalone,
+            INITIAL_HEAP_LIMIT,
+            source,
+        )
     }
 
     /// A macro isolate with the build's deadline, cancellation and memory pool.
     pub(crate) fn new_for_build(
         options: EvaluatorOptions,
         resources: &BuildResources,
-        slot: usize,
-        readers_registered: bool,
+        main: bool,
     ) -> Result<Self, EvalError> {
-        if slot == 0 && resources.isolates == 1 {
+        if main && resources.isolates == 1 {
             // The serial coordinator can exempt process-wide bootstrap work.
             return Self::create(
                 options,
                 resources.control.clone(),
-                None,
+                buffers::BudgetKind::Standalone,
                 INITIAL_HEAP_LIMIT,
                 Self::startup_source,
             );
         }
-        let build = if slot == 0 {
+        let build = if main {
             &resources.control
         } else {
             &resources.workers
@@ -513,46 +517,37 @@ impl V8Evaluator {
         Self::create(
             options,
             control,
-            Some((
-                resources.memory.clone(),
-                buffers::Share::Macro {
-                    slot,
-                    readers_registered,
-                },
-            )),
+            buffers::BudgetKind::Build {
+                pool: resources.memory.clone(),
+                main,
+            },
             INITIAL_HEAP_LIMIT,
             Self::startup_source,
         )
     }
 
-    /// Give a reader its own startup allowance. When the build plans worker
-    /// isolates, growth uses the slot's reserved share and shared headroom.
-    pub(crate) fn new_for_build_reader(
-        options: EvaluatorOptions,
-        resources: &BuildResources,
-        slot: Option<usize>,
+    /// Give a reader its own allowance, capped at one worker share.
+    pub(crate) fn new_data_reader(
+        mut options: EvaluatorOptions,
+        control: ExecutionControl,
+        interactive: bool,
     ) -> Result<Self, EvalError> {
-        let build = if slot == Some(0) {
-            &resources.control
-        } else {
-            &resources.workers
-        };
-        let control = ExecutionControl::linked(&options, build)?;
-        let pool = (resources.isolates > 1)
-            .then(|| (resources.memory.clone(), buffers::Share::Reader(slot)));
-        Self::create(
+        options.memory_limit = options.memory_limit.min(WORKER_SHARE);
+        let evaluator = Self::create(
             options,
             control,
-            pool,
-            INITIAL_HEAP_LIMIT,
+            buffers::BudgetKind::Reader,
+            MINIMUM_HEAP_LIMIT,
             Self::startup_source,
-        )
+        )?;
+        evaluator.state.interactive.set(interactive);
+        Ok(evaluator)
     }
 
     fn create(
         options: EvaluatorOptions,
         control: ExecutionControl,
-        pool: Option<(Arc<MemoryPool>, buffers::Share)>,
+        budget: buffers::BudgetKind,
         initial_heap_limit: usize,
         source: impl FnOnce() -> String,
     ) -> Result<Self, EvalError> {
@@ -567,11 +562,10 @@ impl V8Evaluator {
                 sweeping_support: v8::cppgc::SweepingType::Atomic,
             },
         );
-        let buffers = buffers::Budget::new(options.memory_limit, control.clone(), pool)?;
+        let buffers = buffers::Budget::new(options.memory_limit, control.clone(), budget);
         // V8 reserves its code range from the heap limit, which must be
         // page aligned: a build's share of the memory limit need not be.
-        let heap_limit =
-            initial_heap_limit.clamp(MINIMUM_HEAP_LIMIT, buffers.allowance()) & !((1 << 20) - 1);
+        let heap_limit = initial_heap_limit.min(buffers.allowance()) & !((1 << 20) - 1);
         let stack = stack::StackLimit::new(options.stack_limit)?;
         // SAFETY: the stack helper verifies a boundary within this thread's
         // stack. Rc state prevents moving the evaluator to another thread.
@@ -1447,14 +1441,19 @@ fn string_service(
     scope.terminate_execution();
 }
 impl CompilerEvaluator for V8Evaluator {
+    #[cfg(test)]
+    fn v8_heap_limit(&self) -> usize {
+        let mut isolate = self.isolate.borrow_mut();
+        Entered::new(&mut isolate)
+            .0
+            .get_heap_statistics()
+            .heap_size_limit()
+    }
     fn export_data(&self, id: ValueId, limits: ConversionLimits) -> Result<Datum, EvalError> {
         V8Evaluator::export_data(self, id, limits)
     }
     fn headroom_held(&self) -> usize {
         self.state.buffers.headroom_held()
-    }
-    fn v8_memory_slot(&self) -> Option<usize> {
-        self.state.buffers.slot()
     }
     fn collect_garbage(&self) {
         self.collect_garbage()
@@ -1908,7 +1907,7 @@ mod tests {
         let slots = 256_000 / SLOT_BYTES;
         for old in (share * 3 / 4..=share + 8).step_by(2) {
             let resources = crate::evaluator::BuildResources::new(&options, 3, true).unwrap();
-            let worker = V8Evaluator::new_for_build(options.clone(), &resources, 1, false).unwrap();
+            let worker = V8Evaluator::new_for_build(options.clone(), &resources, false).unwrap();
             let result = worker.evaluate_js(&format!(
                 "(() => {{ globalThis.kept = []; for (let i = 0; i < {old}; i++) kept.push(new Array({slots}).fill(1)); globalThis.young = []; for (let i = 0; i < 2000; i++) young.push(new Array(64).fill(i)); return kept.length; }})()"
             ));
@@ -2206,9 +2205,9 @@ mod tests {
             ..Default::default()
         };
         let resources = BuildResources::new(&options, 3, true).unwrap();
-        let spinning = V8Evaluator::new_for_build(options.clone(), &resources, 1, false).unwrap();
-        let sibling = V8Evaluator::new_for_build(options.clone(), &resources, 2, false).unwrap();
-        let main = V8Evaluator::new_for_build(options.clone(), &resources, 0, false).unwrap();
+        let spinning = V8Evaluator::new_for_build(options.clone(), &resources, false).unwrap();
+        let sibling = V8Evaluator::new_for_build(options.clone(), &resources, false).unwrap();
+        let main = V8Evaluator::new_for_build(options.clone(), &resources, true).unwrap();
 
         spinning
             .control()
