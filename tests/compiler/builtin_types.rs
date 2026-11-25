@@ -7302,3 +7302,158 @@ fn seq_vector_and_lazy_seq_fast_path_edge_cases() {
         "42",
     );
 }
+
+/// light-cljs-1120: Unfrozen vector leaves and tails must never be mutated through
+/// any handle handed out of the runtime (`to-array`, `into-array`, `to-array-2d`,
+/// `clj->js`, `js->clj`, `.-tail`, `ranged-iterator`, `seq`/`next`/`rest`/`drop`/
+/// `with-meta`/`clone`/`apply` `.-arr` and `.-node`, `chunk-first` / `-drop-first`
+/// / `concat` `.-arr`, `aget`/`aset`, or subsequent `transient`/`persistent!` edits),
+/// while caller-supplied arrays retain identity on `IndexedSeq.`, `(seq arr)`,
+/// `array-chunk`, `ChunkedSeq.`, and `PersistentVector.`.
+#[test]
+fn unfrozen_vector_leaves_cannot_be_mutated_through_any_public_handle() {
+    // 1. Short vector (<= 32), MapEntry, Subvec, and transient-built <= 32 vector.
+    every_level(
+        r#"(let [v-lit [10 20 30]
+                 v-tr (persistent! (conj! (conj! (conj! (transient []) 10) 20) 30))
+                 me (first {:k 1})
+                 sv (subvec [0 10 20 30 40] 1 4)
+                 sv-assoc (assoc sv 0 10)
+                 src-js #js [10 20 30]
+                 v-from-js (js->clj src-js)]
+             (aset src-js 0 :src-mut)
+             (doseq [v [v-lit v-tr sv sv-assoc v-from-js]]
+               (let [a1 (to-array v)
+                     a2 (into-array v)
+                     a3 (clj->js v)
+                     a4 (when (instance? PersistentVector v) (.-tail v))
+                     a5 (.-arr (ranged-iterator v 0 3))
+                     s (seq v)
+                     sa (.-arr s)
+                     sn (.-arr (next s))
+                     sr (.-arr (rest s))
+                     sm (.-arr (with-meta s {:m 1}))
+                     sc (.-arr (clone s))
+                     sd (.-arr (-drop v 1))
+                     sd-s (.-arr (-drop s 1))
+                     sap (apply (fn [& args] (.-arr args)) v)
+                     sap1 (apply (fn [_ & more] (.-arr more)) v)
+                     sap-s (apply (fn [_ & more] (.-arr more)) s)
+                     ag (aget s "arr")]
+                 (doseq [h (keep identity [a1 a2 a3 a4 a5 sa sn sr sm sc sd sd-s sap sap1 sap-s ag])]
+                   (aset h 0 :mut)
+                   (.push h :extra))))
+             ;; MapEntry seq handle
+             (let [ms (seq me)]
+               (aset (.-arr ms) 0 :mut)
+               (aset (aget ms "arr") 1 :mut))
+             ;; to-array-2d handle
+             (let [nested [[10 20] [30 40]]
+                   a2d (to-array-2d nested)]
+               (aset (aget a2d 0) 0 :mut)
+               (assert (= [[10 20] [30 40]] nested)))
+             ;; Subsequent transient on a <= 32 persistent vector cannot mutate it
+             (let [s-before (seq v-tr)
+                   t2 (transient v-tr)
+                   _ (assoc! t2 0 :t2-mut)
+                   _ (conj! t2 40)
+                   v-after (persistent! t2)]
+               (assert (= [10 20 30] v-tr))
+               (assert (= [10 20 30] (vec s-before)))
+               (assert (= [:t2-mut 20 30 40] v-after)))
+             (pr-str [v-lit v-tr me sv sv-assoc v-from-js])) "#,
+        "[[10 20 30] [10 20 30] [:k 1] [10 20 30] [10 20 30] [10 20 30]]",
+    );
+
+    // 2. Long vector (> 32, both trie leaves and tail), transient-built (vec (range 70)),
+    //    subvec > 32, chunked-seq .-node, chunk-first / -drop-first / concat .-arr,
+    //    ranged-iterator across chunk boundary, and subsequent transient edits.
+    every_level(
+        r#"(let [v-tr (vec (range 70))
+                 v-pop (pop (vec (range 65)))
+                 sv (subvec v-tr 5 50)
+                 src-js (js/Array.from #js {:length 70} (fn [_ i] i))
+                 v-from-js (js->clj src-js)]
+             (aset src-js 0 :src-mut)
+             (aset src-js 65 :src-mut)
+             (doseq [v [v-tr v-pop]]
+               (let [a1 (to-array v)
+                     a2 (into-array v)
+                     a3 (clj->js v)
+                     a4 (.-tail v)
+                     ri (ranged-iterator v 0 (count v))
+                     ri0 (.-arr ri)
+                     _ (dotimes [_ 33] (.next ri))
+                     ri1 (.-arr ri)
+                     s (seq v)
+                     n0 (.-node s)
+                     n0-next (.-node (next s))
+                     n0-rest (.-node (rest s))
+                     n0-meta (.-node (with-meta s {:m 1}))
+                     n0-drop (.-node (-drop v 1))
+                     n0-drops (.-node (-drop s 1))
+                     n0-ap (apply (fn [& args] (.-node args)) v)
+                     s-tail (chunk-next (chunk-next s))
+                     nt (when s-tail (.-node s-tail))
+                     cf0 (.-arr (chunk-first s))
+                     cf0-drop (.-arr (-drop-first (chunk-first s)))
+                     cft (when s-tail (.-arr (chunk-first s-tail)))
+                     cat-cf (.-arr (chunk-first (seq (concat v [999]))))
+                     ag0 (aget s "node")
+                     ag-cf0 (aget (chunk-first s) "arr")]
+                 (doseq [h [a1 a2 a3 a4 ri0 ri1 n0 n0-next n0-rest n0-meta n0-drop n0-drops n0-ap cf0 cf0-drop cat-cf ag0 ag-cf0]]
+                   (aset h 0 :mut)
+                   (.push h :extra))
+                 (when nt (aset nt 0 :mut))
+                 (when cft (aset cft 0 :mut))))
+             ;; Subvec > 32
+             (let [ss (seq sv)]
+               (aset (.-node ss) 0 :mut)
+               (aset (.-arr (chunk-first ss)) 0 :mut)
+               (aset (.-node (chunk-next ss)) 0 :mut))
+             ;; Subsequent transient on transient-built > 32 vector: assoc! in leaf 0,
+             ;; assoc! in tail, pop! across chunk boundary, conj! past chunk boundary
+             (let [s-before (seq v-tr)
+                   t-assoc (persistent! (assoc! (assoc! (transient v-tr) 0 :leaf0) 69 :tail))
+                   t-pop (loop [t (transient v-tr) k 10]
+                           (if (zero? k) (persistent! t) (recur (pop! t) (dec k))))
+                   t-conj (loop [t (transient v-tr) k 0]
+                            (if (= k 35) (persistent! t) (recur (conj! t (+ 70 k)) (inc k))))]
+               (assert (= (vec (range 70)) v-tr))
+               (assert (= (vec (range 70)) (vec s-before)))
+               (assert (= :leaf0 (nth t-assoc 0)))
+               (assert (= :tail (nth t-assoc 69)))
+               (assert (= (vec (range 60)) t-pop))
+               (assert (= (vec (range 105)) t-conj)))
+             (pr-str [(nth v-tr 0) (nth v-tr 32) (nth v-tr 64) (nth v-tr 69)
+                      (nth v-pop 0) (nth v-pop 63)
+                      (nth sv 0) (nth sv 32) (nth sv 44)
+                      (nth v-from-js 0) (nth v-from-js 65)])) "#,
+        "[0 32 64 69 0 63 5 37 49 0 65]",
+    );
+
+    // 3. Caller-supplied arrays keep their identity on IndexedSeq., (seq arr),
+    //    array-chunk, ChunkedSeq., PersistentVector., and set! on ArrayChunk .-arr.
+    every_level(
+        r#"(let [a #js [1 2 3]
+                 is1 (IndexedSeq. a 0 nil)
+                 is2 (seq a)
+                 ac (array-chunk a 0 3)
+                 v40 (vec (range 40))
+                 cs (ChunkedSeq. v40 a 0 0 nil nil)
+                 pv (PersistentVector. nil 3 5 nil a nil)
+                 vc (chunk-first (seq v40))
+                 b #js [7 8]]
+             (set! (.-arr vc) b)
+             (pr-str [(identical? a (.-arr is1))
+                      (identical? a (.-arr (clone is1)))
+                      (identical? a (.-arr is2))
+                      (identical? a (.-arr ac))
+                      (identical? a (.-node cs))
+                      (identical? a (.-node (with-meta cs {:m 1})))
+                      (identical? a (.-arr (chunk-first cs)))
+                      (identical? a (.-arr (seq pv)))
+                      (identical? b (.-arr vc))])) "#,
+        "[true true true true true true true true true]",
+    );
+}

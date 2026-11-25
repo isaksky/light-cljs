@@ -1730,7 +1730,9 @@
   //@unit ChunkedSeqValue requires: ChunkedSeqCell, metaFields
   // Its metadata and hash are kept as given, an undefined one too.
   function ChunkedSeqValue(source, node, index, offset, metadata, cachedHash) {
-    return metaFields(new ChunkedSeqCell(node, offset, source, index), metadata, cachedHash);
+    const value = metaFields(new ChunkedSeqCell(node, offset, source, index), metadata, cachedHash);
+    Object.defineProperty(value, "callerArr$LKEY", {value: true});
+    return value;
   }
   //@unit PersistentQueueValue requires: constructorSlots, queueFromArray
   function PersistentQueueValue(metadata, cnt, front, rear, cachedHash) {
@@ -2061,7 +2063,7 @@
   //@ IndexedSeqCell, kindHooks, vectorChunk
   // A vector of at most 32 items walks its tail; a longer one is upstream's
   // chunked seq over its trie's leaves.
-  kindHooks.seqVector = (value, store) => !store.cnt$LKEY ? null : store.cnt$LKEY <= 32 ? new IndexedSeqCell(vectorChunk(value, 0), 0, true, "indexed")
+  kindHooks.seqVector = (value, store) => !store.cnt$LKEY ? null : store.cnt$LKEY <= 32 ? new IndexedSeqCell(vectorChunk(value, 0), 0, store.callerTail$LKEY ? true : 2, "indexed")
     : new ChunkedSeqCell(vectorChunk(value, 0), 0, value, 0);
   //@unit arrayMapSeq requires: ArrayMapIndexCell
   // An array map's seq is an index into its keys and values, upstream's
@@ -7872,7 +7874,7 @@
   //@ requires: builtinSlot, ChunkedSeqCell, IndexedSeqCell, PersistentVectorValue, vectorLeaf
   PersistentVectorValue.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
     const cnt = self.cnt$LKEY;
-    return !cnt ? null : cnt <= 32 ? new IndexedSeqCell(self.tail$LKEY ?? vectorLeaf(self, 0), 0, true, "indexed")
+    return !cnt ? null : cnt <= 32 ? new IndexedSeqCell(self.tail$LKEY ?? vectorLeaf(self, 0), 0, self.callerTail$LKEY ? true : 2, "indexed")
       : new ChunkedSeqCell(vectorLeaf(self, 0), 0, self, 0);
   });
   //@unit SubvecValue.seq effect: SubvecValue when: seq, seqOf, seqSite requires: builtinSlot,
@@ -7883,7 +7885,7 @@
   //@unit MapEntryType.seq effect: MapEntryType when: seq, seqOf, seqSite requires: builtinSlot,
   //@ IndexedSeqCell, MapEntryType
   MapEntryType.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY = builtinSlot(function (self) {
-    return !self.cnt$LKEY ? null : new IndexedSeqCell(self.tail$LKEY, 0, true, "indexed");
+    return !self.cnt$LKEY ? null : new IndexedSeqCell(self.tail$LKEY, 0, 2, "indexed");
   });
   // A vector's and a subvector's `-reduce` slots, and their `-kv-reduce` (upstream's IReduce and IKVReduce,
   // light-cljs-1055), which `reduce` and `reduce-kv` call before any
@@ -11791,7 +11793,7 @@
   function indexedValue(value) {
     // Of the transients, a transient vector (`isTransientCell`).
     if (transientState(value)) return isTransientCell(value);
-    return chunkOf(value) !== undefined || cellOf(value)?.integer$LKEY === true || holdsVector(value) || viewOf(value)?.indexed$LKEY === true;
+    return chunkOf(value) !== undefined || cellOf(value)?.integer$LKEY === true || holdsVector(value) || !!viewOf(value)?.indexed$LKEY;
   }
   //@unit maskNative requires: protocolMasks
   // A core protocol's native test by its mask bit, for a protocol whose bit
@@ -12712,10 +12714,13 @@
     const c = cellOf(value);
     return iterateNode(c.f$LKEY, c.prev$LKEY, c.seed$LKEY, c.realized$LKEY, c.next$LKEY);
   };
-  //@unit ChunkedSeqValue.meta effect: ChunkedSeqValue when: collectionWithMeta requires: ChunkedSeqValue,
-  //@ kindHooks
-  kindHooks.withMetaChunkedSeq = (value, metadata) =>
-    ChunkedSeqValue(value.vec$LKEY, value.arr$LKEY, value.base$LKEY, value.i$LKEY, metadata, null);
+  //@unit ChunkedSeqValue.meta effect: ChunkedSeqValue when: collectionWithMeta requires: ChunkedSeqCell,
+  //@ kindHooks, metaFields
+  kindHooks.withMetaChunkedSeq = (value, metadata) => {
+    const next = metaFields(new ChunkedSeqCell(value.arr$LKEY, value.i$LKEY, value.vec$LKEY, value.base$LKEY), metadata, null);
+    if (value.callerArr$LKEY) Object.defineProperty(next, "callerArr$LKEY", {value: true});
+    return next;
+  };
   //@unit cycleNode.meta effect: cycleNode when: collectionWithMeta requires: cellOf, cycleNode,
   //@ kindHooks
   kindHooks.withMetaCycle = value => {
@@ -14432,7 +14437,7 @@
     return fixedOnly
       ? applyFixed(fn, p, a, b, c, len, i => vectorNth(tail, i, null))
       : applyDirect(fn, p, a, b, c, len, i => vectorNth(tail, i, null),
-          i => len <= 32 ? new IndexedSeqCell(vectorChunk(tail, 0), i, true, "indexed")
+          i => len <= 32 ? new IndexedSeqCell(vectorChunk(tail, 0), i, tail.callerTail$LKEY ? true : 2, "indexed")
             : new ChunkedSeqCell(vectorChunk(tail, i & -32), i & 31, tail, i & -32));
   };
   //@unit apply requires: applyDirect, applyFixed, applyFixedLiveArray, applyTo, boundedCount, cons,
@@ -14476,7 +14481,7 @@
           const arr = tail.arr$LKEY, start = tail.i$LKEY, len = arr.length - start;
           if (start >= 0 && len >= 0) {
             return applyToFn
-              ? applyDirect(fn, p, a0, a1, a2, len, i => arr[start + i], i => i === 0 ? tail : new IndexedSeqCell(arr, start + i, true, "indexed"))
+              ? applyDirect(fn, p, a0, a1, a2, len, i => arr[start + i], i => i === 0 ? tail : new IndexedSeqCell(arr, start + i, tail.indexed$LKEY, "indexed"))
               : applyFixedLiveArray(fn, p, a0, a1, a2, arr, start);
           }
         }
@@ -14485,7 +14490,7 @@
           if (cnt <= 32 && tail.tail$LKEY.length === cnt) {
             const arr = tail.tail$LKEY;
             return applyToFn
-              ? applyDirect(fn, p, a0, a1, a2, cnt, i => arr[i], i => new IndexedSeqCell(arr, i, true, "indexed"))
+              ? applyDirect(fn, p, a0, a1, a2, cnt, i => arr[i], i => new IndexedSeqCell(arr, i, 2, "indexed"))
               : applyFixed(fn, p, a0, a1, a2, cnt, i => arr[i]);
           }
           if (kindHooks.applyVector) return kindHooks.applyVector(fn, p, a0, a1, a2, tail, !applyToFn);
@@ -14625,9 +14630,16 @@
       return forceRangeChunk(cell).chunk;
     }
     const slice = viewOf(value);
-    if (slice.view$LKEY === "chunked" || value?.slots$LKEY) return arrayChunk(slice.arr$LKEY, slice.i$LKEY);
+    if (slice.view$LKEY === "chunked" || value?.slots$LKEY) {
+      const chunk = arrayChunk(slice.arr$LKEY, slice.i$LKEY);
+      const vec = slice.vec$LKEY;
+      if (!slice.callerArr$LKEY && !(vec?.callerTail$LKEY && slice.arr$LKEY === vec.tail$LKEY)) chunk.first$LKEY = 1;
+      return chunk;
+    }
     const end = Math.min(slice.arr$LKEY.length, slice.i$LKEY + 32 - slice.i$LKEY % 32);
-    return arrayChunk(slice.arr$LKEY, slice.i$LKEY, end);
+    const chunk = arrayChunk(slice.arr$LKEY, slice.i$LKEY, end);
+    if (slice.indexed$LKEY === 2) chunk.first$LKEY = 1;
+    return chunk;
   }
   //@unit rangeChunks
   const rangeChunks = new WeakMap();
@@ -14683,6 +14695,7 @@
     if (integer ? size <= 1 : size === 0) throw new Error("-drop-first of empty chunk");
     const result = arrayChunk(c.arr$LKEY, c.off$LKEY + 1, c.end$LKEY);
     if (integer) { result.first$LKEY = c.first$LKEY + c.step$LKEY; result.step$LKEY = c.step$LKEY; }
+    else if (c.first$LKEY !== null) result.first$LKEY = c.first$LKEY;
     return result;
   }
   //@unit chunkedConsFirst requires: chunkStore, nth
@@ -14754,7 +14767,7 @@
   // As `makeVector.seq`, from index `n`.
   kindHooks.dropVector = (value, n) => {
     const store = vectorStore(value);
-    return n >= store.cnt$LKEY ? null : store.cnt$LKEY <= 32 ? new IndexedSeqCell(vectorChunk(value, 0), n, true, "indexed")
+    return n >= store.cnt$LKEY ? null : store.cnt$LKEY <= 32 ? new IndexedSeqCell(vectorChunk(value, 0), n, store.callerTail$LKEY ? true : 2, "indexed")
       : new ChunkedSeqCell(vectorChunk(value, n), n & 31, value, n & -32);
   };
   //@unit numberArgument
@@ -16720,7 +16733,12 @@
   // `off` are its `base` and `i`.
   publicFields(ChunkedSeqValue, ["vec", "node", "i", "off", "__hash"], (value, field) => {
     const v = viewOf(value);
-    return field === "vec" ? v.vec$LKEY : field === "node" ? v.arr$LKEY : field === "i" ? v.base$LKEY : v.i$LKEY;
+    if (field === "node") {
+      const vec = v.vec$LKEY;
+      return v.callerArr$LKEY || !Array.isArray(v.arr$LKEY) || (vec?.callerTail$LKEY && v.arr$LKEY === vec.tail$LKEY)
+        ? v.arr$LKEY : v.arr$LKEY.slice();
+    }
+    return field === "vec" ? v.vec$LKEY : field === "i" ? v.base$LKEY : v.i$LKEY;
   });
   //@unit ChunkedSeqValue.metaField effect: ChunkedSeqValue when: member_meta, resetMeta requires: ChunkedSeqValue,
   //@ meta, publicFields
@@ -16783,7 +16801,7 @@
   //@ publicFields, viewOf
   publicFields(IndexedSeqValue, ["arr", "i"], (value, field) => {
     const v = viewOf(value);
-    return field === "arr" ? v.arr$LKEY : v.i$LKEY;
+    return field === "arr" ? (v.indexed$LKEY === 2 && Array.isArray(v.arr$LKEY) ? v.arr$LKEY.slice() : v.arr$LKEY) : v.i$LKEY;
   });
   //@unit IndexedSeqValue.metaField effect: IndexedSeqValue when: member_meta, resetMeta requires: IndexedSeqValue,
   //@ meta, publicFields
@@ -16951,7 +16969,16 @@
   //@unit arrayChunk.fields effect: arrayChunk when: member_arr, member_off, member_end requires: arrayChunk,
   //@ chunkOf
   for (const [field, key] of Object.entries({arr: "arr$LKEY", off: "off$LKEY", end: "end$LKEY"})) Object.defineProperty(arrayChunk.prototype, field, {
-    configurable: true, get() { return chunkOf(this)[key]; }, set(value) { chunkOf(this)[key] = value; }
+    configurable: true,
+    get() {
+      const c = chunkOf(this);
+      return field === "arr" && c.step$LKEY === null && c.first$LKEY !== null && Array.isArray(c.arr$LKEY) ? c.arr$LKEY.slice() : c[key];
+    },
+    set(value) {
+      const c = chunkOf(this);
+      c[key] = value;
+      if (field === "arr" && c.step$LKEY === null) c.first$LKEY = null;
+    }
   });
   //@unit realized effect requires: cellOf, coreMethod, delays, isCell, lazyOf, pendingValue, truth
   const realized = coreMethod("IPending/-realized?", [1], value => isCell(value) ? cellOf(value).realized$LKEY === true : delays.has(value) ? !truth(delays.get(value).thunk) : !truth(lazyOf(value).fn$LKEY), pendingValue);
