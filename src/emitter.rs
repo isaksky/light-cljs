@@ -3913,6 +3913,57 @@ impl<'a, 's> Emitter<'a, 's> {
         self.output.push_str("return m0.apply(null, arguments); }");
     }
 
+    /// Dev-build variant of [`Emitter::protocol_direct_path`]: spells each
+    /// arity's keyed slot name directly (`r0.ns$P$m$arity$2$LKEY`) so V8 uses
+    /// a named LoadIC instead of a dynamic keyed lookup, while delegating
+    /// misses to `m0` (`protocolMethod`'s `miss`, which reads the live Var via
+    /// its getter so hot reload and late host `extend-type` still take effect).
+    fn protocol_named_fast_path(&mut self, key: &str, arities: &[usize]) {
+        let widest = arities.iter().copied().max().unwrap_or(1).max(1);
+        let parameters = |arity: usize, defaulted: bool| {
+            (0..arity)
+                .map(|index| match index {
+                    0 => "r0".to_owned(),
+                    1 if defaulted => "a1 = undefined".to_owned(),
+                    _ => format!("a{index}"),
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        write!(
+            self.output,
+            ", (m0) => function ({}) {{ ",
+            parameters(widest, true)
+        )
+        .unwrap();
+        if let [arity] = arities {
+            let slot = crate::rta::protocol_slot(key, *arity);
+            let arguments = parameters(*arity, false);
+            self.output.push_str("return r0 != null && r0");
+            self.keyed_member(&slot);
+            self.output.push_str(" != null ? r0");
+            self.keyed_member(&slot);
+            write!(self.output, "({arguments}) : m0({arguments}); }}").unwrap();
+            return;
+        }
+        for (index, arity) in arities.iter().enumerate() {
+            if index > 0 {
+                self.output.push_str("else ");
+            }
+            let slot = crate::rta::protocol_slot(key, *arity);
+            write!(
+                self.output,
+                "if (arguments.length === {arity}) {{ if (r0 != null && r0"
+            )
+            .unwrap();
+            self.keyed_member(&slot);
+            self.output.push_str(" != null) return r0");
+            self.keyed_member(&slot);
+            write!(self.output, "({}); }} ", parameters(*arity, false)).unwrap();
+        }
+        self.output.push_str("return m0.apply(null, arguments); }");
+    }
+
     /// At `Advanced`, the dispatcher of a protocol method of these fixed
     /// `arities`, as [`Emitter::protocol_fast_path`] makes it, written as
     /// the function itself (light-cljs-1069): its slots are named in the
@@ -10547,14 +10598,28 @@ impl<'a, 's> Emitter<'a, 's> {
                         self.output.push_str("() => ");
                         self.global(method.global);
                     }
+                    // Dev/interactive units (`application_roots && !demand_roots`)
+                    // have no compile-time declaration demand, so non-metadata,
+                    // non-variadic protocol methods can take the same direct
+                    // slot-calling fast path as release builds while keeping
+                    // their live Var getter for hot reload and late `extend-type`.
+                    let dev_fast = self.application_roots
+                        && !self.demand_roots
+                        && !*via_metadata
+                        && method.variadic.is_none()
+                        && !method.arities.is_empty()
+                        && !method.arities.contains(&0);
                     let fast =
-                        self.inference.is_some() && !*via_metadata && method.variadic.is_none();
+                        (self.inference.is_some() && !*via_metadata && method.variadic.is_none())
+                            || dev_fast;
                     let named = self.names_program_slots()
                         && !method.arities.is_empty()
                         && !method.arities.contains(&0);
                     let direct = fast && named && unassigned;
                     if direct {
                         self.protocol_direct_path(method.global, &method.key, &method.arities);
+                    } else if dev_fast {
+                        self.protocol_named_fast_path(&method.key, &method.arities);
                     } else if fast {
                         self.protocol_fast_path(&method.arities);
                     }

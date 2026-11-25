@@ -1376,3 +1376,104 @@ start
         r#"{"id":"program","outcome":{"status":"returned","value":{"$value":"undefined"}},"trace":[],"stdout":"[false \"5\" \"{:a 1, :b [2 3]}\" 3 true true]\n#spec 9 true\n[YES \"YES\" 3]\n"}"#
     );
 }
+
+/// Dev `defprotocol` dispatchers use `protocol_fast_path` (direct slot calls),
+/// yet hot-reloaded protocol redefinitions, late `extend-type` on records and
+/// host types (`string`, `nil`, `default`), `specify!`, and multi-arity /
+/// arity-error dispatch must all keep working.
+#[test]
+fn dev_protocol_fast_path_preserves_reload_extend_type_specify_and_arities() {
+    let dir = TempDir::new("dev-protocol-fast");
+    let v1 = source_root(
+        &dir.join("v1"),
+        &[
+            (
+                "app/proto.cljs",
+                r#"(ns app.proto)
+(defprotocol P
+  (one [this])
+  (two [this] [this x]))
+(defrecord Box [v]
+  P
+  (one [this] (:v this))
+  (two [this] (:v this))
+  (two [this x] (+ (:v this) x)))
+(defonce saved-box (->Box 10))
+(defn call-all []
+  [(one saved-box) (two saved-box) (two saved-box 5)])
+"#,
+            ),
+            (
+                "app/main.cljs",
+                r#"(ns app.main (:require [app.proto :as p]))
+(defn ^:dev/after-load after [] (js/console.log (pr-str (p/call-all))))
+(defn start []
+  (let [s (specify! #js {}
+            p/P
+            (one [_] :spec-one)
+            (two ([_] :spec-two-1) ([_ x] [:spec-two-2 x])))]
+    (js/console.log (pr-str (p/call-all)) (pr-str [(p/one s) (p/two s) (p/two s 3)]))))
+start
+"#,
+            ),
+        ],
+    );
+    let out = dir.join("dev");
+    dev_build(&v1, &out);
+
+    // Reload: redefine protocol P, extend host types `string`, `nil`, and
+    // `default`, and keep dispatching on the pre-reload `saved-box` instance.
+    let v2 = source_root(
+        &dir.join("v2"),
+        &[
+            (
+                "app/proto.cljs",
+                r#"(ns app.proto)
+(defprotocol P
+  (one [this])
+  (two [this] [this x]))
+(defrecord Box [v]
+  P
+  (one [this] (* 2 (:v this)))
+  (two [this] (* 2 (:v this)))
+  (two [this x] (+ (* 2 (:v this)) x)))
+(extend-type string
+  P
+  (one [s] (str "S:" s))
+  (two ([s] s) ([s x] (str s ":" x))))
+(extend-type nil
+  P
+  (one [_] :nil-one)
+  (two ([_] :nil-1) ([_ x] [:nil-2 x])))
+(extend-type default
+  P
+  (one [x] [:def x])
+  (two ([x] [:def1 x]) ([x y] [:def2 x y])))
+(defonce saved-box (->Box 10))
+(defn call-all []
+  [(one saved-box) (two saved-box 5)
+   (one (->Box 10)) (two (->Box 10) 5)
+   (one "hi") (two "hi" 7)
+   (one nil) (two nil 9)
+   (one 42)
+   (try (two saved-box 1 2) :no-err (catch :default _ :arity-err))])
+"#,
+            ),
+            (
+                "app/main.cljs",
+                r#"(ns app.main (:require [app.proto :as p]))
+(defn ^:dev/after-load after [] (js/console.log (pr-str (p/call-all))))
+(defn start [] (after))
+start
+"#,
+            ),
+        ],
+    );
+    let out_v2 = dir.join("dev-v2");
+    dev_build(&v2, &out_v2);
+
+    assert_eq!(
+        run_dev(&out, true, &[out_v2.join("app.proto.js")]).unwrap(),
+        r#"{"id":"program","outcome":{"status":"returned","value":{"$value":"undefined"}},"trace":[],"stdout":"[10 10 15] [:spec-one :spec-two-1 [:spec-two-2 3]]\n[10 15 20 25 \"S:hi\" \"hi:7\" :nil-one [:nil-2 9] [:def 42] :arity-err]\n"}"#
+    );
+}
