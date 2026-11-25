@@ -6,14 +6,11 @@ differs from upstream ClojureScript. It describes the current implementation.
 
 The compiler reads `.cljs`/`.cljc` source, analyzes it in Rust and emits one
 self-contained JavaScript expression. Macros (both first-party core macros and
-user `defmacro`s) are compiled by the same pipeline and executed in an embedded
-JavaScript heap. Native clean compilations use V8 by default; interactive
-sessions and builds without the `v8-macros` feature use QuickJS. WebAssembly
-builds embed no engine: the embedder runs macros through a
-`host_evaluator::ScriptHost` (docs/browser-macros.md).
-Both engines execute the same emitted functions and runtime. Evaluation
-sessions and the `--eval`/`--repl` commands use QuickJS; see
-[evaluation](evaluation.md) and the [synchronous evaluator](evaluator.md).
+user `defmacro`s) are compiled by the same pipeline. The V8 build runs them
+in a JavaScript isolate. In WebAssembly, the embedder runs macros through
+a `host_evaluator::ScriptHost` ([browser macros](browser-macros.md)). Evaluation
+sessions and `--eval`/`--repl` require V8. See [evaluation](evaluation.md)
+and the [synchronous evaluator](evaluator.md).
 
 Supported today: lexical closures, multi-arity/variadic functions, mutable
 globals and Vars, source namespaces, JavaScript interop, immutable
@@ -1186,14 +1183,8 @@ entry. A lazy seq or chunked cons built with nil metadata stores none;
 `meta` and its `meta` field read nil either way. A step of `repeat` stores no
 nil metadata or hash, and no positional constructor stores a null hash; the
 compiler form bridge reads a repeat as having nil metadata, as it does a lazy
-seq. A host that states `globalThis.lightCljsWeakMapStores` before a runtime
-loads, as the evaluator does in its QuickJS sessions (macro expansion there,
-and `--eval` or `--repl` with `--engine quickjs`), has its compile-time values
-branded by a `WeakSet` rather than a private field (light-cljs-292,
-docs/value-layout.md, section 4): QuickJS frees short-lived values by
-reference counting, so an entry costs it less than adding a private field,
-which runs a class's constructors. The runtime reads the statement once when
-it loads and never sniffs the engine.
+seq. The compile-time runtime brands values with a private field so the form
+bridge can reject host objects before reading their properties.
 
 A kind test reads the value's keyed kind, one property of its prototype (and
 for most kinds an own field the class always holds). A map entry is a value
@@ -1794,7 +1785,7 @@ earlier, including REPL definitions. A missing registry or package throws a
 
 The host fills the registry before the program runs, for example from an ES
 module (`import * as react from "react"; globalThis.lightCljsPackages = {react};`)
-or, in an `EvalSession`, QuickJS runner or REPL, from a prelude such as
+or, in an `EvalSession`, script runner or REPL, from a prelude such as
 `(set! js/lightCljsPackages (js-obj "react" react-object))`. The REPL accepts the
 same libspecs in `require` and `ns`; there a later binding of the same name
 replaces an earlier package or namespace alias.
@@ -2437,7 +2428,7 @@ decimals, through `*print-fn*`, so compiled output needs
 `enable-console-print!` or `set-print-fn!` as upstream's does) and returns the
 value. It reads the clock through `system-time`: the session's
 `EvalOptions::clock` when one is set, otherwise `performance.now` where the host
-has it and `Date.now` where it does not (the embedded QuickJS).
+has it and `Date.now` otherwise.
 `simple-benchmark` binds its bindings, runs its expression the given number of
 times and calls `:print-fn` (default `println`, resolved where the macro is
 used) with the bindings and expression as printed at expansion time, the count
@@ -3173,7 +3164,7 @@ node tests/support/js_core_helpers.test.js
 
 Compiler execution tests run emitted JavaScript in Node.js; it must be on `PATH`,
 or `NODE` must name its executable. Evaluator tests (`--test evaluation`) need
-only Rust, since they run QuickJS in-process. README "Testing" lists the test
+only Rust and the embedded V8 engine. README "Testing" lists the test
 binaries and how to run one suite or test.
 
 `tests/fixtures/execution.tsv` contains shared tiny programs and their expected

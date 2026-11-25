@@ -2,8 +2,7 @@
 
 `EvalSession` is the supported interactive embedding API. Rust reads and resolves
 each form, expands macros in a separate compilation heap, emits canonical JavaScript,
-and executes only that form in the application's heap: a V8 isolate where the
-build has V8, else QuickJS (see [Engines](#engines)). Definitions,
+and executes only that form in the application's heap: a V8 isolate. Definitions,
 closures, atoms and protocol tables persist in this explicit session. Later forms
 see earlier effects even when a later read, analysis or runtime operation fails.
 Ordinary exceptions restore language `binding`/`with-redefs` scopes; they do not
@@ -51,7 +50,7 @@ redefines as the session does.
 
 The session is two parts: a `DevSession` (`light_cljs::dev_session`), the
 incremental compiler with its macro host and the namespaces the session has
-loaded, and the QuickJS heap, which interprets what the compiler produces
+loaded, and the V8 isolate, which executes the emitted JavaScript
 (light-cljs-283; the design is "Actions" in
 [dev-workflow.md](dev-workflow.md#actions)). A `DevSession` also works with no
 heap at all, for a runtime in another process:
@@ -292,46 +291,20 @@ no-op stub; `newline` invokes it when newline flushing is enabled.
 
 ## Engines
 
-`EvalOptions::backend` (`--engine v8|quickjs` on the command line) chooses the
-engine the forms run in. V8 is the default where the build has it (the default
-features); `--no-default-features --features quickjs` builds have only QuickJS, and WebAssembly builds have
-no engine for sessions (light-cljs-357).
-The compiler's own heap, where the session's macros run, is QuickJS for either
-engine. Both engines implement one interactive contract
-(`SessionEvaluator` in `src/evaluator.rs`; V8's is `src/v8_session.rs`):
-definitions persist, values print the same, host functions take and return the
-session's values and reenter the compiler, the language reads the host input,
-and a language exception is an ordinary error after which the session goes on,
-while cancellation, the deadline, the poll budget and the memory limit are
-terminal. Promise jobs run after each top-level form on both: each job costs a
-poll (V8 counts them with a promise hook), an exception that leaves a
-`queueMicrotask` callback is reported as QuickJS reports it, and promises
-rejected with no handler are tracked. What differs is the wording of the
-engines' own exceptions (`TypeError: x.call is not a function` from V8,
-`Error: not a function` from QuickJS, whose diagnostics drop the error's
-name), V8's 16 MB minimum memory limit, and V8 charging its watchdog's
-interrupts, about one per 100 µs of running JavaScript, against the poll budget
-where QuickJS charges its own interrupt counter.
+Evaluation and the session's compiler macros run in separate V8 isolates.
+`EvalOptions::backend` selects `EvalEngine::V8`. The command line accepts
+`--engine v8` for compatibility. Builds without V8 report that interactive
+sessions require a V8 build.
 
-The suites run the session contract on both engines:
-`tests/evaluation/eval_sessions.rs` runs once per engine
-(`eval_sessions_quickjs`), and `eval_cli::both_engines_keep_the_repl_and_eval_contract`
-runs one REPL transcript and one script under each `--engine`. The historical
-SCI corpus (`tests/support/sci_evaluator.rs`) stays on QuickJS: it records
-QuickJS's diagnostics.
+Definitions persist, host functions can reenter the compiler, and language
+exceptions leave the session usable. Cancellation, deadline, poll budget and
+memory failures are terminal. Promise jobs run after each top-level form
+and each reaction spends a poll. The V8 heap requires at least 16 MiB.
 
-As built (light-cljs-305), V8 is the default with no measurement gate (the
-user's decision); the numbers are in
-[benchmarks/compiler.md](../benchmarks/compiler.md#engines-of---eval-and---repl--october-18-2026).
-V8 starts in half the time (15.9 ms against 34.9 ms for `--eval --text 1`),
-loads the bundled libraries slightly faster and computes about 14 times
-faster, at a larger resident set (22.5 MB against 13.2 MB at startup). Two
-V8 fixes came with it: the isolate compiles on-stack-replacement code on its
-own thread (`--no-concurrent-osr`), since code installed from a background
-compile ignored termination, so a loop that calls builtins outlived the
-deadline and the heap limit, for macros too; and a session empties V8's
-compilation caches at the start of an operation once its heap holds half the
-limit, since the eval cache kept every form's source.
+The isolate compiles on-stack-replacement code on its own thread
+(`--no-concurrent-osr`) so the engine can interrupt loops that call builtins.
+The session empties V8's compilation caches at the start of an operation
+once its heap holds half the limit.
 
 ## Numbers
 
@@ -344,7 +317,7 @@ arbitrary-precision integers. See the runnable
 
 `light-cljs --eval [OPTIONS] [FILE|-]`, `--eval --text SOURCE`, and
 `--repl [OPTIONS]` compile each form with Rust and execute emitted JavaScript in
-embedded V8, or QuickJS with `--engine quickjs` (see [Engines](#engines)). No
+embedded V8. No
 Node/JVM is needed. `.clj` files receive a migration
 error; use `.cljs` or `.cljc`, ordinary `:require` for helpers/macros, and `:cljs`
 conditionals. Stdin and text use the portable CLJS dialect with conditionals.
@@ -417,9 +390,8 @@ A promise still rejected with no handler attached once the jobs after a form
 have run out is an unhandled rejection (light-cljs-297), reported once with
 its printed reason: `unhandled promise rejection: #error {:message "boom",
 :data {}}` (`<unprintable reason>` when printing it throws; printing keeps
-`*e`). The session's engine tracks rejections (rquickjs
-`set_host_promise_rejection_tracker`; the record lives in the heap, never in
-Rust) and forgets one when a handler is attached first, so a rejection that a
+`*e`). The session tracks rejections in the V8 heap and forgets one when
+a handler is attached first, so a rejection that a
 `.catch`, an `await` or a job of the same drain handles is not reported, while
 a handler that a later form attaches comes too late. Under `--repl` each is a
 warning on stderr after the form's printed result or error, `light-cljs:

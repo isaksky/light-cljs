@@ -22,9 +22,7 @@ pub const USAGE: &str = "Compiled JavaScript evaluation:
   light-cljs --repl --connect HOST:PORT [--print-length N] [--print-level N]
 
   --source-root DIR  Explicit .cljs/.cljc namespace roots (.cljs first)
-  --engine NAME      JavaScript engine the forms run in: v8 (the default in a
-                     build with V8) or quickjs. Macros use V8 when available
-                     and QuickJS otherwise
+  --engine NAME      JavaScript engine for the session (v8)
   --poll-budget N    Cooperative engine/compiler polls per operation (1000000)
   --memory-limit N   JavaScript heap bytes (67108864)
   --stack-limit N    JavaScript stack bytes (1048576)

@@ -581,13 +581,13 @@ changed" or "earlier namespaces changed". The components:
 
 - **Compiler.** `build.rs` hashes every file under `src/` (the embedded
   runtime, bootstrap units, core macros and bundled first-party libraries
-  are there), `build.rs`, `Cargo.toml`, `Cargo.lock` and the vendored
-  `rquickjs-sys`, `v8` (with its patch) and `v8-headers`, by path and
+  are there), `build.rs`, `Cargo.toml`, `Cargo.lock` and `vendor/v8-headers`, by path and
   content, with the enabled features, profile, optimization level, target,
   `RUSTFLAGS` and `rustc -vV`. Any edit, even to a comment, is another
   compiler. The key adds the artifact `SCHEMA_VERSION`, the core operation
-  table and the macro engine: V8 with its version for clean compilations,
-  QuickJS for interactive ones, so a key never matches across engines.
+  table and the macro engine. V8 includes its version and a script host
+  provides its engine identifier. A no-engine build has its own marker.
+  Interactive compilations add a separate mode marker.
   Hashing about 16 MB adds 0.4 s to a debug build-script run (1.1 s to
   1.5 s), which reruns on any edit under `src/`.
 - **Options.** Every `AnalysisOptions` field (the warning mode among them),

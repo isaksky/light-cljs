@@ -69,9 +69,7 @@ pub struct EvalOptions {
     pub aliases: Vec<(String, String)>,
     /// Limits for the runtime and macro heaps. A V8 heap needs at least 16 MiB.
     pub engine: EvaluatorOptions,
-    /// The JavaScript engine the forms run in: V8 by default where the build
-    /// has it, else QuickJS. The compiler's macros use V8 when available
-    /// and QuickJS otherwise, independently of this setting.
+    /// The session's JavaScript engine. Both evaluation and macros require V8.
     pub backend: EvalEngine,
     pub compiler: crate::MacroLimits,
     pub max_source_bytes: usize,

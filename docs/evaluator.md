@@ -7,10 +7,7 @@ runtime. Applications that need interactive compiler symbol state use
 
 V8 builds expose the V8 isolate as `Evaluator`. Clean compilations and
 interactive sessions share that engine implementation through their respective
-traits. QuickJS-only builds expose the QuickJS runtime as `Evaluator`, and
-builds with both engines can select QuickJS through `EvalEngine::QuickJs`.
-Both engines load the same runtime and execute the same compiler-emitted macro
-bodies. The V8 bridge
+traits. The V8 bridge
 preserves immutable form identity and namespace snapshots while releasing
 session roots on completion. Its interrupt scheduler runs on a shared thread.
 Heap and buffer storage, including shared buffers, draw on a cooperative memory
@@ -36,7 +33,7 @@ execution tests.
 | Run code and inspect values | `evaluate`, `evaluate_unit`, `evaluate_js`, `call`, `number`, `string`, `print`, and `release` |
 | Move compiler data across the engine boundary | `import_form`, `import_data`, `export_form`, and `export_data` |
 | Install capabilities | `install_callback`, `install_gc_callback`, `input_provider`, and `install_form_services` |
-| Reenter the compiler from an engine callback | QuickJS's `active` and `install_unit_service` in the QuickJS implementation of `CompilerEvaluator` |
+| Reenter the compiler from an engine callback | The internal `CompilerEvaluator` service uses the active V8 scope |
 | Observe heap ownership | `collect_garbage`, `value_roots`, and `memory_usage_bytes` |
 | Configure and control execution | `EvaluatorOptions::{memory_limit, stack_limit, poll_budget, timeout}` and `control` (polling, cancellation and deadline checks) |
 
@@ -47,38 +44,20 @@ tests match `budget` or `poll budget exhausted`, `deadline`, `cancelled`, and
 paths to unsupported values and macro call/definition provenance. Those
 diagnostics come from the shared bridge and compiler.
 
-### Engine-dependent behavior
+### V8 behavior
 
 - `new`, `interactive`, and `MacroHost::new_evaluator` require at least 16 MiB
-  for V8 startup and 1 MiB for QuickJS startup. V8 enforces a heap and backing
-  storage budget and bounds its stack by the host thread's available stack.
-  QuickJS charges its instrumented allocator and counts JavaScript stack
-  from its own runtime boundary. `control` exposes the same cancellation,
-  deadline, and poll-budget contract. The V8 scheduler requests interrupts
-  based on elapsed time, while QuickJS polls during interpreter work, so equal
-  budgets can stop different amounts of work. V8's `interactive` constructor
-  also installs the `queueMicrotask` shim and rejection hooks.
-- `evaluate`, `evaluate_unit`, `evaluate_js`, and `call` observe the selected
-  engine's intrinsics and exception messages. V8 has no `lightCljsWeakMapStores`
-  flag and restricts buffer and WebAssembly capabilities as described above.
-  A V8 stack overflow is typically `RangeError: Maximum call stack size exceeded`.
-  Both engines preserve terminal resource and cancellation errors.
-- `number`, `string`, `print`, `release`, `import_form`, `import_data`,
-  `export_form`, and `export_data` share value and conversion contracts. When
-  these operations fail, the diagnostic can include the engine's exception
-  formatting. V8 delays reclamation of released JS values and bridge payloads
-  until collection. QuickJS can reclaim values immediately by reference counting.
-- `collect_garbage` and `install_gc_callback` request full V8 collection through
-  its low-memory notification. `memory_usage_bytes` reports V8 live heap and
-  charged backing storage, where QuickJS reports live allocator bytes.
-  Measurements depend on when the engine last collected. `value_roots` counts
-  outstanding IDs in either engine.
-- `install_callback` uses the same string-to-string signature on both engines.
-  V8 delivers callback failures as owned diagnostics and terminates the
-  isolate's execution. `install_form_services` and `input_provider` use the
-  common form bridge and input protocol, with backend-specific exception
-  formatting. The QuickJS-specific `active` and `install_unit_service` accept
-  a QuickJS context. V8 compiler reentry uses `CompilerEvaluator` internally.
+  for startup. V8 enforces a heap and backing storage budget and bounds its
+  stack by the host thread's available stack. `interactive` installs the
+  `queueMicrotask` shim and rejection hooks.
+- Engine operations preserve terminal resource and cancellation errors. A V8
+  stack overflow is typically `RangeError: Maximum call stack size exceeded`.
+- `collect_garbage` and `install_gc_callback` request collection through V8's
+  low-memory notification. `memory_usage_bytes` reports live heap and charged
+  backing storage. `value_roots` counts outstanding value IDs. Released
+  values and bridge payloads can remain allocated until collection.
+- `install_callback` accepts a string and returns a string. Callback failures
+  return owned diagnostics and terminate the isolate's execution.
 
 `emitter::emit_js` retains self-contained application output. `emit_js_unit`
 returns a function accepting a canonical runtime instance; `Evaluator::evaluate`
@@ -96,14 +75,10 @@ Malformed quoted calls produce located compiler errors. Lexical/source shadowing
 is respected. Dynamic computed forms remain an explicit hosted service; these
 source macros do not provide bare-runtime `eval` or loading capabilities.
 
-`MacroHost::evaluator_options` contains reusable configuration;
-`MacroHost::new_evaluator()` creates a fresh heap. CLI scripts, the REPL and public
-`EvalSession` embedding use compiler-emitted JavaScript; there is no other
-evaluator to fall back to. `QuickJsEvaluator::active(ctx)` borrows the
-already-entered context for nested compilation, without reacquiring its runtime
-lock. `install_unit_service` installs a reentrant `Fn` receiving that context and
-an owned request ID. It catches panics, preserves owned failure diagnostics, and
-shares sticky cancellation/resource limits with the outer operation.
+`MacroHost::evaluator_options` contains reusable configuration.
+`MacroHost::new_evaluator()` creates a fresh V8 isolate. Compiler reentry
+uses an active engine scope and shares cancellation and resource limits
+with the outer operation.
 
 ## Compile-time phase contract
 
@@ -198,7 +173,7 @@ Only opaque `ValueId` values leave the engine boundary. IDs include a unique
 session generation, fail explicitly in another session, and become invalid when
 released or when their owner drops. The private JavaScript registry holds
 value roots. The evaluator drops its engine handles before disposing the
-context and isolate or runtime. Cycles and callbacks stay within that ownership.
+context and isolate. Cycles and callbacks stay within that ownership.
 
 `evaluate_js` is an explicit JavaScript embedding capability, not an untrusted
 code sandbox. ECMAScript Math, strings, RegExp, JSON and Object work. DOM, process,
@@ -214,7 +189,7 @@ reports the ones still unhandled after the jobs.
 ## Compiler form bridge
 
 `form_bridge::FORM_BRIDGE_VERSION` and `rt.compilerForms.version` identify the
-in-process descriptor ABI (currently 4). `Evaluator::import_form`/`import_data`
+in-process descriptor ABI (currently 5). `Evaluator::import_form`/`import_data`
 and `export_form`/`export_data` transport actual engine arrays with primitive
 payloads. Strings and name components cross as native UTF-16 engine strings,
 preserving lone surrogates. Number payloads
@@ -350,30 +325,17 @@ Focused bridge execution checks are in
 
 ## Resource controls
 
-Limits are configured before context entry. Defaults are a 64 MiB memory budget,
-1 MiB engine stack limit, one million cooperative polls, and a ten-second
-session deadline. These are session-wide compilation limits, not reset per nested
-call. Engine interrupts and Rust `ExecutionControl::poll` share fuel/deadline/
-cancellation. Long Rust callbacks must poll cooperatively. A clone of the control
-can cancel from another thread without accessing the engine.
+Limits are configured before context entry. Defaults are a 64 MiB memory
+budget, 1 MiB engine stack limit, one million cooperative polls and a ten-second
+deadline. Nested operations share execution control. The interactive evaluator
+starts a new deadline and poll budget for each operation while the session is
+usable. Rust callbacks poll cooperatively. A clone of the control can cancel
+from another thread.
 
-QuickJS's bundled regex matching VM polls this handler during backtracking;
-bounded pathological matching tests verify budget, deadline and cross-thread
-cancellation. This is cooperative interruption, not a hard latency guarantee
-for every builtin: pattern compilation and string copying can run until their
-next poll or return. The host checks controls again after return. Emitted Node
-applications use their embedding's resource controls.
-
-QuickJS allocation accounting wraps the upstream `RustAllocator` with a small documented
-unsafe boundary. It rejects over-budget allocation before allocation and marks
-the terminal state even if JavaScript catches the resulting exception. This is
-needed because the engine's ordinary memory limit alone is catchable. Alignment
-and deallocation delegate to the same upstream allocator; accounting includes
-rounded usable payload sizes (not allocator headers or Rust compiler allocations).
-Callback panics are contained before crossing C and poison the session. Controls
-are checked again on return, so catches cannot restore a cancelled/exhausted
-operation. Errors are owned strings, and a new session on the same host starts
-clean. Compiler callers must poll the same control during their Rust work.
+V8's interrupt scheduler charges the poll budget for JavaScript work. Promise
+reaction jobs also charge it. The host checks execution control on return.
+Cancellation, deadline, poll-budget and memory errors remain terminal even
+when JavaScript catches an exception.
 
 ## Verification and measurements
 
@@ -396,10 +358,6 @@ flaky timing gate. `node tests/support/js_runtime.test.js` exercises the same
 canonical runtime source and bootstrap hooks directly in Node. A past measurement
 run is recorded in [benchmarks/results](../benchmarks/results/evaluator-2026-10-10.md).
 
-Upstream implementation provenance: [rquickjs 0.14.0 source](https://docs.rs/crate/rquickjs/0.14.0/source/)
-and [rquickjs-core 0.14.0 source](https://docs.rs/crate/rquickjs-core/0.14.0/source/),
-especially synchronous runtime/context, allocator and function callback tracing.
-
 ## Deferred compiler units
 
 `compilation_session` catalogs ordinary top-level initializer forms with stable
@@ -417,7 +375,7 @@ helper dependency path; ordinary recursive functions use already-installed code.
 A scope guard unwinds the analysis stack even on failure. Frame ownership restores
 namespace and macro environments automatically. Active engine handles reuse the
 same context for calls, conversion and installation; they never configure the
-runtime, collect garbage or call `Context::with`.
+runtime or collect garbage.
 
 Successful semantic IR is reused by compile-time emission and final application
 assembly. `program_fragment` remaps arena IDs while preserving binding identity

@@ -4,8 +4,7 @@ light-cljs is a ClojureScript-to-JavaScript compiler written in Rust. It reads
 `.cljs`/`.cljc` source, resolves and analyzes it in Rust, and emits a single
 self-contained JavaScript expression that carries its own persistent-collection
 runtime. The same compiler powers a script runner, a REPL and an embedding API
-that execute the emitted JavaScript in an embedded QuickJS engine (via
-[`rquickjs`](https://crates.io/crates/rquickjs) 0.14.0), so no Node, JVM or
+that execute the emitted JavaScript in an embedded V8 isolate. No Node, JVM or
 installed `cljs.core` is needed to run code.
 
 The project site, <https://isaksky.github.io/light-cljs/>, has an overview and
@@ -96,8 +95,8 @@ source ─▶ Tokenizer ─▶ Parser ─▶ compiler reader ─▶ Analyzer ─
   parameter and return types, purity and its runtime units from
   `src/core_operations.tsv` (`src/core_operations.rs`).
 - **Macros** run as JavaScript emitted by this same compiler, inside a separate
-  heap: V8 for native clean compilations, QuickJS for interactive sessions and
-  WebAssembly (`macro_host.rs`, `compiler_evaluator.rs`). Core macros
+  V8 isolate (`macro_host.rs`, `compiler_evaluator.rs`). The browser playground
+  executes macros through its browser host. Core macros
   are bootstrapped from `src/compiler_core_macros.cljs` and
   `src/compiler_sequence_macros.cljs`; the most used ones (`cond`, `when`,
   `and`, `->`, `case`, `for`, `doseq` and others) expand in Rust to the same
@@ -112,8 +111,7 @@ source ─▶ Tokenizer ─▶ Parser ─▶ compiler reader ─▶ Analyzer ─
   `clojure.walk`, `clojure.edn`, `cljs.reader` and `light.lazy` live in
   `src/compiler_libraries/`.
 - **Evaluation** (`src/eval_session.rs`, `eval_compiler.rs`, `eval_cli.rs`)
-  compiles forms incrementally and executes them in a persistent V8 isolate, or
-  a QuickJS heap with `--engine quickjs` and in builds without V8
+  compiles forms incrementally and executes them in a persistent V8 isolate
   (`src/v8_session.rs`, `src/evaluator.rs`).
 
 ## Building
@@ -131,22 +129,16 @@ running emitted JavaScript outside the embedded evaluator.
 cargo build --release
 ```
 
-`cargo build --release --no-default-features --features quickjs` selects the QuickJS-only compiler
-and needs Rust and a C compiler. WebAssembly builds embed no JavaScript engine:
-their embedder runs the macros (`host_evaluator::ScriptHost`, as the browser
-playground does). The native
-V8 backend runs the macros of clean compilations and the forms of `--eval` and
-`--repl` (whose macros stay in QuickJS); generated applications carry the same
-JavaScript runtime.
-
-Plain `--no-default-features` embeds no engine. The default remains V8 with
-QuickJS for interactive macro sessions.
+Builds with `--no-default-features` and WebAssembly builds embed no engine.
+A `host_evaluator::ScriptHost` can execute macros for clean compilations, as
+the browser playground does. Interactive sessions and compiler data readers
+require a V8 build.
 
 ## Command-line usage
 
 Run `cargo run -- --help` for the full option list.
 
-### Evaluate scripts and use the REPL (embedded V8 or QuickJS)
+### Evaluate scripts and use the REPL (embedded V8)
 
 ```sh
 cargo run --quiet -- --eval --text '(/ 1 2)'
@@ -167,8 +159,7 @@ stderr). Namespaces are loaded only from explicit `--source-root DIR` options
 (`.cljs` is preferred over `.cljc`); `.clj` files are rejected. Resource limits:
 `--poll-budget`, `--memory-limit`, `--stack-limit`, `--timeout-ms`,
 `--source-limit`, `--output-limit`, plus `--print-length`/`--print-level` for the
-printed result. `--engine quickjs` runs the forms in QuickJS instead of V8,
-the default where the build has V8.
+printed result. Existing commands can specify `--engine v8` explicitly.
 `--warnings` analyzes as `--compile --warnings` does, printing
 undeclared Vars and arity conflicts to stderr instead of rejecting the form, so
 `(require 'app.view :reload)` of a file that uses a Var another file defines
@@ -438,8 +429,7 @@ while programs whose namespaces have hundreds of definitions reach about
 0.45x. Sources are read and parsed on that pool, the source
 order coming from the require edges and not from which file finished first;
 and each namespace's deferred units (its definitions' bodies) are analyzed on
-it, by workers in V8 isolates of their own (in a QuickJS-only build, QuickJS
-runtimes of their own) as far as the macro memory limit
+it, by workers in V8 isolates of their own as far as the macro memory limit
 allows and by workers without an engine, which take only the units that
 expand no JavaScript macro, while the calling thread drains them in order. Every other phase still runs on the calling thread. Output
 does not depend on N, except where a macro's compile-time effect in one
@@ -539,8 +529,8 @@ table of up to 20 rows each, such as `app.main miss source: source changed`
 or `app.view bypass blocked app.macros > app.view`. Embedders call
 `light_cljs::compiler::analyze_namespace_entry_cached`, or
 `light_cljs::dev_session::DevSession::compile_entry` for a session. The
-cache key names the macro engine, so `--watch`, whose session compiles with
-QuickJS, and a V8 `--compile` keep separate artifacts in one directory.
+cache key distinguishes interactive and clean compilation, so `--watch` and
+`--compile` keep separate artifacts in one directory.
 
 `--config KEY=EDN` (repeatable) with `--compile --entry`, `--reloadable` or
 `--watch` gives macros a build configuration value, which they read with
@@ -893,7 +883,7 @@ can declare one test per row, row range or share of the rows with `row_tests!`
 ([tests/support/row_tests.rs](tests/support/row_tests.rs), loaded by the `compiler`
 and `evaluation` binaries), so the parts run in parallel. A complete source that
 must give the same result as an application and as a macro computation, with
-fresh and reused macro hosts, in QuickJS and Node, goes in its feature suite's
+fresh and reused macro hosts, in V8 and Node, goes in its feature suite's
 `phase_oracles` module as a case for
 [tests/support/phase_oracle.rs](tests/support/phase_oracle.rs); `cargo nextest run
 phase_oracles::` runs them all. [.config/nextest.toml](.config/nextest.toml) runs 16
@@ -901,13 +891,9 @@ tests at a time, starts the slowest tests first and sets the slow-test timeout;
 the `ci` profile (`cargo nextest run --profile ci`) uses every CPU and reports
 every failure.
 
-Macros run in V8 in the default build and in QuickJS with `--no-default-features --features quickjs`,
-so run the suite and strict Clippy both ways after changing the macro host,
-evaluators or compilation session: add `--no-default-features --features quickjs` to the commands
-above. Tests whose expectations differ by engine branch on
-`cfg!(feature = "v8-macros")`. CI ([.github/workflows/conformance.yml](.github/workflows/conformance.yml))
-runs Clippy and the suite once per backend (`fast-tests` with V8, `quickjs-tests`
-without); the V8 jobs download the prebuilt engine like a local build.
+CI runs the V8 suite and strict Clippy in
+[the conformance workflow](.github/workflows/conformance.yml). The V8 jobs
+download the prebuilt engine as a local build does.
 
 `size_ratchet` (`tests/compiler/size_ratchet.rs`) pins the emitted size of a few
 small programs (`tests/support/ratchet_fixtures.rs`) at each `--optimize` level
@@ -967,7 +953,7 @@ unused code for optimizer checks. See [the generator guide](benchmarks/generated
   forms and runtime semantics, macros, namespaces, interop, differences.
 - [docs/evaluation.md](docs/evaluation.md) — `EvalSession` embedding API and the
   `--eval`/`--repl` commands.
-- [docs/evaluator.md](docs/evaluator.md) — the QuickJS evaluator, compile-time
+- [docs/evaluator.md](docs/evaluator.md) — the V8 evaluator, compile-time
   phase contract, form bridge, resource controls.
 - [docs/compiler-cache.md](docs/compiler-cache.md) — proposed persistent binary
   cache, explicit dependencies, opt-outs, and development-session reuse.
@@ -1002,5 +988,5 @@ upstream copyright notices, and are listed in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md); the EPL text is in
 [epl-v10.html](epl-v10.html). Compiled programs that use `clojure.string` or
 `clojure.set` embed JavaScript compiled from those EPL-1.0 files. The embedded
-QuickJS-ng engine and rusty_v8 bindings are MIT-licensed; V8 carries its BSD
+rusty_v8 bindings are MIT-licensed. V8 carries its BSD
 license and upstream dependency notices listed in the third-party notices.

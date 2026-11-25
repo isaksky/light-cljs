@@ -10,12 +10,12 @@
 //!
 //! - **compiler**: [`compiler_identity`], the hash `build.rs` computes of the
 //!   crate's sources (the embedded runtime, bootstrap, core macros and
-//!   bundled first-party libraries are among them), its vendored engines,
+//!   bundled first-party libraries are among them), the vendored V8 headers,
 //!   `Cargo.lock`, features, profile, target and `rustc` version, with the
 //!   artifact schema version, the core operation table and the macro engine
-//!   that runs this compilation's macros (V8 with its version, QuickJS or
-//!   a script host). Interactive compilations have a separate identity
-//!   because they can observe retained session state.
+//!   available to the compilation (V8 with its version, a script host with
+//!   its engine identifier, or no engine). Interactive compilations have a
+//!   separate identity because they can observe retained session state.
 //! - **options**: the analysis and macro options of [`KeyEnvironment::new`].
 //! - **config**: the fingerprint of the `--config` map
 //!   ([`crate::BuildConfiguration::fingerprint`]), the host's
@@ -264,7 +264,7 @@ pub fn compiler_identity(host: &MacroHost) -> Digest {
     #[cfg(light_v8)]
     fingerprint.text("v8").text(v8::V8::get_version());
     #[cfg(not(light_v8))]
-    fingerprint.text("quickjs");
+    fingerprint.text("no-embedded-engine");
     fingerprint.finish()
 }
 
@@ -1290,6 +1290,7 @@ pub fn inputs_unchanged<'a>(
 mod tests {
     use super::*;
 
+    #[cfg(light_v8)]
     #[test]
     fn clean_compilations_keep_the_pre_interactive_cache_key() {
         // The clean compiler identity from f3ce9409, with the same build
@@ -1300,10 +1301,7 @@ mod tests {
             .digest(&build_identity())
             .number(u64::from(crate::artifact_codec::SCHEMA_VERSION))
             .digest(&crate::artifact_codec::core_table());
-        #[cfg(light_v8)]
         legacy.text("v8").text(v8::V8::get_version());
-        #[cfg(not(light_v8))]
-        legacy.text("quickjs");
 
         let clean = KeyEnvironment::new(&MacroHost::new(), AnalysisOptions::default());
         assert_eq!(clean.compiler, legacy.finish());

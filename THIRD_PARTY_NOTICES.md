@@ -47,22 +47,6 @@ committed beyond the adapted files listed above.
   Rich Hickey, EPL-1.0), is in
   [tests/reference/sci/NOTICE.md](tests/reference/sci/NOTICE.md).
 
-## QuickJS-ng (via rquickjs-sys)
-
-- Upstream: <https://github.com/quickjs-ng/quickjs>, version 0.16.2, as bundled
-  by the `rquickjs-sys` 0.14.0 crate and vendored with one engine patch in
-  `vendor/rquickjs-sys/` (see `vendor/rquickjs-sys/PATCHES.md`).
-- Copyright (c) 2017-2026 Fabrice Bellard, (c) 2017-2024 Charlie Gordon,
-  (c) 2023-2026 Ben Noordhuis, (c) 2023-2026 Saúl Ibarra Corretgé.
-- License: MIT, reproduced in `vendor/rquickjs-sys/quickjs/LICENSE`.
-
-## rquickjs and rquickjs-sys
-
-- Upstream: <https://github.com/DelSkayn/rquickjs>, version 0.14.0. The
-  `rquickjs-sys` crate is vendored in `vendor/rquickjs-sys/`; `rquickjs` is a
-  normal Cargo dependency.
-- License: MIT.
-
 ## mimalloc
 
 - Upstream: <https://github.com/purpleprotocol/mimalloc_rust>, version 0.1.52,

@@ -10,8 +10,8 @@ compiles.
 - **V8 build**: macros run on V8, Google's engine, which compiles hot code to
   machine code while it runs. This is the build that ships today (formerly
   "default build", "default backend").
-- **QuickJS-only build**: uses QuickJS for compiler macros as well as
-  interactive sessions. Build with `--no-default-features --features quickjs`.
+- **No-engine build**: embeds no JavaScript engine. Build with
+  `--no-default-features`. An embedder can provide a `ScriptHost` for macros.
 
 ## Measurements
 
