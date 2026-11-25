@@ -4176,15 +4176,9 @@ mod compiler_default_reader_tests {
 
     #[cfg(light_v8)]
     #[test]
-    fn reader_memory_limit_errors_name_the_tag_in_each_compilation_mode() {
-        for (interactive, jobs, limit, size) in [
-            (false, 1, 192, 65),
-            (false, 3, 192, 65),
-            (true, 1, 192, 65),
-            (false, 1, 24, 25),
-        ] {
+    fn reader_memory_limit_errors_name_the_tag_in_serial_and_parallel_builds() {
+        for (jobs, limit, size) in [(1, 192, 65), (3, 192, 65), (1, 24, 25)] {
             let mut host = MacroHost::new();
-            host.tables.interactive = interactive;
             host.evaluator_options.memory_limit = limit << 20;
             host.register_compiler_data_reader(Name::new(None, "size"), SIZE_READER)
                 .unwrap();
@@ -4456,10 +4450,19 @@ mod compiler_default_reader_tests {
         let reader_registry = reader_heap.reader_namespaces().unwrap();
         assert!(!std::rc::Rc::ptr_eq(&macro_registry, &reader_registry));
 
-        let buffer = reader_heap
-            .evaluate_js("new ArrayBuffer(40 * 1024 * 1024)")
+        // Live double arrays grow the V8 heap itself beyond its 16 MiB
+        // startup threshold independently of the backing-store allocator.
+        let value = reader_heap
+            .evaluate_js(
+                "(() => {
+                    const arrays = [];
+                    for (let i = 0; i < 20; i++) arrays.push(new Array(262144).fill(1.5));
+                    return arrays[0][0] + arrays[19][262143];
+                })()",
+            )
             .unwrap();
-        reader_heap.release(buffer).unwrap();
+        assert_eq!(reader_heap.number(value).unwrap(), 3.0);
+        reader_heap.release(value).unwrap();
         let error = reader_heap
             .evaluate_js("new ArrayBuffer(65 * 1024 * 1024)")
             .unwrap_err();

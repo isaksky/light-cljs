@@ -15,12 +15,9 @@ is smaller. Each worker isolate needs another 64 MiB, so with the default
 limit of 64 MiB only the coordinator can run macros. Worker shares stay
 reserved during cache lookup. A fully cached build releases those unused shares.
 
-Custom compiler data readers run in separate V8 isolates. When the build plans
-worker isolates, their reader startup allowances bring the combined macro and
-reader budget to at most 125% of the configured limit. When the coordinator runs
-all JavaScript, its reader gets a separate allowance equal to the configured
-limit, for a total of twice that limit. Without reader calls, the configured
-limit covers all JavaScript memory.
+The coordinator and workers start separate V8 data-reader isolates on first
+use. Each starts with 16 MiB and can grow to the smaller of 64 MiB and
+`--macro-memory-limit` without drawing from the macro budget.
 Process peak memory also includes engine overhead and the compiler's own data.
 [Command-line usage](../README.md#compile-to-javascript)
 

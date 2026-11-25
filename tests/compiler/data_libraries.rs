@@ -406,6 +406,27 @@ fn compiler_data_readers_run_in_v8() {
 
 #[cfg(light_v8)]
 #[test]
+fn interactive_data_readers_have_an_independent_64_mib_cap() {
+    use light_cljs::{EvalOptions, EvalSession, compiler_data::Name};
+
+    let mut options = EvalOptions::default();
+    options.engine.memory_limit = 192 << 20;
+    options.data_readers.push((
+        Name::new(None, "size"),
+        "(fn [mib] (.-byteLength (js/ArrayBuffer. (* mib 1024 1024))))".into(),
+    ));
+    let mut session = EvalSession::new(options).unwrap();
+    let result = session.eval_string("#size 40").unwrap();
+    assert_eq!(session.print(result.value).unwrap(), "41943040");
+    session.release(result.value).unwrap();
+
+    let error = session.eval_string("#size 65").unwrap_err();
+    assert!(error.message.contains("while reading #size"), "{error}");
+    assert!(error.message.contains("memory limit exhausted"), "{error}");
+}
+
+#[cfg(light_v8)]
+#[test]
 fn compiler_owned_data_readers_keep_source_order_origins_and_typed_results() {
     use light_cljs::{
         MacroHost, compile_with_macros,
