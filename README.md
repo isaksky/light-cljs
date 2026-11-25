@@ -45,27 +45,32 @@ build varied widely under load, so that row gives its range. Peak memory for
 the clean builds was 0.35 GB against 2.36 GB at 50k lines and 0.91 GB against
 3.02 GB at 200k, with shadow-cljs on its default heap.
 
-Speed of the compiled output (ten alternated runs per row, measured as each
-change landed between `956e908e` and `713fe449`):
+Speed of the compiled output (`d7281fe8`, ten alternated runs per row in one
+session; "parity" marks rows whose ranges overlap shadow-cljs's):
 
 | Program | Measure | light/shadow |
 | --- | --- | --- |
-| Generated 200k and 800k lines, Node | steady state | 0.93 to 0.97 |
-| Generated 200k lines, Node | first output | 1.04 to 1.05 |
-| Generated re-frame-shaped 200k lines, Node | steady state | 1.15 |
+| Generated 200k / 800k lines, Node | steady state | 0.90 / 0.92 (parity) |
+| Generated 200k lines, Node | first output | 1.01 (parity) |
+| Generated re-frame-shaped 200k lines, Node | steady state | 1.10 |
 | re-frame TodoMVC, Chromium | add 1,000 todos | 0.81 |
-| re-frame TodoMVC, Chromium | toggle all, edit, clear completed | 0.99 to 1.01 |
-| re-frame TodoMVC, Chromium | page load to interactive | 1.22 |
-| re-frame TodoMVC, dev build, Chromium | add 1,000 todos / toggle all | 1.04 / 1.00 |
-| Generated 200k lines, dev build, Node | steady state | 1.06 |
+| re-frame TodoMVC, Chromium | toggle all, edit, clear completed | 1.01 to 1.02 (parity) |
+| re-frame TodoMVC, Chromium | page load to interactive | 1.23 |
+| re-frame TodoMVC, dev build, Chromium | add 1,000 todos / toggle all | 1.02 (parity) / 1.23 |
+| Generated 200k lines, dev build, Node | steady state | 1.11 |
+| Generated 200k lines, dev build, Node | first output | 0.87 |
 
-Output size after gzip: 0.96 of shadow-cljs's on the generated 50k-line
-program and 0.89 on the 200k-line one (`4cb35725`). Small apps come out larger:
-re-frame's simple example was 19% larger and TodoMVC 11% larger, React included
-(`4d8d02d5`), and the output-speed work since then has added about 2% more.
+In the 80-operation micro-benchmark, 76 operations are at or below
+shadow-cljs's time and the slowest is at 1.10.
+
+Output size after gzip (`d7281fe8`): 0.96, 0.89 and 0.86 of shadow-cljs's on
+the generated 50k-, 200k- and 800k-line programs. Small apps come out larger,
+React included: re-frame's simple example is 22% larger and TodoMVC 13%
+larger; flow is 3% smaller.
 
 **Where light-cljs still loses:** steady state on the re-frame-shaped program,
-TodoMVC's page load, and the size of small apps.
+TodoMVC's page load, toggle-all in TodoMVC's dev build, and the size of small
+apps.
 
 ## Architecture
 
