@@ -7816,3 +7816,177 @@ fn next_and_rest_own_field_fast_path_edge_cases() {
         "[:scr :scr :scn :more :more :dropped :dropped :sccr :sccr :sccn :slr :sln () nil :scr :scn]",
     );
 }
+
+/// Sol finding #2 (light-cljs-1122): `LazySeq` `first`/`rest`/`next` over an
+/// `IndexedSeq` view must still execute the `seq` step's backing `length` read
+/// before dispatching the requested operation.
+#[test]
+fn lazy_seq_view_operations_preserve_length_reads() {
+    every_level(
+        r#"(let [mk-throw (fn [on-read]
+                            (let [n (atom 0)]
+                              (js/Proxy. #js [10 20]
+                                #js {:get (fn [t k r]
+                                            (when (= k "length")
+                                              (when (= on-read (swap! n inc))
+                                                (throw (js/Error. (str "len-" @n)))))
+                                            (js/Reflect.get t k r))})))
+                 v-first (specify! (IndexedSeq. (mk-throw 1) 0 nil) ISeq (-first [_] :override))
+                 v-first2 (IndexedSeq. (mk-throw 2) 0 nil)
+                 v-rest2 (IndexedSeq. (mk-throw 2) 0 nil)
+                 v-next2 (IndexedSeq. (mk-throw 2) 0 nil)
+                 err (fn [f] (try (f) (catch js/Error e (.-message e))))]
+             (pr-str [(err #(first (lazy-seq v-first)))
+                      (err #(first (lazy-seq v-first2)))
+                      (err #(rest (lazy-seq v-rest2)))
+                      (err #(next (lazy-seq v-next2)))])) "#,
+        "[\"len-1\" \"len-2\" \"len-2\" \"len-2\"]",
+    );
+}
+
+/// Sol finding #6 (light-cljs-1122): `LazySeq` `first`/`rest`/`next` on a host
+/// realized result must preserve `LazySeq.seqSlot`'s `-seq` slot probe.
+#[test]
+fn lazy_seq_host_fallback_preserves_slot_reads() {
+    every_level(
+        r#"(let [seq-key (js* "'cljs$core$ISeqable$_seq$arity$1$LKEY'")
+                 mk (fn [should-throw?]
+                      (let [hits (atom 0)]
+                        [(js/Proxy. #js [1 2]
+                           #js {:get (fn [t k r]
+                                       (when (= k seq-key)
+                                         (swap! hits inc)
+                                         (when should-throw?
+                                           (throw (js/Error. "seq-probe"))))
+                                       (js/Reflect.get t k r))})
+                         hits]))
+                 [p1 h1] (mk false)
+                 [p2 h2] (mk false)
+                 [p3 h3] (mk false)
+                 [t1 _] (mk true)
+                 [t2 _] (mk true)
+                 [t3 _] (mk true)
+                 err (fn [f] (try (f) (catch js/Error e (.-message e))))]
+             (pr-str [(first (lazy-seq p1)) (pos? @h1)
+                      (vec (rest (lazy-seq p2))) (pos? @h2)
+                      (vec (next (lazy-seq p3))) (pos? @h3)
+                      (err #(first (lazy-seq t1)))
+                      (err #(rest (lazy-seq t2)))
+                      (err #(next (lazy-seq t3)))])) "#,
+        "[1 true [2] true [2] true \"seq-probe\" \"seq-probe\" \"seq-probe\"]",
+    );
+}
+
+/// Sol finding #4 (light-cljs-1122): `ChunkedCons.next` reads `-seq` once on
+/// the newly created `ChunkedCons` cell rather than on `ChunkedCons.prototype`.
+#[test]
+fn chunked_cons_next_reads_seq_slot_on_the_new_cell() {
+    every_level(
+        r#"(let [sample (chunk-cons (array-chunk #js [1 2]) nil)
+                 proto (js/Object.getPrototypeOf sample)
+                 seq-key (js* "'cljs$core$ISeqable$_seq$arity$1$LKEY'")
+                 orig (aget proto seq-key)
+                 reads (atom 0)
+                 receivers (atom [])]
+             (js/Object.defineProperty proto seq-key
+               #js {:configurable true
+                    :get (fn []
+                           (this-as self
+                             (swap! reads inc)
+                             (swap! receivers conj (not (identical? self proto)))
+                             (if (identical? self proto)
+                               orig
+                               (fn [_] '(:override)))))})
+             (let [res (next sample)]
+               (js/Object.defineProperty proto seq-key #js {:configurable true :writable true :value orig})
+               (pr-str [(first res) @reads @receivers]))) "#,
+        "[:override 1 [true]]",
+    );
+}
+
+/// Sol finding #5 (light-cljs-1122): `ChunkedCons.rest`/`next` must not double-read
+/// a missing `-drop-first` slot and must preserve `dropFirstChunk`'s `count` check
+/// when `protocolHooks.programMethod` is active.
+#[test]
+fn chunked_cons_drop_first_preserves_getter_dispatch() {
+    every_level(
+        r#"(defprotocol UnrelatedP (-up [x]))
+           (let [_ (specify! (js-obj) UnrelatedP (-up [_] 1))
+                 ac0 (array-chunk #js [1 2])
+                 proto (js/Object.getPrototypeOf ac0)
+                 drop-key (js* "'cljs$core$IChunk$_drop_first$arity$1$LKEY'")
+                 orig (aget proto drop-key)
+                 mk-undef (fn []
+                            (let [ac (array-chunk #js [1 2])
+                                  n (atom 0)]
+                              (js/Object.defineProperty ac drop-key
+                                #js {:configurable true
+                                     :get (fn []
+                                            (if (< (swap! n inc) 3)
+                                              js/undefined
+                                              (fn [_] (array-chunk #js [:third]))))})
+                              [ac n]))
+                 [u1 n1] (mk-undef)
+                 [u2 n2] (mk-undef)
+                 mk-zero (fn []
+                           (let [ac (array-chunk #js [1 2])]
+                             (js/Object.defineProperty ac drop-key
+                               #js {:configurable true
+                                    :get (fn []
+                                           (specify! ac ICounted (-count [_] 0))
+                                           orig)})
+                             ac))
+                 err (fn [f] (try (f) (catch js/Error e (.-message e))))]
+             (pr-str [(first (rest (chunk-cons u1 nil))) @n1
+                      (first (next (chunk-cons u2 nil))) @n2
+                      (err #(rest (chunk-cons (mk-zero) nil)))
+                      (err #(next (chunk-cons (mk-zero) nil)))])) "#,
+        "[2 2 2 2 \"-drop-first of empty chunk\" \"-drop-first of empty chunk\"]",
+    );
+}
+
+/// Sol finding #7 (light-cljs-1122): `ChunkedCons.first` preserves `nth` index
+/// semantics (`off + 0`) for public `ArrayChunk` instances with non-numeric
+/// offsets when `protocolHooks.programMethod` is active.
+#[test]
+fn chunked_cons_first_preserves_public_chunk_offsets() {
+    every_level(
+        r#"(defprotocol UnrelatedP (-up [x]))
+           (let [_ (specify! (js-obj) UnrelatedP (-up [_] 1))
+                 arr #js [0 1 2 3 4 5 6 7 8 9 10]
+                 cc-str (chunk-cons (ArrayChunk. arr "1" 2) nil)
+                 cc-num (chunk-cons (ArrayChunk. arr 1 2) nil)]
+             (pr-str [(first cc-str) (first cc-num)])) "#,
+        "[10 1]",
+    );
+}
+
+/// Sol finding #3 (light-cljs-1122): `first`/`rest` fallback on a host Proxy
+/// array with an unrelated protocol implementation (keeping `programMethod`
+/// active without setting `hostExt.seq`) performs the same number of host reads
+/// as without the extra pre-probe.
+#[test]
+fn first_and_rest_fallback_host_reads_with_program_method() {
+    let source = r#"(defprotocol UnrelatedP (-up [x]))
+                    (let [_ (specify! (js-obj) UnrelatedP (-up [_] 1))
+                          reads (atom 0)
+                          mk (fn [] (js/Proxy. #js [1 2] #js {:get (fn [t k r] (swap! reads inc) (js/Reflect.get t k r))}))
+                          c (fn [f] (reset! reads 0) (let [v (pr-str (f (mk)))] [v @reads]))]
+                      (pr-str [(c first) (c rest)]))"#;
+    let program = program(source);
+    let printed: Vec<String> = OptimizationLevel::ALL
+        .into_iter()
+        .map(|level| {
+            let js = prepare_application(&program, ApplicationOptions::new(level)).emit_js();
+            execute(&format!("console.log({js});"))
+        })
+        .collect();
+    assert_eq!(
+        printed,
+        [
+            "[[\"1\" 12] [\"(2)\" 15]]\n",
+            "[[\"1\" 12] [\"(2)\" 15]]\n",
+            "[[\"1\" 6] [\"(2)\" 13]]\n",
+        ]
+    );
+}

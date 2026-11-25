@@ -669,13 +669,18 @@ fn same_build_copies_honor_seq_overrides() {
 /// light-cljs-1122 (Change 1): two copies of the same build share keyed kinds
 /// and protocol slots; `first` and `LazySeq`/`ChunkedCons` fast paths must check
 /// slot identity against this runtime's built-in slots so `specify!` overrides
-/// in copy 1 are honored when read in copy 2.
+/// in copy 1 are honored when read in copy 2 (including when copy 2 constructs
+/// local outer `LazySeq`/`ChunkedCons` wrappers around copy 1's operands).
 #[test]
 fn same_build_copies_honor_first_overrides() {
     let source = "(if (exists? js/sharedFirstVals)
                     (let [f first
-                          [c cc-ac cc is cs ls-f ls-s ls-c] js/sharedFirstVals]
-                      (pr-str [(f c) (f cc-ac) (f cc) (f is) (f cs) (f ls-f) (f ls-s) (f ls-c)]))
+                          [c ac cc-ac cc is cs ls-f ls-s ls-c] js/sharedFirstVals
+                          local-cc (chunk-cons ac nil)
+                          local-ls-c (lazy-seq c)
+                          local-ls-is (lazy-seq is)]
+                      (pr-str [(f c) (f cc-ac) (f cc) (f is) (f cs) (f ls-f) (f ls-s) (f ls-c)
+                               (f local-cc) (f local-ls-c) (f local-ls-is)]))
                     (let [c (specify! (cons 1 '(2)) ISeq (-first [_] :c))
                           ac (specify! (array-chunk #js [1 2]) IIndexed (-nth [_ _] :ac))
                           cc-ac (chunk-cons ac nil)
@@ -685,13 +690,13 @@ fn same_build_copies_honor_first_overrides() {
                           ls-f (specify! (lazy-seq (cons 1 nil)) ISeq (-first [_] :ls-f))
                           ls-s (specify! (lazy-seq (cons 1 nil)) ISeqable (-seq [_] nil))
                           ls-c (lazy-seq c)]
-                      (set! js/sharedFirstVals #js [c cc-ac cc is cs ls-f ls-s ls-c])
+                      (set! js/sharedFirstVals #js [c ac cc-ac cc is cs ls-f ls-s ls-c])
                       :first))";
     for level in OptimizationLevel::ALL {
         let js = release(source, level);
         assert_eq!(
             execute(&format!("console.log(String({js})); console.log({js});")),
-            ":first\n[:c :ac :cc :is :cs :ls-f nil :c]\n",
+            ":first\n[:c :ac :cc :is :cs :ls-f nil :c :ac :c :is]\n",
             "at {level}"
         );
     }
@@ -699,18 +704,28 @@ fn same_build_copies_honor_first_overrides() {
 
 /// light-cljs-1122 (Change 2): two copies of the same build share keyed kinds
 /// and protocol slots; `rest`, `next`, `Cons.nextSlot`, `ChunkedCons`, and
-/// `LazySeq` fast paths must honor `specify!` overrides across copies.
+/// `LazySeq` fast paths must honor `specify!` overrides across copies,
+/// including local outer `Cons`/`ChunkedCons`/`LazySeq` wrapping foreign operands.
 #[test]
 fn same_build_copies_honor_next_and_rest_overrides() {
     let source = "(if (exists? js/sharedNextRestVals)
                     (let [r rest
                           nx next
-                          [c-r c-n cc-ac cc-ad cc-r cc-n ls-r ls-n ls-s ls-cr] js/sharedNextRestVals]
+                          [c-r c-n ac-c cc-ac ac-d cc-ad cc-r cc-n ls-r ls-n ls-s ls-cr] js/sharedNextRestVals
+                          local-cc-c (chunk-cons ac-c '(:local-more))
+                          local-cc-d (chunk-cons ac-d nil)
+                          local-cons (cons 0 c-r)
+                          local-ls-r (lazy-seq c-r)
+                          local-ls-n (lazy-seq c-n)]
                       (pr-str [(first (r c-r)) (first (nx c-r)) (first (nx c-n))
                                (first (r cc-ac)) (first (nx cc-ac))
                                (first (r cc-ad)) (first (nx cc-ad))
                                (first (r cc-r)) (first (nx cc-r)) (first (nx cc-n))
-                               (first (r ls-r)) (first (nx ls-n)) (nx ls-s) (first (r ls-cr))]))
+                               (first (r ls-r)) (first (nx ls-n)) (nx ls-s) (first (r ls-cr))
+                               (first (r local-cc-c)) (first (nx local-cc-c))
+                               (first (r local-cc-d)) (first (nx local-cc-d))
+                               (first (r (nx local-cons)))
+                               (first (r local-ls-r)) (first (nx local-ls-n))]))
                     (let [c-r (specify! (cons 1 '(2)) ISeq (-rest [_] '(:cr)))
                           c-n (specify! (cons 1 '(2)) INext (-next [_] '(:cn)))
                           ac-c (specify! (array-chunk #js [1 2]) ICounted (-count [_] 1))
@@ -723,13 +738,63 @@ fn same_build_copies_honor_next_and_rest_overrides() {
                           ls-n (specify! (lazy-seq (cons 1 '(2))) INext (-next [_] '(:lsn)))
                           ls-s (specify! (lazy-seq (cons 1 '(2))) ISeqable (-seq [_] nil))
                           ls-cr (lazy-seq c-r)]
-                      (set! js/sharedNextRestVals #js [c-r c-n cc-ac cc-ad cc-r cc-n ls-r ls-n ls-s ls-cr])
+                      (set! js/sharedNextRestVals #js [c-r c-n ac-c cc-ac ac-d cc-ad cc-r cc-n ls-r ls-n ls-s ls-cr])
                       :first))";
     for level in OptimizationLevel::ALL {
         let js = release(source, level);
         assert_eq!(
             execute(&format!("console.log(String({js})); console.log({js});")),
-            ":first\n[:cr :cr :cn :more :more :drop :drop :ccr :ccr :ccn :lsr :lsn nil :cr]\n",
+            ":first\n[:cr :cr :cn :more :more :drop :drop :ccr :ccr :ccn :lsr :lsn nil :cr :local-more :local-more :drop :drop :cr :cr :cn]\n",
+            "at {level}"
+        );
+    }
+}
+
+/// Sol finding #3 (light-cljs-1122): two copies of the same build share keyed
+/// protocol markers but have independent `hostExt.seq` flags. A partial `ISeq`
+/// `specify!` installed in copy B on a collection created in copy A must still
+/// throw for the unimplemented `ISeq` method when called from copy A.
+#[test]
+fn same_build_copies_preserve_partial_iseq_declarations() {
+    let source = "(if (exists? js/sharedPartialISeq)
+                    (let [[v-for-rest rest-fn v-for-first first-fn] js/sharedPartialISeq]
+                      (specify! v-for-rest ISeq (-first [_] :b-first))
+                      (specify! v-for-first ISeq (-rest [_] '(:b-rest)))
+                      (pr-str [(try (rest-fn v-for-rest) (catch js/Error e (.-message e)))
+                               (try (first-fn v-for-first) (catch js/Error e (.-message e)))]))
+                    (let [v1 [1 2]
+                          v2 [3 4]]
+                      (set! js/sharedPartialISeq #js [v1 (fn [x] (rest x)) v2 (fn [x] (first x))])
+                      :setup))";
+    for level in OptimizationLevel::ALL {
+        let js = release(source, level);
+        assert_eq!(
+            execute(&format!("console.log(String({js})); console.log({js});")),
+            ":setup\n[\"No protocol method ISeq/-rest defined for this value\" \"No protocol method ISeq/-first defined for this value\"]\n",
+            "at {level}"
+        );
+    }
+}
+
+/// Sol finding #9 (light-cljs-1122): values from a different build (distinct
+/// runtime key) fall back through host iteration for `first`, `rest`, and `next`.
+#[test]
+fn different_build_seq_operations_use_host_iteration() {
+    let producer = "(do (set! js/foreignSeqs #js [(cons 1 '(2 3)) (list 4 5) (chunk-cons (array-chunk #js [6 7]) nil) (lazy-seq (cons 8 '(9)))]) :produced)";
+    let consumer = "(let [[c l cc ls] js/foreignSeqs]
+                      (pr-str [(first c) (vec (rest c)) (vec (next c))
+                               (first l) (vec (rest l)) (vec (next l))
+                               (first cc) (vec (rest cc)) (vec (next cc))
+                               (first ls) (vec (rest ls)) (vec (next ls))]))";
+    for level in OptimizationLevel::ALL {
+        let p_js = release(producer, level);
+        let c_js = release(consumer, level);
+        assert_ne!(key(&p_js), key(&c_js), "distinct builds at {level}");
+        assert_eq!(
+            execute(&format!(
+                "console.log(String({p_js})); console.log({c_js});"
+            )),
+            ":produced\n[1 [2 3] [2 3] 4 [5] [5] 6 [7] [7] 8 [9] [9]]\n",
             "at {level}"
         );
     }

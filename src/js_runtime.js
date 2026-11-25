@@ -2160,10 +2160,8 @@
       && value.cljs$core$ISeqable$$LKEY !== protocolSentinel) {
       return value.length ? value[0] : null;
     }
-    if (protocolHooks.programMethod && (!slotFirst.on || hostExt.seq || !(value.cljs$lang$kind$$LKEY < 64) || value.cljs$core$ISeq$_first$arity$1$LKEY !== undefined)) {
-      const own = protocolHooks.programMethod(value, methodKeys[48], 1, false, true);
-      if (own) return own.call(value, value);
-    }
+    const own = protocolHooks.programMethod?.(value, methodKeys[48], 1, false, true);
+    if (own) return own.call(value, value);
     const s = seq(value);
     if (s == null) return null;
     if (ownSeqs.on) return protocolHooks.firstSeq(s);
@@ -2226,14 +2224,12 @@
     }
     return restOf(value);
   }
-  //@unit restOf requires: cellRestSlot, emptyList, emptyRestSlot, hostExt, listRestSlot,
-  //@ methodKeys, ownSeqs, protocolHooks, seq, slotFirst, unsupported
+  //@unit restOf requires: cellRestSlot, emptyList, emptyRestSlot, listRestSlot, methodKeys,
+  //@ ownSeqs, protocolHooks, seq, unsupported
   function restOf(value) {
     if (value == null) return emptyList;
-    if (protocolHooks.programMethod && (!slotFirst.on || hostExt.seq || !(value.cljs$lang$kind$$LKEY < 64) || value.cljs$core$ISeq$_rest$arity$1$LKEY !== undefined)) {
-      const own = protocolHooks.programMethod(value, methodKeys[50], 1, false, true);
-      if (own) return own.call(value, value);
-    }
+    const own = protocolHooks.programMethod?.(value, methodKeys[50], 1, false, true);
+    if (own) return own.call(value, value);
     const s = seq(value);
     if (s == null) return emptyList;
     if (ownSeqs.on) return protocolHooks.restSeq(s);
@@ -8020,27 +8016,28 @@
   });
   //@unit LazySeq.firstSlot effect: LazySeq when: first, firstOf, firstSite requires: builtinSlot,
   //@ cellFirstSlot, emptyFirstSlot, emptySeqSlot, first, firstOf, lazyRealized, LazySeq,
-  //@ selfSeqSlot, seq, seqOf, slotFirst, viewFirstSlot, viewSeqSlot
+  //@ selfSeqSlot, seq, seqOf, slotFirst, viewSeqSlot
   LazySeq.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot((ownSeq => function (self) {
     if (slotFirst.on) {
       const seqMethod = self.cljs$core$ISeqable$_seq$arity$1$LKEY;
       if (seqMethod === ownSeq) {
         const s = lazyRealized(self);
         if (s == null) return null;
-        if (s.cljs$lang$kind$$LKEY !== undefined) {
-          const sm = s.cljs$core$ISeqable$_seq$arity$1$LKEY;
-          if (sm === selfSeqSlot || sm === viewSeqSlot) {
-            const fm = s.cljs$core$ISeq$_first$arity$1$LKEY;
-            if (fm === cellFirstSlot) return s.first$LKEY;
-            if (fm === viewFirstSlot) { const arr = s.arr$LKEY, i = s.i$LKEY; return i < arr.length ? arr[i] : null; }
-            return fm ? fm.call(s, s) : firstOf(s);
-          }
-          if (sm === emptySeqSlot) {
-            const fm = s.cljs$core$ISeq$_first$arity$1$LKEY;
-            if (fm === emptyFirstSlot) return null;
-            return fm ? fm.call(s, s) : firstOf(s);
-          }
-          if (sm) sm.call(s, s); else seqOf(s);
+        const sm = s.cljs$core$ISeqable$_seq$arity$1$LKEY;
+        if (sm === selfSeqSlot) {
+          const fm = s.cljs$core$ISeq$_first$arity$1$LKEY;
+          if (fm === cellFirstSlot) return s.first$LKEY;
+          return fm ? fm.call(s, s) : firstOf(s);
+        }
+        if (sm === emptySeqSlot) {
+          const fm = s.cljs$core$ISeq$_first$arity$1$LKEY;
+          if (fm === emptyFirstSlot) return null;
+          return fm ? fm.call(s, s) : firstOf(s);
+        }
+        if (sm === viewSeqSlot) {
+          s.i$LKEY < s.arr$LKEY.length;
+        } else if (sm && s.cljs$lang$kind$$LKEY !== undefined) {
+          sm.call(s, s);
         } else {
           seqOf(s);
         }
@@ -8061,20 +8058,22 @@
       if (seqMethod === ownSeq) {
         const s = lazyRealized(self);
         if (s == null) return emptyList;
-        if (s.cljs$lang$kind$$LKEY !== undefined) {
-          const sm = s.cljs$core$ISeqable$_seq$arity$1$LKEY;
-          if (sm === selfSeqSlot || sm === viewSeqSlot) {
-            const rm = s.cljs$core$ISeq$_rest$arity$1$LKEY;
-            if (rm === cellRestSlot) return s.rest$LKEY ?? emptyList;
-            if (rm === listRestSlot) return s.count$LKEY === 1 ? emptyList : s.rest$LKEY;
-            return rm ? rm.call(s, s) : restOf(s);
-          }
-          if (sm === emptySeqSlot) {
-            const rm = s.cljs$core$ISeq$_rest$arity$1$LKEY;
-            if (rm === emptyRestSlot) return emptyList;
-            return rm ? rm.call(s, s) : restOf(s);
-          }
-          if (sm) sm.call(s, s); else seqOf(s);
+        const sm = s.cljs$core$ISeqable$_seq$arity$1$LKEY;
+        if (sm === selfSeqSlot) {
+          const rm = s.cljs$core$ISeq$_rest$arity$1$LKEY;
+          if (rm === cellRestSlot) return s.rest$LKEY ?? emptyList;
+          if (rm === listRestSlot) return s.count$LKEY === 1 ? emptyList : s.rest$LKEY;
+          return rm ? rm.call(s, s) : restOf(s);
+        }
+        if (sm === emptySeqSlot) {
+          const rm = s.cljs$core$ISeq$_rest$arity$1$LKEY;
+          if (rm === emptyRestSlot) return emptyList;
+          return rm ? rm.call(s, s) : restOf(s);
+        }
+        if (sm === viewSeqSlot) {
+          s.i$LKEY < s.arr$LKEY.length;
+        } else if (sm && s.cljs$lang$kind$$LKEY !== undefined) {
+          sm.call(s, s);
         } else {
           seqOf(s);
         }
@@ -8095,19 +8094,21 @@
       if (seqMethod === ownSeq) {
         const s = lazyRealized(self);
         if (s == null) return null;
-        if (s.cljs$lang$kind$$LKEY !== undefined) {
-          const sm = s.cljs$core$ISeqable$_seq$arity$1$LKEY;
-          if (sm === selfSeqSlot || sm === viewSeqSlot) {
-            const nm = s.cljs$core$INext$_next$arity$1$LKEY;
-            if (nm === listNextSlot) return s.count$LKEY === 1 ? null : s.rest$LKEY;
-            return nm ? nm.call(s, s) : nextOf(s);
-          }
-          if (sm === emptySeqSlot) {
-            const nm = s.cljs$core$INext$_next$arity$1$LKEY;
-            if (nm === emptyNextSlot) return null;
-            return nm ? nm.call(s, s) : nextOf(s);
-          }
-          if (sm) sm.call(s, s); else seqOf(s);
+        const sm = s.cljs$core$ISeqable$_seq$arity$1$LKEY;
+        if (sm === selfSeqSlot) {
+          const nm = s.cljs$core$INext$_next$arity$1$LKEY;
+          if (nm === listNextSlot) return s.count$LKEY === 1 ? null : s.rest$LKEY;
+          return nm ? nm.call(s, s) : nextOf(s);
+        }
+        if (sm === emptySeqSlot) {
+          const nm = s.cljs$core$INext$_next$arity$1$LKEY;
+          if (nm === emptyNextSlot) return null;
+          return nm ? nm.call(s, s) : nextOf(s);
+        }
+        if (sm === viewSeqSlot) {
+          s.i$LKEY < s.arr$LKEY.length;
+        } else if (sm && s.cljs$lang$kind$$LKEY !== undefined) {
+          sm.call(s, s);
         } else {
           seqOf(s);
         }
@@ -8120,14 +8121,16 @@
     return next(self.s$LKEY);
   })(LazySeq.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY));
   //@unit ChunkedCons.first effect: ChunkedCons when: first, firstOf, firstSite requires: arrayChunkNth2Slot,
-  //@ builtinSlot, ChunkedCons, chunkedConsFirst, nthOf, slotFirst
+  //@ builtinSlot, ChunkedCons, chunkedConsFirst, nthOf, protocolHooks, slotFirst
   ChunkedCons.prototype.cljs$core$ISeq$_first$arity$1$LKEY = builtinSlot(function (self) {
     if (slotFirst.on) {
       const chunk = self.chunk$LKEY;
       if (chunk != null && chunk.cljs$lang$kind$$LKEY !== undefined) {
         const nthMethod = chunk.cljs$core$IIndexed$_nth$arity$2$LKEY;
         if (nthMethod === arrayChunkNth2Slot && "arr$LKEY" in chunk) {
-          return chunk.step$LKEY !== null ? chunk.first$LKEY + 0 * chunk.step$LKEY : chunk.arr$LKEY?.[chunk.off$LKEY];
+          if (chunk.step$LKEY !== null) return chunk.first$LKEY + 0 * chunk.step$LKEY;
+          if (!protocolHooks.programMethod || typeof chunk.off$LKEY === "number") return chunk.arr$LKEY?.[chunk.off$LKEY];
+          return nthMethod.call(chunk, chunk, 0);
         }
         if (nthMethod) return nthMethod.call(chunk, chunk, 0);
         return nthOf(chunk, 0, undefined, 2);
@@ -8137,7 +8140,8 @@
   });
   //@unit ChunkedCons.rest effect: ChunkedCons when: rest, restOf, restSite requires: ArrayChunkCell,
   //@ arrayChunkCountSlot, arrayChunkDropFirstSlot, builtinSlot, chunkDropFirst, ChunkedCons,
-  //@ ChunkedConsCell, chunkedConsRest, countOf, emptyList, noBranch, slotFirst
+  //@ ChunkedConsCell, chunkedConsRest, countOf, dropFirstProtocol, emptyList, noBranch,
+  //@ protocolHooks, slotFirst
   ChunkedCons.prototype.cljs$core$ISeq$_rest$arity$1$LKEY = builtinSlot(function (self) {
     if (slotFirst.on) {
       const chunk = self.chunk$LKEY;
@@ -8147,12 +8151,17 @@
           if (chunk.end$LKEY - chunk.off$LKEY > 1) {
             const dm = chunk.cljs$core$IChunk$_drop_first$arity$1$LKEY;
             if (dm === arrayChunkDropFirstSlot) {
+              if (protocolHooks.programMethod) {
+                const cm2 = chunk.cljs$core$ICounted$_count$arity$1$LKEY;
+                const size = cm2 === arrayChunkCountSlot ? chunk.end$LKEY - chunk.off$LKEY : cm2 ? cm2.call(chunk, chunk) : countOf(chunk);
+                if (chunk.step$LKEY !== null ? size <= 1 : size === 0) throw new Error("-drop-first of empty chunk");
+              }
               const nextChunk = new ArrayChunkCell(chunk.arr$LKEY, chunk.off$LKEY + 1, chunk.end$LKEY,
                 chunk.step$LKEY !== null ? chunk.first$LKEY + chunk.step$LKEY : chunk.first$LKEY, chunk.step$LKEY);
               return new ChunkedConsCell(nextChunk, self.more$LKEY, null);
             }
             const d = dm ? dm.call(chunk, chunk) : noBranch;
-            return new ChunkedConsCell(d === noBranch ? chunkDropFirst(chunk) : d, self.more$LKEY, null);
+            return new ChunkedConsCell(d === noBranch ? dropFirstProtocol(chunk) : d, self.more$LKEY, null);
           }
           return self.more$LKEY ?? emptyList;
         }
@@ -8164,8 +8173,8 @@
   });
   //@unit ChunkedCons.next effect: ChunkedCons when: next, nextSite requires: ArrayChunkCell,
   //@ arrayChunkCountSlot, arrayChunkDropFirstSlot, builtinSlot, chunkDropFirst, ChunkedCons,
-  //@ ChunkedConsCell, countOf, emptyList, emptySeqSlot, noBranch, rest, restOf, selfSeqSlot,
-  //@ seq, seqOf, slotFirst
+  //@ ChunkedConsCell, countOf, dropFirstProtocol, emptyList, emptySeqSlot, noBranch,
+  //@ protocolHooks, rest, restOf, selfSeqSlot, seq, seqOf, slotFirst
   ChunkedCons.prototype.cljs$core$INext$_next$arity$1$LKEY = builtinSlot((ownRest => function (self) {
     if (slotFirst.on) {
       const rm = self.cljs$core$ISeq$_rest$arity$1$LKEY;
@@ -8180,17 +8189,23 @@
             if (ownChunk) {
               const dm = chunk.cljs$core$IChunk$_drop_first$arity$1$LKEY;
               if (dm === arrayChunkDropFirstSlot) {
+                if (protocolHooks.programMethod) {
+                  const cm2 = chunk.cljs$core$ICounted$_count$arity$1$LKEY;
+                  const size = cm2 === arrayChunkCountSlot ? chunk.end$LKEY - chunk.off$LKEY : cm2 ? cm2.call(chunk, chunk) : countOf(chunk);
+                  if (chunk.step$LKEY !== null ? size <= 1 : size === 0) throw new Error("-drop-first of empty chunk");
+                }
                 nextChunk = new ArrayChunkCell(chunk.arr$LKEY, chunk.off$LKEY + 1, chunk.end$LKEY,
                   chunk.step$LKEY !== null ? chunk.first$LKEY + chunk.step$LKEY : chunk.first$LKEY, chunk.step$LKEY);
               } else {
                 const d = dm ? dm.call(chunk, chunk) : noBranch;
-                nextChunk = d === noBranch ? chunkDropFirst(chunk) : d;
+                nextChunk = d === noBranch ? dropFirstProtocol(chunk) : d;
               }
             } else {
               nextChunk = chunkDropFirst(chunk);
             }
             const nextCell = new ChunkedConsCell(nextChunk, self.more$LKEY, null);
-            return ChunkedCons.prototype.cljs$core$ISeqable$_seq$arity$1$LKEY === selfSeqSlot ? nextCell : seq(nextCell);
+            const nsm = nextCell.cljs$core$ISeqable$_seq$arity$1$LKEY;
+            return nsm === selfSeqSlot ? nextCell : nsm ? nsm.call(nextCell, nextCell) : seqOf(nextCell);
           }
           const more = self.more$LKEY;
           if (more == null) {
