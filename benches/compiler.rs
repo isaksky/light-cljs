@@ -1,7 +1,7 @@
 //! Resident phases; raw output is consumed by benchmarks/run_compiler.py.
 //! `--levels` instead measures startup and steady state of the size-ratchet
-//! fixtures at every optimization level in Node and QuickJS (support/levels.rs),
-//! and `--callees` the cost per call of each call shape (support/callees.rs).
+//! fixtures at every optimization level (support/levels.rs), and `--callees`
+//! the cost per call of each call shape (support/callees.rs), both in Node.
 use light_cljs::{
     ApplicationOptions, MacroHost, NamespaceInput, OptimizationLevel, Program, SyntaxTree, analyze,
     analyze_namespaces, analyze_with_macros, compile, compile_namespace,

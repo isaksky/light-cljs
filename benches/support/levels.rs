@@ -1,5 +1,5 @@
 //! Startup and steady-state cost of whole-program output at every optimization
-//! level, in Node and in the QuickJS engine light-cljs embeds (light-cljs-216).
+//! level in Node (light-cljs-216).
 //! `cargo bench --bench compiler -- --levels --output DIR` runs it; the method and
 //! the recorded baseline are in benchmarks/compiler.md ("Startup and steady state
 //! by optimization level"). tests/benchmark_variants.rs runs a tiny configuration
@@ -18,7 +18,6 @@
 //! sizes, so that an operation that is linear where upstream's is constant shows as
 //! quadratic growth.
 use crate::temp_dir::TempDir;
-use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use light_cljs::{ApplicationOptions, OptimizationLevel, analyze, parse, prepare_application};
 use std::error::Error;
 use std::ffi::OsStr;
@@ -30,7 +29,7 @@ use std::{env, fs};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
-/// A program measured in a fresh engine: parse plus its first execution.
+/// A program measured in a fresh Node process: parse plus its first execution.
 pub struct Startup<'a> {
     pub name: &'a str,
     pub source: &'a str,
@@ -43,12 +42,11 @@ pub struct Startup<'a> {
 struct Steady {
     name: &'static str,
     source: &'static str,
-    /// The arguments `n`. A ratchet workload has one, sized so that a QuickJS call
-    /// takes tens of milliseconds; a collection workload has [`GROWTH`].
+    /// The arguments `n`. A ratchet workload has one; a collection workload has
+    /// [`GROWTH`].
     inputs: &'static [u64],
-    /// Whether the workload runs at every level in both engines. The collection
-    /// workloads run in Node at `advanced` only, the build compared with upstream:
-    /// their quadratic calls take seconds in Node today and minutes in QuickJS.
+    /// Whether the workload runs at every level. Collection workloads run at
+    /// `advanced` only, the build compared with upstream.
     every_level: bool,
     /// What `(f n)` returns.
     expected: fn(u64) -> u64,
@@ -501,10 +499,10 @@ fn protocol_dispatch(n: u64) -> u64 {
 pub struct Config {
     /// Receives samples.csv and summary.md; must not hold an earlier run.
     pub output: PathBuf,
-    /// Timed rounds. Each gives one sample per engine, measure, fixture and level.
+    /// Timed rounds. Each gives one sample per measure, fixture and level.
     pub samples: usize,
     /// Untimed rounds before them, for process, file and engine caches. Only the
-    /// startup fixtures run in them: a steady-state sample warms its own engine.
+    /// startup fixtures run in them: a steady-state sample warms up in its own process.
     pub warmups: usize,
     /// Replaces every steady-state workload's arguments with this one `n` (the
     /// smoke test's is tiny).
@@ -597,7 +595,6 @@ impl std::fmt::Display for Build {
 }
 
 struct Sample {
-    engine: &'static str,
     measure: &'static str,
     /// The startup fixture, or for `call` the steady-state [`Row`].
     fixture: usize,
@@ -624,24 +621,6 @@ const UPSTREAM_SCRIPT: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/benchmarks/support/upstream_sizes.clj"
 );
-
-/// Installs `console.log` in a QuickJS session and evaluates to a function that
-/// returns everything printed so far plus its argument shown the way the Node
-/// driver shows a value. It formats only what the fixtures print (primitives and
-/// flat arrays); anything else fails the output check instead of passing silently.
-const QUICKJS_CONSOLE: &str = r##"(() => {
-  let printed = "";
-  const show = (value, nested) =>
-    value === undefined ? "undefined"
-    : value === null ? "null"
-    : typeof value === "string" ? (nested ? `'${value}'` : value)
-    : typeof value === "function" ? (nested ? "[Function]" : "#function")
-    : Array.isArray(value) ? (value.length ? `[ ${value.map(v => show(v, true)).join(", ")} ]` : "[]")
-    : typeof value === "object" ? "[unsupported object]"
-    : String(value);
-  globalThis.console = { log: (...values) => { printed += values.map(v => show(v, false)).join(" ") + "\n"; } };
-  return value => printed + show(value, false) + "\n";
-})()"##;
 
 pub fn run(config: &Config, fixtures: &[Startup]) -> Result<()> {
     let csv = config.output.join("samples.csv");
@@ -691,10 +670,9 @@ pub fn run(config: &Config, fixtures: &[Startup]) -> Result<()> {
             loads.push(load.map(|l| l[0]));
         }
         let round_index = round.saturating_sub(config.warmups);
-        let mut record = |engine, measure, fixture, level, nanoseconds: f64| {
+        let mut record = |measure, fixture, level, nanoseconds: f64| {
             if timed {
                 samples.push(Sample {
-                    engine,
                     measure,
                     fixture,
                     build: Build::Level(level),
@@ -713,16 +691,13 @@ pub fn run(config: &Config, fixtures: &[Startup]) -> Result<()> {
                 let context = || format!("{} at {level}", fixture.name);
                 let [parse, execute, process] = node_startup(&node, &program.path, fixture.printed)
                     .map_err(|e| format!("Node startup, {}: {e}", context()))?;
-                record("node", "parse", index, level, parse);
-                record("node", "execute", index, level, execute);
-                record("node", "parse+execute", index, level, parse + execute);
-                record("node", "process", index, level, process);
-                let total = quickjs_startup(&fs::read_to_string(&program.path)?, fixture.printed)
-                    .map_err(|e| format!("QuickJS startup, {}: {e}", context()))?;
-                record("quickjs", "parse+execute", index, level, total);
+                record("parse", index, level, parse);
+                record("execute", index, level, execute);
+                record("parse+execute", index, level, parse + execute);
+                record("process", index, level, process);
             }
         }
-        // A steady-state sample warms its own fresh engine with untimed calls.
+        // A steady-state sample warms up in its own Node process with untimed calls.
         if !timed {
             continue;
         }
@@ -753,32 +728,23 @@ pub fn run(config: &Config, fixtures: &[Startup]) -> Result<()> {
                     Build::Upstream => &upstream_steady[row.workload],
                 };
                 let context = || format!("{} (n = {}) at {build}", row.steady.name, row.input);
-                let sample = |engine, (nanoseconds, calls): (f64, usize)| Sample {
-                    engine,
-                    measure: "call",
-                    fixture: index,
-                    build,
-                    round: round_index,
-                    nanoseconds,
-                    calls,
-                };
-                if !sampled_enough(&samples, "node", index, build, config.budget) {
-                    let call = node_steady(&node, program, &calls)
+                if !sampled_enough(&samples, index, build, config.budget) {
+                    let (nanoseconds, calls) = node_steady(&node, program, &calls)
                         .map_err(|e| format!("Node steady state, {}: {e}", context()))?;
-                    samples.push(sample("node", call));
-                }
-                if row.steady.every_level
-                    && build != Build::Upstream
-                    && !sampled_enough(&samples, "quickjs", index, build, config.budget)
-                {
-                    let call = quickjs_steady(&fs::read_to_string(program)?, &calls)
-                        .map_err(|e| format!("QuickJS steady state, {}: {e}", context()))?;
-                    samples.push(sample("quickjs", call));
+                    samples.push(Sample {
+                        measure: "call",
+                        fixture: index,
+                        build,
+                        round: round_index,
+                        nanoseconds,
+                        calls,
+                    });
                 }
             }
         }
     }
     let last_load = load_average();
+    // Keep the engine field for readers that also load historical runs.
     let mut lines =
         String::from("engine,measure,fixture,n,level,round,nanoseconds,calls,load_1m\n");
     for sample in &samples {
@@ -792,13 +758,8 @@ pub fn run(config: &Config, fixtures: &[Startup]) -> Result<()> {
         let load = loads[sample.round].map_or(String::new(), |l| format!("{l:.2}"));
         writeln!(
             lines,
-            "{},{},{fixture},{input},{},{},{:.0},{},{load}",
-            sample.engine,
-            sample.measure,
-            sample.build,
-            sample.round,
-            sample.nanoseconds,
-            sample.calls
+            "node,{},{fixture},{input},{},{},{:.0},{},{load}",
+            sample.measure, sample.build, sample.round, sample.nanoseconds, sample.calls
         )?;
     }
     fs::write(&csv, lines)?;
@@ -912,13 +873,6 @@ struct Calls {
     timed: usize,
     budget: Duration,
 }
-impl Calls {
-    /// Whether a phase that has made `made` calls in `elapsed` makes another.
-    fn another(&self, made: usize, elapsed: Duration) -> bool {
-        made == 0 || elapsed + elapsed / made as u32 <= self.budget
-    }
-}
-
 /// Nanoseconds per call of a warm function in one fresh Node process, and the
 /// timed calls they average.
 fn node_steady(node: &OsStr, program: &Path, calls: &Calls) -> Result<(f64, usize)> {
@@ -941,81 +895,12 @@ fn node_steady(node: &OsStr, program: &Path, calls: &Calls) -> Result<(f64, usiz
     Ok((fields[0].parse::<f64>()? / made.max(1) as f64, made))
 }
 
-/// A fresh embedded-engine session, as `EvalSession` creates one, with limits that
-/// a long benchmark cannot reach.
-fn quickjs() -> Result<Evaluator> {
-    Ok(Evaluator::new(EvaluatorOptions {
-        memory_limit: 1 << 30,
-        poll_budget: u64::MAX,
-        timeout: Duration::from_secs(24 * 60 * 60),
-        ..EvaluatorOptions::default()
-    })?)
-}
-
-/// Nanoseconds to parse and first execute `js` in a fresh QuickJS session. The
-/// session's own runtime is loaded before timing starts.
-fn quickjs_startup(js: &str, expected: &str) -> Result<f64> {
-    let engine = quickjs()?;
-    let show = engine.evaluate_js(QUICKJS_CONSOLE)?;
-    // What `evaluate_js` would build, built before timing starts.
-    let unit = format!("(rt) => ({js}\n)");
-    let start = Instant::now();
-    let value = engine.evaluate_unit(&unit)?;
-    let elapsed = start.elapsed().as_nanos() as f64;
-    let printed = engine.call(show, &[value])?;
-    check_printed(&engine.string(printed)?, expected)?;
-    Ok(elapsed)
-}
-
-/// Nanoseconds per call of a warm function in a fresh QuickJS session, and the
-/// timed calls they average.
-fn quickjs_steady(js: &str, calls: &Calls) -> Result<(f64, usize)> {
-    let engine = quickjs()?;
-    let run = engine.evaluate_js(js)?;
-    let input = engine.evaluate_js(&calls.input.to_string())?;
-    let check = |result| -> Result<()> {
-        let value = engine.number(result)?;
-        engine.release(result)?;
-        if value == calls.expected as f64 {
-            Ok(())
-        } else {
-            Err(format!("returned {value}, expected {}", calls.expected).into())
-        }
-    };
-    let warm = Instant::now();
-    let mut made = 0;
-    while made < calls.warmups && calls.another(made, warm.elapsed()) {
-        check(engine.call(run, &[input])?)?;
-        made += 1;
-    }
-    let mut results = Vec::with_capacity(calls.timed);
-    let mut elapsed = Duration::ZERO;
-    let start = Instant::now();
-    while results.len() < calls.timed && calls.another(results.len(), elapsed) {
-        results.push(engine.call(run, &[input])?);
-        elapsed = start.elapsed();
-    }
-    let made = results.len();
-    for result in results {
-        check(result)?;
-    }
-    Ok((elapsed.as_nanos() as f64 / made.max(1) as f64, made))
-}
-
 /// Whether a steady-state target has all the samples it gets: one whose call
 /// takes longer than the budget is sampled in [`SLOW_SAMPLES`] rounds only.
-fn sampled_enough(
-    samples: &[Sample],
-    engine: &str,
-    row: usize,
-    build: Build,
-    budget: Duration,
-) -> bool {
+fn sampled_enough(samples: &[Sample], row: usize, build: Build, budget: Duration) -> bool {
     let mine: Vec<_> = samples
         .iter()
-        .filter(|s| {
-            s.measure == "call" && s.engine == engine && s.fixture == row && s.build == build
-        })
+        .filter(|s| s.measure == "call" && s.fixture == row && s.build == build)
         .collect();
     mine.len() >= SLOW_SAMPLES
         && mine
@@ -1247,24 +1132,19 @@ fn summary(
     loads: &[Option<f64>],
     upstream: Option<&std::result::Result<Upstream, String>>,
 ) -> String {
-    let timing = |engine: &str, measure: &str, fixture: usize, build, scale: f64| {
+    let timing = |measure: &str, fixture: usize, build, scale: f64| {
         stats(
             samples
                 .iter()
-                .filter(|s| {
-                    s.engine == engine
-                        && s.measure == measure
-                        && s.fixture == fixture
-                        && s.build == build
-                })
+                .filter(|s| s.measure == measure && s.fixture == fixture && s.build == build)
                 .map(|s| s.nanoseconds / scale),
         )
     };
     let shown = |stats: Option<Stats>| {
         stats.map_or("–".into(), |s| format!("{:.3} / {:.3}", s.median, s.min))
     };
-    let cell = |engine: &str, measure: &str, fixture: usize, level, scale: f64| {
-        shown(timing(engine, measure, fixture, Build::Level(level), scale))
+    let cell = |measure: &str, fixture: usize, level, scale: f64| {
+        shown(timing(measure, fixture, Build::Level(level), scale))
     };
     let load = |l: Option<[f64; 3]>| {
         l.map_or("unknown".into(), |l| {
@@ -1349,40 +1229,37 @@ fn summary(
     );
     out.push_str(
         "## Startup: parse plus first execution\n\n\
-         Milliseconds, median / minimum, one fresh engine per sample. Node: `parse` is \
+         Milliseconds, median / minimum, one fresh Node process per sample. `parse` is \
          `new vm.Script`, `execute` its first `runInThisContext` (Node's own stdout setup is \
-         done before timing), `process` spawn to exit. QuickJS: one evaluation in a fresh \
-         light-cljs `Evaluator`, the engine behind `EvalSession`, after the session's own \
-         runtime has loaded. Bytes are the emitted program, with `gzip -9` in parentheses.\n\n\
-         | Fixture | Level | Bytes | Node parse | Node execute | Node parse+execute | Node process | QuickJS parse+execute |\n\
-         | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |\n",
+         done before timing), and `process` spawn to exit. Bytes are the emitted program, \
+         with `gzip -9` in parentheses.\n\n\
+         | Fixture | Level | Bytes | Node parse | Node execute | Node parse+execute | Node process |\n\
+         | --- | --- | ---: | ---: | ---: | ---: | ---: |\n",
     );
     for (index, fixture) in fixtures.iter().enumerate() {
         for level in OptimizationLevel::ALL {
             let emitted = &startup[index][level_index(level)];
             let _ = writeln!(
                 out,
-                "| {} | {level} | {} | {} | {} | {} | {} | {} |",
+                "| {} | {level} | {} | {} | {} | {} | {} |",
                 fixture.name,
                 size(Some((emitted.bytes, emitted.gzip))),
-                cell("node", "parse", index, level, 1e6),
-                cell("node", "execute", index, level, 1e6),
-                cell("node", "parse+execute", index, level, 1e6),
-                cell("node", "process", index, level, 1e6),
-                cell("quickjs", "parse+execute", index, level, 1e6),
+                cell("parse", index, level, 1e6),
+                cell("execute", index, level, 1e6),
+                cell("parse+execute", index, level, 1e6),
+                cell("process", index, level, 1e6),
             );
         }
     }
     let _ = write!(
         out,
         "\n## Steady state\n\n\
-         Microseconds per call `(f n)`, median / minimum, one fresh engine per sample making \
+         Microseconds per call `(f n)`, median / minimum, one fresh Node process per sample making \
          up to {} timed calls after up to {} untimed ones. Each phase stops early when one more \
          call would take it past {budget:.0} ms, and a target whose call takes longer than that \
          is sampled in {SLOW_SAMPLES} rounds only; `samples.csv` has each sample's timed calls. \
-         QuickJS calls go through `Evaluator::call`. The collection workloads run in Node at \
-         `advanced` only.\n\n\
-         | Fixture | n | Level | Node | QuickJS |\n| --- | ---: | --- | ---: | ---: |\n",
+         The collection workloads run at `advanced` only.\n\n\
+         | Fixture | n | Level | Node |\n| --- | ---: | --- | ---: |\n",
         config.calls, config.warmup_calls
     );
     let rows = config.rows();
@@ -1391,11 +1268,10 @@ fn summary(
             if row.steady.every_level || level == OptimizationLevel::Advanced {
                 let _ = writeln!(
                     out,
-                    "| {} | {} | {level} | {} | {} |",
+                    "| {} | {} | {level} | {} |",
                     row.steady.name,
                     row.input,
-                    cell("node", "call", index, level, 1e3),
-                    cell("quickjs", "call", index, level, 1e3),
+                    cell("call", index, level, 1e3),
                 );
             }
         }
@@ -1448,13 +1324,12 @@ fn summary(
             }
             for (index, row) in rows.iter().enumerate() {
                 let light = timing(
-                    "node",
                     "call",
                     index,
                     Build::Level(OptimizationLevel::Advanced),
                     1e6,
                 );
-                let theirs = timing("node", "call", index, Build::Upstream, 1e6);
+                let theirs = timing("call", index, Build::Upstream, 1e6);
                 let ratio = match (&light, &theirs) {
                     (Some(light), Some(theirs)) => {
                         let ratio = light.median / theirs.median;

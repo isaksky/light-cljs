@@ -657,11 +657,11 @@ cargo test --test compiler core_operations::print_core_operation_units -- --igno
 
 ## Startup and steady state by optimization level — October 13, 2026
 
-light-cljs-216 adds a `--levels` mode to [benches/compiler.rs](../benches/compiler.rs)
+light-cljs-216 added a `--levels` mode to [benches/compiler.rs](../benches/compiler.rs)
 ([support/levels.rs](../benches/support/levels.rs)). It times every size-ratchet
 fixture ([tests/support/ratchet_fixtures.rs](../tests/support/ratchet_fixtures.rs))
-at every `--optimize` level, from a fresh engine, in Node and in QuickJS. It also
-times steady-state calls of a sequence pipeline and a record/protocol workload,
+at every `--optimize` level in a fresh Node process. It also times steady-state
+calls of a sequence pipeline and a record/protocol workload,
 and can record upstream ClojureScript's `:advanced` sizes for the same programs.
 To measure before and after a change, run it on both commits, ideally on a quiet
 machine:
@@ -672,14 +672,14 @@ cargo bench --locked --bench compiler -- --levels --output benchmarks/results/le
 
 `--upstream research/clojurescript` adds the upstream column. It needs Java and
 the Clojure CLI, and adds about a minute. `--samples N` (default 15, at least 9)
-and `--warmups N` (default 2) set the rounds. With the defaults the run takes
-about three minutes. `--only a,b,...` (light-cljs-220) measures only the named
-fixtures and steady-state workloads, for a pellet whose change reaches a few of
-them. It writes `samples.csv` (every sample, with the one-minute
-load average of its round) and `summary.md` (every table below, with environment
-and load), and it refuses a directory that already holds a run. The application
-phases of the default mode (`--application-only`) now also run at all three
-levels: their scenarios are `NAME-none`, `NAME-prepare` and `NAME-advanced`
+and `--warmups N` (default 2) set the rounds. `--only a,b,...` (light-cljs-220)
+measures only the named fixtures and steady-state workloads. The benchmark
+writes `samples.csv` with each sample and its round's one-minute load average.
+`summary.md` reports Node parse, execute, parse plus execute, and whole-process
+startup times, plus Node time per steady-state call. It also records the
+environment and load. The benchmark refuses a directory that already holds a
+run. The application phases of the default mode (`--application-only`) also run
+at all three levels. Their scenarios are `NAME-none`, `NAME-prepare` and `NAME-advanced`
 instead of `NAME-off` and `NAME-on`.
 
 Method:
@@ -692,17 +692,11 @@ Method:
   *execute* is its first `runInThisContext()`. Node's lazy stdout and console
   setup (about 5 ms) is done before timing, so it does not land on whichever
   program prints first. *Process* is spawn to exit, measured by Rust.
-- **QuickJS.** Each sample is a fresh `light_cljs::evaluator::Evaluator`, the
-  engine that `EvalSession` embeds, with a `console.log` shim. The timing covers
-  one evaluation of the program; QuickJS parses and runs in one step, so there
-  is no split. The session loads its own copy of the shared runtime before
-  timing starts, and that load is not counted.
 - **Steady state.** Each workload evaluates to `(fn [n] ...)`. *seq-pipeline*
   sums the ratchet's pipeline over `(range n)` with n = 200. *record-protocol*
   builds the ratchet's `Rect` and calls `area` on it n = 2,000 times in a
-  `loop`. Each sample is a fresh process or session that calls the function 10
-  times untimed and then 20 times in one timed batch. QuickJS calls go through
-  `Evaluator::call`, which costs a few µs, under 0.1% of a call.
+  `loop`. Each sample is a fresh Node process that calls the function up to 10
+  times untimed and then up to 20 times in one timed batch.
 - **Noise.** The machine is shared, so every round runs each fixture at each
   level before the next round starts, rotating the level order. A burst of
   outside load therefore lands on all levels alike. Two untimed warm-up rounds
@@ -718,6 +712,14 @@ Method:
   `:lite-mode true :elide-to-string true` as upstream's lite-mode ratchets do.
   Each output must print the fixture's expected text in Node. Without Java,
   the Clojure CLI or the checkout, the column is skipped with the reason.
+
+### Historical baseline
+
+The original run also sampled QuickJS. Each startup sample evaluated the
+program in a fresh `light_cljs::evaluator::Evaluator` with a `console.log`
+shim. The session loaded its own copy of the shared runtime before timing.
+Steady-state calls went through `Evaluator::call`, which cost a few µs, under
+0.1% of a call.
 
 Baseline: master `95a5e92` (light-cljs-203's runtime slicing at `advanced`).
 Node v24.18.0, macOS 15.7.3 ARM64 VM, 24 CPUs; 2 warm-up and 15 timed rounds.
@@ -1547,9 +1549,13 @@ and shrinks the runtime, `keyword-case` is 119,902 bytes and
 calls per sample of each call shape on each kind of function value
 ([support/callees.js](../benches/support/callees.js)): a function with one
 method (`single`), a dispatcher over fixed methods (`multi`) and one with a
-variadic method (`variadic`), each called with one argument. 15 timed rounds
-after 3 untimed ones, median ns per call, one after the other with the levels
-runs below ([callees.md](results/call-shapes-2026-10-13/callees.md)):
+variadic method (`variadic`), each called with one argument. The current table
+reports Node median ns per call, with the minimum in parentheses.
+
+**Historical call costs.** The original run measured Node and QuickJS with 15
+timed rounds after 3 untimed ones, one after the other with the levels runs
+below. The table shows median ns per call.
+[Recorded call shapes](results/call-shapes-2026-10-13/callees.md)
 
 | Shape | single, Node | multi, Node | variadic, Node | single, QuickJS | multi, QuickJS | variadic, QuickJS |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |

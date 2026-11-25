@@ -1,13 +1,11 @@
-//! `--callees`: the cost of each call shape of light-cljs-212 per call, in Node
-//! and in the QuickJS engine light-cljs embeds. callees.js holds the shapes and
-//! the method; benchmarks/compiler.md ("Direct call shapes") has the results.
+//! `--callees`: the cost of each call shape of light-cljs-212 per call in Node.
+//! callees.js holds the shapes and the method.
+//! benchmarks/compiler.md ("Direct call shapes") has the recorded results.
 //! It prints a Markdown table of the median nanoseconds per call over the timed
 //! rounds, with the minimum in parentheses.
-use light_cljs::evaluator::{Evaluator, EvaluatorOptions};
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::process::Command;
-use std::time::Duration;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -45,32 +43,18 @@ fn parse(json: &str) -> Result<Samples> {
     Ok(samples)
 }
 
-fn call(config: &Config) -> String {
-    format!(
-        "({BENCHMARK})({}, {}, {})",
-        config.rounds, config.warmups, config.calls
-    )
-}
-
 fn node(config: &Config) -> Result<Samples> {
+    let script = format!(
+        "console.log(({BENCHMARK})({}, {}, {}))",
+        config.rounds, config.warmups, config.calls
+    );
     let output = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
-        .args(["--eval", &format!("console.log({})", call(config))])
+        .args(["--eval", &script])
         .output()?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).into_owned().into());
     }
     parse(&String::from_utf8(output.stdout)?)
-}
-
-fn quickjs(config: &Config) -> Result<Samples> {
-    let engine = Evaluator::new(EvaluatorOptions {
-        memory_limit: 1 << 30,
-        poll_budget: u64::MAX,
-        timeout: Duration::from_secs(24 * 60 * 60),
-        ..EvaluatorOptions::default()
-    })?;
-    let value = engine.evaluate_js(&call(config))?;
-    parse(&engine.string(value)?)
 }
 
 fn median(values: &[f64]) -> f64 {
@@ -84,22 +68,19 @@ fn minimum(values: &[f64]) -> f64 {
 }
 
 pub fn run(config: &Config) -> Result<()> {
-    let engines = [("Node", node(config)?), ("QuickJS", quickjs(config)?)];
+    let samples = node(config)?;
     println!(
         "{} calls per sample, {} timed rounds after {} untimed; median ns per call (minimum)\n",
         config.calls, config.rounds, config.warmups
     );
-    println!("| Shape | Target | Node | QuickJS |\n| --- | --- | ---: | ---: |");
-    for key in engines[0].1.keys() {
+    println!("| Shape | Target | Node |\n| --- | --- | ---: |");
+    for (key, values) in &samples {
         let (shape, target) = key.split_once('/').unwrap_or((key, ""));
-        let cells: Vec<String> = engines
-            .iter()
-            .map(|(_, samples)| {
-                let values = &samples[key];
-                format!("{:.1} ({:.1})", median(values), minimum(values))
-            })
-            .collect();
-        println!("| {shape} | {target} | {} | {} |", cells[0], cells[1]);
+        println!(
+            "| {shape} | {target} | {:.1} ({:.1}) |",
+            median(values),
+            minimum(values)
+        );
     }
     Ok(())
 }

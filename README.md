@@ -958,11 +958,12 @@ cargo test --release --test frontend parser_corpus::parse_clojurescript_checkout
 See [tests/reference/README.md](tests/reference/README.md) for the reference
 tooling and how to set up the checkout.
 
-Benchmarks: `cargo bench --bench tokenizer|parser|subset|compiler|evaluator`; see
-[benchmarks/README.md](benchmarks/README.md). Startup and steady-state time of the
-ratchet programs at every `--optimize` level, in Node and QuickJS:
-`cargo bench --locked --bench compiler -- --levels --output DIR` (see
-[benchmarks/compiler.md](benchmarks/compiler.md#startup-and-steady-state-by-optimization-level--october-13-2026)).
+Run `cargo bench --bench tokenizer|parser|subset|compiler|evaluator` to select a
+benchmark. See [benchmarks/README.md](benchmarks/README.md).
+`cargo bench --locked --bench compiler -- --levels --output DIR` measures startup
+and steady-state time of the ratchet programs at every `--optimize` level in Node.
+`cargo bench --locked --bench compiler -- --callees` measures call costs in Node.
+See [benchmarks/compiler.md](benchmarks/compiler.md#startup-and-steady-state-by-optimization-level--october-13-2026).
 
 For large synthetic applications shared with shadow-cljs,
 `bb benchmarks/generated-project/generate.bb /tmp/cljs-200k --seed 42 --lines 200k`

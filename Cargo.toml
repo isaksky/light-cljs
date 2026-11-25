@@ -56,6 +56,10 @@ count-allocations = []
 [dependencies]
 big-boy-pants-js = { workspace = true, optional = true }
 
+[lib]
+# Benchmarks live in benches/. The library's unit-test harness is for cargo test.
+bench = false
+
 [[bench]]
 name = "tokenizer"
 harness = false
@@ -71,8 +75,6 @@ harness = false
 [[bench]]
 name = "compiler"
 harness = false
-# Its level and callee benchmarks time QuickJS beside Node.
-required-features = ["quickjs"]
 
 [[bench]]
 name = "evaluator"

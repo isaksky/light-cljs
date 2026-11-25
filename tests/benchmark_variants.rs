@@ -6,8 +6,6 @@ mod subset;
 use subset::{Token, Tokenizer};
 use variants::{CompactTokenizer, MatchTokenizer, SourceTooLarge};
 
-// The level benchmark times QuickJS beside Node.
-#[cfg(feature = "quickjs")]
 #[path = "../benches/support/levels.rs"]
 mod levels;
 #[path = "support/ratchet_fixtures.rs"]
@@ -20,8 +18,6 @@ mod temp_dir;
 
 /// `cargo bench --bench compiler -- --levels` at its smallest: two fixtures, one
 /// timed round, tiny steady-state inputs. Every sample is checked as in a real run.
-// The level benchmark times QuickJS beside Node.
-#[cfg(feature = "quickjs")]
 #[test]
 fn level_benchmark_harness_checks_and_records_every_level() {
     let output = temp_dir::TempDir::new("cljs-levels-smoke");
@@ -46,33 +42,31 @@ fn level_benchmark_harness_checks_and_records_every_level() {
     config.calls = 2;
     levels::run(&config, &fixtures).unwrap();
     let samples = std::fs::read_to_string(output.join("samples.csv")).unwrap();
-    // Startup: 2 fixtures x 3 levels x (4 Node + 1 QuickJS measures). Steady state:
-    // 16 ratchet workloads and record-lookup x 3 levels x 2 engines, and 9 collection
-    // workloads in Node at advanced only.
-    assert_eq!(samples.lines().count(), 1 + 30 + 102 + 9, "{samples}");
+    // Startup: 2 fixtures x 3 levels x 4 Node measures. Steady state:
+    // 17 ratchet workloads x 3 levels, and 9 collection workloads at advanced only.
+    assert_eq!(samples.lines().count(), 1 + 24 + 51 + 9, "{samples}");
     for row in [
         "node,parse+execute,seq-pipeline,,advanced,0,",
-        "quickjs,parse+execute,rest-fn,,none,0,",
+        "node,parse+execute,rest-fn,,none,0,",
         "node,call,record-protocol,10,prepare,0,",
-        "quickjs,call,record-printed,10,advanced,0,",
         "node,call,record-printed,10,advanced,0,",
-        "quickjs,call,protocol-dispatch,10,none,0,",
+        "node,call,protocol-dispatch,10,none,0,",
         "node,call,protocol-dispatch,10,advanced,0,",
-        "quickjs,call,record-keys,10,none,0,",
+        "node,call,record-keys,10,none,0,",
         "node,call,record-keys,10,advanced,0,",
-        "quickjs,call,seq-pipeline,10,advanced,0,",
-        "quickjs,call,keyword-lookups,10,none,0,",
+        "node,call,seq-pipeline,10,advanced,0,",
+        "node,call,keyword-lookups,10,none,0,",
         "node,call,constant-literals,10,advanced,0,",
-        "quickjs,call,constant-keys,10,advanced,0,",
-        "quickjs,call,multi-arity,10,advanced,0,",
+        "node,call,constant-keys,10,advanced,0,",
+        "node,call,multi-arity,10,advanced,0,",
         "node,call,event-maps,10,advanced,0,",
-        "quickjs,call,closed-params,10,advanced,0,",
+        "node,call,closed-params,10,advanced,0,",
         "node,call,local-arities,10,advanced,0,",
-        "quickjs,call,reduced-early,10,none,0,",
+        "node,call,reduced-early,10,none,0,",
         "node,call,transient-batches,10,prepare,0,",
-        "quickjs,call,queue-ops,10,advanced,0,",
+        "node,call,queue-ops,10,advanced,0,",
         "node,call,iterator-seq,10,advanced,0,",
-        "quickjs,call,record-lookup,10,none,0,",
+        "node,call,record-lookup,10,none,0,",
         "node,call,record-lookup,10,advanced,0,",
         "node,call,vector-conj,10,advanced,0,",
         "node,call,map-assoc,10,advanced,0,",
@@ -90,8 +84,12 @@ fn level_benchmark_harness_checks_and_records_every_level() {
         !samples.contains("node,call,map-assoc,10,none,"),
         "{samples}"
     );
-    assert!(!samples.contains("quickjs,call,map-assoc,"), "{samples}");
+    assert!(
+        samples.lines().skip(1).all(|row| row.starts_with("node,")),
+        "{samples}"
+    );
     let summary = std::fs::read_to_string(output.join("summary.md")).unwrap();
+    assert!(!summary.contains("QuickJS"), "{summary}");
     assert!(summary.contains("| rest-fn | prepare |"), "{summary}");
     assert!(
         summary.contains("| record-protocol | 10 | none |"),

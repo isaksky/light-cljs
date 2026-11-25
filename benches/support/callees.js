@@ -63,13 +63,12 @@
       pairs.push([shape + "/" + name, loop, shape === "direct" ? methods[name] : target]);
     }
   }
-  const now = typeof performance === "undefined" ? () => Date.now() : () => performance.now();
   const samples = {};
   for (let round = 0; round < warmups + rounds; round++) {
     for (const [key, loop, f] of pairs) {
-      const start = now();
+      const start = performance.now();
       const total = loop(f, n);
-      const elapsed = now() - start;
+      const elapsed = performance.now() - start;
       if (total !== n) throw new Error(key + " returned " + total);
       if (round >= warmups) (samples[key] ??= []).push(elapsed * 1e6 / n);
     }
