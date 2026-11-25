@@ -113,9 +113,10 @@ With --macro-expansions N, --macro-nodes N, --macro-timeout-ms N,
 --macro-memory-limit N and --macro-poll-budget N, raise the macro limits as
 --compile does (defaults 1024, 100000, 10000, 67108864 and 1000000), for the
 startup build and for the watch's session: its load of the program at
-startup is one operation under the deadline and poll budget, and in a step
-so is each namespace compiled again. As with --compile, macros see stub JavaScript packages, which only the
-application has.
+startup is one operation, as is each namespace compiled again in a step.
+Each operation gets a fresh expansion budget, generated-node budget, deadline
+and poll budget. As with --compile, macros see stub JavaScript packages, which
+only the application has.
 
 With --config KEY=EDN, repeatable, give light.build/config the value EDN for
 the keyword KEY in the build and in every step, as --compile does.

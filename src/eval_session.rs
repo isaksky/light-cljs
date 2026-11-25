@@ -323,6 +323,7 @@ impl EvalSession {
     fn begin(&self) -> Result<OperationGuard, EvalDiagnostic> {
         if self.operation_depth.get() == 0 {
             self.engine.begin_operation(&self.options.engine)?;
+            self.dev.reset_expansion_budget();
             *self.output_bytes.borrow_mut() = 0;
         }
         self.operation_depth.set(self.operation_depth.get() + 1);

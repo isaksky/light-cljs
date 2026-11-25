@@ -2458,14 +2458,7 @@ fn repeated_steps_hold_bounded_engine_state_and_no_artifact() {
     let mut watch = Watch::start("dev-watch-live");
     let cache = watch.dir.join("cache");
     let cache = cache.to_str().unwrap().to_owned();
-    // This many recompilations exceed the session's default expansion budget.
-    let args = [
-        "--stats",
-        "--cache-dir",
-        &cache,
-        "--macro-expansions",
-        "4096",
-    ];
+    let args = ["--stats", "--cache-dir", &cache];
     watch.restart(&args);
     watch.restart(&args);
     let report = watch.startup.join("\n");
@@ -2527,6 +2520,43 @@ fn repeated_steps_hold_bounded_engine_state_and_no_artifact() {
     for (step, count) in counts.iter().enumerate().skip(CACHE_FILL_STEPS - 1) {
         assert_eq!(count[3], payloads, "bridge payloads at step {}", step + 1);
     }
+}
+
+#[cfg(any(light_v8, feature = "quickjs"))]
+#[test]
+fn watch_expansion_limit_applies_to_each_compilation() {
+    let mut watch = Watch::start("dev-watch-expansion-limit");
+    let view = watch.source("app/view.cljs");
+    for edit in 1..=1000 {
+        let edited = format!("{view}\n(def edit (labeled \"edit\" {edit}))\n");
+        let (lines, summary) = watch.save("app/view.cljs", &edited);
+        assert!(lines.is_empty(), "edit {edit}: {lines:#?}");
+        assert!(
+            summary.starts_with("light-cljs: recompiled app.view in "),
+            "edit {edit}: {summary}"
+        );
+    }
+
+    let limit = light_cljs::MacroLimits::default().expansions;
+    let too_many = "(labeled \"over budget\")\n".repeat(limit + 1);
+    let before = watch.read("app.view.js");
+    let (lines, summary) = watch.save("app/view.cljs", &format!("{view}\n(do\n{too_many})"));
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("compiler macro expansion limit exceeded")),
+        "{lines:#?}"
+    );
+    assert!(summary.contains("app.view failed and keeps its previous unit"));
+    assert_eq!(watch.read("app.view.js"), before);
+
+    let (lines, summary) = watch.save("app/view.cljs", &view);
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert!(
+        summary.starts_with("light-cljs: recompiled app.view in "),
+        "{summary}"
+    );
+    assert_ne!(watch.read("app.view.js"), before);
 }
 
 /// `light-cljs watch features` (docs/build-configuration.md, "Commands"),

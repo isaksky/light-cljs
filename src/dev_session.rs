@@ -140,9 +140,8 @@ pub struct DevSession {
     /// What the compiler and its macro heap poll: the control of the heap
     /// that interprets the actions in process, or the session's own.
     control: ExecutionControl,
-    /// The limits of each operation when the session owns its control: each
-    /// public method then begins a new deadline and poll budget, as
-    /// `EvalSession` does for its heap's.
+    /// The evaluator limits for each operation when the session owns its
+    /// control. Its operations also begin a fresh macro expansion budget.
     operation: Option<EvaluatorOptions>,
     loaded: RefCell<HashSet<String>>,
     loading: RefCell<Vec<String>>,
@@ -197,9 +196,10 @@ impl DevSession {
     /// `max_source_bytes`, `assertions`, `policy`, `configuration` and
     /// `opaque_packages`. The other fields
     /// configure a heap. Each call of [`Self::form`], [`Self::source`],
-    /// [`Self::load_file`] or [`Self::read_forms`] runs under a new deadline
-    /// and poll budget of `engine`; one that runs out, or a cancelled
-    /// [`Self::control`], leaves the session terminal, as an `EvalSession`.
+    /// [`Self::load_file`] or [`Self::read_forms`] gets a fresh macro expansion
+    /// budget and a new deadline and poll budget from `engine`. Exhausting
+    /// the deadline or poll budget, or cancelling [`Self::control`], leaves
+    /// the session terminal, as an `EvalSession`.
     /// The V8 macro heap requires a memory limit of at least 16 MiB.
     ///
     /// Analysis is in warning mode, as dev compilation's is
@@ -708,8 +708,12 @@ impl DevSession {
     fn begin(&self) -> Result<(), EvalDiagnostic> {
         if let Some(options) = &self.operation {
             self.control.begin(options)?;
+            self.reset_expansion_budget();
         }
         Ok(())
+    }
+    pub(crate) fn reset_expansion_budget(&self) {
+        self.compiler.borrow().host.reset_expansion_budget();
     }
     pub(crate) fn compiler(&self) -> Ref<'_, InteractiveCompiler> {
         self.compiler.borrow()

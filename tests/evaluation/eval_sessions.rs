@@ -90,6 +90,29 @@ fn printed(s: &mut light_cljs::EvalSession, source: &str) -> String {
     s.release(v).unwrap();
     text
 }
+
+#[test]
+fn macro_expansion_budget_resets_between_evaluations() {
+    let mut options = EvalOptions::default();
+    options.compiler.expansions = 8;
+    let mut session = EvalSession::new(options).unwrap();
+    assert_eq!(printed(&mut session, "(defmacro one [] 1)"), "nil");
+    let within_limit = "(one) ".repeat(8);
+    for _ in 0..3 {
+        assert_eq!(printed(&mut session, &within_limit), "1");
+    }
+    let error = session
+        .eval_string(&format!("{within_limit}(one)"))
+        .unwrap_err();
+    assert!(
+        error
+            .message
+            .contains("compiler macro expansion limit exceeded"),
+        "{error}"
+    );
+    assert_eq!(printed(&mut session, &within_limit), "1");
+}
+
 #[test]
 fn incremental_application_roots_and_macro_roots_are_independent() {
     let mut s = EvalSession::new(EvalOptions::default()).unwrap();

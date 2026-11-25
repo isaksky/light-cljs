@@ -2408,6 +2408,12 @@ impl MacroHost {
     pub(crate) fn reset_unit_work(&mut self) {
         self.engine.work = Default::default();
     }
+    /// Start a new session operation's logical budget in the shared counters.
+    pub(crate) fn reset_expansion_budget(&self) {
+        self.engine.expansions.set(0);
+        self.engine.generated_nodes.set(0);
+        self.engine.work.charged_expansions.set(0);
+    }
     /// Begin measuring the next namespace's logical work
     /// ([`WorkMarks`]): its counts start here, and its marks from nothing.
     pub(crate) fn begin_namespace_work(&self) -> WorkStart {
