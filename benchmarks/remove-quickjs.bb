@@ -186,6 +186,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ")
     (apply process/shell "rustc" "--edition=2024" "-C" "opt-level=3"
+           "-C" "lto=thin" "-C" "codegen-units=1"
            "--extern" (str "light_cljs=" (fs/path release "liblight_cljs.rlib"))
            "-L" (str "dependency=" (fs/path release "deps"))
            "-o" (str driver) (str source)

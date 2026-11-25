@@ -117,3 +117,31 @@ script. Macro execution starts a second V8 isolate on the branch in
 place of master's QuickJS runtime. The branch requires at least 16 MiB
 for a V8 heap, and these runs use the default 64 MiB setting. The user
 must decide whether the macro-heavy memory increase is acceptable.
+
+## 3. Compiler data readers
+
+```sh
+bb benchmarks/remove-quickjs.bb readers "$logs" "$master" "$branch" 10
+bb benchmarks/remove-quickjs.bb summary "$logs/readers.edn"
+```
+
+The script links a small driver against each revision's release library
+because configuring a compiler data reader is a library API. It compiles
+a namespace with a registered `#bench/named` reader and an unknown
+`#bench/fallback` tag handled by the default reader. The small source
+contains 16 calls of each kind, and the scaled source contains 3,000
+of each. Node checks the emitted program's sum outside the timed command.
+
+| Reader calls | Master wall (s) | Branch wall (s) | Master peak (MiB) | Branch peak (MiB) | Load range |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 32 | 0.061 [0.059–0.105] | 0.024 [0.023–0.032] | 20.22 [20.16–23.86] | 26.91 [26.80–27.03] | 4.50–4.62 |
+| 6,000 | 0.167 [0.165–0.168] | 0.065 [0.063–0.067] | 27.55 [27.41–27.67] | 49.55 [47.23–51.30] | 4.57–4.62 |
+
+The scaled workload takes 39% of master's wall time and adds 22.00 MiB
+(80%) at the median. The small workload also speeds up and adds 6.69 MiB.
+Both memory increases exceed the observed ranges. A diagnostic run of
+the scaled source reports one V8 isolate on the branch and zero on
+master, since the fixture only needs a reader engine. The branch uses
+a dedicated V8 reader isolate with a 16 MiB initial allowance and a
+64 MiB ceiling at the default limit. The user must decide whether to
+accept the higher peak memory for these tagged-literal workloads.
