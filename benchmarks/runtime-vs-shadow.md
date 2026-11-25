@@ -6499,3 +6499,81 @@ All 80 operations matched shadow-cljs checksums. In the full 80-op run, machine 
 | `flow` | 1,259,263 | 1,260,122 (+859) | 292,990 | 293,425 | +435 B (+0.15%) | 345,988 -> 346,557 (+569 B, +0.16%) |
 
 Standalone gzip growth slightly above 0.5% on `simple` (+0.69%) and `todomvc` (+0.51%) comes from the fixed ~2 KB raw (~520 B gzip) `fnApplyTo`/`apply`/`applyDirect`/`applyFixed` runtime helpers (below +0.5% on the shipped whole bundle and +0.15% on `flow`). Size ratchet ceilings are recomputed on `956e908e` in `tests/support/ratchet_fixtures.rs` and `tests/compiler/chunks.rs`.
+
+
+## 2026-11-24: defer lazyErrorStack probe to first ExceptionInfo construction (light-cljs-1121)
+
+Measured on `master` `54c3ce59` (`light-cljs-base-54c3ce59`, SHA-256 `518d4a03cb85c5ed...`), pre-regression `4d8d02d5` (`light-cljs-4d8d02d5`, SHA-256 `c83ad3079129f3a4...`), and the fix (`debef950`, same `:advanced` output as `light-cljs-after`, SHA-256 `df3214808ebb62ff...`) against shadow-cljs 3.5.3 (Headless Chromium 156.0.8078.4, esbuild 0.25.10, Node v26.12.1, Apple M3 Ultra VM, 24 CPUs, 32 GiB; unreserved, compilers alternated).
+
+- **Change:** Replaced top-level `const lazyErrorStack = typeof Object.getOwnPropertyDescriptor(new Error(), "stack")?.get === "function";` inside the runtime factory with `let lazyErrorStack;` inside `//@unit ExceptionInfo`, populated on the first `ExceptionInfo` construction by inspecting the `new Error(message)` it already constructs (`if (lazyErrorStack === undefined) lazyErrorStack = typeof Object.getOwnPropertyDescriptor(error, "stack")?.get === "function";`), and tracked `lazyErrorStack` as per-task state in the shared-heap profile (`build.rs`, `src/js_shared_profile.js`).
+
+### TodoMVC release comparison (headless Chromium, 10 runs alternated each, unreserved)
+
+| Step | `4d8d02d5` pre-1114 ms (script ms) | `54c3ce59` before ms (script ms) | `light-cljs-1121` after ms (script ms) | shadow-cljs ms (script ms, paired w/ after) | after / shadow |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| page load to interactive | 42.20 [40.50-46.10] (21.74 [20.61-23.28]) | 64.70 [61.50-69.10] (43.93 [41.19-46.01]) | 43.05 [41.60-44.60] (21.97 [21.06-22.74]) | 35.30 [33.70-64.30] (14.86 [14.15-26.91]) | 1.22 |
+| add 1,000 todos | 789.65 [768.50-818.40] (743.74) | 772.80 [753.80-785.20] (729.44) | 776.80 [758.10-788.70] (733.77) | 956.20 [926.00-966.80] (907.47) | 0.81 |
+| toggle all | 47.40 [43.80-60.80] (26.94) | 46.75 [42.40-54.20] (23.13) | 47.55 [43.30-53.20] (23.48) | 48.20 [40.00-54.10] (21.50) | 0.99 |
+| edit one in 1,000 | 62.10 [55.80-69.40] (8.55) | 60.70 [57.50-63.70] (8.21) | 61.95 [58.30-64.00] (8.36) | 61.30 [58.40-70.10] (7.78) | 1.01 |
+| clear completed | 25.65 [24.40-27.20] (7.94) | 25.65 [24.00-27.90] (7.30) | 25.45 [24.60-27.20] (7.28) | 25.40 [23.50-26.40] (7.52) | 1.00 |
+| whole run wall s | 1.36 [1.31-1.43] | 1.36 [1.32-1.39] | 1.34 [1.31-1.35] | 1.52 [1.47-1.86] | 0.88 |
+| 1-min load before | 5.38-5.82 | 5.46-5.77 | 6.37-6.57 | 6.37-6.57 | |
+
+Paired shadow-cljs medians were `34.90 ms` (`14.95 ms` script) with `4d8d02d5`, `34.10 ms` (`14.30 ms` script) with `54c3ce59`, and `35.30 ms` (`14.86 ms` script) with `after`. Deferring `lazyErrorStack` recovers `-21.65 ms` of page load (`-21.96 ms` script), restoring the `1.22x` ratio of pre-1114 `4d8d02d5` (`1.21x`).
+
+### CDP V8 trace and first post-load `ex-info` check
+
+- **TodoMVC load trace (`v8,v8.execute,disabled-by-default-v8.compile`):**
+  - `shadow-cljs`: `V8.CollectSourcePositions = 0.00 ms` (0), `V8.ParseFunction = 4.82 ms`, `v8.run = 11.70 ms`.
+  - `4d8d02d5` (pre-1114): `V8.CollectSourcePositions = 0.00 ms` (0), `V8.ParseFunction = 8.09 ms`, `v8.run = 18.32 ms`.
+  - `54c3ce59` (before): `V8.CollectSourcePositions = 25.31 ms` (3), `V8.ParseFunction = 24.97 ms`, `v8.run = 56.65 ms`.
+  - `light-cljs-1121` (after): `V8.CollectSourcePositions = 0.00 ms` (0), `V8.ParseFunction = 7.91 ms`, `v8.run = 19.33 ms`.
+- **First `(ex-info "x" {})` after load (verifying the 23 ms cost did not move):**
+  - **Tiny `:advanced` module in Node (5 fresh processes each):** `54c3ce59` first `0.039-0.050 ms` (median `0.043 ms`), next 1,000 `1.84-2.82 ms` (median `1.95 ms`); `after` first `0.049-0.057 ms` (median `0.052 ms`), next 1,000 `1.85-2.09 ms` (median `1.96 ms`).
+  - **Full 248 KB TodoMVC bundle in headless Chromium:** `54c3ce59` load `V8.CollectSourcePositions = 22.65 ms`, first post-load `ex-info` `V8.CollectSourcePositions = 0.07 ms` (`firstMs = 0.20 ms`, next 1,000 `1.80 ms`); `after` load `V8.CollectSourcePositions = 0.00 ms`, first post-load `ex-info` `V8.CollectSourcePositions = 0.08 ms` (`firstMs = 0.10 ms`, next 1,000 `2.10 ms`). Because the 248 KB runtime factory has already returned before post-load `ExceptionInfo` runs, V8 only collects source positions for the small active stack frames.
+
+### Generated workload, 200k lines (10 runs alternated, unreserved)
+
+- **Before (`54c3ce59`, load 4.48-4.89):** 1-iter first output `0.318 s (0.315-0.345)` / wall `0.322 s (0.319-0.349)` vs shadow `0.306 s` / `0.309 s` (`1.04x`); 10-iter wall `0.591 s (0.580-0.627)` vs `0.581 s` (`1.02x`); 40-iter wall `1.259 s (1.215-1.323)` vs `1.233 s` (`1.02x`); steady state `24.0 vs 23.7 ms/iter (1.01x)`.
+- **After (`light-cljs-1121`, load 5.41-5.94):**
+
+| Iterations | Compiler | First output | Wall time | User CPU | System CPU | Peak memory | 1-minute load before |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | light-cljs | 0.328 s (0.319-0.345) | 0.333 s (0.323-0.350) | 0.39 s (0.37-0.40) | 0.03 s (0.03-0.03) | 0.139 GB (0.138-0.141) | 5.66-5.80 |
+| 1 | shadow-cljs | 0.312 s (0.304-0.337) | 0.316 s (0.308-0.341) | 0.36 s (0.35-0.38) | 0.02 s (0.02-0.03) | 0.122 GB (0.119-0.126) | 5.66-5.80 |
+| 10 | light-cljs | 0.630 s (0.600-0.647) | 0.636 s (0.605-0.653) | 0.86 s (0.81-0.89) | 0.06 s (0.05-0.06) | 0.184 GB (0.178-0.189) | 5.44-5.81 |
+| 10 | shadow-cljs | 0.606 s (0.591-0.627) | 0.613 s (0.597-0.633) | 0.83 s (0.80-0.84) | 0.06 s (0.06-0.07) | 0.206 GB (0.196-0.210) | 5.44-5.81 |
+| 40 | light-cljs | 1.293 s (1.232-1.500) | 1.311 s (1.247-1.517) | 1.77 s (1.68-1.94) | 0.09 s (0.08-0.17) | 0.251 GB (0.244-0.258) | 5.41-5.94 |
+| 40 | shadow-cljs | 1.332 s (1.249-1.453) | 1.342 s (1.256-1.464) | 1.85 s (1.73-1.94) | 0.11 s (0.09-0.16) | 0.270 GB (0.262-0.285) | 5.41-5.94 |
+
+Steady state (1- and 40-iter medians): **25.1 vs 26.3 ms/iter (0.95x shadow)**; 1-iter first output ranges overlap `54c3ce59` (`0.319-0.345` vs `0.315-0.345 s`, ratio `1.05x` vs `1.04x` under higher machine load).
+
+### Generated workload, 800k lines (10 runs alternated, unreserved)
+
+- **Before (`54c3ce59`, load 4.76-5.92):** 1-iter first output `1.050 s (0.999-1.190)` / wall `1.059 s (1.008-1.200)` vs shadow `1.043 s` / `1.051 s` (`1.01x`); 4-iter wall `1.409 s (1.382-1.458)` vs `1.390 s` (`1.01x`); 16-iter wall `2.666 s (2.622-2.796)` vs `2.714 s` (`0.98x`); steady state `107.2 vs 110.8 ms/iter (0.97x)`.
+- **After (`light-cljs-1121`, load 5.07-5.88):**
+
+| Iterations | Compiler | First output | Wall time | User CPU | System CPU | Peak memory | 1-minute load before |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | light-cljs | 1.046 s (1.017-1.283) | 1.055 s (1.025-1.294) | 1.21 s (1.18-1.41) | 0.07 s (0.07-0.20) | 0.381 GB (0.349-0.386) | 5.14-5.53 |
+| 1 | shadow-cljs | 1.049 s (1.010-1.123) | 1.057 s (1.019-1.156) | 1.18 s (1.15-1.28) | 0.06 s (0.06-0.10) | 0.338 GB (0.286-0.340) | 5.14-5.53 |
+| 4 | light-cljs | 1.491 s (1.426-1.687) | 1.503 s (1.438-1.709) | 1.85 s (1.76-2.06) | 0.11 s (0.10-0.22) | 0.405 GB (0.374-0.422) | 5.07-5.88 |
+| 4 | shadow-cljs | 1.494 s (1.432-1.680) | 1.505 s (1.442-1.692) | 1.84 s (1.75-2.02) | 0.12 s (0.10-0.20) | 0.401 GB (0.375-0.414) | 5.07-5.88 |
+| 16 | light-cljs | 2.695 s (2.628-2.925) | 2.709 s (2.641-2.939) | 3.58 s (3.49-3.78) | 0.16 s (0.15-0.26) | 0.496 GB (0.470-0.513) | 5.35-5.87 |
+| 16 | shadow-cljs | 2.748 s (2.617-3.128) | 2.767 s (2.631-3.149) | 3.70 s (3.52-4.00) | 0.19 s (0.16-0.44) | 0.562 GB (0.545-0.581) | 5.35-5.80 |
+
+Steady state (1- and 16-iter medians): **110.3 vs 114.0 ms/iter (0.97x shadow)**; 1-iter first output **1.046 vs 1.049 s (1.00x)**; 16-iter wall **0.98x**, CPU **0.96x**, peak memory **0.88x**.
+
+### Core-ops gate, browser checks, and sizes (`54c3ce59` -> `light-cljs-1121`)
+
+- **Core-ops gate:** `benchmarks/core-ops` omits `ExceptionInfo`; `core-ops.main.js` is byte-for-byte identical (`SHA-256 071edb48f0f004ede5e93bba3f31a4f485409677abdc401fe61afa73b8ccd2a3`).
+- **Browser checks (`bb benchmarks/re-frame.bb browser --compiler light`):** `todomvc` 10/10 pass, `simple` 4/4 pass, `flow` 2/2 pass.
+- **Sizes (`bb benchmarks/re-frame.bb size --light-only`):**
+
+| App | Before raw (without React) | After raw (without React) | Before gzip -9 | After gzip -9 | gzip delta (without React) | Whole bundle gzip -9 (+esbuild) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `simple` | 281,807 | 281,818 (+11) | 75,824 | 75,827 | +3 B (+0.00%) | 121,936 -> 121,952 (+16 B, +0.01%) |
+| `todomvc` | 398,850 | 398,861 (+11) | 106,106 | 106,123 | +17 B (+0.02%) | 154,085 -> 154,090 (+5 B, +0.00%) |
+| `flow` | 1,260,929 | 1,260,940 (+11) | 293,516 | 293,529 | +13 B (+0.00%) | 346,662 -> 346,622 (-40 B, -0.01%) |
+
+No size ratchet or chunk ceiling moved (`tests/support/ratchet_fixtures.rs`, `tests/compiler/chunks.rs` all pass unchanged).
