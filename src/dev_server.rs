@@ -1520,7 +1520,6 @@ fn connection(stream: TcpStream, site: &Arc<Site>) -> io::Result<()> {
                 &request,
                 &path,
                 within,
-                head_only,
                 keep_alive,
             ),
             (_, "/reply") => {
@@ -2498,9 +2497,9 @@ fn file(
     request: &Request,
     path: &str,
     within: &str,
-    head_only: bool,
     keep_alive: bool,
 ) -> io::Result<()> {
+    let head_only = request.method == "HEAD";
     let found = if within == "/" || within == "/index.html" {
         let page = shared.out_dir().join("index.html");
         if page.is_file() {

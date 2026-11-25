@@ -11878,7 +11878,8 @@
   function protocolPredicate(protocol, key, value, direct) {
     if (slotFirst.on) {
       if (value != null) {
-        const slot = protocol ? (protocol.slot$LKEY ?? (protocol.slot$LKEY = protocolSlot(key, 0))) : protocolSlot(key, 0);
+        // A local alias can share the protocol object but names a different marker.
+        const slot = protocolSlot(key, 0);
         if (value[slot] === protocolSentinel) return true;
       }
       if (direct) return false;

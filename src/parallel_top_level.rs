@@ -23,13 +23,13 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use crate::analyzer::namespace_publication::{NamespacePublication, WaveSnapshot};
+use crate::analyzer::namespace_publication::NamespacePublication;
 use crate::analyzer::{AnalysisOptions, NamespaceAnalysis, NamespaceInput};
 use crate::build_services::BuildGuard;
 use crate::compilation_session::{
     CompilationSession, NamespaceOverlayOutput, PoolPolicy, SharedCatalog,
 };
-use crate::macro_host::{MacroEnvironment, MacroHost, NamespaceMetadata, UnitRecording};
+use crate::macro_host::{MacroHost, NamespaceMetadata, UnitRecording};
 use crate::{AnalysisError, CollectionKind, NodeId, NodeKind};
 
 use super::{NamespaceSource, prepare_source};
@@ -358,24 +358,17 @@ impl ParallelTopLevel {
 
         // Lazily construct one shared O(1) wave snapshot only if at least one
         // lookahead namespace is actually eligible for dispatch.
-        let mut wave: Option<(
-            WaveSnapshot,
-            MacroEnvironment,
-            (usize, usize, usize),
-            usize,
-            usize,
-        )> = None;
+        let mut wave = None;
 
         let macro_version = macros.tables.macro_version;
         let data_readers_now = macros.data_reader_count();
-        for j in (current_index + 1)..end {
+        for (j, file) in ordered.iter().enumerate().take(end).skip(current_index + 1) {
             if self.in_flight >= self.max_in_flight {
                 break;
             }
             if self.states[j] != SlotState::Pending || self.unmet_deps[j] != 0 {
                 continue;
             }
-            let file = &ordered[j];
             // Do not speculatively analyze warm cache candidates; they go
             // through cache lookup when canonical `index` reaches them.
             if skip_speculation(&file.name) {
@@ -795,8 +788,10 @@ fn metadata_has_macro(file: &NamespaceSource, node: NodeId) -> bool {
             kind: CollectionKind::Map,
             children,
         } => children
-            .chunks_exact(2)
-            .any(|pair| &file.source[file.syntax.nodes[pair[0].0].span.clone()] == ":macro"),
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .any(|[key, _]| &file.source[file.syntax.nodes[key.0].span.clone()] == ":macro"),
         _ => false,
     }
 }

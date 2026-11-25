@@ -5,6 +5,9 @@ edition = "2024"
 publish = false
 description = "The browser playground's WebAssembly entry: light-cljs compiled for wasm32-unknown-unknown"
 
+# Declare the workspace root explicitly so Cargo stops here in nested worktrees.
+[workspace]
+
 [lib]
 crate-type = ["cdylib"]
 
