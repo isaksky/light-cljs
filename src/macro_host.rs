@@ -1107,6 +1107,9 @@ struct Classifier {
     source_bindings: crate::layered::QualifiedNames<SourceBindingKind>,
     javascript_macros: crate::layered::QualifiedNames<crate::compiler_bootstrap::CompiledMacro>,
     log: crate::build_services::SharedLog,
+    /// The namespaces the expansion reflected on, which a parallel
+    /// top-level pass checks its snapshot against, as for `ns-interns`.
+    reflected: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
 }
 
 thread_local! {
@@ -1126,6 +1129,7 @@ impl ClassifyScope {
             source_bindings: host.tables.source_bindings.clone(),
             javascript_macros: host.tables.javascript_macros.clone(),
             log: host.engine.dependency_log.clone(),
+            reflected: host.engine.reflected_namespaces.clone(),
         };
         Self(CLASSIFIER.with(|slot| slot.borrow_mut().replace(classifier)))
     }
@@ -1174,7 +1178,10 @@ pub(crate) fn classify_name(target: &str) -> Result<&'static str, String> {
         } else {
             "unresolved"
         };
-        let observed = (namespace != classifier.namespace).then(|| classifier.log.clone());
+        let observed = (namespace != classifier.namespace).then(|| {
+            classifier.reflected.borrow_mut().push(namespace.to_owned());
+            classifier.log.clone()
+        });
         Some((kind, observed))
     });
     let Some((kind, observed)) = answer else {

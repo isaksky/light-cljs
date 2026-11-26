@@ -2630,7 +2630,7 @@ explicit inputs that a compiler cache can key on
 
   | Answer | Meaning |
   | --- | --- |
-  | `:fn-var` | A Var whose last definition with a value is a function: `defn`, `defn-`, a `def` of a `fn`/`fn*` form, a protocol method, a type's `->T`/`map->T` factory, or a core function (`=`, `pos?`, `string?`, `str`), including those a core macro of the same name inlines. |
+  | `:fn-var` | A Var whose last definition with a value is a function: `defn`, `defn-`, a `def` whose initializer is written as a `fn*` or core `fn` form (the check reads the form before expansion, so a user macro that expands to `fn` gives `:var`), a protocol method, the `->T`/`map->T` factory of a top-level type or record, or a core function (`=`, `pos?`, `string?`, `str`), including those a core macro of the same name inlines. |
   | `:var` | Any other Var: a `def` of a value, a multimethod, a type, a core value such as `*print-fn*`. |
   | `:macro` | A `defmacro` of any namespace, or a core macro or analyzer-lowered core form (`and`, `when`, `defn`, `binding`). |
   | `:special-form` | `if`, `def`, `do`, `let*`, `loop*`, `letfn*`, `fn*`, `recur`, `quote`, `var`, `throw`, `try`, `catch`, `finally`, `new`, `set!`, `.`, `js*`, `case*`, `deftype*`, `defrecord*`, `ns`, `ns*`, `&`, and constructor sugar `T.`. |
@@ -2650,7 +2650,8 @@ explicit inputs that a compiler cache can key on
   (`EdgeKinds::OBSERVED`), as reflecting it with `ns-interns` is, so
   editing it recompiles the caller; the caller's own names and `cljs.core`
   are covered by its own source and the compiler. A non-symbol is an error,
-  and so is a call outside a macro expansion, including from a data reader.
+  and so is a call outside a macro expansion (code that runs during one,
+  such as a helper it initializes, answers for that expansion's caller).
   The host object answers `.classify(qualifiedName)` with `"fn-var"`,
   `"var"`, `"macro"` or `"unresolved"`.
 - **Data readers.** A handler registered with

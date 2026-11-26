@@ -232,3 +232,42 @@ fn classify_answers_match_on_parallel_workers() {
     assert!(stat(&stats, "pool.worker-isolates") > 0, "{stats}");
     assert_eq!(node(&parallel), EXPECTED);
 }
+
+/// A name of a namespace the caller does not require is still a
+/// dependency: redefining it recompiles the caller on a cached build, with
+/// one job or several.
+#[test]
+fn classify_answers_about_an_unrequired_namespace_invalidate_the_caller() {
+    for jobs in ["1", "4"] {
+        let root = TempDir::new("cljs-build-classify-observed");
+        write(
+            root.path(),
+            "src/probe/macros.cljs",
+            &MACROS.replace(
+                "(:require [light.build :as b])",
+                "(:require [light.build :as b] [probe.other])",
+            ),
+        );
+        write(
+            root.path(),
+            "src/probe/other.cljs",
+            "(ns probe.other) (defn thing [x] x)",
+        );
+        write(
+            root.path(),
+            "src/probe/main.cljs",
+            "(ns probe.main (:require [probe.macros :refer [kinds]])) \
+             (js/console.log (kinds probe.other/thing))",
+        );
+        let options = ["--jobs", jobs, "--macro-memory-limit", "268435456"];
+        let (first, _) = compile(root.path(), true, &options);
+        assert_eq!(node(&first), "[:fn-var]");
+        write(
+            root.path(),
+            "src/probe/other.cljs",
+            "(ns probe.other) (def thing 1)",
+        );
+        let (second, stats) = compile(root.path(), true, &options);
+        assert_eq!(node(&second), "[:var]", "{stats}");
+    }
+}
