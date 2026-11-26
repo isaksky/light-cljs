@@ -74,6 +74,7 @@ mod case_char_string_gap;
 mod case_numeric;
 mod chunks;
 mod cljc_prefixes;
+mod clojure_template;
 mod compile_time_units;
 mod configured_custom_source_context;
 mod configured_source_context;
@@ -184,7 +185,6 @@ mod runtime_set_order;
 mod runtime_set_traversal;
 mod runtime_slicing;
 // The scheduling perturbation it drives exists in debug builds only.
-mod clojure_template;
 #[cfg(debug_assertions)]
 mod schedule_stress;
 mod sci_cljc_accepted_probe;

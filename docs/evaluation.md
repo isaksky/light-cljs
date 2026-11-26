@@ -188,8 +188,8 @@ and ordinary host errors leave the session usable.
 
 Sources load only through the explicit provider. `ns` and `require` use ordinary
 `.cljs`/`.cljc` compilation, aliases/refers and dependency-once loading; standard
-`clojure.string`, `clojure.set`, `clojure.walk`, `clojure.edn` and `cljs.reader`
-sources are bundled. No ambient filesystem, npm, Node, DOM or JVM is introduced.
+`clojure.string`, `clojure.set`, `clojure.walk`, `clojure.template`, `clojure.edn`
+and `cljs.reader` sources are bundled. No ambient filesystem, npm, Node, DOM or JVM is introduced.
 
 An `ns` form goes through the compiler's namespace analysis, as `ns*` does
 and as a source file's header does under `--compile` (light-cljs-284), so

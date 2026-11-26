@@ -43,8 +43,8 @@ committed beyond the adapted files listed above.
   header notice that must not be removed:
   - `src/compiler_libraries/clojure/template.cljs` (from
     `src/clj/clojure/template.clj`, by Stuart Sierra)
-- Compiled programs that call `clojure.template/apply-template` at run time
-  embed JavaScript compiled from that file.
+- Compiled programs that use `clojure.template` may embed JavaScript compiled
+  from that file.
 
 ## SCI (Small Clojure Interpreter)
 

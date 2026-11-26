@@ -6,8 +6,12 @@
 ;   the terms of this license.
 ;   You must not remove this notice, or any other, from this software.
 
-;;; template.cljs - anonymous functions that pre-evaluate sub-expressions
-;;; Adapted from Clojure's clojure/template.clj (by Stuart Sierra). The
+;;; template.clj - anonymous functions that pre-evaluate sub-expressions
+
+;; By Stuart Sierra
+;; June 23, 2009
+
+;;; Adapted for light-cljs from Clojure's clojure/template.clj. The
 ;;; function and the macro live in one namespace, as light-cljs runs macros
 ;;; from ordinary sources.
 
