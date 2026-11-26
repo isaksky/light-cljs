@@ -167,7 +167,8 @@ pub enum RequireTarget {
 pub enum RequireForm {
     /// As written in the `ns` form.
     Declared,
-    /// `clojure.X` had no source and `cljs.X` did.
+    /// `clojure.X` had no source and `cljs.X` had one or was bundled while
+    /// `clojure.X` was not (`crate::compiler::clojure_fallback`).
     ClojureRewrite,
     /// Added because the source spells `light.lazy/loadable`.
     ImplicitLazy,

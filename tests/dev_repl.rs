@@ -1230,4 +1230,16 @@ fn repl_requires_fall_back_from_clojure_to_cljs_namespaces() {
         repl.value("[(r/read-string \"{:a 1}\") (clojure.reader/read-string \"2\") (cljs.reader/read-string \"3\") v clojure.foo/v cljs.foo/v]"),
         "[{:a 1} 2 3 41 41 41]"
     );
+    // A `clojure.reader` source that appears later wins from then on.
+    fs::create_dir_all(watch.dir.join("src/clojure")).unwrap();
+    fs::write(
+        watch.dir.join("src/clojure/reader.cljs"),
+        "(ns clojure.reader) (defn read-string [s] (str \"own \" s))",
+    )
+    .unwrap();
+    assert_eq!(repl.value("(require '[clojure.reader :as own])"), "nil");
+    assert_eq!(
+        repl.value("[(own/read-string \"1\") (clojure.reader/read-string \"2\") (cljs.reader/read-string \"3\")]"),
+        "[\"own 1\" \"own 2\" 3]"
+    );
 }

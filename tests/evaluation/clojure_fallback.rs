@@ -58,7 +58,8 @@ fn eval_falls_back_from_clojure_to_bundled_and_source_cljs_namespaces() {
         run(&root, &["--eval", main.to_str().unwrap()], ""),
         "[{:a 1} [2] :k 3 41 41 41 41]\n"
     );
-    // A quoted `require` and an `ns*` take the same fallback.
+    // A quoted `require` and an `ns*` take the same fallback, which may
+    // require the library again under the same alias.
     assert_eq!(
         run(
             &root,
@@ -66,12 +67,12 @@ fn eval_falls_back_from_clojure_to_bundled_and_source_cljs_namespaces() {
                 "--eval",
                 "--text",
                 "(require '[clojure.reader :as r] '[clojure.foo :refer [v]])
-                 (ns* (:require '[clojure.reader :as r2]))
-                 [(r/read-string \"{:b 2}\") (r2/read-string \"4\") (clojure.reader/read-string \"5\") v clojure.foo/v]",
+                 (ns* (:require '[clojure.reader :as r2] '[clojure.reader :as r]))
+                 [(r/read-string \"{:b 2}\") (r2/read-string \"4\") (r/read-string \"6\") (clojure.reader/read-string \"5\") v clojure.foo/v]",
             ],
             "",
         ),
-        "[{:b 2} 4 5 41 41]\n"
+        "[{:b 2} 4 6 5 41 41]\n"
     );
     // An explicit `clojure.foo` source replaces `cljs.foo`.
     write(&root, "clojure/foo.cljs", "(ns clojure.foo) (def v 7)");

@@ -1243,6 +1243,11 @@ impl InteractiveCompiler {
                 self.set_alias(&import.namespace, &rewritten);
                 request.namespace = Name::new(None, &rewritten);
                 import.namespace = rewritten;
+            } else if let Some(suffix) = import.namespace.strip_prefix("clojure.") {
+                // A source that appeared since an earlier fallback wins.
+                let rewritten = format!("cljs.{suffix}");
+                self.aliases
+                    .retain(|pair| *pair != (import.namespace.clone(), rewritten.clone()));
             }
         }
         self.set_imports(imports)?;

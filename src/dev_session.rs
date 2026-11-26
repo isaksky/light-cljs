@@ -1200,9 +1200,9 @@ impl DevSession {
     /// provider does not provide for this request: a `goog.*` one is a
     /// JavaScript host namespace, which `--compile` binds instead of loading
     /// (`NamespaceSource::bind_host_namespace`), and a `clojure.*` one may
-    /// resolve to its `cljs.*` one (`crate::compiler::clojure_fallback`). As
-    /// there, the bundled libraries are not asked here. A provider that fails answers no, so that
-    /// the load reports its error.
+    /// resolve to its `cljs.*` one (`crate::compiler::clojure_fallback`,
+    /// which asks the bundled libraries itself). A provider that fails
+    /// answers no, so that the load reports its error.
     fn hosted(&self, request: &LoadRequest) -> bool {
         let name = String::from_utf16_lossy(request.namespace.name());
         if self.loaded.borrow().contains(&name) {

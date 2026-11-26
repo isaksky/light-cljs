@@ -513,14 +513,19 @@ impl NamespaceSource {
         // A `clojure.X` require no source provides resolves to `cljs.X` as
         // the loader resolves it ([`clojure_fallback`]).
         let mut rewrites = Vec::new();
+        let mut stale = Vec::new();
         for dependency in &mut self.requires {
             if let Some(rewritten) =
                 clojure_fallback(dependency, &mut |namespace| !hosted(namespace, &self.name))
             {
                 rewrites.push((dependency.clone(), rewritten.clone()));
                 *dependency = rewritten;
+            } else if let Some(suffix) = dependency.strip_prefix("clojure.") {
+                // A source that appeared since an earlier fallback wins.
+                stale.push((dependency.clone(), format!("cljs.{suffix}")));
             }
         }
+        self.aliases.retain(|pair| !stale.contains(pair));
         for (written, rewritten) in &rewrites {
             self.rewrite_clojure_require(written, rewritten);
         }
@@ -893,7 +898,12 @@ impl NamespaceSource {
                             if let Some((_, previous)) =
                                 self.aliases.iter().find(|(existing, _)| existing == alias)
                             {
-                                if previous != &parsed.import.namespace {
+                                // Or the `cljs.X` an earlier directive
+                                // resolved this `clojure.X` to.
+                                let rewritten = self.aliases.iter().any(|(written, target)| {
+                                    written == &parsed.import.namespace && target == previous
+                                });
+                                if previous != &parsed.import.namespace && !rewritten {
                                     return Err(self.error(
                                         parsed.alias_node.unwrap_or(spec),
                                         format!(
