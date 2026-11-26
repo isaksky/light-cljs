@@ -167,6 +167,48 @@ impl V8Evaluator {
             .used_heap_size();
         i64::try_from(used.saturating_add(self.state.buffers.used())).unwrap_or(i64::MAX)
     }
+
+    /// Live V8 JS-object heap bytes and charged buffer backing storage,
+    /// excluding V8's JIT code and trusted bytecode/metadata spaces, which
+    /// flush on [`Self::collect_garbage`] and tier up asynchronously on
+    /// shared V8 platform threads.
+    #[doc(hidden)]
+    pub fn object_memory_usage_bytes(&self) -> i64 {
+        let mut isolate = self.isolate.borrow_mut();
+        let used = isolate.get_heap_statistics().used_heap_size();
+        let mut code_and_trusted = 0usize;
+        for index in 0..isolate.number_of_heap_spaces() {
+            if let Some(space) = isolate.get_heap_space_statistics(index) {
+                let name = space.space_name().to_bytes();
+                if name.starts_with(b"code_")
+                    || name.starts_with(b"trusted_")
+                    || name.starts_with(b"shared_trusted_")
+                {
+                    code_and_trusted = code_and_trusted.saturating_add(space.space_used_size());
+                }
+            }
+        }
+        let objects = used.saturating_sub(code_and_trusted);
+        i64::try_from(objects.saturating_add(self.state.buffers.used())).unwrap_or(i64::MAX)
+    }
+
+    /// Begin an operation with a fresh deadline and poll budget from `options`
+    /// unless this session is cancelled or terminal, first emptying V8's
+    /// compilation caches when the heap holds more than half the limit. A
+    /// session evaluates a new source per form, and V8 keeps what `eval`
+    /// compiles until a low-memory collection: 6,000 REPL forms reached the
+    /// 64 MB limit with 2.6 MB live.
+    #[doc(hidden)]
+    pub fn begin_operation(&self, options: &EvaluatorOptions) -> Result<(), EvalError> {
+        self.state.control.begin(options)?;
+        let mut isolate = self.isolate.borrow_mut();
+        let entered = super::Entered::new(&mut isolate);
+        let used = entered.0.get_heap_statistics().used_heap_size();
+        if used.saturating_add(self.state.buffers.used()) > self.memory.maximum / 2 {
+            entered.0.low_memory_notification();
+        }
+        Ok(())
+    }
 }
 
 /// An argument of a `__lightEvaluator` service.
@@ -245,19 +287,8 @@ impl SessionEvaluator for V8Evaluator {
     fn control(&self) -> ExecutionControl {
         self.control()
     }
-    /// Begin an operation, first emptying V8's compilation caches when the
-    /// heap holds more than half the limit. A session evaluates a new source
-    /// per form, and V8 keeps what `eval` compiles until a low-memory
-    /// collection: 6,000 REPL forms reached the 64 MB limit with 2.6 MB live.
     fn begin_operation(&self, options: &EvaluatorOptions) -> Result<(), EvalError> {
-        self.state.control.begin(options)?;
-        let mut isolate = self.isolate.borrow_mut();
-        let entered = super::Entered::new(&mut isolate);
-        let used = entered.0.get_heap_statistics().used_heap_size();
-        if used.saturating_add(self.state.buffers.used()) > self.memory.maximum / 2 {
-            entered.0.low_memory_notification();
-        }
-        Ok(())
+        self.begin_operation(options)
     }
     fn evaluate_unit(&self, source: &str) -> Result<ValueId, EvalError> {
         self.evaluate_unit(source)

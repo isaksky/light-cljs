@@ -25,14 +25,16 @@
 //! hits gives those of an uncached build.
 //!
 //! Analysis outside every scope (a single source, a REPL form, an
-//! evaluation session) draws from the process-wide counters below, whose
+//! evaluation session) draws from this thread's counters below, whose
 //! spellings are one number, so they never meet a scope's. Within one
-//! process every such allocation is new. A namespace artifact can come from
-//! another process, or from an
+//! thread every such allocation is new, and keeping the counters per thread
+//! keeps concurrent compilations and tests (including [`rewind`]) from
+//! advancing or rewinding another thread's captured [`GeneratedNames`]
+//! window. A namespace artifact can come from another process, or from an
 //! earlier compilation of this one, so the names it retains can be ones this
 //! compilation would allocate again. Each artifact therefore records the
 //! names its namespace's analysis generated ([`GeneratedNames`]): the window
-//! of each process-wide counter it drew from, and the compile-time runtime's
+//! of each unscoped counter it drew from, and the compile-time runtime's
 //! `gensym` counter and the spellings it returned. Every generated name the
 //! artifact retains, its own or one an earlier namespace's code made, was
 //! numbered below those marks. Installing it reserves them ([`reserve`], and
@@ -108,10 +110,14 @@ use std::sync::{Arc, Mutex};
 
 pub use crate::namespace_artifact::{Counters, GeneratedNames};
 
-static SYNTAX_QUOTE: AtomicU64 = AtomicU64::new(1);
-static ANONYMOUS: AtomicU64 = AtomicU64::new(1);
-static BINDING: AtomicU64 = AtomicU64::new(0);
-static DESTRUCTURE: AtomicU64 = AtomicU64::new(0);
+thread_local! {
+    /// Unscoped generated-name allocators for this thread (outside every
+    /// [`Scope`]): single-source analysis, REPL forms and evaluation sessions.
+    static SYNTAX_QUOTE: Cell<u64> = const { Cell::new(1) };
+    static ANONYMOUS: Cell<u64> = const { Cell::new(1) };
+    static BINDING: Cell<u64> = const { Cell::new(0) };
+    static DESTRUCTURE: Cell<u64> = const { Cell::new(0) };
+}
 /// Identifies each [`Scope`] of the process, so that a compile-time runtime
 /// keeps the `gensym` counter of each apart. Never spelled.
 static SCOPE_SERIAL: AtomicU64 = AtomicU64::new(1);
@@ -636,7 +642,11 @@ pub(crate) fn forget_installed_scopes() {
     INSTALLED.set((0, 0));
 }
 
-fn allocate(process: &AtomicU64, what: &str, expansion: bool) -> GeneratedId {
+fn allocate(
+    counter: &'static std::thread::LocalKey<Cell<u64>>,
+    what: &str,
+    expansion: bool,
+) -> GeneratedId {
     match innermost() {
         Some(scope) => GeneratedId {
             number: Scope::next(if expansion {
@@ -647,13 +657,19 @@ fn allocate(process: &AtomicU64, what: &str, expansion: bool) -> GeneratedId {
             prefix: Some(scope.prefix.clone()),
             expansion,
         },
-        None => GeneratedId {
-            prefix: None,
-            expansion,
-            number: process
-                .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
-                .unwrap_or_else(|_| panic!("{what} gensym identities exhausted")),
-        },
+        None => {
+            let number = counter.get();
+            counter.set(
+                number
+                    .checked_add(1)
+                    .unwrap_or_else(|| panic!("{what} gensym identities exhausted")),
+            );
+            GeneratedId {
+                prefix: None,
+                expansion,
+                number,
+            }
+        }
     }
 }
 
@@ -677,36 +693,35 @@ pub(crate) fn next_destructure() -> GeneratedId {
     allocate(&DESTRUCTURE, "destructure", true)
 }
 
-/// The next number each process-wide allocator will allocate.
+/// The next number each unscoped allocator on this thread will allocate.
 pub fn current() -> Counters {
     Counters {
-        syntax_quote: SYNTAX_QUOTE.load(Ordering::Relaxed),
-        anonymous: ANONYMOUS.load(Ordering::Relaxed),
-        binding: BINDING.load(Ordering::Relaxed),
-        destructure: DESTRUCTURE.load(Ordering::Relaxed),
+        syntax_quote: SYNTAX_QUOTE.get(),
+        anonymous: ANONYMOUS.get(),
+        binding: BINDING.get(),
+        destructure: DESTRUCTURE.get(),
     }
 }
 
-/// Move the process-wide allocators to at least `to`, so none of them
+/// Move this thread's unscoped allocators to at least `to`, so none of them
 /// allocates a number below it again.
 pub fn reserve(to: &Counters) {
-    SYNTAX_QUOTE.fetch_max(to.syntax_quote, Ordering::Relaxed);
-    ANONYMOUS.fetch_max(to.anonymous, Ordering::Relaxed);
-    BINDING.fetch_max(to.binding, Ordering::Relaxed);
-    DESTRUCTURE.fetch_max(to.destructure, Ordering::Relaxed);
+    SYNTAX_QUOTE.set(SYNTAX_QUOTE.get().max(to.syntax_quote));
+    ANONYMOUS.set(ANONYMOUS.get().max(to.anonymous));
+    BINDING.set(BINDING.get().max(to.binding));
+    DESTRUCTURE.set(DESTRUCTURE.get().max(to.destructure));
 }
 
-/// Set the process-wide allocators back to `to`, as a new process would
+/// Set this thread's unscoped allocators back to `to`, as a new process would
 /// start below the numbers an artifact captured elsewhere retains. Only for
-/// tests that stand for such a process: every compilation still running in
-/// this process can allocate its numbers again. Each nextest test is its own
-/// process.
+/// tests that stand for such a process; keeping the counters per thread
+/// leaves compilations running on other threads unaffected.
 #[doc(hidden)]
 pub fn rewind(to: &Counters) {
-    SYNTAX_QUOTE.store(to.syntax_quote, Ordering::Relaxed);
-    ANONYMOUS.store(to.anonymous, Ordering::Relaxed);
-    BINDING.store(to.binding, Ordering::Relaxed);
-    DESTRUCTURE.store(to.destructure, Ordering::Relaxed);
+    SYNTAX_QUOTE.set(to.syntax_quote);
+    ANONYMOUS.set(to.anonymous);
+    BINDING.set(to.binding);
+    DESTRUCTURE.set(to.destructure);
 }
 
 /// What a compilation reserves before its first namespace for the artifacts
@@ -913,5 +928,61 @@ mod tests {
             namespace_discriminator("b", "x")
         );
         assert_ne!(namespace_discriminator("a", "x"), BOOTSTRAP_SCOPE);
+    }
+
+    /// Unscoped counter allocations, reservations and rewinds on one thread
+    /// never advance or rewind another thread's captured counter window.
+    #[test]
+    fn unscoped_counters_are_isolated_per_thread() {
+        let before = current();
+        let high = Counters {
+            syntax_quote: before.syntax_quote + 50,
+            anonymous: before.anonymous + 60,
+            binding: before.binding + 70,
+            destructure: before.destructure + 80,
+        };
+        reserve(&high);
+        assert_eq!(current(), high);
+        std::thread::spawn(move || {
+            let start = current();
+            assert_eq!(
+                start,
+                Counters {
+                    syntax_quote: 1,
+                    anonymous: 1,
+                    binding: 0,
+                    destructure: 0,
+                }
+            );
+            let _ = (
+                next_syntax_quote(),
+                next_anonymous(),
+                next_binding(),
+                next_destructure(),
+            );
+            assert_eq!(
+                current(),
+                Counters {
+                    syntax_quote: 2,
+                    anonymous: 2,
+                    binding: 1,
+                    destructure: 1,
+                }
+            );
+            reserve(&Counters {
+                syntax_quote: 99,
+                anonymous: 99,
+                binding: 99,
+                destructure: 99,
+            });
+            assert_eq!(current().destructure, 99);
+            rewind(&start);
+            assert_eq!(current(), start);
+        })
+        .join()
+        .unwrap();
+        assert_eq!(current(), high);
+        rewind(&before);
+        assert_eq!(current(), before);
     }
 }

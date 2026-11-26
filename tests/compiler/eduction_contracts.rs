@@ -165,12 +165,14 @@ fn abandoned_prefixes_and_reducer_cycles_are_collected_in_both_engines() {
         e.release(result).unwrap();
         e.collect_garbage();
     };
-    // Warm the V8 code paths before measuring retained heap across batches.
+    // Warm the V8 code paths before measuring retained JS object memory across
+    // batches; excluding V8's JIT code/trusted spaces avoids asynchronous
+    // tier-up and bytecode-flush swings under shared platform load.
     run_batch();
-    let before = e.memory_usage_bytes();
+    let before = e.object_memory_usage_bytes();
     for _ in 0..3 {
         run_batch();
-        let after = e.memory_usage_bytes();
+        let after = e.object_memory_usage_bytes();
         assert!(
             after < before + 128 * 1024,
             "retained JS heap: {before} -> {after}"

@@ -268,6 +268,8 @@ fn declined_doseq_preserves_surrogate_regex_ranges() {
     let mut host = MacroHost::new();
     host.limits.generated_nodes = 10_000_000;
     host.limits.expansions = 100_000;
+    // Keep the large expansion's regex check independent of test load.
+    host.evaluator_options.timeout = std::time::Duration::from_secs(60);
     let js = compile_with_macros(&source, &mut host).unwrap_or_else(|error| panic!("{error}"));
     let root = crate::temp_dir::TempDir::new("surrogate-regex");
     let file = root.join("main.js");

@@ -2465,4 +2465,32 @@ mod tests {
         );
         assert!(evaluator.evaluate_js("1").is_err());
     }
+
+    #[test]
+    fn object_memory_usage_tracks_retained_js_objects_and_collection() {
+        let evaluator = V8Evaluator::new(EvaluatorOptions {
+            memory_limit: 16 << 20,
+            timeout: Duration::from_secs(60),
+            ..Default::default()
+        })
+        .unwrap();
+        evaluator.collect_garbage();
+        let baseline = evaluator.object_memory_usage_bytes();
+        let held = evaluator
+            .evaluate_js("Array.from({length: 128}, (_, i) => new Array(1000).fill(i))")
+            .unwrap();
+        evaluator.collect_garbage();
+        let retained = evaluator.object_memory_usage_bytes();
+        assert!(
+            retained >= baseline + 256 * 1024,
+            "retained JS arrays must show up in object heap: {baseline} -> {retained}"
+        );
+        evaluator.release(held).unwrap();
+        evaluator.collect_garbage();
+        let after_gc = evaluator.object_memory_usage_bytes();
+        assert!(
+            after_gc < baseline + 128 * 1024,
+            "released JS arrays must be collected from object heap: {baseline} -> {after_gc}"
+        );
+    }
 }

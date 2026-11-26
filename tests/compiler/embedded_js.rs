@@ -30,6 +30,10 @@ impl EmbeddedJs {
         source: &str,
         read: impl FnOnce(&Evaluator, ValueId) -> Result<T, EvalError>,
     ) -> Result<T, EvalError> {
+        // Each standalone fixture gets its own operation deadline and poll
+        // budget so time spent outside this isolate (Node subprocesses and
+        // macro compilation between fixtures) is not charged to it.
+        self.0.begin_operation(&Self::options())?;
         // Indirect eval gives scripts their completion value and access to the
         // isolate's global object.
         let value = self.0.evaluate_js(&format!("(0, eval)({source:?})"))?;
