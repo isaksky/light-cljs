@@ -1655,8 +1655,12 @@ required.
 
 Namespace metadata merges symbol metadata with the optional attribute map;
 docstrings are available separately at `&env :ns :doc`. `:as-alias` is a
-reader-only alias and does not load a source. A missing `clojure.*` runtime source
-can resolve an existing `cljs.*` source while preserving both qualifiers.
+reader-only alias and does not load a source. A `clojure.X` require that no source
+provides resolves to `cljs.X` when a source provides it, or when `cljs.X` is a
+bundled library and `clojure.X` is not (so `clojure.reader` loads the bundled
+`cljs.reader`); both qualifiers then name `cljs.X`. An explicit `clojure.X`
+source on a root always wins. `--compile`, cached builds, `--eval`, `--repl`
+and `--watch` resolve it alike, in `ns`, `ns*` and `require`.
 `:import` binds actual host constructors and `:require-global` binds supplied host
 globals; string libspecs bind host-supplied [JavaScript packages](#javascript-packages). Top-level quoted require/use/import and macro equivalents,
 `refer-clojure`, and `refer-global` retain their namespace effects. Explicit

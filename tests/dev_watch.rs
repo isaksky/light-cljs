@@ -3911,3 +3911,61 @@ fn cache_retention_applies_at_startup_and_after_a_reread() {
     assert!(built.starts_with("[:features] built app.main ("), "{built}");
     assert_eq!(shared_candidates(&project), 4);
 }
+
+#[cfg(light_v8)]
+/// A `clojure.X` require that no source provides resolves to `cljs.X`, a
+/// source root's or a bundled library's, in the startup build and in a
+/// step, as `--compile` resolves it, and both qualifiers name it.
+#[test]
+fn clojure_requires_fall_back_to_cljs_namespaces_at_startup_and_in_steps() {
+    let mut watch = Watch::start_with("dev-watch-clojure-fallback", |src| {
+        fs::create_dir_all(src.join("cljs")).unwrap();
+        fs::write(
+            src.join("cljs/foo.cljs"),
+            "(ns cljs.foo)\n\n(def mark \"!\")\n",
+        )
+        .unwrap();
+        let view = fs::read_to_string(src.join("app/view.cljs")).unwrap();
+        let view = view
+            .replace(
+                "[app.state :as state]",
+                "[app.state :as state]\n            [clojure.foo :as foo]",
+            )
+            .replace(
+                "(js/console.log (describe card))",
+                "(js/console.log (str (describe card) foo/mark))",
+            );
+        fs::write(src.join("app/view.cljs"), view).unwrap();
+    });
+    assert_eq!(
+        watch.now_and_fresh(),
+        [
+            record("start\nclicks: [1]!\n"),
+            record("start\nclicks: [1]!\n")
+        ]
+    );
+    // A step adds a require of `clojure.reader`, the bundled `cljs.reader`.
+    let view = watch
+        .source("app/view.cljs")
+        .replace(
+            "[clojure.foo :as foo]",
+            "[clojure.foo :as foo]\n            [clojure.reader :as reader]",
+        )
+        .replace(
+            "(str (describe card) foo/mark)",
+            "(str (describe card) clojure.foo/mark cljs.foo/mark (reader/read-string \"[:k]\") (clojure.reader/read-string \"1\"))",
+        );
+    let (lines, step) = watch.save("app/view.cljs", &view);
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert!(
+        step.starts_with("light-cljs: recompiled cljs.reader, app.view in "),
+        "{step}"
+    );
+    assert_eq!(
+        watch.now_and_fresh(),
+        [
+            record("start\nclicks: [1]!![:k]1\n"),
+            record("start\nclicks: [1]!![:k]1\n")
+        ]
+    );
+}

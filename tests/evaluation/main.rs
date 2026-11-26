@@ -28,6 +28,7 @@ mod temp_dir;
 #[allow(dead_code)]
 mod dev_execution;
 
+mod clojure_fallback;
 #[cfg(light_v8)]
 mod dev_session;
 mod eval_cli;

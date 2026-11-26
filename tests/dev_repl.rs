@@ -1206,3 +1206,28 @@ fn cljs_repl_errors() {
         assert_eq!(file_watch::tree(&project), before, "{args:?}");
     }
 }
+
+#[cfg(light_v8)]
+/// In a watch's REPL, a `clojure.X` require that no source provides loads
+/// `cljs.X`, a source root's or a bundled library's, which both qualifiers
+/// name, as `--compile` resolves it.
+#[test]
+fn repl_requires_fall_back_from_clojure_to_cljs_namespaces() {
+    let watch = Watch::start("dev-repl-clojure-fallback");
+    fs::create_dir_all(watch.dir.join("src/cljs")).unwrap();
+    fs::write(
+        watch.dir.join("src/cljs/foo.cljs"),
+        "(ns cljs.foo) (def v 41)",
+    )
+    .unwrap();
+    let _runtime = watch.runtime();
+    let mut repl = watch.repl(&[]);
+    assert_eq!(
+        repl.value("(require '[clojure.reader :as r] '[clojure.foo :refer [v]])"),
+        "nil"
+    );
+    assert_eq!(
+        repl.value("[(r/read-string \"{:a 1}\") (clojure.reader/read-string \"2\") (cljs.reader/read-string \"3\") v clojure.foo/v cljs.foo/v]"),
+        "[{:a 1} 2 3 41 41 41]"
+    );
+}

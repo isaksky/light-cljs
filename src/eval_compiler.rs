@@ -989,7 +989,10 @@ impl InteractiveCompiler {
     /// A require of a `goog.*` namespace for which `hosted` says that no
     /// source provides it, given the request the directive would make,
     /// binds a JavaScript host namespace and requests nothing, as
-    /// `--compile` binds it.
+    /// `--compile` binds it. A require of a `clojure.X` namespace that `hosted`
+    /// says no source provides requests `cljs.X` instead when `hosted` says
+    /// a source provides that, or it is bundled and `clojure.X` is not
+    /// (`crate::compiler::clojure_fallback`).
     pub(crate) fn directive(
         &mut self,
         form: &Form,
@@ -1223,6 +1226,23 @@ impl InteractiveCompiler {
                 self.bind_host_namespace(imports.remove(index));
             } else {
                 index += 1;
+            }
+        }
+        // A `clojure.X` library no source provides loads `cljs.X`, which
+        // both qualifiers name, as in an `ns` form.
+        for (request, import) in requests.iter_mut().zip(&mut imports) {
+            let mut probe = |namespace: &str| {
+                !hosted(&LoadRequest {
+                    namespace: Name::new(None, namespace),
+                    ..request.clone()
+                })
+            };
+            if let Some(rewritten) =
+                crate::compiler::clojure_fallback(&import.namespace, &mut probe)
+            {
+                self.set_alias(&import.namespace, &rewritten);
+                request.namespace = Name::new(None, &rewritten);
+                import.namespace = rewritten;
             }
         }
         self.set_imports(imports)?;

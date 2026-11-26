@@ -510,7 +510,45 @@ impl NamespaceSource {
             self.runtime_specs.push(spec);
         }
         self.drop_host_namespaces(&hosts);
+        // A `clojure.X` require no source provides resolves to `cljs.X` as
+        // the loader resolves it ([`clojure_fallback`]).
+        let mut rewrites = Vec::new();
+        for dependency in &mut self.requires {
+            if let Some(rewritten) =
+                clojure_fallback(dependency, &mut |namespace| !hosted(namespace, &self.name))
+            {
+                rewrites.push((dependency.clone(), rewritten.clone()));
+                *dependency = rewritten;
+            }
+        }
+        for (written, rewritten) in &rewrites {
+            self.rewrite_clojure_require(written, rewritten);
+        }
         Ok(())
+    }
+    /// Make `rewritten`, the `cljs.*` namespace a require of `written`
+    /// resolved to, the target of the libspecs and aliases that named
+    /// `written`, which itself becomes an alias of `rewritten`, so both
+    /// qualifiers resolve. The requires are already rewritten.
+    fn rewrite_clojure_require(&mut self, written: &str, rewritten: &str) {
+        for (_, target) in &mut self.aliases {
+            if target == written {
+                *target = rewritten.to_owned();
+            }
+        }
+        if !self
+            .aliases
+            .iter()
+            .any(|(alias, target)| alias == written && target == rewritten)
+        {
+            self.aliases
+                .push((written.to_owned(), rewritten.to_owned()));
+        }
+        for spec in &mut self.runtime_specs {
+            if spec.import.namespace == written {
+                spec.import.namespace = rewritten.to_owned();
+            }
+        }
     }
     fn add_js_refer(
         &mut self,
@@ -885,7 +923,13 @@ impl NamespaceSource {
             }
         }
         for (alias, target) in &self.aliases {
+            // A `clojure.X` an earlier directive resolved to `cljs.X`
+            // ([`clojure_fallback`]) names `cljs.X` again when required again.
+            let rewrite = alias
+                .strip_prefix("clojure.")
+                .is_some_and(|suffix| target.strip_prefix("cljs.") == Some(suffix));
             if alias != target
+                && !rewrite
                 && (alias == &self.name
                     || self.requires.contains(alias)
                     || matches!(alias.as_str(), "cljs.core" | "clojure.core"))
@@ -1161,6 +1205,33 @@ fn session_directive(
         symbol: None,
     })
 }
+/// The `cljs.X` namespace a require of `dependency`, `clojure.X` other than
+/// `clojure.core`, resolves to, as upstream resolves a missing `clojure.*`
+/// namespace: when no source provides `clojure.X` (`provided` answers for
+/// the source provider or roots, and a session's loaded namespaces) and
+/// either a source provides `cljs.X` or `cljs.X` is bundled while `clojure.X`
+/// is not ([`bundled_rewrite`]). The loader asks the same questions, and
+/// records their lookups, in [`parse_source`].
+pub(crate) fn clojure_fallback(
+    dependency: &str,
+    provided: &mut dyn FnMut(&str) -> bool,
+) -> Option<String> {
+    let suffix = dependency.strip_prefix("clojure.")?;
+    if dependency == "clojure.core" || provided(dependency) {
+        return None;
+    }
+    let rewritten = format!("cljs.{suffix}");
+    (provided(&rewritten) || bundled_rewrite(dependency, &rewritten)).then_some(rewritten)
+}
+
+/// Whether a require of `written`, a `clojure.*` namespace no source
+/// provides, resolves to `rewritten`, its `cljs.*` namespace, as a bundled
+/// library: a bundled `written` is the library the require names.
+fn bundled_rewrite(written: &str, rewritten: &str) -> bool {
+    crate::compiler_libraries::source(written).is_none()
+        && crate::compiler_libraries::source(rewritten).is_some()
+}
+
 pub(crate) fn valid_namespace(name: &str) -> bool {
     name != "js"
         && name.split('.').all(|part| {
@@ -1406,6 +1477,10 @@ fn parse_source(
             (dependency.clone(), RequireForm::Declared, checks)
         })
         .collect();
+    // A missing `clojure.X` resolves to an existing `cljs.X`: one a source
+    // provides, else a bundled one ([`clojure_fallback`]), asking `find` so
+    // the manifest records both lookups.
+    let mut rewrites = Vec::new();
     for (index, dependency) in file.requires.iter_mut().enumerate() {
         if let Some(suffix) = dependency.strip_prefix("clojure.")
             && dependency != "clojure.core"
@@ -1418,22 +1493,15 @@ fn parse_source(
             let rewritten = format!("cljs.{suffix}");
             let (found, lookup) = find(&rewritten)?;
             forms[index].2.push(lookup);
-            if found.is_some() {
+            if found.is_some() || bundled_rewrite(dependency, &rewritten) {
                 forms[index].1 = RequireForm::ClojureRewrite;
-                for (_, target) in &mut file.aliases {
-                    if target == dependency {
-                        *target = rewritten.clone();
-                    }
-                }
-                file.aliases.push((dependency.clone(), rewritten.clone()));
-                for spec in &mut file.runtime_specs {
-                    if spec.import.namespace == *dependency {
-                        spec.import.namespace = rewritten.clone();
-                    }
-                }
+                rewrites.push((dependency.clone(), rewritten.clone()));
                 *dependency = rewritten;
             }
         }
+    }
+    for (written, rewritten) in &rewrites {
+        file.rewrite_clojure_require(written, rewritten);
     }
     // `light.lazy/loadable` is a special form that needs no require, but
     // its sites construct a `light.lazy/Loadable` when the source runs: a
