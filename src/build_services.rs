@@ -144,6 +144,22 @@ pub(crate) const BUILD_OBJECT: &str = include_str!("build_services.js");
 /// The caller part of a request from a data reader's heap.
 pub(crate) const READER_CALLER: &str = "() => 'r\\u0000'";
 
+/// Answer a request that the thread running the code must serve itself,
+/// before a worker forwards anything to its coordinator: `classify`, which
+/// reads the declarations of the expansion running on this thread
+/// ([`crate::macro_host::ClassifyScope`]). `None` for any other request.
+pub(crate) fn serve_local(request: &str) -> Option<String> {
+    let mut parts = request.splitn(5, '\0');
+    let (_, _, operation, target) = (parts.next(), parts.next(), parts.next()?, parts.next()?);
+    if operation != "classify" {
+        return None;
+    }
+    Some(match crate::macro_host::classify_name(target) {
+        Ok(kind) => format!("v{kind}"),
+        Err(message) => format!("e{message}"),
+    })
+}
+
 /// Parse and serve one request. `units` maps the deferred units a request
 /// names to their sources, and `analysis` gives the sources of the units
 /// being analyzed, innermost last.
@@ -154,6 +170,9 @@ pub(crate) fn serve_request(
     units: impl Fn(usize) -> Option<u32>,
     analysis: Vec<u32>,
 ) -> String {
+    if let Some(answer) = serve_local(request) {
+        return answer;
+    }
     let mut parts = request.splitn(5, '\0');
     let (Some(caller), Some(initializing), Some(operation), Some(first), Some(second)) = (
         parts.next(),

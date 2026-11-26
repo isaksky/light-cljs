@@ -7,7 +7,8 @@
   or `../` resolves against the directory of the file of the namespace whose
   macro expansion is running. `config` answers the build configuration
   (`--config KEY=EDN`), and `depend-on!` declares a coarse dependency on a
-  broad compiler view. They work only at compile time: in emitted
+  broad compiler view. `classify` says what a symbol names where a macro
+  expands. They work only at compile time: in emitted
   application code, every call is an error.")
 
 (defn- service
@@ -80,3 +81,62 @@
       (throw (js/Error. (str "light.build/depend-on!: expected :namespaces, :declarations"
                              " or :config, got " (pr-str view)))))
     nil))
+
+(def ^:private special-forms
+  '#{def if do let* loop* letfn* fn* recur quote var throw try catch finally
+     new set! . js* case* deftype* defrecord* ns ns* &})
+
+(defn- classify-name
+  [build target]
+  (keyword (.classify build target)))
+
+(defn classify
+  "What symbol `sym` names where the macro whose `&env` is `env` expands,
+  as one of:
+
+  - `:fn-var`, a Var whose definition is a function: a `defn`, a `def` of a
+    `fn`, a protocol method, a type factory or a core function such as `=`,
+    `pos?` or `str` (upstream's analyzer marks these `:fn-var`);
+  - `:var`, any other Var, such as a `def` of a value or a multimethod;
+  - `:macro`, a macro of the core namespace or one `defmacro` declared;
+  - `:special-form`, such as `if`, `let*`, `fn*` or constructor sugar `Foo.`;
+  - `:local`, a lexical binding of `env`;
+  - `:js`, host interop: `js/...` names and `.method` / `.-field` members;
+  - `:unresolved`, anything else.
+
+  A name resolves as analysis resolves it: its alias, the caller's own
+  Vars and macros, its refers, then `cljs.core` unless excluded. A name
+  of another namespace than the caller's is an observed dependency on it,
+  as reflecting it with `ns-interns` is. Only while a macro expands."
+  [env sym]
+  (when-not (symbol? sym)
+    (throw (js/Error. (str "light.build/classify: expected a symbol, got " (pr-str sym)))))
+  (let [build (service "classify")
+        ns-env (:ns env)
+        caller (str (:name ns-env))
+        qualifier (namespace sym)
+        local (name sym)
+        context (:light-cljs/reader-context env)]
+    (cond
+      (some? qualifier)
+      (if (= qualifier "js")
+        :js
+        (let [target (str (get (:requires ns-env) (symbol qualifier) qualifier))
+              target (if (= target "clojure.core") "cljs.core" target)]
+          (classify-name build (str target "/" local))))
+
+      (contains? special-forms sym) :special-form
+      (contains? (:locals env) sym) :local
+      (and (> (count local) 1) (= "." (subs local 0 1)) (not= local "..")) :js
+      (and (> (count local) 1) (= "." (subs local (dec (count local))))
+           (not= local "..")) :special-form
+      :else
+      (let [own (classify-name build (str caller "/" local))
+            refer (some (fn [[name target original]]
+                          (when (= name local) (str target "/" original)))
+                        (:refers context))]
+        (cond
+          (not= own :unresolved) own
+          refer (classify-name build refer)
+          (some #(= % local) (:excludes context)) :unresolved
+          :else (classify-name build (str "cljs.core/" local)))))))

@@ -1293,6 +1293,8 @@ impl MacroHost {
             definition: Some(declaration.definition),
             helpers: vec![],
         };
+        // `light.build/classify` answers for this caller while it runs.
+        let _classify = crate::macro_host::ClassifyScope::enter(self, namespace);
         if env_measured {
             self.expand_javascript_with_measured_env(engine, function, call, env, origin)
         } else {

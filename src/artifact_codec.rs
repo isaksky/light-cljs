@@ -66,7 +66,7 @@ use std::sync::OnceLock;
 
 pub const MAGIC: [u8; 8] = *b"LCLJSART";
 /// The encoding's version. Bump it with any change to the bytes written.
-pub const SCHEMA_VERSION: u32 = 14;
+pub const SCHEMA_VERSION: u32 = 15;
 const BYTE_ORDER: u32 = 0x0102_0304;
 const PREFIX: usize = 20;
 const MANIFEST_START: usize = PREFIX + 32;
@@ -1101,11 +1101,13 @@ impl Writer<'_> {
                 name,
                 declared,
                 private,
+                function,
             } = global;
             out.str(namespace);
             out.str(name);
             out.bool(*declared);
             out.option_bool(*private);
+            out.bool(*function);
         });
     }
     fn flags(&mut self, flags: GlobalFlags) {
@@ -1285,6 +1287,7 @@ impl Writer<'_> {
                 span,
                 source,
                 private,
+                function,
                 binding,
             } = global;
             out.str(namespace);
@@ -1294,6 +1297,7 @@ impl Writer<'_> {
             out.bytes_range(*span);
             out.source(*source);
             out.option_bool(*private);
+            out.bool(*function);
             out.u8(match binding {
                 None => 0,
                 Some(BindingKind::Value) => 1,
@@ -2997,6 +3001,7 @@ impl<'a> Reader<'a> {
                 name: r.string()?,
                 declared: r.bool()?,
                 private: r.option_bool()?,
+                function: r.bool()?,
             })
         })
     }
@@ -3139,6 +3144,7 @@ impl<'a> Reader<'a> {
                 span: r.bytes_range()?,
                 source: r.source()?,
                 private: r.option_bool()?,
+                function: r.bool()?,
                 binding: match r.byte()? {
                     0 => None,
                     1 => Some(BindingKind::Value),
@@ -4017,6 +4023,7 @@ mod tests {
                     span: (5, 9),
                     source: SourceRef::Own,
                     private: Some(true),
+                    function: true,
                     binding: Some(BindingKind::Macro),
                 }],
                 protocols: vec![(
@@ -4169,6 +4176,7 @@ mod tests {
                     name: "x".into(),
                     declared: true,
                     private: Some(false),
+                    function: false,
                 }],
             },
             names: GeneratedNames {
@@ -4249,6 +4257,7 @@ mod tests {
                         span: (2, 3),
                         source: SourceRef::Own,
                         private: Some(false),
+                        function: false,
                         binding: None,
                     }],
                     reader_context: reader_context(),
@@ -4266,6 +4275,7 @@ mod tests {
                         name: "top".into(),
                         declared: true,
                         private: None,
+                        function: false,
                     }],
                 },
                 placeholders: vec![(ExprRef(0), ExprRef(1))],

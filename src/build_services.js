@@ -32,6 +32,9 @@
     dependProvider: (token, fingerprint) => call("depend-provider", text("depend!", token), text("depend!", fingerprint)),
     // The canonical EDN text of a key's value, or null when it is unset.
     config: key => call("config", text("config", key), ""),
-    dependOn: view => call("depend-on", text("depend-on!", view), "")
+    dependOn: view => call("depend-on", text("depend-on!", view), ""),
+    // What a qualified name names for the macro expanding on this thread:
+    // "fn-var", "var", "macro" or "unresolved".
+    classify: name => call("classify", text("classify", name), "")
   });
 }

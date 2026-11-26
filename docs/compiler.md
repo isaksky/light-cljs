@@ -2618,6 +2618,41 @@ explicit inputs that a compiler cache can key on
   fingerprint. They are deliberately coarse: a finer view, such as the
   declarations of the namespaces a macro actually lists, is a later
   optimization. Any other view is an error.
+- **Symbol classification.** `(b/classify &env sym)` says what `sym` names
+  where the macro expands, the question upstream `cljs.test` asks
+  `cljs.analyzer.api/resolve` (`:fn-var`) to choose between
+  `(apply pred args)` and evaluating the form as a whole:
+
+  ```clojure
+  (defn function? [env form]
+    (and (symbol? form) (= :fn-var (b/classify env form))))
+  ```
+
+  | Answer | Meaning |
+  | --- | --- |
+  | `:fn-var` | A Var whose last definition with a value is a function: `defn`, `defn-`, a `def` of a `fn`/`fn*` form, a protocol method, a type's `->T`/`map->T` factory, or a core function (`=`, `pos?`, `string?`, `str`), including those a core macro of the same name inlines. |
+  | `:var` | Any other Var: a `def` of a value, a multimethod, a type, a core value such as `*print-fn*`. |
+  | `:macro` | A `defmacro` of any namespace, or a core macro or analyzer-lowered core form (`and`, `when`, `defn`, `binding`). |
+  | `:special-form` | `if`, `def`, `do`, `let*`, `loop*`, `letfn*`, `fn*`, `recur`, `quote`, `var`, `throw`, `try`, `catch`, `finally`, `new`, `set!`, `.`, `js*`, `case*`, `deftype*`, `defrecord*`, `ns`, `ns*`, `&`, and constructor sugar `T.`. |
+  | `:local` | A name in `(:locals env)`. |
+  | `:js` | Host interop: a `js/` name (`js/isNaN`, `js/Array.isArray`), a `.method` or `.-field` member. |
+  | `:unresolved` | Anything else, such as an undefined name or an unknown alias. |
+
+  The checks run in the order of the table's rows from special forms down,
+  then a name resolves as analysis resolves it: a qualifier through the
+  caller's aliases (`clojure.core` is `cljs.core`); an unqualified name to
+  the caller's own Var or macro, then its refers, then `cljs.core` unless
+  `:refer-clojure :exclude`d. It reads the declarations of the expansion
+  running on the calling thread, so a pool worker, a REPL or watch session
+  and an artifact installed from the compiler cache answer alike (an
+  artifact keeps which of its Vars are functions). An answer about another
+  namespace's name is an observed dependency on that namespace
+  (`EdgeKinds::OBSERVED`), as reflecting it with `ns-interns` is, so
+  editing it recompiles the caller; the caller's own names and `cljs.core`
+  are covered by its own source and the compiler. A non-symbol is an error,
+  and so is a call outside a macro expansion, including from a data reader.
+  The host object answers `.classify(qualifiedName)` with `"fn-var"`,
+  `"var"`, `"macro"` or `"unresolved"`.
 - **Data readers.** A handler registered with
   `MacroHost::register_compiler_data_reader` calls the same services through
   the host object `js/lightCljsBuild`: `.resource`, `.optionalResource`,

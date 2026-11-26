@@ -308,6 +308,9 @@ pub struct ExternalGlobal {
     /// Its visibility in the compile-time session: `Some(true)` for a private
     /// Var, `None` when no Var registered it.
     pub private: Option<bool>,
+    /// Whether the registered Var's definition is a function
+    /// (`light.build/classify`'s `:fn-var`).
+    pub function: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -386,6 +389,9 @@ pub struct Global {
     pub source: SourceRef,
     /// Registered as a Var in the compile-time session, and whether private.
     pub private: Option<bool>,
+    /// Whether the registered Var's definition is a function
+    /// (`light.build/classify`'s `:fn-var`).
+    pub function: bool,
     /// Its kind in the compile-time session, when one is registered.
     pub binding: Option<BindingKind>,
 }
@@ -1773,7 +1779,7 @@ impl NamespaceArtifact {
         for (index, global) in d.globals.iter().enumerate() {
             writeln!(
                 out,
-                "global {index} {}/{} {:?} metadata {:?} span {:?} source {:?} private {:?} binding {:?}",
+                "global {index} {}/{} {:?} metadata {:?} span {:?} source {:?} private {:?} function {} binding {:?}",
                 global.namespace,
                 global.name,
                 global.flags,
@@ -1781,6 +1787,7 @@ impl NamespaceArtifact {
                 global.span,
                 global.source,
                 global.private,
+                global.function,
                 global.binding
             )
             .unwrap();
@@ -1934,8 +1941,8 @@ impl NamespaceArtifact {
         for (index, global) in self.references.globals.iter().enumerate() {
             writeln!(
                 out,
-                "external {index} {}/{} declared {} private {:?}",
-                global.namespace, global.name, global.declared, global.private
+                "external {index} {}/{} declared {} private {:?} function {}",
+                global.namespace, global.name, global.declared, global.private, global.function
             )
             .unwrap();
         }

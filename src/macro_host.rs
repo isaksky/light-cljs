@@ -797,8 +797,9 @@ pub(crate) struct MacroTables {
     renames: crate::layered::Layered<String, Vec<(String, String, String)>>,
     namespace_symbols: crate::layered::Layered<String, crate::compiler_data::Datum>,
     namespace_docs: crate::layered::Layered<String, crate::compiler_data::Datum>,
-    /// By `namespace/name`, whether the Var is private.
-    runtime_vars: crate::layered::Layered<String, bool>,
+    /// By `namespace/name`, whether the Var is private and whether its
+    /// definition is a function ([`RuntimeVar`]).
+    runtime_vars: crate::layered::Layered<String, RuntimeVar>,
     namespace_imports: crate::layered::Layered<String, Vec<(String, String)>>,
     assertions_disabled: bool,
     pub(crate) interactive: bool,
@@ -1083,8 +1084,149 @@ pub(crate) struct NamespaceMetadata {
     symbol: Option<crate::compiler_data::Datum>,
     doc: Option<crate::compiler_data::Datum>,
     bindings: Vec<(String, SourceBindingKind)>,
-    runtime_vars: Vec<(String, bool)>,
+    runtime_vars: Vec<(String, RuntimeVar)>,
     macros: Vec<(String, crate::compiler_bootstrap::CompiledMacro)>,
+}
+
+/// A Var of the compile-time session: whether it is private, and whether
+/// its last definition with a value bound a function (`defn`, a `def` of
+/// a `fn`, a protocol method or a type's factory), which upstream's
+/// analyzer calls `:fn-var` and `light.build/classify` answers.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct RuntimeVar {
+    pub(crate) private: bool,
+    pub(crate) function: bool,
+}
+
+/// What `light.build/classify` reads while a source macro expands on this
+/// thread: the caller's namespace and the macro host's declarations as the
+/// expansion sees them, shared by reference ([`ClassifyScope`]).
+struct Classifier {
+    namespace: String,
+    runtime_vars: crate::layered::Layered<String, RuntimeVar>,
+    source_bindings: crate::layered::QualifiedNames<SourceBindingKind>,
+    javascript_macros: crate::layered::QualifiedNames<crate::compiler_bootstrap::CompiledMacro>,
+    log: crate::build_services::SharedLog,
+}
+
+thread_local! {
+    static CLASSIFIER: std::cell::RefCell<Option<Classifier>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// While alive, `light.build/classify` answers for a source macro that
+/// `namespace` expands on this thread; dropping it restores the scope it
+/// replaced, so a nested expansion answers for its own caller.
+pub(crate) struct ClassifyScope(Option<Classifier>);
+impl ClassifyScope {
+    pub(crate) fn enter(host: &MacroHost, namespace: &str) -> Self {
+        let classifier = Classifier {
+            namespace: namespace.to_owned(),
+            runtime_vars: host.tables.runtime_vars.clone(),
+            source_bindings: host.tables.source_bindings.clone(),
+            javascript_macros: host.tables.javascript_macros.clone(),
+            log: host.engine.dependency_log.clone(),
+        };
+        Self(CLASSIFIER.with(|slot| slot.borrow_mut().replace(classifier)))
+    }
+}
+impl Drop for ClassifyScope {
+    fn drop(&mut self) {
+        let previous = self.0.take();
+        CLASSIFIER.with(|slot| *slot.borrow_mut() = previous);
+    }
+}
+
+/// What the qualified name `target` names for a macro expanding in the
+/// current [`ClassifyScope`]: `fn-var`, `var`, `macro` or `unresolved`
+/// (docs/compiler.md, "Compile-time services: light.build"). A name of
+/// another namespace than the caller's and `cljs.core` is an observed
+/// dependency on that namespace, as reflecting it with `ns-interns` is.
+pub(crate) fn classify_name(target: &str) -> Result<&'static str, String> {
+    let Some((namespace, name)) = target
+        .split_once('/')
+        .filter(|(namespace, name)| !namespace.is_empty() && !name.is_empty())
+    else {
+        return Err(format!(
+            "light.build/classify: expected a qualified name, got {target}"
+        ));
+    };
+    let answer = CLASSIFIER.with(|slot| {
+        let slot = slot.borrow();
+        let classifier = slot.as_ref()?;
+        if matches!(namespace, "cljs.core" | "clojure.core") {
+            return Some((core_kind(name), None));
+        }
+        let kind = if classifier
+            .javascript_macros
+            .get_parts(namespace, name)
+            .is_some()
+            || classifier.source_bindings.get_parts(namespace, name)
+                == Some(&SourceBindingKind::Macro)
+        {
+            "macro"
+        } else if let Some(var) = classifier.runtime_vars.get(target) {
+            if var.function { "fn-var" } else { "var" }
+        } else if classifier.source_bindings.get_parts(namespace, name)
+            == Some(&SourceBindingKind::Value)
+        {
+            "var"
+        } else {
+            "unresolved"
+        };
+        let observed = (namespace != classifier.namespace).then(|| classifier.log.clone());
+        Some((kind, observed))
+    });
+    let Some((kind, observed)) = answer else {
+        return Err(
+            "light.build/classify is only available while a macro expands: \
+                    call it from a macro or the helper code it runs"
+                .into(),
+        );
+    };
+    // Another namespace's declarations decide the answer, which a unit this
+    // thread records keeps in its record ([`record_observation`]).
+    if let Some(log) = observed
+        && let Some(record) =
+            record_observation(|log: &mut crate::dependency_manifest::ObservationLog| {
+                log.named(namespace, crate::dependency_manifest::EdgeKinds::OBSERVED)
+            })
+        && let Some(log) = log.borrow_mut().as_mut()
+    {
+        record(log);
+    }
+    Ok(kind)
+}
+
+/// What `cljs.core/name` names: a function the runtime provides whose
+/// pinned upstream metadata gives arglists is a `fn-var`, as upstream's
+/// analyzer marks it, even where a macro of the same name inlines its
+/// calls (`+`, `pos?`, `str`); a compiler macro or special form of the
+/// core namespace is a `macro`; another value the runtime provides is a
+/// `var`.
+fn core_kind(name: &str) -> &'static str {
+    static FUNCTIONS: std::sync::OnceLock<HashSet<&'static str>> = std::sync::OnceLock::new();
+    let functions = FUNCTIONS.get_or_init(|| {
+        include_str!("core_var_metadata.tsv")
+            .lines()
+            .filter_map(|line| line.split_once('\t'))
+            .filter(|(_, metadata)| metadata.contains(":arglists (["))
+            .map(|(name, _)| name)
+            .collect()
+    });
+    let provided = crate::CoreFnId::resolve(name).is_some();
+    if provided && functions.contains(name) {
+        "fn-var"
+    } else if core_macro(name)
+        || crate::compiler_names::is_declaration_macro(name)
+        || is_definition_macro("cljs.core", name)
+    {
+        "macro"
+    } else if provided {
+        "var"
+    } else {
+        "unresolved"
+    }
 }
 
 impl NamespaceMetadata {
@@ -2015,7 +2157,7 @@ impl MacroHost {
             .tables
             .runtime_vars
             .iter()
-            .filter_map(|(key, private)| Some((key.strip_prefix(&prefix)?.to_owned(), *private)))
+            .filter_map(|(key, var)| Some((key.strip_prefix(&prefix)?.to_owned(), *var)))
             .collect();
         runtime_vars.sort_by(|a, b| a.0.cmp(&b.0));
         let macros = self
@@ -2091,8 +2233,8 @@ impl MacroHost {
                 continue;
             }
             if let Some(member) = key.strip_prefix(&prefix) {
-                if let Some(&private) = current {
-                    runtime_vars.push((member.to_owned(), private));
+                if let Some(&var) = current {
+                    runtime_vars.push((member.to_owned(), var));
                 }
             } else {
                 mutated_foreign = true;
@@ -2179,8 +2321,8 @@ impl MacroHost {
         for (name, kind) in &metadata.bindings {
             self.register_source_binding(namespace, name, *kind)?;
         }
-        for (name, private) in &metadata.runtime_vars {
-            self.register_runtime_var(namespace, name, *private)?;
+        for (name, var) in &metadata.runtime_vars {
+            self.register_runtime_var(namespace, name, var.private, var.function)?;
         }
         for (name, declaration) in &metadata.macros {
             self.install_javascript_macro(format!("{namespace}/{name}"), declaration.published());
@@ -2231,7 +2373,15 @@ impl MacroHost {
     /// Whether `namespace/name` is a Var of the compile-time session, and
     /// whether it is private.
     pub(crate) fn runtime_var(&self, key: &str) -> Option<bool> {
-        self.tables.runtime_vars.get(key).copied()
+        self.tables.runtime_vars.get(key).map(|var| var.private)
+    }
+    /// Whether `namespace/name` is a Var of the compile-time session whose
+    /// definition is a function ([`RuntimeVar::function`]).
+    pub(crate) fn runtime_function(&self, key: &str) -> bool {
+        self.tables
+            .runtime_vars
+            .get(key)
+            .is_some_and(|var| var.function)
     }
     pub(crate) fn data_reader_count(&self) -> usize {
         self.tables.data_readers.len()
@@ -2526,12 +2676,14 @@ impl MacroHost {
         namespace: &str,
         name: &str,
         private: bool,
+        function: bool,
     ) -> Result<(), String> {
         forbid_definition();
         self.register_source_binding(namespace, name, SourceBindingKind::Value)?;
-        self.tables
-            .runtime_vars
-            .insert(format!("{namespace}/{name}"), private);
+        self.tables.runtime_vars.insert(
+            format!("{namespace}/{name}"),
+            RuntimeVar { private, function },
+        );
         Ok(())
     }
     pub(crate) fn source_namespace<'a>(
@@ -2555,8 +2707,7 @@ impl MacroHost {
             .tables
             .runtime_vars
             .get(&format!("{namespace}/{name}"))
-            .copied()
-            .unwrap_or(false)
+            .is_some_and(|var| var.private)
         {
             return true;
         }
@@ -2881,9 +3032,9 @@ impl MacroHost {
                 self.tables
                     .runtime_vars
                     .iter()
-                    .filter_map(|(key, private)| {
+                    .filter_map(|(key, var)| {
                         let (owner, local) = key.split_once('/')?;
-                        (owner == namespace && (operation == "ns-interns" || !*private))
+                        (owner == namespace && (operation == "ns-interns" || !var.private))
                             .then(|| (local.to_owned(), key.clone()))
                     })
                     .collect()
@@ -3491,7 +3642,7 @@ mod compiler_pure_tests {
             )
             .unwrap();
             writer
-                .register_runtime_var("other", "leaked", false)
+                .register_runtime_var("other", "leaked", false, false)
                 .unwrap();
             writer.restore_namespace_declarations(
                 "cljs.user",
@@ -3514,7 +3665,7 @@ mod compiler_pure_tests {
         let mut receiver = MacroHost::new();
         assert!(receiver.engine.bootstrap.is_none());
         receiver
-            .register_runtime_var("keep", "value", false)
+            .register_runtime_var("keep", "value", false, false)
             .unwrap();
         receiver.engine.expansions.set(17);
         receiver.limits.generated_nodes = 99_999;

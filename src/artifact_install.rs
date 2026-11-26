@@ -2404,6 +2404,7 @@ impl Installer<'_> {
                     &global.name,
                     global.binding,
                     global.private,
+                    global.function,
                 )
             })
             .chain(artifact.references.globals.iter().map(|external| {
@@ -2412,11 +2413,14 @@ impl Installer<'_> {
                     &external.name,
                     external.private.map(|_| BindingKind::Value),
                     external.private,
+                    external.function,
                 )
             }));
-        for (namespace, name, binding, private) in bindings {
+        for (namespace, name, binding, private, function) in bindings {
             match (binding, private) {
-                (_, Some(private)) => macro_host.register_runtime_var(namespace, name, private),
+                (_, Some(private)) => {
+                    macro_host.register_runtime_var(namespace, name, private, function)
+                }
                 (Some(kind), None) => {
                     macro_host.register_source_binding(namespace, name, source_binding(kind))
                 }

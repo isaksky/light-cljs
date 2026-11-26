@@ -6636,6 +6636,10 @@ pub(crate) fn install_catalog_services(
                     }
                     return String::new();
                 }
+                // `classify` reads this thread's expansion, never the coordinator's.
+                if let Some(answer) = crate::build_services::serve_local(request) {
+                    return answer;
+                }
                 let view = requests.upgrade();
                 if let Some(answer) = view.as_ref().and_then(|view| view.forward_build(request)) {
                     return answer;

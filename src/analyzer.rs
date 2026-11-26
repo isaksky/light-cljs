@@ -9093,11 +9093,21 @@ impl Analyzer<'_> {
             }
         }
         self.program.globals[global.0].metadata = Some(metadata);
+        // A `def` without a value assigns nothing, so it keeps what the
+        // Var's last definition with one bound.
+        let function = match args.get(if args.len() == 3 { 2 } else { 1 }) {
+            Some(&init) => self.function_literal(init),
+            None => self.macro_host.runtime_function(&format!(
+                "{}/{}",
+                self.namespace, self.program.globals[global.0].name
+            )),
+        };
         self.macro_host
             .register_runtime_var(
                 self.namespace,
                 &self.program.globals[global.0].name,
                 self.metadata_is(args[0], "private", "true"),
+                function,
             )
             .map_err(|e| self.error(args[0], AnalysisErrorKind::MacroExpansion(e)))?;
         // Registration precedes initializer/test analysis, so both see the live global.
@@ -9981,13 +9991,49 @@ impl Analyzer<'_> {
         result
     }
 
-    fn declare_global(&mut self, node: NodeId) -> Result<GlobalId, AnalysisError> {
+    /// Whether `node` is a function literal, as upstream's analyzer marks a
+    /// `def` of one `:fn-var`: a `fn*` form or a call of the core `fn`
+    /// macro, which `defn` expands to.
+    fn function_literal(&self, node: NodeId) -> bool {
+        let NodeKind::Collection {
+            kind: CollectionKind::List,
+            children,
+        } = &self.syntax.nodes[node.0].kind
+        else {
+            return false;
+        };
+        let Some(&head) = children.first() else {
+            return false;
+        };
+        if !matches!(self.syntax.nodes[head.0].kind, NodeKind::Symbol) {
+            return false;
+        }
+        match self.spelling(head) {
+            "fn*" | "cljs.core/fn" | "clojure.core/fn" => true,
+            "fn" => {
+                self.lookup("fn").is_none()
+                    && !self.macro_host.has_source_value(self.namespace, "fn")
+                    && !self.resolution.excludes.iter().any(|name| name == "fn")
+                    && !self
+                        .resolution
+                        .refers
+                        .iter()
+                        .any(|(local, _, _)| local == "fn")
+            }
+            _ => false,
+        }
+    }
+
+    /// Declare the global `node` names; `function` says whether its value
+    /// is a function, as a protocol method's is.
+    fn declare_global(&mut self, node: NodeId, function: bool) -> Result<GlobalId, AnalysisError> {
         let name = self.binding_name(node)?.to_owned();
         self.macro_host
             .register_runtime_var(
                 self.namespace,
                 &name,
                 self.metadata_is(node, "private", "true"),
+                function,
             )
             .map_err(|e| self.error(node, AnalysisErrorKind::MacroExpansion(e)))?;
         let key = (self.namespace.to_owned(), name.clone());
@@ -10208,6 +10254,9 @@ impl Analyzer<'_> {
             return Ok(expr);
         };
         let mut products = Vec::new();
+        // The products whose values are functions: protocol methods and
+        // type factories.
+        let mut functions = Vec::new();
         let mut once = false;
         let mut extensions = Vec::new();
         let mut work = vec![expr];
@@ -10250,11 +10299,14 @@ impl Analyzer<'_> {
                 } => {
                     products.push(*global);
                     products.extend(methods.iter().map(|m| m.global));
+                    functions.extend(methods.iter().map(|m| m.global));
                 }
                 ExprKind::DefType { global, layout, .. } => {
                     products.push(*global);
                     products.extend(layout.constructor);
                     products.extend(layout.map_constructor);
+                    functions.extend(layout.constructor);
+                    functions.extend(layout.map_constructor);
                     if self.options.warning_mode {
                         self.record_fields.insert(*global, layout.fields.len());
                     }
@@ -10309,8 +10361,12 @@ impl Analyzer<'_> {
         }
         for g in &products {
             let b = &self.program.globals[g.0];
+            let function = functions.contains(g)
+                || self
+                    .macro_host
+                    .runtime_function(&format!("{}/{}", b.namespace, b.name));
             self.macro_host
-                .register_runtime_var(&b.namespace, &b.name, false)
+                .register_runtime_var(&b.namespace, &b.name, false, function)
                 .map_err(|e| self.error(id, AnalysisErrorKind::MacroExpansion(e)))?;
         }
         let form = self
@@ -10367,7 +10423,7 @@ impl Analyzer<'_> {
         // The protocol and its methods are the bundle's own products: no
         // code is analyzed here, so a macro-free unit may declare them.
         let _declaring = crate::macro_host::OwnDeclaration::enter();
-        let global = self.declare_global(name)?;
+        let global = self.declare_global(name, false)?;
         self.program.globals[global.0].type_descriptor = false;
         self.definition(id, &[name], ExprContext::Discard, false)?;
         let protocol_name = format!("{}/{}", self.namespace, self.program.globals[global.0].name);
@@ -10421,7 +10477,7 @@ impl Analyzer<'_> {
                     AnalysisErrorKind::InvalidForm("empty protocol method"),
                 ));
             };
-            let method = self.declare_global(name)?;
+            let method = self.declare_global(name, true)?;
             self.definition(spec, &[name], ExprContext::Discard, false)?;
             let mut arities = Vec::new();
             let mut variadic = None;
@@ -11239,7 +11295,7 @@ impl Analyzer<'_> {
         }
         let global = {
             let _declaring = crate::macro_host::OwnDeclaration::enter();
-            self.declare_global(args[0])?
+            self.declare_global(args[0], false)?
         };
         self.program.globals[global.0].type_descriptor = true;
         if record {
@@ -11398,7 +11454,7 @@ impl Analyzer<'_> {
                 ),
             ));
         }
-        let global = self.declare_global(args[0])?;
+        let global = self.declare_global(args[0], false)?;
         self.program.globals[global.0].type_descriptor = true;
         let masks = self.datum(args[2], ExprContext::Value)?;
         if record {

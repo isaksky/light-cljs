@@ -878,6 +878,9 @@ impl Converter<'_> {
             private: self
                 .macro_host
                 .runtime_var(&format!("{}/{}", binding.namespace, binding.name)),
+            function: self
+                .macro_host
+                .runtime_function(&format!("{}/{}", binding.namespace, binding.name)),
         });
         self.external_globals.insert(id.0, index);
         Ok(GlobalRef::External(index))
@@ -1296,6 +1299,7 @@ impl Converter<'_> {
                 span: bytes(&binding.span),
                 source: self.source(binding.source_index),
                 private: host.runtime_var(&key),
+                function: host.runtime_function(&key),
                 binding: host
                     .tables
                     .source_bindings
