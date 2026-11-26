@@ -1,51 +1,127 @@
 # light-cljs
 
 light-cljs is a ClojureScript-to-JavaScript compiler written in Rust. It reads
-`.cljs`/`.cljc` source, resolves and analyzes it in Rust, and emits a single
-self-contained JavaScript expression that carries its own persistent-collection
-runtime. The same compiler powers a script runner, a REPL and an embedding API
-that execute the emitted JavaScript in an embedded V8 isolate. No Node, JVM or
-installed `cljs.core` is needed to run code.
+`.cljs`/`.cljc` source, resolves and analyzes it in Rust, and emits self-contained
+JavaScript carrying its own persistent-collection runtime. The same compiler
+powers a project build tool (`light-cljs.edn` with `compile`, `watch`, `release`,
+and `cljs-repl`), a script runner, a REPL, and a Rust embedding API backed by an
+embedded V8 isolate. No Node, JVM, or installed `cljs.core` is required to run
+code.
 
-The project site, <https://isaksky.github.io/light-cljs/>, has an overview and
-the [browser playground](https://isaksky.github.io/light-cljs/playground/).
+Try it in the [browser playground](https://isaksky.github.io/light-cljs/playground/)
+or visit the [project site](https://isaksky.github.io/light-cljs/).
 
 **Status:** ClojureScript support is substantial but partial. Core special forms,
 macros, namespaces, persistent and sorted collections, lazy sequences,
-transducers, protocols, types, records, multimethods, atoms, exceptions and
-JavaScript interop work, and behavior is regularly compared against standard
+transducers, protocols, types, records, multimethods, atoms, exceptions, and
+JavaScript interop work, and behavior is regularly checked against standard
 ClojureScript. It is not a drop-in replacement: there is no Google Closure
-Library, no `cljs.pprint`/`core.async`/`test.check`, no package resolution (npm
-packages come from the host or a bundler), and numbers are always JavaScript
-Numbers. See [known boundaries](#known-boundaries).
+Library, no `cljs.pprint`/`core.async`/`test.check`, no npm package resolution,
+and numbers are always JavaScript Numbers. See [Known boundaries](#known-boundaries).
 
-**Performance against shadow-cljs 3.5.3 (November 24, 2026).** Every figure is
-light-cljs's median divided by shadow-cljs's, so below 1.00 means light-cljs is
-faster or smaller. Both compilers build the same source in release mode
-(`:advanced`) unless a row says dev. The machine was busy during every run, the
-compilers alternated, and the large programs are ones this project generates
-itself. Details, ranges and commands are in
-[benchmarks/shadow-comparison.md](benchmarks/shadow-comparison.md) and
+## Quick start
+
+### Build
+
+Requires Rust 1.91+, [babashka](https://babashka.org/) (`bb`), Git, and a C/C++
+toolchain. The first build downloads the pinned prebuilt V8 engine (x86_64 and
+arm64 on macOS, Linux, and Windows). Node.js is only needed to run emitted JS
+outside the embedded evaluator and for parts of the test suite.
+
+```sh
+cargo build --release
+# Optional: install `light-cljs` onto PATH
+cargo install --path .
+```
+
+*(WebAssembly and `--no-default-features` builds embed no JS engine; macros can
+still run through a `host_evaluator::ScriptHost`, as the browser playground does.
+Interactive sessions and custom compiler data readers require V8.)*
+
+### Run scripts or a REPL (embedded V8)
+
+```sh
+light-cljs --eval --text '(/ 1 2)'
+# 0.5
+
+light-cljs --eval --source-root examples/native examples/native/demo.cljs
+# Hello from compiled JavaScript
+# {:squares [1 4 9 16 25], :sum 15}
+
+light-cljs --repl
+```
+
+### Build and watch a project (`light-cljs.edn`)
+
+`light-cljs.edn` defines builds modeled on `shadow-cljs.edn` (`:source-paths`,
+`:builds`, `:dev`/`:release` overrides, dev HTTP server, hot reload, and nREPL):
+
+```sh
+cd examples/features
+light-cljs watch features      # dev build + file watcher + dev server + nREPL
+light-cljs cljs-repl features  # attach a REPL to the running watch (another terminal)
+light-cljs compile features    # one-shot reloadable dev build
+light-cljs release features    # optimized code-split release build (:advanced)
+```
+
+### Compile directly to JavaScript
+
+```sh
+# Single file -> JS expression evaluating to the last form
+light-cljs --compile examples/closure.cljs | node --print 'eval(require("fs").readFileSync(0, "utf8"))'
+
+# Namespace entry -> ES module for a bundler (--esm) or code-split chunks (--out-dir)
+light-cljs --compile --optimize advanced --entry app.main \
+  --source-root examples/features --out-dir /tmp/light-features
+node -e 'import("/tmp/light-features/app.main.js").then(m => m.default())'
+```
+
+See [docs/cli.md](docs/cli.md) for the complete CLI reference (source maps,
+`--define`, `--elide-asserts`, `--config`, caching, `--stats`, `--jobs`, nREPL,
+and `--print-config`).
+
+### Embed in Rust
+
+```rust
+use light_cljs::{EvalOptions, EvalSession};
+
+let mut session = EvalSession::new(EvalOptions::default())?;
+session.eval_string("(def hits (atom 0))")?;
+let result = session.eval_string("(swap! hits inc)")?;
+assert_eq!(session.number(result.value)?, 1.0);
+```
+
+To compile to a JavaScript string without running it, call
+`light_cljs::compile(source)`, `compile_namespace(entry, roots)`, or
+`prepare_application(&program, options).emit_chunks()`. See
+[examples/embedding.rs](examples/embedding.rs) (`cargo run --example embedding`)
+and [docs/evaluation.md](docs/evaluation.md).
+
+## Performance vs. shadow-cljs
+
+Measured against **shadow-cljs 3.5.3** (November 24, 2026). Every ratio is
+`light-cljs / shadow-cljs`, so **below `1.00` means light-cljs is faster or
+smaller**. Both compilers build the same source in release mode (`:advanced`)
+unless marked dev. Runs alternated on a busy machine, and the large synthetic
+programs are generated by this repository. Full tables, ranges, and commands live
+in [benchmarks/shadow-comparison.md](benchmarks/shadow-comparison.md) and
 [benchmarks/runtime-vs-shadow.md](benchmarks/runtime-vs-shadow.md).
 
-Build time, command-line release builds (`4cb35725`, three rounds each):
+**Build time (command-line release builds, 3 rounds each):**
 
 | Build | Lines | light-cljs | shadow-cljs | light/shadow |
 | --- | --- | --- | --- | --- |
-| Clean | 50k | 1.37 s | 18.02 s | 0.08 |
-| Nothing changed | 50k | 0.25 s | 13.75 s | 0.02 |
-| One file edited | 50k | 0.15 s | 13.52 s | 0.01 |
-| Clean | 200k | 5.89 s | 52.73 to 213.19 s | 0.03 to 0.11 |
-| Nothing changed | 200k | 1.09 s | 36.62 s | 0.03 |
-| One file edited | 200k | 2.01 s | 36.47 s | 0.06 |
+| Clean | 50k | 1.37 s | 18.02 s | **0.08** |
+| Nothing changed | 50k | 0.25 s | 13.75 s | **0.02** |
+| One file edited | 50k | 0.15 s | 13.52 s | **0.01** |
+| Clean | 200k | 5.89 s | 52.73–213.19 s | **0.03–0.11** |
+| Nothing changed | 200k | 1.09 s | 36.62 s | **0.03** |
+| One file edited | 200k | 2.01 s | 36.47 s | **0.06** |
 
-shadow-cljs pays its JVM startup in each of these builds, and its 200k clean
-build varied widely under load, so that row gives its range. Peak memory for
-the clean builds was 0.35 GB against 2.36 GB at 50k lines and 0.91 GB against
-3.02 GB at 200k, with shadow-cljs on its default heap.
+*(shadow-cljs pays JVM startup on each CLI invocation. Peak clean-build memory
+was 0.35 GB vs. 2.36 GB at 50k lines, and 0.91 GB vs. 3.02 GB at 200k lines.)*
 
-Speed of the compiled output (`d7281fe8`, ten alternated runs per row in one
-session; "parity" marks rows whose ranges overlap shadow-cljs's):
+**Compiled output speed (10 alternated runs; "parity" = overlapping ranges):**
 
 | Program | Measure | light/shadow |
 | --- | --- | --- |
@@ -53,23 +129,21 @@ session; "parity" marks rows whose ranges overlap shadow-cljs's):
 | Generated 200k lines, Node | first output | 1.01 (parity) |
 | Generated re-frame-shaped 200k lines, Node | steady state | 1.10 |
 | re-frame TodoMVC, Chromium | add 1,000 todos | 0.81 |
-| re-frame TodoMVC, Chromium | toggle all, edit, clear completed | 1.01 to 1.02 (parity) |
+| re-frame TodoMVC, Chromium | toggle all, edit, clear completed | 1.01–1.02 (parity) |
 | re-frame TodoMVC, Chromium | page load to interactive | 1.23 |
 | re-frame TodoMVC, dev build, Chromium | add 1,000 todos / toggle all | 1.02 (parity) / 1.23 |
-| Generated 200k lines, dev build, Node | steady state | 1.11 |
-| Generated 200k lines, dev build, Node | first output | 0.87 |
+| Generated 200k lines, dev build, Node | steady state / first output | 1.11 / 0.87 |
 
-In the 80-operation micro-benchmark, 76 operations are at or below
-shadow-cljs's time and the slowest is at 1.10.
+In the 80-operation micro-benchmark, 76 operations are at or faster than
+shadow-cljs (slowest: 1.10).
 
-Output size after gzip (`d7281fe8`): 0.96, 0.89 and 0.86 of shadow-cljs's on
-the generated 50k-, 200k- and 800k-line programs. Small apps come out larger,
-React included: re-frame's simple example is 22% larger and TodoMVC 13%
-larger; flow is 3% smaller.
+**Gzipped output size:** `0.96×`, `0.89×`, and `0.86×` of shadow-cljs on the
+generated 50k-, 200k-, and 800k-line programs. Small apps are currently larger
+(React included): re-frame simple is +22%, TodoMVC is +13%, flow is −3%.
 
-**Where light-cljs still loses:** steady state on the re-frame-shaped program,
-TodoMVC's page load, toggle-all in TodoMVC's dev build, and the size of small
-apps.
+**Where light-cljs still loses:** steady state on the re-frame-shaped benchmark,
+TodoMVC page load to interactive, dev-build toggle-all in TodoMVC, and bundle
+size on small apps.
 
 ## Architecture
 
@@ -80,895 +154,88 @@ source ─▶ Tokenizer ─▶ Parser ─▶ compiler reader ─▶ Analyzer ─
                                          └── macro expansion ◀┘ compiled to JS, run in V8
 ```
 
-- **Tokenizer** (`src/lib.rs`) borrows the source and yields raw tokens with byte
-  spans; it never allocates text. See [docs/lexer.md](docs/lexer.md).
-- **Parser** (`src/parser.rs`) builds a flat node arena with byte spans and
-  validates literal spelling; it performs no reader expansion. See
-  [docs/parser.md](docs/parser.md).
-- **Compiler reader** (`src/compiler_reader.rs`, `compiler_data.rs`) turns syntax
-  into immutable compiler forms: reader conditionals, syntax quote, `#()`,
-  namespaced maps, tagged literals and namespace-aware symbol resolution. Custom
-  compiler data readers run in a V8 isolate separate from the macro isolate.
-- **Analyzer** (`src/analyzer.rs`) resolves names to stable binding IDs and
-  lowers forms into an expression arena (`Program`). Binding/destructuring
-  macros are expanded in Rust (`compiler_binding_macros.rs`,
-  `compiler_destructuring.rs`). Every core operation (`CoreFnId`) carries
-  parameter and return types, purity and its runtime units from
-  `src/core_operations.tsv` (`src/core_operations.rs`).
-- **Macros** run as JavaScript emitted by this same compiler, inside a separate
-  V8 isolate (`macro_host.rs`, `compiler_evaluator.rs`). The browser playground
-  executes macros through its browser host. Core macros
-  are bootstrapped from `src/compiler_core_macros.cljs` and
-  `src/compiler_sequence_macros.cljs`; the most used ones (`cond`, `when`,
-  `and`, `->`, `case`, `for`, `doseq` and others) expand in Rust to the same
-  forms (`native_core_macros.rs`). User macros are ordinary `defmacro`s in
-  `.cljs`/`.cljc` files. Ordinary helpers that macros call are compiled on demand
-  (`compilation_session.rs`).
-- **Application preparation** (`src/application.rs`) conservatively removes
-  unused inert definitions and specializes some calls, preserving effect order.
-- **Emitter** (`src/emitter.rs`) writes the JavaScript expression; the shared
-  runtime is `src/js_runtime.js`, split into units with declared dependencies
-  (`src/runtime_manifest.rs`). Bundled `clojure.string`, `clojure.set`,
-  `clojure.walk`, `clojure.edn`, `cljs.reader` and `light.lazy` live in
-  `src/compiler_libraries/`.
-- **Evaluation** (`src/eval_session.rs`, `eval_compiler.rs`, `eval_cli.rs`)
-  compiles forms incrementally and executes them in a persistent V8 isolate
-  (`src/v8_session.rs`, `src/evaluator.rs`).
+- **Tokenizer** (`src/lib.rs`) borrows source and yields raw tokens with byte spans without allocating text ([docs/lexer.md](docs/lexer.md)).
+- **Parser** (`src/parser.rs`) builds a flat syntax arena with byte spans and validates literals ([docs/parser.md](docs/parser.md)).
+- **Compiler reader** (`src/compiler_reader.rs`, `compiler_data.rs`) expands reader conditionals, syntax quote, `#()`, namespaced maps, and tagged literals. Custom data readers run in a separate V8 isolate.
+- **Analyzer** (`src/analyzer.rs`) resolves bindings into an expression arena (`Program`), expands binding/destructuring macros in Rust, and tracks core op types/purity/runtime units (`src/core_operations.tsv`).
+- **Macros** compile through the same pipeline and run in a separate V8 isolate (`macro_host.rs`) or the browser host in the playground. Hot core macros (`cond`, `when`, `and`, `->`, `case`, `for`, `doseq`, …) expand natively in Rust (`native_core_macros.rs`).
+- **Application preparation & Emitter** (`src/application.rs`, `src/emitter.rs`) dead-code-eliminate, specialize/inline, and emit JavaScript plus only the reachable units of `src/js_runtime.js` (`src/runtime_manifest.rs`).
+- **Evaluation** (`src/eval_session.rs`, `src/v8_session.rs`) compiles forms incrementally into a persistent V8 isolate.
 
-## Building
+## Known boundaries
 
-The V8 build requires Rust 1.91+, babashka (`bb`), Git and a C/C++
-toolchain. The build script downloads the pinned `v8` crate's prebuilt engine
-on the first build. Prebuilt engines cover x86_64 and arm64 on macOS, Linux and
-Windows. The macro realm disables `WebAssembly` and rejects `maxByteLength`
-because stock V8 maps WebAssembly memory and resizable buffers outside the
-allocator that charges the macro memory limit (`RESTRICTED_BUFFERS` in
-`src/v8_evaluator.rs`). Node.js is needed for parts of the test suite and for
-running emitted JavaScript outside the embedded evaluator.
+- **Numbers** are JavaScript Numbers everywhere, including during macro expansion. `N`/`M` literals and integral ratios (`4/2`) become Numbers (large integers round); non-integral ratios (`1/3`) are rejected.
+- **Bundled libraries:** only `cljs.core` (supported subset), `clojure.string`, `clojure.set`, `clojure.walk`, `clojure.edn`, `cljs.reader`, and `light.lazy` are bundled. There is no Google Closure Library (`goog.*`), `cljs.pprint`, `cljs.test`, `core.async`, or `test.check`. Other namespaces are supplied as source via `--source-root` / `:source-paths`.
+- **No npm resolution:** light-cljs never reads `node_modules` or `package.json` and does no CommonJS conversion. String libspecs like `["react" :as r]` read `globalThis.lightCljsPackages["react"]`, or become static ES `import`s with `--esm` / `--out-dir` for an external bundler (Vite, esbuild, Rollup).
+- **Macros** must be in `.cljs`/`.cljc` files (`.clj` companions are never loaded) and run in JavaScript.
+- **Release optimizer (`--optimize advanced`)** is still being built ([docs/advanced-optimization.md](docs/advanced-optimization.md)). Typical sizes today: `(js/console.log (+ 1 2))` is ~150 B, a small record/protocol program ~6 KB, printing pulls in the printer (~21 KB), and generic sequence operations ~30–50 KB.
+- **Collection performance:** vectors, hash maps, hash sets, and transients use persistent 32-way / HAMT tries matching upstream asymptotic complexity (except `rseq` on vectors copies); some lazy-seq and seq-probing paths are still slower than upstream (~1.8× on `map`/`filter`/`partition` pipelines in Node). See [benchmarks/compiler.md](benchmarks/compiler.md).
+- **Embedded V8 environment:** `--eval`, `--repl`, and macro isolates provide ECMAScript intrinsics only—no DOM, Node APIs, filesystem, network, or timers unless supplied by the host (`NamePolicy` restricts resolution, not sandboxing). In `--eval`/`--repl`, promise microtasks drain after each top-level form rather than at end of file; compiled output uses the host event loop (`^:async`/`await` supported).
 
-```sh
-cargo build --release
-```
-
-V8 is the only embedded engine. Builds with `--no-default-features`,
-WebAssembly builds and targets without a prebuilt V8 embed no engine.
-A `host_evaluator::ScriptHost` can execute macros for clean compilations, as
-the browser playground does. Interactive sessions and compiler data readers
-require a V8 build.
-
-## Command-line usage
-
-Run `cargo run -- --help` for the full option list.
-
-### Evaluate scripts and use the REPL (embedded V8)
-
-```sh
-cargo run --quiet -- --eval --text '(/ 1 2)'
-# 0.5
-cargo run --quiet -- --eval --source-root examples/native examples/native/demo.cljs
-# Hello from compiled JavaScript
-# {:squares [1 4 9 16 25], :sum 15}
-printf '(+ 20\n 22)\n(* *1 2)\n' | cargo run --quiet -- --repl
-# 42
-# 84
-```
-
-`--eval` takes a `.cljs`/`.cljc` file, `-`/stdin, or `--text SOURCE`. Program
-output streams immediately; the printed final value appears only after success.
-`--repl` keeps definitions, namespaces and `*1`/`*2`/`*3`/`*e`, accepts
-multiline input and recovers from reader and language errors (prompts go to
-stderr). Namespaces are loaded only from explicit `--source-root DIR` options
-(`.cljs` is preferred over `.cljc`); `.clj` files are rejected. Resource limits:
-`--poll-budget`, `--memory-limit`, `--stack-limit`, `--timeout-ms`,
-`--source-limit`, `--output-limit`, plus `--print-length`/`--print-level` for the
-printed result. The V8 heap needs at least 16 MiB (16,777,216 bytes) at startup.
-`--engine` accepts only `v8`. Legacy `--engine quickjs` commands report that QuickJS was removed.
-`--warnings` analyzes as `--compile --warnings` does, printing
-undeclared Vars and arity conflicts to stderr instead of rejecting the form, so
-`(require 'app.view :reload)` of a file that uses a Var another file defines
-later still loads. Details: [docs/evaluation.md](docs/evaluation.md#script-and-repl-commands).
-
-### Compile to JavaScript
-
-```sh
-# A single file, stdin or --text: emits one JS expression whose value is the last form
-cargo run --quiet -- --compile examples/closure.cljs \
-  | node --print 'eval(require("fs").readFileSync(0, "utf8"))'
-# 10
-
-# A namespace and its dependencies from explicit source roots
-cargo run --quiet -- --compile --entry demo.main --source-root examples/namespaces | node
-# 4
-cargo run --quiet -- --compile --entry demo.main --source-root examples/macros | node
-# 12
-```
-
-String libspecs such as `["react" :as r]` read host-supplied packages from
-`globalThis.lightCljsPackages`. Add `--esm` to `--compile --entry` to emit one ES
-module for a bundler instead, with static package imports and the entry value as
-its default export (see [JavaScript packages](docs/compiler.md#javascript-packages)).
-
-Add `--out-dir DIR` to `--compile --entry` to split a program at its
-`light.lazy/loadable` sites: `DIR` gets one ES module per chunk (`--out-dir`
-implies `--esm`), the startup chunk `NS.js` whose default export is the entry
-value, the chunks loaded with `import()` the first time `light.lazy/load` asks
-for a target in them, and `chunks.json`, which lists each file with its
-imports, namespaces, moved definitions, roots, loadable sites and size.
-Chunks follow namespaces, and at `--optimize advanced` definitions without
-effects move to the chunk of the code that reads them, as do the keywords,
-symbols and constant collections of the constant table and the runtime units
-(each chunk embeds those only the roots that load it need), and a chunk left
-without code is not written; there `--size-report` prints per chunk its bytes,
-definitions, constants and runtime units, each with what first demanded it.
-It works at every
-`--optimize` level, writes only the files the manifest names, takes no source
-map flags, and leaves a program without loadables one file, its `--esm` output
-([Chunked builds](docs/compiler.md#chunked-builds),
-[Code-splitting contract](docs/compiler.md#code-splitting-contract)).
-
-```sh
-cargo run --quiet -- --compile --optimize advanced --entry app.main \
-  --source-root examples/features --out-dir /tmp/light-features
-node -e 'import("/tmp/light-features/app.main.js").then(m => m.default())'
-# menu: Editor | Reports
-# editor: 4 documents, first Introduction, ids #{:api :faq :intro :setup}
-# reports: tags Draft, Guide, Reference; drafts FAQ, INTRO; 1050 words
-```
-
-Add `--reloadable --out-dir DIR` to `--compile --entry` to write a dev build
-into `DIR` instead: `runtime.js` (the runtime, once), one unit per namespace in
-dependency order with its source map, `manifest.json` and an `index.js` that
-loads them in order (script elements in a page, `require` in Node). Definitions
-live in a registry read at each use, as in the REPL, so evaluating a namespace's
-unit again replaces its definitions while `defonce` state stays
-([Dev builds](docs/compiler.md#dev-builds),
-[docs/dev-workflow.md](docs/dev-workflow.md)).
-
-```sh
-cargo run --quiet -- --compile --entry app.main --source-root examples/dev \
-  --reloadable --out-dir /tmp/light-dev
-node -e 'require("/tmp/light-dev/index.js"); __lightDevLoaded.then(start => start())'
-# start
-# clicks: [1]
-```
-
-`--watch --entry NS --source-root DIR --out-dir DIR [--poll-ms N]` writes the
-same dev build, then polls the sources (every 100 ms by default) and, for each
-saved namespace, compiles its forms again against the program it keeps and
-rewrites the namespace's unit, its source map and the manifest: a new require
-adds the units of the namespaces it loads, a change to a macro namespace or
-to a namespace its macros require recompiles the namespaces that use its
-macros, a change to a file a macro read through `light.build` recompiles the
-namespaces that read it, every step recompiles the namespaces marked
-`^:dev/always` and those that depend on them, and a form that fails prints its
-error and leaves the previous unit. The watch starts from the persistent
-compiler cache (below), in `.light-cljs/cache` or in `--cache-dir DIR`: its
-startup build runs once in the session's V8 macro host. The build installs
-each namespace whose artifact is current instead of analyzing it. The session
-uses the resulting program to compile later edits. With `--no-cache`, the
-compiler writes the startup build first, then loads the program into a separate
-session. Only startup reads or writes the cache. A restart analyzes what changed
-since the cache was last filled. Deleting the cache directory leaves a running
-watch intact.
-`--cache-blocker NS` (repeatable) keeps NS and its compilation consumers
-out of the cache; a blocker never makes a step recompile. A large program
-raises the macro limits with the flags `--compile` takes,
-`--macro-expansions N`, `--macro-nodes N`, `--macro-timeout-ms N`,
-`--macro-memory-limit N` and `--macro-poll-budget N` (by default 1,024
-expansions and 100,000 generated form nodes per compilation, a 10 s deadline,
-a 64 MiB heap and a poll budget of 1,000,000). Macro expansion and generated-node
-counts start over at each watch step and are shared by the namespaces it
-recompiles. Each namespace reload has its own deadline and poll budget.
-As with `--compile`, macros see stub JavaScript
-packages, which only the application has. One line per step goes to stderr
-([Watch](docs/evaluation.md#watch)).
-
-```sh
-cargo run --quiet -- --watch --entry app.main --source-root examples/dev --out-dir /tmp/light-dev
-# light-cljs: built app.main (4 namespaces) into /tmp/light-dev in 281 ms; watching every 100 ms
-# light-cljs: recompiled app.view in 4.1 ms
-```
-
-Add `--serve PORT` to `--watch` to serve the build at `http://127.0.0.1:PORT/`
-(`--serve-host HOST` for another address; a connected page runs what the server
-sends it, so open it to a network only when you trust it): a page with the
-console output at `/` unless the build directory has an `index.html`, the
-build's files and the sources its source maps name, and an event stream that
-pushes each step to the open pages. The build's `client.js` loads the pushed
-units between the `^:dev/before-load` and `^:dev/after-load` hooks, keeping
-`defonce` state, draws compile errors and warnings over the page with file,
-line and column, catches up when it connects late, and reconnects when the
-server restarts. A step loads the namespaces it recompiled (a changed macro
-namespace recompiles those that use it, and every step those marked
-`^:dev/always` with those that depend on them), never again one marked
-`^:dev/once`; `--reload-dependents` also reloads every
-namespace downstream of them, as shadow-cljs's `:full` strategy does.
-JavaScript packages come from a page in the build directory
-that sets `globalThis.lightCljsPackages` before it loads `index.js`
-([Serve](docs/evaluation.md#serve), [JavaScript packages in
-dev](docs/evaluation.md#javascript-packages-in-dev)).
-
-```sh
-cargo run --quiet -- --watch --entry app.main --source-root examples/dev --out-dir /tmp/light-dev --serve 9630
-# light-cljs: serving /tmp/light-dev at http://127.0.0.1:9630/
-# light-cljs: built app.main (4 namespaces) into /tmp/light-dev in 281 ms; watching every 100 ms
-```
-
-With the server running, `--repl --connect HOST:PORT` is a REPL in the page:
-it reads forms as `--repl` does, the server compiles each with the watch's
-program (so REPL definitions and saved files see each other) in the
-connection's namespace, the entry namespace to begin with, and the most
-recently connected page or Node runtime runs it, prints the value with
-`--print-length` and `--print-level`, and keeps `*1`, `*2`, `*3` and `*e`.
-Runtime errors come back with their stacks mapped to the sources. A value that
-is not finite data also comes back as a reference (`;; ref 1` on stderr),
-which `(light.dev/ref 1)` returns and `(light.dev/inspect 1)` describes;
-`(light.dev/runtimes)` lists the connected runtimes and
-`(light.dev/select! ID)` sends the forms to another
-([Connected REPL](docs/evaluation.md#connected-repl)).
-
-```sh
-cargo run --quiet -- --repl --connect localhost:9630
-# app.main=> (swap! app.state/state update :clicks inc)
-# {:clicks 2, :card #app.view.Card{:label "clicks", :clicks 1}}
-```
-
-Editors connect over nREPL to the same port, or to the port of `--nrepl PORT`
-(0 for any free one), which the watch writes into `.nrepl-port` in the working
-directory while it runs. An nREPL session is such a REPL; the server answers
-`clone`, `close`, `describe`, `eval` (with `ns`), `load-file`, `interrupt`
-(which stops waiting for the runtime), `completions`, `lookup` and
-`ls-sessions`, completions and lookups from the definitions and metadata of the
-watch's program without a runtime round trip ([nREPL](docs/evaluation.md#nrepl)).
-With `--no-nrepl`, the server's port answers no nREPL client.
-
-```sh
-cargo run --quiet -- --watch --entry app.main --source-root examples/dev --out-dir /tmp/light-dev --serve 9630 --nrepl 0
-# light-cljs: serving /tmp/light-dev at http://127.0.0.1:9630/
-# light-cljs: nREPL at 127.0.0.1:52411, its port in /work/.nrepl-port
-```
-
-`--optimize none|prepare|advanced` after `--compile` (single files and `--entry`
-builds, with `--esm` or `--out-dir` too) picks the optimization level. `prepare`, the
-default, removes unused definitions with inert initializers and specializes
-top-level calls; `none` emits everything as analyzed. `advanced` is the release
-mode, still being built from
-[docs/advanced-optimization.md](docs/advanced-optimization.md). So far it:
-
-- removes unused definitions whose initializers only call pure core operations,
-  and does not let retained `js*` disable these passes;
-- embeds just the runtime units the program reaches and reads runtime functions
-  directly; registers namespaces with the runtime only for programs that use
-  reflection such as `*ns*`, `find-ns` or `read-string`; keeps the printer (and
-  with it a printing `toString` on collections) only for programs that print;
-- builds each distinct keyword, symbol and constant collection literal once,
-  with its hash computed by the compiler, and builds map literals with constant
-  keys from a precomputed key shape;
-- infers types, of parameters too from the calls of functions only the program
-  calls or passes to core operations such as `map`, `reduce` and `swap!` (with
-  the values stored in atoms only the program uses, which `deref` and `swap!`
-  then return), and of protocol methods
-  only the program calls, to write truth tests,
-  arithmetic, comparisons and typed core calls as plain JavaScript;
-- drops the methods and types no instance can use, and keeps of the runtime's
-  collection, keyword and seq types only those the program can build, with the
-  parts of each operation that handle them;
-- calls the program's own functions directly through the method a call selects,
-  without an arity dispatcher when nothing else sees them, and creates once the
-  methods of local functions that capture nothing;
-- folds constants, dead branches, `goog-define` values and lookups in constant
-  collections, and inlines single-use and small pure functions;
-- writes the program and the runtime it embeds tersely, with short names and
-  without comments or whitespace.
-
-See [Application preparation](docs/compiler.md#application-preparation) for
-the passes and [known boundaries](#known-boundaries) for typical output sizes.
-Add `--pseudo-names` to keep `advanced` output readable for debugging: the
-compiler's own names, the runtime as written and an indented layout. Add
-`--size-report` to print to stderr which runtime units the output embeds, with
-their sizes and the source expression that first demanded each, and the size of
-the constant table. `--define ns/NAME=VALUE` (repeatable) gives a
-`(goog-define NAME default)` Var its value for the build, at every level; at
-`advanced` the code that only another value runs, such as a `(when DEBUG ...)`
-logging path, is removed. `--elide-asserts` omits every `assert` and `fn`
-`:pre`/`:post` check at every level, as upstream's `:elide-asserts` does:
-`(assert (= 1 1) "x") (js/console.log 1)` is 151 bytes at `advanced`, the same
-as without the assertion, instead of 309. Source macros read it as a false
-`*assert*` while they expand. It is the only switch; `--define`
-names only `goog-define` Vars, so `--define cljs.core/*assert*=false` is
-rejected. `--eval` and `--repl` take `--elide-asserts` too.
-
-`--stats` with `--compile --entry`, `--reloadable` or `--watch` prints to
-stderr what the build did, without changing its output: the wall time of each
-phase (source resolution and parsing, analysis with macro expansion, draining
-deferred units, application preparation, emission and writing; for `--watch`
-also loading its session), the namespaces compiled, the macro calls executed,
-the form nodes they generated, the deferred units registered, analyzed,
-prepared and executed, and the 20 namespaces with the most macro calls. Each
-counter is one `key value` line, after a `light-cljs-stats 1` line, and the
-table follows a `[macro-calls-by-namespace]` line, one `NAMESPACE COUNT` row
-each; `light_cljs::compiler::analyze_namespace_entry_with_stats` returns the
-same numbers as a `CompileStats`. The `trace.*` counters ahead of the table
-come from a trace of *exclusive* stage times, in which nested work counts
-once: loading, the top-level passes without the units they demand, each
-deferred unit without the units it demands, the drains' bookkeeping, the
-V8 time of each, the units that entered the macro host and the ready width of
-each namespace's drain. The `memory.*` counters come last:
-`memory.peak-rss-bytes`, the process's peak resident set so far (from
-`getrusage`, on macOS and Linux only; for `--watch` it covers the whole
-session); `memory.parsed-trees.peak-bytes` and `-files`, the most parsed
-sources the loader held at once, each from when it is parsed until its tree
-is released after its namespace's analysis (its text, nodes, roots, child
-lists and decoded strings); and `memory.queued-ir.peak-bytes` and `-units`,
-the most analyzed deferred-unit IR waiting to merge into the program at
-once, from when a unit's analysis ends, on whichever thread, until its
-namespace's units merge after the next namespace's top-level pass. Both
-peaks are estimates, table lengths times element sizes, without an
-expression's own vectors. The last four, `memory.live.artifacts`,
-`memory.live.engines`, `memory.live.engine-handles` and
-`memory.live.bridge-payloads`, count what the process still holds when the
-report is printed: namespace artifacts (captured or decoded for the cache),
-JavaScript engines, persistent handles Rust holds into an engine's heap (V8
-`Global`s), and the Rust provenance data an engine's objects own through the
-form bridge. A `--compile` build has dropped its macro host by then, so all
-four are 0; `light_cljs::compile_stats::live_counts` reads them from the
-library. With `--watch --stats`, each step's line is followed by
-`light-cljs: live artifacts=N engines=N engine-handles=N bridge-payloads=N value-roots=N`,
-counted after a full garbage collection of the session's engines;
-`value-roots` is how many values the session's macro engine roots for
-the compiler in its private registry.
-`--stats-file PATH` (which implies `--stats`) also
-writes that trace to `PATH` as tab-separated `stage`, `namespace` and `unit`
-rows (and `execute` and `read` rows for the compile-time roots evaluated
-and read), with each unit's position, demander and costs, for
-`benchmarks/concurrency/dag.bb` ([docs/compiler-concurrency.md](docs/compiler-concurrency.md)).
-
-`--jobs N` with `--compile` is experimental. It allows the compilation N CPU
-work slots, the calling thread's included, so at most N-1 worker threads.
-The default is 1: on Penpot, eight jobs take 0.79x the wall time of one
-with 1.8x the peak memory, short of the design's gate of 0.5x and 1.5x
-([benchmarks/compiler-concurrency.md](benchmarks/compiler-concurrency.md#stage-a-gate-light-cljs-343-october-19-2026)),
-while programs whose namespaces have hundreds of definitions reach about
-0.45x. Sources are read and parsed on that pool, the source
-order coming from the require edges and not from which file finished first;
-and each namespace's deferred units (its definitions' bodies) are analyzed on
-it, by workers in V8 isolates of their own as far as the macro memory limit
-allows and by workers without an engine, which take only the units that
-expand no JavaScript macro, while the calling thread drains them in order. Every other phase still runs on the calling thread. Output
-does not depend on N, except where a macro's compile-time effect in one
-namespace's definition bodies is observed from another: each isolate has its
-own compile-time state, so such an effect is invisible in the others (the
-`counter` example of the design prints `1 1` with several jobs and `1 2`
-with one). Declare such a provider with `--cache-blocker NS` (repeatable,
-with or without `--cache-dir`): NS and every namespace that requires it,
-directly or transitively, or names it in a symbol (such as a fully
-qualified macro), analyze their definition bodies on the calling
-thread's isolate in source order, as one job does, so the example prints
-`1 2` at every N, while the other namespaces' units still go to the pool.
-`^:light-cljs/no-cache` keeps a namespace out of the cache only and gives no
-such affinity; an undeclared provider is treated as pure and nothing
-detects its effects. Warnings and
-errors do not depend on N either: warnings come in source order, and a
-failed build reports the error the first failing unit in source order
-gives, whichever worker failed first, after which the workers' remaining
-work is cancelled and nothing is written. `--macro-expansions` and
-`--macro-nodes` count each unit's expansions where the units are charged in
-source order, so a limit fails in the unit and with the message one job
-gives.
-
-In the V8 build, `--macro-memory-limit` sets a budget for the JavaScript heaps
-and fixed-length buffer backing stores used by macros. The coordinator has a
-base share of at least 64 MiB, or the whole limit if it is lower. Each worker
-isolate needs at least 64 MiB, so the default limit of 64 MiB leaves workers
-without engines. Macro isolates can grow past their base shares using the
-remaining headroom. Worker shares are reserved from the start, including
-while the compiler looks for cached artifacts. On a cache miss, the pool
-starts with the planned number of workers that can run macros. Once every
-namespace has installed from the cache, the coordinator can use the unused
-worker shares for any later compile-time work in that session. Installing a
-cached artifact leaves its macro functions unevaluated.
-
-The coordinator, workers, and interactive sessions start their data-reader
-isolates on the first custom tag they read. Each reader starts with an
-independent 16 MiB allowance and can grow to 64 MiB or
-`--macro-memory-limit`, whichever is smaller. Macro allowances are independent
-of readers, so the total compile-time JavaScript memory budget is at most
-`--macro-memory-limit` plus 64 MiB per reader engine used.
-
-An isolate that exhausts its allowance and the available headroom
-reports a memory-limit error. Process peak memory also includes native engine
-overhead and the compiler's own data.
-
-`--macro-timeout-ms` is one deadline for the build, from the pool's start;
-`--macro-poll-budget` is per isolate. A timeout or memory failure depends on
-scheduling, so its message is not promised to be the same at every N. With
-`--stats` the report adds `pool.*` lines: the workers, those with an engine
-and the units the others analyzed, the pool's time and
-utilization, the jobs, claims, steals and parks, the peak queue depth and the
-lock contention. The pool is described in
-[docs/compiler-concurrency.md](docs/compiler-concurrency.md#the-scheduler).
-
-`--compile --entry` (also with `--reloadable`, `--esm` and `--out-dir`, at
-every `--optimize` level) and `--watch` keep a persistent compiler cache, on
-by default since light-cljs-328, in `.light-cljs/cache` under the current
-directory, or in DIR with `--cache-dir DIR`, created when missing. A
-namespace whose source, resolution, dependencies, `light.build` inputs,
-options, `--config` map and compiler are unchanged is installed from its stored artifact instead of being analyzed,
-so its macro calls do not run again; every other namespace is analyzed and
-stored. A build whose every namespace has an artifact also stores its
-output, and a build of the same artifacts and emission options (a chunked
-build, or one file without a source map or `--size-report`) writes that
-output instead of preparing and emitting the application again. For macros that follow the cache contract
-([docs/compiler-cache.md](docs/compiler-cache.md#cache-contract)), the output
-is byte for byte the uncached build's; a macro with side effects across
-namespaces does not repeat them on a hit. `--cache-blocker NS` (repeatable)
-keeps NS and every namespace whose compilation depends on it from reading or
-writing the cache, as `^:dev/always` on a namespace does for it and its
-consumers and `^:light-cljs/no-cache` for that namespace alone. With
-`--no-cache` nothing reads or writes a cache: the build is a fresh uncached
-one, and `--no-cache` with `--cache-dir` is an error. The directory is
-disposable derived data, bounded to three artifacts per namespace and 1 GiB,
-and to the three most recently used outputs;
-`--cache-retention N` (on `--compile` and `--watch`, a positive integer)
-keeps N per namespace and N outputs instead, for several builds of different
-configurations sharing one store, which evict each other's artifacts at
-three ([docs/build-configuration.md](docs/build-configuration.md), "As built
-(light-cljs-409)"); never commit it (add `.light-cljs/` to `.gitignore`). On Penpot a warm build
-with nothing edited takes 7% of an uncached one's time and filling the cache
-costs about 10% more
-([benchmarks/compiler-cache.md](benchmarks/compiler-cache.md)). With
-`--stats` the report adds `cache.hits`, `cache.misses` with
-`cache.miss.KIND` per first differing key component (`source`,
-`dependencies`, ...) or failure (`no-artifact`, `unreadable`, ...),
-`cache.bypasses` with `cache.bypass.REASON`, bytes read and written and the
-validation, decode and write times, whether the output was reused
-(`cache.output.reused`) or stored (`cache.output.stored`) with its bytes and
-time, then a `[cache-misses-and-bypasses]`
-table of up to 20 rows each, such as `app.main miss source: source changed`
-or `app.view bypass blocked app.macros > app.view`. Embedders call
-`light_cljs::compiler::analyze_namespace_entry_cached`, or
-`light_cljs::dev_session::DevSession::compile_entry` for a session. The
-cache key distinguishes interactive and clean compilation, so `--watch` and
-`--compile` keep separate artifacts in one directory.
-
-`--config KEY=EDN` (repeatable) with `--compile --entry`, `--reloadable` or
-`--watch` gives macros a build configuration value, which they read with
-`(light.build/config :KEY)`: `--config app/flavor=:dev --config app/n=3`. KEY
-is a keyword written without its colon, and EDN is keywords, numbers,
-strings, booleans, nil and lists, vectors, maps and sets of them, read with
-the compiler's reader; an unset key reads as nil. A malformed value, a
-symbol, a tagged literal or a key given twice is an error. Use it for build
-inputs such as a build time or a flavor instead of host state a macro would
-read itself ([Compile-time services](docs/compiler.md#compile-time-services-lightbuild));
-embedders pass the same map with `MacroHost::set_build_configuration` and
-`EvalOptions::configuration`.
-
-`--source-map PATH` writes a Source Map v3 of the output to `PATH`, at every
-level and with `--esm` too, and ends the JavaScript with a
-`//# sourceMappingURL=` comment naming the map's file, so write the JavaScript
-next to it; the JavaScript before that comment is the output without the flag.
-Each expression maps to its `.cljs` file, line and column, macro-expanded code
-to the macro call, and renamed `advanced` locals and definitions to their
-source names (the map's `names`); the embedded runtime maps to
-`src/js_runtime.js` as the source `light-cljs/js_runtime.js`. Source paths are
-relative to the map's directory. `--source-map-inline` embeds the map in the
-comment instead (paths relative to the current directory), and
-`--source-map-include-sources` adds every source's text. Node's
-`--enable-source-maps` then reports a stack trace at the source:
-
-```sh
-cargo run --quiet -- --compile --optimize advanced app.cljs --source-map app.js.map > app.js
-node --enable-source-maps app.js
-# Error: boom 42
-#     at explode (/path/to/app.cljs:2:10)
-```
-
-Put `--warnings` before the mode flag (`--warnings --compile ...`) for ClojureScript-style warnings (undeclared
-Vars and arity conflicts become warnings instead of errors), or with
-`--checked-arrays-warn`/`--checked-arrays-error` for array-operand checks.
-Compilation errors report line/byte-column and produce no partial output.
-
-### Build from light-cljs.edn
-
-`light-cljs.edn` names a project's builds, as `shadow-cljs.edn` does: its
-`:source-paths`, cache settings and `:builds`, each with `:target :esm`, an
-`:output-dir`, one module's `:entries` namespace and `:dev` and `:release`
-overrides ([docs/build-configuration.md](docs/build-configuration.md)). The
-`compile` and `release` commands find it in the current directory or the
-nearest parent and run the builds named, one after another in that order,
-stopping at the first failure; `watch` runs builds watched and served, and
-`cljs-repl` is a REPL into a running watch's build:
-
-```sh
-cd examples/features
-cargo run --quiet -- release features   # the chunks in out/release, at :advanced
-cargo run --quiet -- compile features   # the dev build in out/dev, once
-# light-cljs - config: /work/light-cljs/examples/features/light-cljs.edn
-# [:features] Compiling ...
-# [:features] Build completed in 171 ms: /work/light-cljs/examples/features/out/dev
-cargo run --quiet -- watch features     # the dev build in out/dev, watched and served
-# light-cljs - config: /work/light-cljs/examples/features/light-cljs.edn
-# light-cljs: serving /work/light-cljs/examples/features/out/dev at http://127.0.0.1:9630/
-# [:features] built app.main (6 namespaces) into /work/light-cljs/examples/features/out/dev in 412 ms; watching every 100 ms
-```
-
-`watch ID` runs what `--watch --serve` runs, and always starts the dev
-server, as shadow-cljs does: on `:http`'s `:host` and `:port` (127.0.0.1 and
-9630 by default, 0 for any free port), taking the next free port upward when
-that one is in use unless `:http {:strict true}`, serving the build under
-`/ID/` and at `/`. It writes the bound port into `http.port` in `:cache-root`
-(`.light-cljs/http.port` by default) and removes the file when the watch ends.
-nREPL answers on the same port unless `:nrepl false`; `:nrepl {:port N}` adds
-the listener of `--nrepl N` and writes `.nrepl-port` in the project
-directory. `:fs-watch {:loop-wait N}` is `--poll-ms N`, and `:devtools
-{:reload-strategy :full}` is `--reload-dependents`. The build's lines on
-stderr, and its messages in the overlay, begin with its id (`[:features]
-recompiled app.shared in 41.2 ms`), as shadow-cljs's `[:app] Build
-completed.` does; `--watch`'s lines stay `light-cljs: ...`.
-
-`watch ID ID ...` watches several builds in one process, as shadow-cljs's
-`watch app worker` does: each on a thread of its own, their startup builds
-one after another in the order named, then one dev server, the first build
-at `/` and each under `/ID/`, one nREPL listener, and one poll of the shared
-`:source-paths`, whose changes each build steps on its own, concurrently: a
-save of a namespace two builds require recompiles it in both, and a compile
-error in one build is that build's stderr and overlay while the others keep
-stepping. The watch reads `light-cljs.edn` again whenever it is saved, as
-shadow-cljs does: an invalid file is reported on stderr and in the page's
-overlay, and the build keeps running; an edit that changes the build's
-settings (`:config`, say) restarts that build in the same process, from the
-cache, and its connected pages reconnect to it, a top-level change such as
-`:source-paths` every build; a comment or the section of a build not
-watched changes nothing; and an edit of `:http`,
-`:nrepl` or `:fs-watch` is reported (`light-cljs: :http changed in
-light-cljs.edn; restart the watch to apply it`) and applies once the watch
-is started again. Flags after the ids still win.
-
-A REPL session of the watch, nREPL on either port or `--repl --connect`,
-starts bound to the first build named, in its entry namespace.
-`(light.dev/repl :worker)`, as shadow-cljs's `(shadow.cljs.devtools.api/repl
-:worker)`, binds the session to another build: its forms compile with that
-build's program and run in its runtimes, from its entry namespace, and the
-value is `[:selected :worker]`. `(light.dev/runtimes)` lists every build's
-runtimes, each with its `:build`, and `(light.dev/select! ID)` chooses among
-the bound build's. An id the watch does not run is an error that names those
-it runs; a flag-only `--watch` runs no named builds, so there it is an error
-too.
-
-```sh
-light-cljs watch app worker          # in tests/fixtures/build-configuration/multi
-# app.main=> (light.dev/repl :worker)
-# [:selected :worker]
-# app.worker=> (jobs/run 2)
-# 42
-```
-
-`cljs-repl ID` is shadow-cljs's command for a REPL into a running watch's
-build: from the project directory or below it, it finds the watch by the
-port in `<:cache-root>/http.port` and runs the `--repl --connect` client on
-127.0.0.1 at that port, with its session bound to build ID as if its first
-form were `(light.dev/repl :ID)`, in the build's entry namespace. It takes
-the client's `--print-length` and `--print-level`. Unlike shadow-cljs's, it
-never starts a watch: without one running for the file it says so (`light-cljs
-cljs-repl worker: no watch is running for /work/site/light-cljs.edn; start one
-with light-cljs watch worker`), and an id the running watch does not run is
-an error naming those it does.
-
-```sh
-light-cljs watch app worker          # in one terminal
-light-cljs cljs-repl worker          # in another, from the same project
-# app.worker=> (jobs/run 2)
-# 42
-```
-
-`release ID` writes what `--compile --optimize advanced --out-dir` writes,
-at the build's `:optimizations`; `compile ID` writes what `--compile
---reloadable --out-dir` writes. Build ids are written with or without
-their colon. Every relative path, in the file and in the flags, resolves
-against the file's directory, so a command run from a subdirectory builds
-the same thing into the same place. Flags after the ids override the file
-for every build named: `compile` takes the flags `--compile --reloadable`
-takes, `watch` those `--watch` takes (`--serve PORT` binds that port or
-fails, and `--no-nrepl` is `:nrepl false`), and `release` those `--compile`
-takes (with `--warnings` and, for
-`release`, `--checked-arrays-warn`/`--checked-arrays-error`); `--source-root`
-replaces `:source-paths`, `--config KEY=EDN` sets one key of `:config`,
-`--cache-dir` names the store and turns the cache on, `--no-cache` turns it
-off, `--cache-blocker` adds to the file's blockers and `--cache-retention N`
-replaces the top-level `:cache-retention N`. `--config-merge DATA`
-(repeatable) deep-merges EDN text starting with `{`, or a file, over each
-build, as shadow-cljs's does. `--entry` and `--out-dir` take one build id,
-and `--esm` and the source map flags are refused, as are `--watch`'s flags
-but by `watch`. A command that starts with a flag never reads
-`light-cljs.edn`; a file named `compile`, `watch`, `release` or `cljs-repl`
-is tokenized when written `./compile`.
-
-`--print-config` after the ids prints, for each build, the configuration the
-command would run with instead of building it, and writes nothing: EDN a
-`light-cljs.edn` could hold, the top-level settings the command reads and the
-build with its layers and the flags merged, each value's origin in a comment.
-It is how to check which layer won:
-
-```sh
-cargo run --quiet -- release features --optimize none --print-config
-# ;; build :features, release mode, from /work/light-cljs/examples/features/light-cljs.edn
-# {:source-paths ["."]                                 ; light-cljs.edn:7:16
-#  :cache-root ".light-cljs"                           ; default
-#  ...
-#    :compiler-options {:optimizations :none           ; --optimize none, over the release default :advanced
-#    :build-options {:cache-level :all}}}}             ; default
-```
-
-### Inspect intermediate stages
-
-```sh
-cargo run --quiet -- --text '(+ 1 2)'             # tokens with byte spans
-cargo run --quiet -- --parse --text '(+ 1 2)'     # syntax arena
-cargo run --quiet -- --analyze --text '(let* [x 10] x)'  # resolved Program
-```
+Deliberate behavioral differences from upstream ClojureScript are documented in [docs/compiler.md](docs/compiler.md).
 
 ## Browser playground
 
-[playground/](playground/) is a static page that runs the compiler in the
-browser, published at <https://isaksky.github.io/light-cljs/playground/>:
-light-cljs built for `wasm32-unknown-unknown` compiles several in-memory
-namespaces at any `--optimize` level, and the emitted JavaScript runs in the
-browser's own engine inside a worker.
-A dropdown offers examples from a single namespace to a calculator in several.
-Its macros run in the browser's own engine too. A watchdog ends a compile
-whose macro runs past the 10 s deadline ([docs/browser-macros.md](docs/browser-macros.md)).
-`bb playground/build.bb` builds and serves it; see
-[playground/README.md](playground/README.md) for the toolchain it needs.
-
-`bb site/build.bb build` assembles the project site (the landing page in
-[site/](site/) plus the playground) into `site/dist`, and
-`bb site/build.bb serve` serves it at <http://localhost:8788/light-cljs/>;
-[.github/workflows/pages.yml](.github/workflows/pages.yml) publishes it to GitHub
-Pages on every push to `master`.
-
-## Library usage
-
-Compile source to JavaScript:
-
-```rust
-use light_cljs::{analyze, emit_js, parse};
-
-let source = "(let* [x 10 f (fn* [] x)] (let* [x 20] (f)))";
-let syntax = parse(source).unwrap();
-let program = analyze(source, &syntax).unwrap();
-let javascript = emit_js(&program);
-// Or light_cljs::compile(source); compile_namespace(entry, roots) for namespaces;
-// prepare_application(&program, options).emit_chunks() for a chunked build's
-// files and chunks.json, as values.
-```
-
-Evaluate incrementally in an embedded session:
-
-```rust
-use light_cljs::{EvalOptions, EvalSession};
-let mut session = EvalSession::new(EvalOptions::default())?;
-session.eval_string("(def hits (atom 0))")?;
-let result = session.eval_string("(swap! hits inc)")?;
-assert_eq!(session.number(result.value)?, 1.0);
-```
-
-`EvalOptions` supplies host functions, source/file providers, I/O callbacks,
-print options and resource limits. See [examples/embedding.rs](examples/embedding.rs)
-(`cargo run --example embedding`) and [docs/evaluation.md](docs/evaluation.md).
+[playground/](playground/) compiles light-cljs to `wasm32-unknown-unknown` and
+runs both macros and compiled output in the browser's JS engine inside a worker
+([live demo](https://isaksky.github.io/light-cljs/playground/),
+[playground/README.md](playground/README.md)). Build and serve the site locally
+with `bb site/build.bb build` and `bb site/build.bb serve`.
 
 ## Examples
 
 | Path | Shows |
 | --- | --- |
 | [examples/closure.cljs](examples/closure.cljs) | Single-file compilation |
-| [examples/namespaces](examples/namespaces) | Two runtime namespaces (`--entry demo.main`) |
-| [examples/macros](examples/macros) | A `.cljs` macro namespace required alongside runtime code |
-| [examples/collections](examples/collections) | Several namespaces compiled to an expression returning `batch.main/run` |
-| [examples/features](examples/features) | The code-splitting application: startup `app.main`, shared helpers and two features loaded on demand; its [`light-cljs.edn`](examples/features/light-cljs.edn) defines build `:features`, so `light-cljs release features` writes the chunks into `out/release` and `compile features` the dev build into `out/dev` (or `--entry app.main --out-dir DIR`; [docs/code-splitting.md](docs/code-splitting.md), [docs/build-configuration.md](docs/build-configuration.md)) |
-| [examples/dev](examples/dev) | The dev-workflow application: `defonce` state, a macro, a record view and reload hooks (`--entry app.main --reloadable --out-dir DIR`; [docs/dev-workflow.md](docs/dev-workflow.md)) |
-| [examples/native](examples/native) | Scripts for `--eval` (data processing, macros, lazy pipelines, state, exceptions) |
-| [examples/embedding.rs](examples/embedding.rs), [examples/evaluator.rs](examples/evaluator.rs) | Rust embedding |
-
-## Known boundaries
-
-- **Numbers** are JavaScript Numbers everywhere, including at macro-expansion
-  time. `N`/`M` literals and integral ratios (`4/2`) become Numbers (large
-  integers round); non-integral ratio literals such as `1/3` are rejected.
-- **Libraries:** only `cljs.core` (the supported subset), `clojure.string`,
-  `clojure.set`, `clojure.walk`, `clojure.edn`, `cljs.reader` and `light.lazy`
-  (lazy loading; docs/code-splitting.md) are bundled. Other
-  namespaces must be supplied as source via `--source-root` or a source provider.
-  The Google Closure Library (`goog.*`), `cljs.pprint`, `cljs.test`,
-  `core.async` and `test.check` are not provided.
-- **JavaScript packages are host-supplied.** A string libspec such as
-  `["react" :as r]` lowers each use to `globalThis.lightCljsPackages["react"]`;
-  the host fills that registry. With `--esm` the output is one ES module whose
-  static imports a bundler (Vite, esbuild, Rollup) resolves and tree-shakes. The
-  compiler never reads `node_modules` or `package.json` and does no package
-  resolution or CommonJS conversion.
-- **No build tooling:** no per-namespace module output; output
-  is one JavaScript expression, one ES module with `--esm`, or with `--out-dir`
-  one ES module per chunk of namespaces that `light.lazy/loadable` sites load
-  (at `advanced` also of definitions and constants moved toward their
-  readers), with the runtime in the startup chunk. A dev build
-  (`--reloadable`) writes one unit per namespace for reloading, and `--watch`
-  rewrites a saved namespace's unit, which `--serve` pushes to open pages with
-  the reload policy (`^:dev/once`, `^:dev/always`, `--reload-dependents`) and
-  where `--repl --connect` and editors over nREPL evaluate. The release
-  optimizer, `--optimize advanced`, is still being built
-  ([docs/advanced-optimization.md](docs/advanced-optimization.md)); what it does
-  so far is listed under [Compile to JavaScript](#compile-to-javascript). Sizes
-  today: `(js/console.log (+ 1 2))` drops from about 390 KB to about 150 bytes,
-  a small record and protocol program to about 6 KB, a program that only builds
-  a keyword to 4 KB, a vector to 6 KB and a map or set literal to 12 KB; a
-  program that prints keeps the printer (about 21 KB), and one that uses the
-  generic sequence operations most of the collection machinery (30-50 KB).
-- **Collection performance:** vectors are upstream's persistent 32-way trie, so
-  `conj` is amortized O(1), `nth`, `assoc` and `pop` are O(log32 n) and `subvec`
-  is an O(1) view, but `rseq` copies. A map of more than 8 keys is a hash array
-  mapped trie, as upstream's, so its `assoc`, `dissoc` and lookup are O(log32 n)
-  ([benchmarks/compiler.md](benchmarks/compiler.md#hash-maps-as-tries--october-14-2026)),
-  and its transient edits the nodes it owns in place
-  ([benchmarks/compiler.md](benchmarks/compiler.md#transient-hash-maps--october-14-2026)).
-  A set of more than 8 members keeps them in the same trie, as upstream's hash
-  set over a hash map, so its `conj`, `disj` and lookup are O(log32 n), its
-  equality and `clojure.set` operations make one lookup per member, and its
-  transient edits the trie in place
-  ([benchmarks/compiler.md](benchmarks/compiler.md#hash-sets-as-tries--october-14-2026)).
-  A lazy seq pipeline writes no `WeakMap` entry per step, nor does building an
-  array map or set, a transient, a queue or a `reduced` marker
-  ([benchmarks/compiler.md](benchmarks/compiler.md#private-payloads-for-the-remaining-kinds--october-18-2026)),
-  and `seq`, `first`,
-  `rest`, `next` and `count` of a lazy seq or a cell read its kind once instead
-  of probing each kind's store, so a `map`/`filter`/`partition` pipeline takes
-  about 1.8× upstream's time in Node; of the seqs of vectors, arrays and maps,
-  only `first` of a vector's or an array's seq reads a kind and the rest take
-  the probing path
-  ([benchmarks/compiler.md](benchmarks/compiler.md#kind-tables-for-the-seq-operations--october-18-2026)).
-- **Macros** must be `.cljs`/`.cljc` (`.clj` macro companions are never loaded)
-  and run in an embedded JavaScript engine.
-- **Embedded engines:** the macro environment provides ECMAScript intrinsics only:
-  no DOM, Node APIs, filesystem, network or process access unless the host supplies
-  them, and no timers. `NamePolicy` restricts name resolution but is not a
-  sandbox. Under `--eval` and `--repl` promise jobs (`.then` callbacks,
-  post-`await` code) run after each top-level form, never inside one, so a
-  form sees the reactions of the forms before it, even earlier in the same
-  file, where compiled output runs a whole file first. A promise rejection
-  that no handler has caught once a form's jobs have run is a warning after
-  the form's result under `--repl` and the script's error under `--eval`, as
-  in Node, but a handler that a later form of the script attaches comes too
-  late ([docs/evaluation.md](docs/evaluation.md#script-and-repl-commands)). Compiled
-  output, where `^:async` functions and `await` work as upstream's
-  ([docs/compiler.md](docs/compiler.md#async-functions-and-await)), runs them in
-  the host's event loop.
-- Some upstream behaviors differ deliberately; [docs/compiler.md](docs/compiler.md)
-  documents supported forms, runtime semantics and known differences.
+| [examples/namespaces](examples/namespaces) | Multi-namespace entry compilation (`--entry demo.main`) |
+| [examples/macros](examples/macros) | `.cljs` macro namespace required alongside runtime code |
+| [examples/collections](examples/collections) | Multi-namespace collection processing |
+| [examples/features](examples/features) | `light-cljs.edn` project with code splitting (`light.lazy/loadable`) |
+| [examples/dev](examples/dev) | Dev workflow: `defonce`, macros, records, and reload hooks |
+| [examples/native](examples/native) | Standalone scripts for `--eval` |
+| [examples/embedding.rs](examples/embedding.rs), [examples/evaluator.rs](examples/evaluator.rs) | Rust embedding API |
 
 ## Testing
 
-The tests need Node.js (on `PATH` or in `$NODE`) and the pinned upstream checkout
-in the gitignored `research/clojurescript`, whose sources some tests include (see
-[tests/reference/README.md](tests/reference/README.md)). Run them with
-[cargo-nextest](https://nexte.st) (`cargo install cargo-nextest --locked` or
-`brew install cargo-nextest`), which runs every test in its own process and all
-binaries in parallel; the full suite takes about 1.5 minutes on the 24-vCPU
-development machine. Plain `cargo test` runs the same tests in about 4 minutes.
+The test suite requires Node.js and the pinned upstream checkout in
+`research/clojurescript` ([tests/reference/README.md](tests/reference/README.md)).
 
 ```sh
-cargo nextest run                                  # full suite
-cargo nextest run --test compiler                  # one test binary
-cargo nextest run --test compiler records::        # one suite (module) of a binary
-cargo nextest run records::record_updates          # tests whose name contains this
-cargo nextest run --no-fail-fast -j 8              # keep going after failures; 8 at a time
-cargo test --test compiler records::               # the same tests through plain cargo test
+cargo nextest run                          # recommended (~1.5 min on 24 vCPUs)
+cargo test                                 # plain cargo test (~4 min)
 cargo clippy --all-targets -- -D warnings
-bb playground/build.bb lint                        # the wasm32 playground crate, warnings denied
-node tests/support/js_runtime.test.js              # runtime tests directly in Node
-# after editing src/js_runtime.js: rewrite its unit `requires:` headers, then review the diff
-LIGHT_CLJS_UPDATE_RUNTIME_MANIFEST=1 cargo test --test compiler runtime_manifest::
-# after moving runtime code between units: rewrite the core operation table's units column
-LIGHT_CLJS_UPDATE_CORE_OPERATIONS=1 cargo test --test compiler core_operations::
+node tests/support/js_runtime.test.js
 ```
 
-Integration tests are grouped into a few binaries so they build and link once:
-`compiler` (`tests/compiler/`), `evaluation` (evaluator, `--eval` CLI and SCI
-reference suites, `tests/evaluation/`), `frontend` (tokenizer, parser, analyzer
-and namespaces, `tests/frontend/`), plus `execution`, `cli`, `provenance` and
-`benchmark_variants`. Add a suite as a module file in the matching directory and
-register it with `mod <name>;` in that directory's `main.rs`. Long fixture loops
-can declare one test per row, row range or share of the rows with `row_tests!`
-([tests/support/row_tests.rs](tests/support/row_tests.rs), loaded by the `compiler`
-and `evaluation` binaries), so the parts run in parallel. A complete source that
-must give the same result as an application and as a macro computation, with
-fresh and reused macro hosts, in V8 and Node, goes in its feature suite's
-`phase_oracles` module as a case for
-[tests/support/phase_oracle.rs](tests/support/phase_oracle.rs); `cargo nextest run
-phase_oracles::` runs them all. [.config/nextest.toml](.config/nextest.toml) runs 16
-tests at a time, starts the slowest tests first and sets the slow-test timeout;
-the `ci` profile (`cargo nextest run --profile ci`) uses every CPU and reports
-every failure.
-
-The `fast-tests` job in [the conformance workflow](.github/workflows/conformance.yml)
-runs the V8 suite, strict Clippy and the Node tests. It downloads the prebuilt
-engine as a local build does. The `playground` job builds and checks the
-WebAssembly compiler with the browser macro host.
-
-`size_ratchet` (`tests/compiler/size_ratchet.rs`) pins the emitted size of a few
-small programs (`tests/support/ratchet_fixtures.rs`) at each `--optimize` level
-and runs them at every level in Node;
-`cargo nextest run --test compiler size_ratchet:: --no-capture` prints the size
-table. `generated_optimization` compiles seeded multi-namespace programs with
-tagged dead code at every level, runs them in Node and checks which dead code
-survives against an expected-survivor list; `--no-capture` prints a table per
-seed. Its `lazy_seed_*` tests turn one or two namespaces of each seed's
-program into lazy roots and check the chunked build against the single file,
-and that startup holds no definition only lazy code reads
-([docs/code-splitting.md](docs/code-splitting.md), Phase 3). A failure names
-its seed: rerun it with `LIGHT_CLJS_GENERATED_SEED=<seed>`, or run more seeds
-with `LIGHT_CLJS_GENERATED_COUNT=<n>` (for example 240).
-
-Tests that need files make `light-*` directories in `$TMPDIR` through
-[tests/support/temp_dir.rs](tests/support/temp_dir.rs), which removes each one when
-its test ends, whether the test passes, fails or panics. Set `LIGHT_CLJS_KEEP_TMP=1`
-to keep them for inspection; each kept directory's path is printed. A test that
-nextest kills at its timeout cannot clean up after itself. Suites that take an
-artifact directory from their own variable, such as `LIGHT_PHASE_ORACLE_ARTIFACTS`,
-never remove it.
-
-Some tests bound macro expansion and evaluation by wall-clock deadlines, so on a
-heavily loaded machine run fewer tests at once (`-j`) or rerun a failure alone.
-To see where suite time goes, save a run's output and summarize it with
-`bb benchmarks/nextest_times.bb run.log`, which prints the wall-clock and summed
-test time and the slowest tests. Pass a second log to compare two runs.
-
-Optional comparisons against standard ClojureScript need Java, the Clojure CLI
-and, for some, the upstream checkout; they are `#[ignore]`d by default:
-
-```sh
-cargo test --test execution -- --ignored --nocapture          # vs. ClojureScript 1.12.134
-cargo test --release --test frontend corpus::clojurescript_checkout_has_no_lexical_errors -- --ignored --nocapture
-cargo test --release --test frontend parser_corpus::parse_clojurescript_checkout -- --ignored --nocapture
-```
-
-See [tests/reference/README.md](tests/reference/README.md) for the reference
-tooling and how to set up the checkout.
-
-Run `cargo bench --bench tokenizer|parser|subset|compiler|evaluator` to select a
-benchmark. See [benchmarks/README.md](benchmarks/README.md).
-`cargo bench --locked --bench compiler -- --levels --output DIR` measures startup
-and steady-state time of the ratchet programs at every `--optimize` level in Node.
-`cargo bench --locked --bench compiler -- --callees` measures call costs in Node.
-See [benchmarks/compiler.md](benchmarks/compiler.md#startup-and-steady-state-by-optimization-level--october-13-2026).
-
-For large synthetic applications shared with shadow-cljs,
-`bb benchmarks/generated-project/generate.bb /tmp/cljs-200k --seed 42 --lines 200k`
-generates a reproducible project, an independent checksum oracle, and marked
-unused code for optimizer checks. See [the generator guide](benchmarks/generated-project/README.md).
+See [docs/testing.md](docs/testing.md) for test binaries, ratchets, phase
+oracles, reference ClojureScript comparisons, and benchmarks.
 
 ## Documentation
 
-- [docs/compiler.md](docs/compiler.md) — compiler reference: pipeline, supported
-  forms and runtime semantics, macros, namespaces, interop, differences.
-- [docs/evaluation.md](docs/evaluation.md) — `EvalSession` embedding API and the
-  `--eval`/`--repl` commands.
-- [docs/evaluator.md](docs/evaluator.md) — the V8 evaluator, compile-time
-  phase contract, form bridge, resource controls.
-- [docs/compiler-cache.md](docs/compiler-cache.md) — persistent binary
-  cache, explicit dependencies, opt-outs, and development-session reuse.
-- [docs/build-configuration.md](docs/build-configuration.md) — `light-cljs.edn`,
-  the configuration file of named builds, and the `compile`, `watch` and
-  `release` commands that run them, after shadow-cljs's `shadow-cljs.edn`.
-- [docs/parser.md](docs/parser.md) and [docs/lexer.md](docs/lexer.md) — syntax
-  layers.
-- [docs/dos-and-donts.md](docs/dos-and-donts.md) — performance guidelines for
-  compiler work.
+- **Using light-cljs**
+  - [docs/cli.md](docs/cli.md) — full CLI reference, flags, caching, `--stats`, and `--jobs`
+  - [docs/build-configuration.md](docs/build-configuration.md) — `light-cljs.edn` schema and `compile`/`watch`/`release`/`cljs-repl`
+  - [docs/dev-workflow.md](docs/dev-workflow.md) — reloadable builds, watch server, overlays, and nREPL
+  - [docs/code-splitting.md](docs/code-splitting.md) — `light.lazy/loadable` and chunked ES module builds
+  - [docs/evaluation.md](docs/evaluation.md) — `EvalSession` Rust embedding API, `--eval`, and `--repl`
+- **Compiler internals**
+  - [docs/compiler.md](docs/compiler.md) — pipeline, supported forms, runtime semantics, macros, interop, and differences
+  - [docs/advanced-optimization.md](docs/advanced-optimization.md) — `--optimize advanced` passes and design
+  - [docs/compiler-cache.md](docs/compiler-cache.md) — persistent cache keys, contract, and invalidation
+  - [docs/compiler-concurrency.md](docs/compiler-concurrency.md) — `--jobs` scheduler and isolate memory budgets
+  - [docs/evaluator.md](docs/evaluator.md) — V8 evaluator, compile-time phase contract, and form bridge
+  - [docs/browser-macros.md](docs/browser-macros.md) — browser macro host for the WebAssembly build
+  - [docs/lexer.md](docs/lexer.md) & [docs/parser.md](docs/parser.md) — syntax layers
+- **Contributing & performance**
+  - [docs/testing.md](docs/testing.md) — test suites, ratchets, CI, and benchmarks
+  - [docs/dos-and-donts.md](docs/dos-and-donts.md) — compiler performance guidelines
 
 ## Acknowledgements
 
 light-cljs stands on the work of the Clojure community:
 
 - [Rich Hickey](https://github.com/richhickey) for Clojure and ClojureScript,
-  whose language design, core library and test suite this compiler follows and
+  whose language design, core library, and test suite this compiler follows and
   is checked against.
 - [David Nolen](https://github.com/swannodette) for leading ClojureScript; its
   analyzer and compiler shaped how this project resolves and emits code.
@@ -986,5 +253,5 @@ upstream copyright notices, and are listed in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md); the EPL text is in
 [epl-v10.html](epl-v10.html). Compiled programs that use `clojure.string` or
 `clojure.set` embed JavaScript compiled from those EPL-1.0 files. The embedded
-rusty_v8 bindings are MIT-licensed. V8 carries its BSD
-license and upstream dependency notices listed in the third-party notices.
+`rusty_v8` bindings are MIT-licensed. V8 carries its BSD license and upstream
+dependency notices listed in the third-party notices.

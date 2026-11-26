@@ -19,7 +19,7 @@ The coordinator and workers start separate V8 data-reader isolates on first
 use. Each starts with 16 MiB and can grow to the smaller of 64 MiB and
 `--macro-memory-limit` without drawing from the macro budget.
 Process peak memory also includes engine overhead and the compiler's own data.
-[Command-line usage](../README.md#compile-to-javascript)
+[Command-line usage](cli.md#parallel-compilation)
 
 ## Historical research and design
 
