@@ -4,9 +4,8 @@ light-cljs is a Clojure-to-JavaScript compiler written in Rust. It reads
 `.cljs`/`.cljc` source, resolves and analyzes it in Rust, and emits self-contained
 JavaScript carrying its own persistent-collection runtime. The same compiler
 powers a project build tool (`light-cljs.edn` with `compile`, `watch`, `release`,
-and `cljs-repl`), a script runner, a REPL, and a Rust embedding API backed by an
-embedded V8 isolate. No Node, JVM, or installed `cljs.core` is required to run
-code.
+and `cljs-repl`), a script runner, and a REPL backed by an embedded V8 isolate.
+No Node, JVM, or installed `cljs.core` is required to run code.
 
 Try it in the [browser playground](https://isaksky.github.io/light-cljs/playground/)
 or visit the [project site](https://isaksky.github.io/light-cljs/).
@@ -80,23 +79,6 @@ See [docs/cli.md](docs/cli.md) for the complete CLI reference (source maps,
 `--define`, `--elide-asserts`, `--config`, caching, `--stats`, `--jobs`, nREPL,
 and `--print-config`).
 
-### Embed in Rust
-
-```rust
-use light_cljs::{EvalOptions, EvalSession};
-
-let mut session = EvalSession::new(EvalOptions::default())?;
-session.eval_string("(def hits (atom 0))")?;
-let result = session.eval_string("(swap! hits inc)")?;
-assert_eq!(session.number(result.value)?, 1.0);
-```
-
-To compile to a JavaScript string without running it, call
-`light_cljs::compile(source)`, `compile_namespace(entry, roots)`, or
-`prepare_application(&program, options).emit_chunks()`. See
-[examples/embedding.rs](examples/embedding.rs) (`cargo run --example embedding`)
-and [docs/evaluation.md](docs/evaluation.md).
-
 ## Performance vs. shadow-cljs
 
 Measured against **shadow-cljs 3.5.3** (November 24, 2026). Every ratio is
@@ -147,20 +129,43 @@ size on small apps.
 
 ## Architecture
 
-```text
-source ─▶ Tokenizer ─▶ Parser ─▶ compiler reader ─▶ Analyzer ─▶ application prep ─▶ Emitter ─▶ JavaScript
-          (lib.rs)    (parser.rs) (compiler_reader.rs) (analyzer.rs) (application.rs)   (emitter.rs)  + js_runtime.js
-                                         ▲                    │
-                                         └── macro expansion ◀┘ compiled to JS, run in V8
+```mermaid
+flowchart LR
+    Src[".cljs / .cljc"] --> Tok["Tokenizer"]
+
+    subgraph Frontend["Frontend (Rust)"]
+        Tok --> Parse["Parser"]
+        Parse --> Read["Reader"]
+        Read --> Analyze["Analyzer"]
+    end
+
+    subgraph Macros["Macro Expansion"]
+        Native["Native Core Macros (Rust)"]
+        V8Macro["User Macros (V8 / Browser JS)"]
+    end
+
+    Analyze <--> Native
+    Analyze <--> V8Macro
+
+    subgraph Backend["Backend (Rust)"]
+        Prep["Optimizer & Prep"] --> Emit["JS Emitter"]
+        RT["Sliced js_runtime.js"] --> Emit
+    end
+
+    Analyze --> Prep
+
+    Emit --> JS["JavaScript Output"]
+    Emit --> Run["Embedded V8 (--eval / --repl)"]
 ```
 
-- **Tokenizer** (`src/lib.rs`) borrows source and yields raw tokens with byte spans without allocating text ([docs/lexer.md](docs/lexer.md)).
-- **Parser** (`src/parser.rs`) builds a flat syntax arena with byte spans and validates literals ([docs/parser.md](docs/parser.md)).
-- **Compiler reader** (`src/compiler_reader.rs`, `compiler_data.rs`) expands reader conditionals, syntax quote, `#()`, namespaced maps, and tagged literals. Custom data readers run in a separate V8 isolate.
-- **Analyzer** (`src/analyzer.rs`) resolves bindings into an expression arena (`Program`), expands binding/destructuring macros in Rust, and tracks core op types/purity/runtime units (`src/core_operations.tsv`).
-- **Macros** compile through the same pipeline and run in a separate V8 isolate (`macro_host.rs`) or the browser host in the playground. Hot core macros (`cond`, `when`, `and`, `->`, `case`, `for`, `doseq`, …) expand natively in Rust (`native_core_macros.rs`).
-- **Application preparation & Emitter** (`src/application.rs`, `src/emitter.rs`) dead-code-eliminate, specialize/inline, and emit JavaScript plus only the reachable units of `src/js_runtime.js` (`src/runtime_manifest.rs`).
-- **Evaluation** (`src/eval_session.rs`, `src/v8_session.rs`) compiles forms incrementally into a persistent V8 isolate.
+| Stage | What it does | Entry points |
+| --- | --- | --- |
+| **Tokenizer & Parser** | Zero-copy byte-span tokenization into a flat syntax arena ([lexer](docs/lexer.md), [parser](docs/parser.md)). | `src/lib.rs`, `src/parser.rs` |
+| **Reader** | Reader conditionals, syntax quote, `#()`, namespaced maps, tagged literals; custom data readers run in a separate V8 isolate. | `src/compiler_reader.rs`, `src/compiler_data.rs` |
+| **Analyzer** | Resolves bindings into a `Program` arena, expands binding/destructuring macros in Rust, and tracks core op types, purity, and runtime units. | `src/analyzer.rs`, `src/core_operations.tsv` |
+| **Macros** | Hot core macros (`cond`, `when`, `and`, `->`, `case`, `for`, `doseq`, …) expand natively in Rust; `defmacro`s compile through the same pipeline and run in V8 (or the browser host in WASM). | `src/native_core_macros.rs`, `src/macro_host.rs` |
+| **Optimizer & Emitter** | Dead-code elimination, type inference, specialization/inlining, code splitting, and JS emission with only the reachable slice of `js_runtime.js`. | `src/application.rs`, `src/emitter.rs`, `src/js_runtime.js` |
+| **Evaluation** | Incremental compilation and execution in a persistent embedded V8 isolate for `--eval` and `--repl`. | `src/eval_session.rs`, `src/v8_session.rs` |
 
 ## Known boundaries
 
