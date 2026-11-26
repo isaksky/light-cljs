@@ -5,6 +5,7 @@ pub(crate) fn source(namespace: &str) -> Option<&'static str> {
         "clojure.string" => include_str!("compiler_libraries/clojure/string.cljs"),
         "clojure.set" => include_str!("compiler_libraries/clojure/set.cljs"),
         "clojure.walk" => include_str!("compiler_libraries/clojure/walk.cljs"),
+        "clojure.template" => include_str!("compiler_libraries/clojure/template.cljs"),
         "cljs.reader" => include_str!("compiler_libraries/cljs/reader.cljs"),
         "clojure.edn" => include_str!("compiler_libraries/clojure/edn.cljs"),
         "light.lazy" => include_str!("compiler_libraries/light/lazy.cljs"),

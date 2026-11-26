@@ -985,8 +985,8 @@ including collection splicing, before dependency discovery. `.cljs` and standalo
 
 ## Compiler-owned standard libraries and stream reading
 
-`clojure.string`, `clojure.set`, `clojure.walk`, `cljs.reader`, `clojure.edn`,
-`light.lazy` and `light.build` are embedded first-party sources (`src/compiler_libraries/`) compiled by the
+`clojure.string`, `clojure.set`, `clojure.walk`, `clojure.template`, `cljs.reader`,
+`clojure.edn`, `light.lazy` and `light.build` are embedded first-party sources (`src/compiler_libraries/`) compiled by the
 ordinary namespace resolver. Explicit source roots take precedence, as for other
 namespaces. Runtime imports, aliases, refers and unmarked macro helpers use the
 same sources and JavaScript runtime.
@@ -996,6 +996,9 @@ regular expressions. Set projection drops relation metadata, retains row metadat
 and uses the requested equivalent keys, matching `select-keys`. Walks preserve
 metadata, map entries and records, visit callbacks in order and use bounded
 iterative traversal state through callback reentry.
+
+`clojure.template` holds `apply-template` and the `do-template` macro in one
+source, so a user macro can call `apply-template` while it expands.
 
 **Dialect difference:** `clojure.string` follows the documented contracts where
 the pinned upstream implementation has JavaScript-level quirks:

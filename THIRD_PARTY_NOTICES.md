@@ -33,6 +33,19 @@ Some tests additionally read the upstream checkout at run time from the
 gitignored `research/clojurescript` directory. Nothing from that checkout is
 committed beyond the adapted files listed above.
 
+## Clojure
+
+- Upstream: <https://github.com/clojure/clojure>, pinned at commit
+  `4278bcea436709ed2869e31b38f1c8e1e3ca5ad7`.
+- Copyright (c) Rich Hickey. All rights reserved.
+- License: Eclipse Public License 1.0, reproduced in [epl-v10.html](epl-v10.html).
+- Files in this repository adapted from Clojure are EPL-1.0 and say so in a
+  header notice that must not be removed:
+  - `src/compiler_libraries/clojure/template.cljs` (from
+    `src/clj/clojure/template.clj`, by Stuart Sierra)
+- Compiled programs that call `clojure.template/apply-template` at run time
+  embed JavaScript compiled from that file.
+
 ## SCI (Small Clojure Interpreter)
 
 - Upstream: <https://github.com/babashka/sci>, pinned at commit

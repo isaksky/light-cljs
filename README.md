@@ -173,7 +173,7 @@ flowchart LR
 ## Known boundaries
 
 - **Numbers** are JavaScript Numbers everywhere, including during macro expansion. `N`/`M` literals and integral ratios (`4/2`) become Numbers (large integers round); non-integral ratios (`1/3`) are rejected.
-- **Bundled libraries:** only `cljs.core` (supported subset), `clojure.string`, `clojure.set`, `clojure.walk`, `clojure.edn`, `cljs.reader`, and `light.lazy` are bundled. There is no Google Closure Library (`goog.*`), `cljs.pprint`, `cljs.test`, `core.async`, or `test.check`. Other namespaces are supplied as source via `--source-root` / `:source-paths`.
+- **Bundled libraries:** only `cljs.core` (supported subset), `clojure.string`, `clojure.set`, `clojure.walk`, `clojure.template`, `clojure.edn`, `cljs.reader`, and `light.lazy` are bundled. There is no Google Closure Library (`goog.*`), `cljs.pprint`, `cljs.test`, `core.async`, or `test.check`. Other namespaces are supplied as source via `--source-root` / `:source-paths`.
 - **No npm resolution:** light-cljs never reads `node_modules` or `package.json` and does no CommonJS conversion. String libspecs like `["react" :as r]` read `globalThis.lightCljsPackages["react"]`, or become static ES `import`s with `--esm` / `--out-dir` for an external bundler (Vite, esbuild, Rollup).
 - **Macros** must be in `.cljs`/`.cljc` files (`.clj` companions are never loaded) and run in JavaScript.
 - **Release optimizer (`--optimize advanced`)** is still being built ([docs/advanced-optimization.md](docs/advanced-optimization.md)). Typical sizes today: `(js/console.log (+ 1 2))` is ~150 B, a small record/protocol program ~6 KB, printing pulls in the printer (~21 KB), and generic sequence operations ~30–50 KB.
