@@ -10,13 +10,16 @@ No Node, JVM, or installed `cljs.core` is required to run code.
 Try it in the [browser playground](https://isaksky.github.io/light-cljs/playground/)
 or visit the [project site](https://isaksky.github.io/light-cljs/).
 
-**Status:** ClojureScript support is substantial but partial. Core special forms,
-macros, namespaces, persistent and sorted collections, lazy sequences,
+**Status:** Pre-1.0, under active development. Core language features—special
+forms, macros, namespaces, persistent and sorted collections, lazy sequences,
 transducers, protocols, types, records, multimethods, atoms, exceptions, and
-JavaScript interop work, and behavior is regularly checked against standard
-ClojureScript. It is not a drop-in replacement: there is no Google Closure
-Library, no `cljs.pprint`/`core.async`/`test.check`, no npm package resolution,
-and numbers are always JavaScript Numbers. See [Known boundaries](#known-boundaries).
+JavaScript interop—work and are regularly tested against standard ClojureScript.
+By design, light-cljs is not a drop-in replacement for shadow-cljs: it omits the
+JVM, the Google Closure Library, and npm bundling in favor of a single JS
+runtime, lower memory, and faster builds. Still in progress: closing remaining
+small-app bundle size and runtime speed gaps against shadow-cljs, bundling
+additional pure-Clojure libraries (such as `cljs.test` and `cljs.pprint`), and
+prebuilt releases. See [Known boundaries](#known-boundaries).
 
 ## Quick start
 
