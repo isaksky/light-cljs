@@ -1,6 +1,6 @@
 # light-cljs
 
-light-cljs is a ClojureScript-to-JavaScript compiler written in Rust. It reads
+light-cljs is a Clojure-to-JavaScript compiler written in Rust. It reads
 `.cljs`/`.cljc` source, resolves and analyzes it in Rust, and emits self-contained
 JavaScript carrying its own persistent-collection runtime. The same compiler
 powers a project build tool (`light-cljs.edn` with `compile`, `watch`, `release`,
