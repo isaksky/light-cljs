@@ -4181,8 +4181,8 @@ mod compiler_default_reader_tests {
     #[test]
     fn reader_memory_limit_errors_name_the_tag_in_serial_and_parallel_builds() {
         for (jobs, limit, cap, size) in [
-            (1, 192 << 20, "64", 65),
-            (3, 192 << 20, "64", 65),
+            (1, 192 << 20, "192", 193),
+            (3, 192 << 20, "192", 193),
             (1, 49 << 19, "24.5", 25),
         ] {
             let mut host = MacroHost::new();
@@ -4198,14 +4198,8 @@ mod compiler_default_reader_tests {
             assert!(error.message.contains("#size"), "{error}");
             assert!(
                 error.message.contains(&format!(
-                    "data reader exceeded its own {cap} MiB memory cap"
+                    "data reader exceeded its own {cap} MiB memory allowance. Raise the macro memory limit"
                 )),
-                "{error}"
-            );
-            assert!(
-                error
-                    .message
-                    .contains("The macro memory limit cannot raise this cap above 64 MiB"),
                 "{error}"
             );
             assert_eq!(error.span.text(), literal);
@@ -4488,7 +4482,7 @@ mod compiler_default_reader_tests {
         assert!(
             error
                 .0
-                .contains("data reader exceeded its own 64 MiB memory cap"),
+                .contains("data reader exceeded its own 64 MiB memory allowance"),
             "{error}"
         );
         assert!(macro_heap.control().poll().is_ok());

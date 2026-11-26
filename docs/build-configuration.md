@@ -450,7 +450,7 @@ only in the file, the commands and messages.
 | `:macro-expansions` | positive integer | 1024 |
 | `:macro-nodes` | positive integer | 100000 |
 | `:macro-timeout-ms` | positive integer | 10000 |
-| `:macro-memory-limit` | positive integer in bytes for macro heaps and backing stores. Allow at least 16 MiB for V8 startup. Custom compiler data readers can add to the total budget. | 67108864 |
+| `:macro-memory-limit` | positive integer in bytes for macro heaps and backing stores. Allow at least 16 MiB for V8 startup. Custom compiler data readers run in an isolate of their own, which may use up to this limit again. | 67108864 |
 | `:macro-poll-budget` | positive integer | 1000000 |
 
 The same memory rules apply with `:compile-threads` and `--jobs`.

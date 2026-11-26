@@ -61,9 +61,6 @@ pub(crate) const DEFAULT_MEMORY_LIMIT: usize = 64 * 1024 * 1024;
 /// ran at the limit and the build took 1.6x as long with twice the
 /// isolates (light-cljs-441).
 pub(crate) const WORKER_SHARE: usize = 64 << 20;
-/// The ceiling for a compiler data reader's independent V8 allowance.
-#[cfg(light_v8)]
-pub(crate) const DATA_READER_MEMORY_CAP: usize = 64 << 20;
 
 #[derive(Clone, Debug)]
 pub struct EvaluatorOptions {
@@ -313,9 +310,8 @@ impl ExecutionControl {
                 if let Some(cap) = self.0.reader_memory_cap {
                     const MIB: usize = 1 << 20;
                     let cap = cap as f64 / MIB as f64;
-                    let maximum = DATA_READER_MEMORY_CAP / MIB;
                     return Err(EvalError(format!(
-                        "data reader exceeded its own {cap} MiB memory cap. The macro memory limit cannot raise this cap above {maximum} MiB."
+                        "data reader exceeded its own {cap} MiB memory allowance. Raise the macro memory limit to allow it more."
                     )));
                 }
                 Err(EvalError(

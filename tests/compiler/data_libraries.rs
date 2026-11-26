@@ -406,7 +406,7 @@ fn compiler_data_readers_run_in_v8() {
 
 #[cfg(light_v8)]
 #[test]
-fn interactive_data_readers_have_an_independent_64_mib_cap() {
+fn interactive_data_readers_have_an_allowance_as_large_as_the_memory_limit() {
     use light_cljs::{EvalOptions, EvalSession, compiler_data::Name};
 
     let mut options = EvalOptions::default();
@@ -420,7 +420,7 @@ fn interactive_data_readers_have_an_independent_64_mib_cap() {
     assert_eq!(session.print(result.value).unwrap(), "41943040");
     session.release(result.value).unwrap();
 
-    let error = session.eval_string("#size 65").unwrap_err();
+    let error = session.eval_string("#size 193").unwrap_err();
     assert!(error.message.contains("while reading #size"), "{error}");
 
     let result = session.eval_string("(+ 2 3)").unwrap();
@@ -432,7 +432,7 @@ fn interactive_data_readers_have_an_independent_64_mib_cap() {
     assert!(
         error
             .message
-            .contains("data reader exceeded its own 64 MiB memory cap"),
+            .contains("data reader exceeded its own 192 MiB memory allowance"),
         "{error}"
     );
 }
