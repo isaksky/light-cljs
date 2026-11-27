@@ -74,6 +74,7 @@ mod case_char_string_gap;
 mod case_numeric;
 mod chunks;
 mod cljc_prefixes;
+mod cljs_test;
 mod clojure_template;
 mod compile_time_units;
 mod configured_custom_source_context;

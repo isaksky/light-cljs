@@ -17,7 +17,7 @@ globals and Vars, source namespaces, JavaScript interop, immutable
 vectors/lists/maps/sets (hash and sorted), transients, lazy sequences,
 transducers, protocols/types/records, multimethods and a large part of
 `cljs.core`, plus first-party `clojure.string`, `clojure.set`, `clojure.walk`,
-`cljs.reader` and `clojure.edn`. Coverage of the full ClojureScript language
+`clojure.template`, `cljs.reader`, `clojure.edn` and `cljs.test`. Coverage of the full ClojureScript language
 and core library is **partial**: core functions the compiler does not implement
 are reported as unresolved symbols. No general third-party standard library is
 bundled; caller-supplied library sources compile through the same language
@@ -986,7 +986,7 @@ including collection splicing, before dependency discovery. `.cljs` and standalo
 ## Compiler-owned standard libraries and stream reading
 
 `clojure.string`, `clojure.set`, `clojure.walk`, `clojure.template`, `cljs.reader`,
-`clojure.edn`, `light.lazy` and `light.build` are embedded first-party sources (`src/compiler_libraries/`) compiled by the
+`clojure.edn`, `cljs.test`, `light.lazy` and `light.build` are embedded first-party sources (`src/compiler_libraries/`) compiled by the
 ordinary namespace resolver. Explicit source roots take precedence, as for other
 namespaces. Runtime imports, aliases, refers and unmarked macro helpers use the
 same sources and JavaScript runtime.
@@ -999,6 +999,50 @@ iterative traversal state through callback reentry.
 
 `clojure.template` holds `apply-template` and the `do-template` macro in one
 source, so a user macro can call `apply-template` while it expands.
+
+`cljs.test` (`src/compiler_libraries/cljs/test.cljs`, adapted from upstream's
+`cljs/test.cljs` and `cljs/test.cljc`) holds the runtime and the macros in one
+source, and a `clojure.test` require loads it through the `clojure.*` fallback
+above. It has the environment and reporting functions (`empty-env`,
+`*current-env*`, `set-env!`, `report` and its `::default` methods,
+`do-report`, `successful?`), `is`, `are` (through `clojure.template/do-template`),
+`testing`, `assert-expr` with `instance?`, `thrown?` and `thrown-with-msg?`,
+`deftest` (also `^:async`), `async`, `use-fixtures`, `compose-fixtures`,
+`join-fixtures`, and the runners `test-var`, `test-vars`, `test-all-vars`,
+`test-ns`, `run-tests`, `run-test`, `run-all-tests` with their `-block`
+forms. Where upstream asks `cljs.analyzer.api` while a macro expands, it uses
+general capabilities:
+
+- `test-ns`, `test-all-vars` and `run-tests` expand to `(ns-interns 'the.ns)`
+  and choose at run time the Vars with `:test` metadata, in `:line` and
+  `:column` order,
+  and the namespace's `test-ns-hook`, `cljs-test-once-fixtures` and
+  `cljs-test-each-fixtures` Vars, so the namespace must be loaded where the
+  call expands. `(run-tests)` names the calling namespace.
+- `is` chooses between applying a predicate and evaluating the form with
+  `light.build/classify` (`:fn-var`), and `run-test` resolves its symbol the
+  same way.
+- `run-all-tests` takes a regular expression literal or nil and lists, while
+  it expands, the namespaces `all-ns` holds there except `cljs.core`. It
+  declares `(light.build/depend-on! :namespaces)`, so a compiler cache never
+  reuses the calling namespace and a test namespace added to the build is
+  found.
+- Assertions report the `:file`, `:line` and `:column` of the asserted form's
+  metadata, or else of the `is` call from `&env`, and an exception outside an
+  assertion reports the test's definition; `do-report` reads no JavaScript
+  stack, so an event a custom method reports without a location prints none. `:formatter` is `pr-str`, and the `::pprint` reporter is
+  the default one until `cljs.pprint` is bundled.
+- `deftest` defines a function that calls `(test-var (var name))`; every
+  `deftest` is compiled, since there is no `:load-tests` option yet.
+
+Reports print with `println`, so a compiled program needs a print function
+such as `enable-console-print!`, which light-cljs does not install by itself
+(upstream's core enables console printing when it loads). **Phase boundary:** an
+`assert-expr` method runs while `is` expands, in the compile-time runtime. A
+top-level `(defmethod cljs.test/assert-expr ...)` analyzed before the `is`
+call, in a namespace the test namespace requires or earlier in the same one,
+extends it; a method declared after the call or added by code that runs only in
+the application does not.
 
 **Dialect difference:** `clojure.string` follows the documented contracts where
 the pinned upstream implementation has JavaScript-level quirks:
@@ -2534,6 +2578,7 @@ The compiler's supported `&env` map follows the upstream CLJS analyzer:
 | `:context` | `:expr`, `:statement`, or `:return`. Fn bodies and value-position let bodies return; a multi-form value-position `do` also has a returning tail. |
 | `:ns` | `:name` caller symbol and `:doc`; `:requires` maps ordinary required namespaces and aliases to their namespace identities; `:uses` maps referred and renamed macro names to their declaring namespaces. `:require-macros` and `:use-macros` are empty compatibility entries, not accepted import syntax. |
 | `:line`, `:column` | One-based call-site location; `&form` also retains original metadata and compiler source provenance. |
+| `:file` | The calling source's name, as definitions record it in `:file` metadata: a file's path, `<text>.cljc` / `<stdin>.cljc` for CLI input, or the namespace's name for a source that has none. Upstream's analyzer environment has no such key. |
 | `:light-cljs/unchecked-arrays` | Boolean compiler setting for the calling source file. |
 
 This is a bounded environment contract, not the entire upstream analyzer AST:

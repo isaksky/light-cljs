@@ -113,7 +113,7 @@ fn named_function_macro_environments_capture_boolean_array_settings() {
           (list 'quote
             [(:light-cljs/unchecked-arrays &env)
              (boolean? (:light-cljs/unchecked-arrays &env))
-             (= #{:locals :context :ns :line :column
+             (= #{:locals :context :ns :line :column :file
                   :light-cljs/macros :light-cljs/unchecked-arrays
                   :light-cljs/reader-context}
                 (set (keys &env)))

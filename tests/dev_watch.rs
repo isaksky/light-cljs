@@ -3969,3 +3969,50 @@ fn clojure_requires_fall_back_to_cljs_namespaces_at_startup_and_in_steps() {
         ]
     );
 }
+
+#[cfg(light_v8)]
+/// A test namespace that requires `clojure.test` (the bundled `cljs.test`)
+/// runs its tests in the startup build and again after a step changes them.
+#[test]
+fn cljs_test_suites_run_at_startup_and_after_a_step() {
+    let suite = "(ns app.sum-test
+  (:require [clojure.test :as t :refer [deftest is]]))
+
+(def result (atom nil))
+(defmethod t/report [::quiet :pass] [_] (t/inc-report-counter! :pass))
+(defmethod t/report [::quiet :fail] [_] (t/inc-report-counter! :fail))
+(defmethod t/report [::quiet :end-run-tests] [m] (reset! result (select-keys m [:test :pass :fail])))
+
+(deftest sums (is (= 4 (+ 2 2))))
+
+(defn run [] (t/run-tests (t/empty-env ::quiet) 'app.sum-test) @result)
+";
+    let mut watch = Watch::start_with("dev-watch-cljs-test", |src| {
+        fs::write(src.join("app/sum_test.cljs"), suite).unwrap();
+        let view = fs::read_to_string(src.join("app/view.cljs")).unwrap();
+        let view = view
+            .replace(
+                "[app.state :as state]",
+                "[app.state :as state]\n            [app.sum-test :as sum]",
+            )
+            .replace(
+                "(js/console.log (describe card))",
+                "(js/console.log (str (describe card) \" \" (sum/run)))",
+            );
+        fs::write(src.join("app/view.cljs"), view).unwrap();
+    });
+    let passing = record("start\nclicks: [1] {:test 1, :pass 1, :fail 0}\n");
+    assert_eq!(watch.now_and_fresh(), [passing.clone(), passing]);
+    let edited = suite.replace(
+        "(is (= 4 (+ 2 2)))",
+        "(is (= 4 (+ 2 2))) (is (= 5 (+ 2 2)))",
+    );
+    let (lines, step) = watch.save("app/sum_test.cljs", &edited);
+    assert!(lines.is_empty(), "{lines:#?}");
+    assert!(
+        step.starts_with("light-cljs: recompiled app.sum-test in "),
+        "{step}"
+    );
+    let failing = record("start\nclicks: [1] {:test 1, :pass 1, :fail 1}\n");
+    assert_eq!(watch.now_and_fresh(), [failing.clone(), failing]);
+}

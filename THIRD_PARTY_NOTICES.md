@@ -19,15 +19,19 @@ here.
     `cljs/core.cljc`)
   - `src/compiler_libraries/clojure/set.cljs`
   - `src/compiler_libraries/clojure/string.cljs`
+  - `src/compiler_libraries/cljs/test.cljs` (from `src/main/cljs/cljs/test.cljs`
+    and `src/main/cljs/cljs/test.cljc`, by Stuart Sierra with contributions
+    by Chas Emerick, Allen Rohner, Stuart Halloway, David Nolen and Leon
+    Grapenthin)
   - Test fixtures under `tests/fixtures/` whose header carries the ClojureScript
     notice. These hold complete or adapted bodies from the upstream test suite
     (`src/test/cljs/...`), with per-body SHA-256 provenance recorded in the
     fixture files and checked by `tests/provenance.rs`.
   - `tests/reference/generate_core_var_metadata.clj` and the metadata it reads
     from the upstream checkout.
-- Compiled programs that use `clojure.string` or `clojure.set` embed JavaScript
-  compiled from the EPL-1.0 files above. The rest of the emitted runtime
-  (`src/js_runtime.js`) is original MIT-licensed work.
+- Compiled programs that use `clojure.string`, `clojure.set` or `cljs.test`
+  embed JavaScript compiled from the EPL-1.0 files above. The rest of the
+  emitted runtime (`src/js_runtime.js`) is original MIT-licensed work.
 
 Some tests additionally read the upstream checkout at run time from the
 gitignored `research/clojurescript` directory. Nothing from that checkout is

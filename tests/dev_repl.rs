@@ -1243,3 +1243,33 @@ fn repl_requires_fall_back_from_clojure_to_cljs_namespaces() {
         "[\"own 1\" \"own 2\" 3]"
     );
 }
+
+#[cfg(light_v8)]
+/// In a watch's REPL, `clojure.test` and `cljs.test` both load the bundled
+/// library, whose assertions and tests run in the connected runtime.
+#[test]
+fn repl_defines_and_runs_cljs_tests() {
+    let watch = Watch::start("dev-repl-cljs-test");
+    let _runtime = watch.runtime();
+    let mut repl = watch.repl(&[]);
+    assert_eq!(
+        repl.value("(require '[clojure.test :as t :refer [deftest is]] '[cljs.test :as ct])"),
+        "nil"
+    );
+    assert_eq!(
+        repl.value("(do (deftest sums (is (= 4 (+ 2 2))) (is (= 5 (+ 2 2)))) :defined)"),
+        ":defined"
+    );
+    assert_eq!(
+        repl.value(
+            "[(is (= 1 1)) (ct/is (thrown? :default (throw :x))) (some? (:test (meta #'sums)))]"
+        ),
+        "[true :x true]"
+    );
+    assert_eq!(
+        repl.value(
+            "(binding [*print-fn* (fn [& _])] (t/clear-env!) (t/test-var #'sums) (:report-counters (t/get-and-clear-env!)))"
+        ),
+        "{:test 1, :pass 1, :fail 1, :error 0}"
+    );
+}

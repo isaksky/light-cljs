@@ -12350,6 +12350,20 @@ impl Analyzer<'_> {
             )),
             &c.boolean(self.unchecked_arrays),
         )?;
+        // The calling source's name, as definitions record it in `:file`
+        // metadata, so a macro such as `cljs.test/is` can report where it
+        // was called.
+        let file = self
+            .resolution
+            .source_name
+            .as_deref()
+            .unwrap_or(self.namespace)
+            .to_owned();
+        let environment = c.assoc(
+            &environment,
+            &c.keyword(crate::compiler_data::Name::new(None, "file")),
+            &c.string(file.encode_utf16().collect::<Vec<_>>()),
+        )?;
         // Upstream's `&env` has `:async` in an `^:async` function's body,
         // which macros such as `await` read.
         if self.asynchronous {

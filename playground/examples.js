@@ -4,7 +4,7 @@
 //
 // The small examples show one feature each, log through js/console.log and
 // end in a number or string, so that the emitted JavaScript holds little
-// beyond the feature; only "Printing" and the calculator call
+// beyond the feature; only "Printing", "Unit tests" and the calculator call
 // (enable-console-print!). At --optimize advanced a program that never prints
 // embeds no printer, so a collection as its final value has no toString and
 // the page shows [object Object]; check.mjs allows that at advanced only.
@@ -246,6 +246,45 @@ data
     (if (> i n)
       total
       (recur (inc i) (+ total (square i))))))
+`,
+      },
+    ],
+  },
+  {
+    id: "testing",
+    title: "Unit tests with clojure.test",
+    entry: "demo.test",
+    expect: "2 tests, 5 passed, 0 failed",
+    files: [
+      {
+        path: "demo/test.cljs",
+        source: `(ns demo.test
+  (:require [clojure.test :as t :refer [deftest is testing are]]))
+
+;; The bundled cljs.test (also required as clojure.test) reports with
+;; println, so it needs a print function.
+(enable-console-print!)
+
+(deftest arithmetic
+  (testing "addition"
+    (is (= 4 (+ 2 2)))
+    (are [x y] (= x y)
+      2 (+ 1 1)
+      6 (* 2 3))))
+
+(deftest strings
+  (is (= "ab" (str "a" "b")))
+  (is (thrown? js/Error (throw (js/Error. "boom")))))
+
+;; A report method sees the summary when the run ends.
+(def summary (atom nil))
+(defmethod t/report [::t/default :end-run-tests] [m]
+  (reset! summary m))
+
+(t/run-tests)
+
+(let [{:keys [test pass fail error]} @summary]
+  (str test " tests, " pass " passed, " (+ fail error) " failed"))
 `,
       },
     ],
