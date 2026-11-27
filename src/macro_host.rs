@@ -50,6 +50,10 @@ pub(crate) struct NativeExpansion {
     pub nodes: usize,
     pub operator: String,
     pub span: std::ops::Range<usize>,
+    /// Whether this expansion ran while compiling a compiler-owned bundled
+    /// library and is therefore exempt from `--macro-expansions` and
+    /// `--macro-nodes` while still counting in `--stats`.
+    pub exempt: bool,
 }
 
 /// What a macro-free unit's analysis would have charged to the
@@ -68,6 +72,7 @@ pub(crate) enum UnitEvent {
         nodes: usize,
         span: std::ops::Range<usize>,
         site: Option<(String, std::ops::Range<usize>)>,
+        exempt: bool,
     },
     /// While artifacts are captured (light-cljs-374): the namespace's node
     /// budget had to leave room for this many nodes beyond those generated
@@ -330,13 +335,18 @@ pub(crate) fn record_native_expansion(expansion: impl FnOnce() -> NativeExpansio
 }
 /// Record a JavaScript macro's expansion if this thread records a unit's
 /// analysis.
-pub(crate) fn record_script_expansion(nodes: usize, span: impl FnOnce() -> std::ops::Range<usize>) {
+pub(crate) fn record_script_expansion(
+    nodes: usize,
+    exempt: bool,
+    span: impl FnOnce() -> std::ops::Range<usize>,
+) {
     MACRO_FREE_UNIT.with(|unit| {
         if let Some(analysis) = &mut *unit.borrow_mut() {
             analysis.events.push(UnitEvent::Script {
                 nodes,
                 span: span(),
                 site: analysis.site.clone(),
+                exempt,
             });
         }
     });
@@ -805,6 +815,10 @@ pub(crate) struct MacroTables {
     pub(crate) interactive: bool,
     pub(crate) name_policy: Option<crate::eval_compiler::NamePolicy>,
     pub(crate) bootstrap_seed: bool,
+    /// Whether the namespace or unit currently being compiled comes from a
+    /// compiler-owned bundled library (`src/compiler_libraries.rs`) and is
+    /// therefore exempt from `--macro-expansions` and `--macro-nodes`.
+    pub(crate) budget_exempt: bool,
     pub(crate) javascript_macros:
         crate::layered::QualifiedNames<crate::compiler_bootstrap::CompiledMacro>,
     /// The names of `javascript_macros` by namespace, sorted
@@ -851,6 +865,11 @@ pub(crate) struct EngineBinding {
     pub(crate) session_ref: std::rc::Weak<crate::compilation_session::CompilationSession>,
     pub(crate) expansions: std::rc::Rc<std::cell::Cell<usize>>,
     pub(crate) generated_nodes: std::rc::Rc<std::cell::Cell<usize>>,
+    /// Macro expansions and generated form nodes executed in compiler-owned
+    /// bundled libraries: exempt from [`MacroLimits::expansions`] and
+    /// [`MacroLimits::generated_nodes`], still counted by `--stats`.
+    pub(crate) exempt_expansions: std::rc::Rc<std::cell::Cell<usize>>,
+    pub(crate) exempt_nodes: std::rc::Rc<std::cell::Cell<usize>>,
     /// The compilation's high-water marks and charges, shared like the
     /// counters ([`WorkMarks`]).
     pub(crate) work: std::rc::Rc<WorkMarks>,
@@ -948,6 +967,8 @@ impl EngineBinding {
                 .map_or_else(std::rc::Weak::new, |s| std::rc::Rc::downgrade(&s)),
             expansions: self.expansions.clone(),
             generated_nodes: self.generated_nodes.clone(),
+            exempt_expansions: self.exempt_expansions.clone(),
+            exempt_nodes: self.exempt_nodes.clone(),
             work: self.work.clone(),
             work_cache: self.work_cache.clone(),
             script_host: self.script_host.clone(),
@@ -1506,11 +1527,18 @@ impl MacroHost {
         environment: &crate::compiler_data::Datum,
         origin: crate::compiler_data::ExpansionOrigin,
     ) -> Result<Form, String> {
+        let exempt = self.budget_exempt();
         self.engine.on_engine_entry(evaluator);
-        if self.engine.expansions.get() >= self.limits.expansions {
-            return Err("compiler macro expansion limit exceeded".into());
+        if exempt {
+            self.engine
+                .exempt_expansions
+                .set(self.engine.exempt_expansions.get() + 1);
+        } else {
+            if self.engine.expansions.get() >= self.limits.expansions {
+                return Err("compiler macro expansion limit exceeded".into());
+            }
+            self.engine.expansions.set(self.engine.expansions.get() + 1);
         }
-        self.engine.expansions.set(self.engine.expansions.get() + 1);
         // The conversions below take at most the node limit each, not
         // what the compilation has left of it, so that whether they fit
         // depends on the expansion alone and not on the units charged
@@ -1518,7 +1546,7 @@ impl MacroHost {
         // built (light-cljs-341)"); what they generate is charged after.
         // The cache's accounting keeps the stricter measure: a namespace
         // needs room for the largest of its inputs too.
-        let measuring = self.measures_work();
+        let measuring = self.measures_work() && !exempt;
         if measuring {
             let input = if ENV_MEASURED {
                 WorkMarks::nodes(&call.data())
@@ -1532,17 +1560,20 @@ impl MacroHost {
             // What the engine's conversions charged before this expansion,
             // outside every other one, is not its own: the engine's history,
             // which differs by isolate (light-cljs-374).
-            if EXPANDING.get() == 0 {
-                if !self.engine.work_cache.encode_peak_clean.get()
-                    && !reset_encode_peak(evaluator, &self.engine.work_cache.encode_peak)
-                {
-                    self.note_unmeasured();
-                }
-                self.engine.work_cache.encode_peak_clean.set(false);
+            if EXPANDING.get() == 0
+                && !self.engine.work_cache.encode_peak_clean.get()
+                && !reset_encode_peak(evaluator, &self.engine.work_cache.encode_peak)
+            {
+                self.note_unmeasured();
             }
         }
+        // Any engine conversion updates JS-side `encode.peak`, including
+        // exempt expansions, so a later measured expansion must reset it.
+        if EXPANDING.get() == 0 {
+            self.engine.work_cache.encode_peak_clean.set(false);
+        }
         let limits = crate::form_bridge::ConversionLimits {
-            nodes: self.limits.generated_nodes,
+            nodes: self.conversion_node_limit(),
             depth: 128,
         };
         let run = || -> Result<Form, crate::evaluator::EvalError> {
@@ -1598,15 +1629,19 @@ impl MacroHost {
             }
         }
         let expanded = expanded.map_err(|e| expansion_failure(&origin, e))?;
-        record_script_expansion(expanded.nodes().len(), || origin.call.bytes());
-        self.engine.generated_nodes.set(
+        let nodes = expanded.nodes().len();
+        record_script_expansion(nodes, exempt, || origin.call.bytes());
+        if exempt {
+            self.engine
+                .exempt_nodes
+                .set(self.engine.exempt_nodes.get().saturating_add(nodes));
+        } else {
             self.engine
                 .generated_nodes
-                .get()
-                .saturating_add(expanded.nodes().len()),
-        );
-        if self.engine.generated_nodes.get() > self.limits.generated_nodes {
-            return Err("compiler macro generated-node limit exceeded".into());
+                .set(self.engine.generated_nodes.get().saturating_add(nodes));
+            if self.engine.generated_nodes.get() > self.limits.generated_nodes {
+                return Err("compiler macro generated-node limit exceeded".into());
+            }
         }
         Ok(expanded)
     }
@@ -1894,12 +1929,12 @@ impl MacroHost {
                     (evaluator, function, fallback)
                 };
                 let limits = crate::form_bridge::ConversionLimits {
-                    nodes: self.limits.generated_nodes,
+                    nodes: self.conversion_node_limit(),
                     depth: 128,
                 };
                 // Each conversion takes at most the node limit itself, so a
                 // namespace needs a limit of at least its largest.
-                let measuring = self.measures_work();
+                let measuring = self.measures_work() && !self.budget_exempt();
                 if measuring {
                     self.note_conversion(WorkMarks::nodes(value));
                 }
@@ -1975,11 +2010,17 @@ impl MacroHost {
                 )
                 .nodes()
                 .len();
-                let generated = self.engine.generated_nodes.get().saturating_add(size);
-                if generated > self.limits.generated_nodes {
-                    return Err("compiler reader generated-node limit exceeded".into());
+                if self.budget_exempt() {
+                    self.engine
+                        .exempt_nodes
+                        .set(self.engine.exempt_nodes.get().saturating_add(size));
+                } else {
+                    let generated = self.engine.generated_nodes.get().saturating_add(size);
+                    if generated > self.limits.generated_nodes {
+                        return Err("compiler reader generated-node limit exceeded".into());
+                    }
+                    self.engine.generated_nodes.set(generated);
                 }
-                self.engine.generated_nodes.set(generated);
             }
             Ok(value)
         };
@@ -2518,10 +2559,34 @@ impl MacroHost {
     pub(crate) fn measures_work(&self) -> bool {
         MacroFreeUnit::captures().unwrap_or_else(|| self.engine.work.measuring.get())
     }
+    /// Whether this analysis frame compiles a compiler-owned bundled library,
+    /// whose expansions do not count against `--macro-expansions` or
+    /// `--macro-nodes`.
+    pub(crate) fn budget_exempt(&self) -> bool {
+        self.tables.budget_exempt
+    }
+    /// Set whether this host is compiling a compiler-owned bundled library,
+    /// returning the previous value.
+    pub(crate) fn set_budget_exempt(&mut self, exempt: bool) -> bool {
+        std::mem::replace(&mut self.tables.budget_exempt, exempt)
+    }
+    /// The per-conversion node bound: for a compiler-owned bundled library
+    /// (exempt from `--macro-nodes`), the engine's 32-bit integer bound;
+    /// otherwise [`MacroLimits::generated_nodes`].
+    pub(crate) fn conversion_node_limit(&self) -> usize {
+        if self.budget_exempt() {
+            i32::MAX as usize
+        } else {
+            self.limits.generated_nodes
+        }
+    }
     /// Note that the namespace's node budget had to leave room for `extra`
     /// nodes beyond those generated so far ([`WorkMarks::node_peak`]), or
     /// record it in the unit this thread records, where it is charged.
     pub(crate) fn note_node_room(&self, extra: usize) {
+        if self.budget_exempt() {
+            return;
+        }
         if !record_capture(|| UnitEvent::Room(extra)) {
             WorkMarks::note(
                 &self.engine.work.node_peak,
@@ -2531,6 +2596,9 @@ impl MacroHost {
     }
     /// [`WorkMarks::conversion_peak`], as [`Self::note_node_room`].
     pub(crate) fn note_conversion(&self, nodes: usize) {
+        if self.budget_exempt() {
+            return;
+        }
         if !record_capture(|| UnitEvent::Conversion(nodes)) {
             WorkMarks::note(&self.engine.work.conversion_peak, nodes);
         }
@@ -2573,6 +2641,8 @@ impl MacroHost {
     pub(crate) fn reset_expansion_budget(&self) {
         self.engine.expansions.set(0);
         self.engine.generated_nodes.set(0);
+        self.engine.exempt_expansions.set(0);
+        self.engine.exempt_nodes.set(0);
         self.engine.work.charged_expansions.set(0);
         if let Some(session) = self.session_handle() {
             session.reset_charged();
@@ -2595,10 +2665,12 @@ impl MacroHost {
             generated_nodes: self.engine.generated_nodes.get(),
         }
     }
-    /// The macro calls the compilation executed: its expansions less those
-    /// installed artifacts charged.
+    /// The macro calls the compilation executed: its charged expansions less
+    /// those installed artifacts charged, plus its exempt bundled-library
+    /// expansions.
     pub(crate) fn executed_expansions(&self) -> usize {
-        self.engine.expansions.get() - self.engine.work.charged_expansions.get()
+        (self.engine.expansions.get() - self.engine.work.charged_expansions.get())
+            + self.engine.exempt_expansions.get()
     }
     /// Why the compilation's compile-time work cannot go on: its session's
     /// execution control, or `control`, is cancelled or terminal. Checked
@@ -2651,7 +2723,10 @@ impl MacroHost {
         }
         self.engine.expansions = Default::default();
         self.engine.generated_nodes = Default::default();
+        self.engine.exempt_expansions = Default::default();
+        self.engine.exempt_nodes = Default::default();
         self.engine.work = Default::default();
+        self.tables.budget_exempt = false;
         self.engine.reader_declared = Default::default();
         self.tables.reader_generation =
             READER_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -2934,25 +3009,34 @@ impl MacroHost {
             None => self.expand_namespace_reflection(form, name)?,
         };
         if let Some(expanded) = &expanded {
+            let exempt = self.budget_exempt();
+            let nodes = expanded.nodes().len();
             if let Some((operator, span)) = site {
                 record_native_expansion(|| NativeExpansion {
-                    nodes: expanded.nodes().len(),
+                    nodes,
                     operator: operator.to_owned(),
                     span: span.clone(),
+                    exempt,
                 });
             }
-            if self.engine.expansions.get() >= self.limits.expansions {
-                return Err("compiler macro expansion limit exceeded".into());
-            }
-            self.engine.expansions.set(self.engine.expansions.get() + 1);
-            self.engine.generated_nodes.set(
+            if exempt {
+                self.engine
+                    .exempt_expansions
+                    .set(self.engine.exempt_expansions.get() + 1);
+                self.engine
+                    .exempt_nodes
+                    .set(self.engine.exempt_nodes.get().saturating_add(nodes));
+            } else {
+                if self.engine.expansions.get() >= self.limits.expansions {
+                    return Err("compiler macro expansion limit exceeded".into());
+                }
+                self.engine.expansions.set(self.engine.expansions.get() + 1);
                 self.engine
                     .generated_nodes
-                    .get()
-                    .saturating_add(expanded.nodes().len()),
-            );
-            if self.engine.generated_nodes.get() > self.limits.generated_nodes {
-                return Err("compiler macro generated-node limit exceeded".into());
+                    .set(self.engine.generated_nodes.get().saturating_add(nodes));
+                if self.engine.generated_nodes.get() > self.limits.generated_nodes {
+                    return Err("compiler macro generated-node limit exceeded".into());
+                }
             }
         }
         Ok(expanded)

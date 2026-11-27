@@ -781,7 +781,7 @@ impl MacroHost {
         let unused = DataBuilder.nil();
         // Half the node limit, as each conversion takes at most the
         // limit ([`MacroHost::expand_javascript`]).
-        let mut remaining = self.limits.generated_nodes / 2;
+        let mut remaining = self.conversion_node_limit() / 2;
         let budget = remaining;
         let env = if !declaration.reads_environment
             && elidable_map_environment(
@@ -1338,7 +1338,7 @@ impl MacroHost {
         }
         // Half the node limit, as each conversion takes at most the limit
         // ([`MacroHost::expand_javascript`]).
-        let mut remaining = self.limits.generated_nodes / 2;
+        let mut remaining = self.conversion_node_limit() / 2;
         let budget = remaining;
         if !elidable_map_environment(
             env,

@@ -683,12 +683,17 @@ pub(crate) fn finish_bodies(
 fn charged_expansion(event: crate::macro_host::UnitEvent) -> Option<ChargedExpansion> {
     use crate::macro_host::UnitEvent;
     match event {
-        UnitEvent::Expansion(expansion) => Some(ChargedExpansion {
+        UnitEvent::Expansion(expansion) if !expansion.exempt => Some(ChargedExpansion {
             operator: Some(expansion.operator),
             call: bytes(&expansion.span),
             nodes: expansion.nodes as u64,
         }),
-        UnitEvent::Script { nodes, span, site } => {
+        UnitEvent::Script {
+            nodes,
+            span,
+            site,
+            exempt: false,
+        } => {
             let (operator, call) = match site {
                 Some((operator, call)) => (Some(operator), call),
                 None => (None, span),

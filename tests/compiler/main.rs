@@ -64,6 +64,7 @@ mod boundary_completion;
 mod build_config;
 mod build_resources;
 mod builtin_types;
+mod bundled_macro_limits;
 mod cache_contract;
 mod cache_keys;
 mod cache_modes;

@@ -1273,9 +1273,12 @@ impl DevSession {
                     .map_err(|error| located(error.to_string(), location.clone()))?,
                 None => None,
             };
-            let source = match (provided, crate::compiler_libraries::source(&name)) {
-                (Some(source), _) => source,
-                (None, Some(source)) => SourceInput::new(format!("<builtin>/{name}.cljs"), source),
+            let (source, bundled) = match (provided, crate::compiler_libraries::source(&name)) {
+                (Some(source), _) => (source, false),
+                (None, Some(source)) => (
+                    SourceInput::new(format!("<builtin>/{name}.cljs"), source),
+                    true,
+                ),
                 (None, None) if self.source_provider.is_none() => {
                     return Err(located(
                         format!("no source provider for {name}"),
@@ -1288,7 +1291,12 @@ impl DevSession {
             };
             let namespace = self.namespace();
             self.loading.borrow_mut().push(name.clone());
+            let previous_exempt = self.compiler.borrow_mut().host.set_budget_exempt(bundled);
             let result = self.run_source(&source, Mode::Load, to);
+            self.compiler
+                .borrow_mut()
+                .host
+                .set_budget_exempt(previous_exempt);
             self.loading.borrow_mut().pop();
             self.compiler.borrow_mut().set_namespace(&namespace);
             to.apply(Action::Namespace(namespace))?;

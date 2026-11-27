@@ -221,19 +221,28 @@ impl UnitCharges {
                     }
                 }
                 UnitEvent::Expansion(expansion) => {
-                    let exceeded = if expansions.get() >= self.limits.0 {
-                        Some("compiler macro expansion limit exceeded")
+                    if expansion.exempt {
+                        binding
+                            .exempt_expansions
+                            .set(binding.exempt_expansions.get() + 1);
+                        binding
+                            .exempt_nodes
+                            .set(binding.exempt_nodes.get().saturating_add(expansion.nodes));
                     } else {
-                        expansions.set(expansions.get() + 1);
-                        nodes.set(nodes.get().saturating_add(expansion.nodes));
-                        (nodes.get() > self.limits.1)
-                            .then_some("compiler macro generated-node limit exceeded")
-                    };
-                    if let Some(message) = exceeded {
-                        return fail(
-                            &expansion.span,
-                            format!("while expanding {}: {message}", expansion.operator),
-                        );
+                        let exceeded = if expansions.get() >= self.limits.0 {
+                            Some("compiler macro expansion limit exceeded")
+                        } else {
+                            expansions.set(expansions.get() + 1);
+                            nodes.set(nodes.get().saturating_add(expansion.nodes));
+                            (nodes.get() > self.limits.1)
+                                .then_some("compiler macro generated-node limit exceeded")
+                        };
+                        if let Some(message) = exceeded {
+                            return fail(
+                                &expansion.span,
+                                format!("while expanding {}: {message}", expansion.operator),
+                            );
+                        }
                     }
                 }
                 // The limits as `MacroHost::expand_javascript` checks them,
@@ -243,6 +252,7 @@ impl UnitCharges {
                     nodes: generated,
                     span,
                     site,
+                    exempt,
                 } => {
                     let fail = |message: &str| match site {
                         Some((operator, span)) => {
@@ -258,13 +268,22 @@ impl UnitCharges {
                             Err(error) => return fail(&error),
                         };
                     }
-                    if expansions.get() >= self.limits.0 {
-                        return fail("compiler macro expansion limit exceeded");
-                    }
-                    expansions.set(expansions.get() + 1);
-                    nodes.set(nodes.get().saturating_add(*generated));
-                    if nodes.get() > self.limits.1 {
-                        return fail("compiler macro generated-node limit exceeded");
+                    if *exempt {
+                        binding
+                            .exempt_expansions
+                            .set(binding.exempt_expansions.get() + 1);
+                        binding
+                            .exempt_nodes
+                            .set(binding.exempt_nodes.get().saturating_add(*generated));
+                    } else {
+                        if expansions.get() >= self.limits.0 {
+                            return fail("compiler macro expansion limit exceeded");
+                        }
+                        expansions.set(expansions.get() + 1);
+                        nodes.set(nodes.get().saturating_add(*generated));
+                        if nodes.get() > self.limits.1 {
+                            return fail("compiler macro generated-node limit exceeded");
+                        }
                     }
                 }
                 // What capture records, where a serial build records it.
@@ -2087,7 +2106,12 @@ impl CompilationSession {
         if let Some(capture) = self.capture.borrow_mut().as_mut() {
             let events = events
                 .into_iter()
-                .filter(|event| matches!(event, UnitEvent::Expansion(_) | UnitEvent::Script { .. }))
+                .filter(|event| {
+                    matches!(
+                        event,
+                        UnitEvent::Expansion(e) if !e.exempt
+                    ) || matches!(event, UnitEvent::Script { exempt: false, .. })
+                })
                 .collect::<Vec<_>>();
             if !events.is_empty() {
                 capture.charges.push((id, events));
@@ -4615,14 +4639,21 @@ impl CompilationSession {
         if let Some(rows) = charges.trace.take() {
             crate::compile_trace::replay(*rows, 0);
         }
-        let before = (binding.expansions.get(), binding.generated_nodes.get());
+        let before = (
+            binding.expansions.get() + binding.exempt_expansions.get(),
+            binding.generated_nodes.get() + binding.exempt_nodes.get(),
+        );
         charges
             .charge(binding, None, control, &start, self)
             .map_err(|(_, diagnostic)| diagnostic)?;
+        let after = (
+            binding.expansions.get() + binding.exempt_expansions.get(),
+            binding.generated_nodes.get() + binding.exempt_nodes.get(),
+        );
         crate::compile_trace::charged(
             &binding.expansions,
-            binding.expansions.get().saturating_sub(before.0),
-            binding.generated_nodes.get().saturating_sub(before.1),
+            after.0.saturating_sub(before.0),
+            after.1.saturating_sub(before.1),
         );
         let UnitCharges {
             observations,
@@ -4849,7 +4880,10 @@ impl CompilationSession {
         if let Some(rows) = charges.trace.take() {
             crate::compile_trace::replay(*rows, depth);
         }
-        let before = (binding.expansions.get(), binding.generated_nodes.get());
+        let before = (
+            binding.expansions.get() + binding.exempt_expansions.get(),
+            binding.generated_nodes.get() + binding.exempt_nodes.get(),
+        );
         // A worker's unit that expanded a JavaScript macro would have
         // started the coordinator's engine with one slot, at that
         // expansion; it starts it there, so later polls are spent.
@@ -4875,10 +4909,14 @@ impl CompilationSession {
         }
         // The unit's trace frame counted these; the frame it is
         // charged in does not count them as its own.
+        let after = (
+            binding.expansions.get() + binding.exempt_expansions.get(),
+            binding.generated_nodes.get() + binding.exempt_nodes.get(),
+        );
         crate::compile_trace::charged(
             &binding.expansions,
-            binding.expansions.get().saturating_sub(before.0),
-            binding.generated_nodes.get().saturating_sub(before.1),
+            after.0.saturating_sub(before.0),
+            after.1.saturating_sub(before.1),
         );
         let UnitCharges {
             observations,
@@ -5046,6 +5084,8 @@ fn analyze_unit(
         let (expansions, nodes) = shared.charged();
         host.engine.expansions = std::rc::Rc::new(std::cell::Cell::new(expansions));
         host.engine.generated_nodes = std::rc::Rc::new(std::cell::Cell::new(nodes));
+        host.engine.exempt_expansions = std::rc::Rc::new(std::cell::Cell::new(0));
+        host.engine.exempt_nodes = std::rc::Rc::new(std::cell::Cell::new(0));
         if !records {
             host.reset_unit_work();
         }

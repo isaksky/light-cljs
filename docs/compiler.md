@@ -2603,7 +2603,14 @@ final form, standalone/entry tails have `:return` context rather than CLJS's usu
 top-level statement context.
 
 Default `MacroLimits` allow 1,024 expansions and 100,000 generated form nodes per
-compilation, with 64 nested macro expansions (also the hard cap). Generated
+compilation, with 64 nested macro expansions (also the hard cap). Expansions
+while compiling compiler-owned bundled libraries (`src/compiler_libraries.rs`)
+do not count against `--macro-expansions` or `--macro-nodes` (including when
+installed from the compiler cache), while staying subject to the nesting depth
+limit, deadline, memory limit, and poll budget; `--stats` still reports every
+executed expansion. A namespace of the same name supplied by an explicit source
+root is user source and is charged normally, as are calls to a bundled
+library's macros inside user namespaces. Generated
 runtime analysis has a 128-frame nesting bound. `evaluator_options` configures
 engine memory, stack, timeout and polling bounds. V8 starts with a collection
 threshold of at most 256 MiB and allows live heaps to grow toward the configured

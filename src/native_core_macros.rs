@@ -1897,21 +1897,22 @@ impl crate::MacroHost {
         if !crate::generated_names::scoped() {
             return Ok(None);
         }
+        let exempt = self.budget_exempt();
         let call = form.data();
         // A call the engine's conversion refuses, too deep or larger than the
         // node limit (which each conversion may take whole), is left to it,
         // which fails as it does; so is never one it converts.
-        if within(&call, DEPTH).is_none_or(|nodes| nodes > self.limits.generated_nodes) {
+        if within(&call, DEPTH).is_none_or(|nodes| nodes > self.conversion_node_limit()) {
             return Ok(None);
         }
-        if self.engine.expansions.get() >= self.limits.expansions {
+        if !exempt && self.engine.expansions.get() >= self.limits.expansions {
             return Err("compiler macro expansion limit exceeded".into());
         }
         // The room the engine's conversion of the call needs, as it notes
         // it ([`crate::macro_host::MacroHost::expand_javascript`]), so a
         // namespace's accounting admits it where this expands it. Its
         // environment is never converted here.
-        if self.measures_work() {
+        if !exempt && self.measures_work() {
             self.note_node_room(crate::macro_host::WorkMarks::nodes(&call));
         }
         let Some(expanded) = expand(name, &call, namespace, &mut scope_gensyms)? else {
@@ -1930,21 +1931,29 @@ impl crate::MacroHost {
             form,
             Name::new(Some("cljs.core"), name),
         );
+        let nodes = expanded.nodes().len();
         let (operator, span) = site;
         crate::macro_host::record_native_expansion(|| crate::macro_host::NativeExpansion {
-            nodes: expanded.nodes().len(),
+            nodes,
             operator: operator.to_owned(),
             span: span.clone(),
+            exempt,
         });
-        self.engine.expansions.set(self.engine.expansions.get() + 1);
-        self.engine.generated_nodes.set(
+        if exempt {
+            self.engine
+                .exempt_expansions
+                .set(self.engine.exempt_expansions.get() + 1);
+            self.engine
+                .exempt_nodes
+                .set(self.engine.exempt_nodes.get().saturating_add(nodes));
+        } else {
+            self.engine.expansions.set(self.engine.expansions.get() + 1);
             self.engine
                 .generated_nodes
-                .get()
-                .saturating_add(expanded.nodes().len()),
-        );
-        if self.engine.generated_nodes.get() > self.limits.generated_nodes {
-            return Err("compiler macro generated-node limit exceeded".into());
+                .set(self.engine.generated_nodes.get().saturating_add(nodes));
+            if self.engine.generated_nodes.get() > self.limits.generated_nodes {
+                return Err("compiler macro generated-node limit exceeded".into());
+            }
         }
         Ok(Some(expanded))
     }

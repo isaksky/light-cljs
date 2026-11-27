@@ -252,7 +252,7 @@ node --enable-source-maps app.js
 
 ### Macro limits
 
-Default limits per compilation: `--macro-expansions 1024`, `--macro-nodes 100000`, `--macro-timeout-ms 10000`, `--macro-memory-limit 67108864` (64 MiB), `--macro-poll-budget 1000000`. Raise these flags on `--compile` or `--watch` for macro-heavy programs.
+Default limits per compilation: `--macro-expansions 1024`, `--macro-nodes 100000`, `--macro-timeout-ms 10000`, `--macro-memory-limit 67108864` (64 MiB), `--macro-poll-budget 1000000`. Raise these flags on `--compile` or `--watch` for macro-heavy programs. Expansions while compiling compiler-owned bundled libraries (`cljs.test`, `clojure.string`, `clojure.template`, and the rest) do not count against `--macro-expansions` or `--macro-nodes` (they remain subject to the nesting depth limit, deadline, memory limit, and poll budget), and `--stats` still counts every executed expansion. A namespace of the same name supplied by an explicit `--source-root` is user source and is charged normally.
 
 ---
 

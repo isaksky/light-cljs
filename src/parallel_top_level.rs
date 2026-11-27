@@ -488,6 +488,8 @@ impl ParallelTopLevel {
                     let (charged_exp, charged_nodes) = ctx.shared.charged();
                     frame.expansions = std::rc::Rc::new(std::cell::Cell::new(charged_exp));
                     frame.generated_nodes = std::rc::Rc::new(std::cell::Cell::new(charged_nodes));
+                    frame.exempt_expansions = std::rc::Rc::new(std::cell::Cell::new(0));
+                    frame.exempt_nodes = std::rc::Rc::new(std::cell::Cell::new(0));
                     frame.work = Default::default();
                     frame.forbid_engine_boot.set(!ctx.has_engine);
                     frame.entered_engine.set(false);

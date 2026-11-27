@@ -3127,6 +3127,9 @@ pub(crate) struct NamespaceResolution {
     pub js_refers: Vec<(String, JsRefer)>,
     pub cljc: bool,
     pub source_name: Option<String>,
+    /// True when the namespace's source is a compiler-owned bundled library
+    /// (`src/compiler_libraries.rs`) rather than an explicit source root.
+    pub bundled: bool,
 }
 
 pub(crate) type DiagnosticArities = HashMap<GlobalId, Vec<(usize, bool)>>;
@@ -5082,6 +5085,21 @@ struct NamespaceTop {
 
 impl NamespaceTop {
     fn analyze(
+        &mut self,
+        input: &NamespaceInput<'_>,
+        resolution: NamespaceResolution,
+        result: bool,
+        macro_host: &mut MacroHost,
+        options: AnalysisOptions,
+        warnings: &mut Vec<AnalysisWarning>,
+    ) -> Result<(ExprId, DrainedNamespace), AnalysisError> {
+        let previous_exempt = macro_host.set_budget_exempt(resolution.bundled);
+        let outcome = self.analyze_inner(input, resolution, result, macro_host, options, warnings);
+        macro_host.set_budget_exempt(previous_exempt);
+        outcome
+    }
+
+    fn analyze_inner(
         &mut self,
         input: &NamespaceInput<'_>,
         resolution: NamespaceResolution,
@@ -8154,7 +8172,7 @@ impl Analyzer<'_> {
                     "defmethod",
                     &datum,
                     self.namespace,
-                    self.macro_host.limits.generated_nodes,
+                    self.macro_host.conversion_node_limit(),
                 )
                 .is_some_and(|expanded| {
                     self.macro_free_datum(&expanded, 1, true)
@@ -8259,7 +8277,7 @@ impl Analyzer<'_> {
                                 &core,
                                 datum,
                                 self.namespace,
-                                self.macro_host.limits.generated_nodes,
+                                self.macro_host.conversion_node_limit(),
                             )
                             .is_some_and(|expanded| {
                                 self.macro_free_datum(&expanded, depth + 1, true)

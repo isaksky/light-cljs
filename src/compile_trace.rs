@@ -524,6 +524,8 @@ pub const TRACE_VERSION: u32 = 2;
 pub(crate) struct Counters {
     expansions: Rc<Cell<usize>>,
     nodes: Rc<Cell<usize>>,
+    exempt_expansions: Rc<Cell<usize>>,
+    exempt_nodes: Rc<Cell<usize>>,
 }
 
 impl Counters {
@@ -531,11 +533,16 @@ impl Counters {
         Self {
             expansions: host.engine.expansions.clone(),
             nodes: host.engine.generated_nodes.clone(),
+            exempt_expansions: host.engine.exempt_expansions.clone(),
+            exempt_nodes: host.engine.exempt_nodes.clone(),
         }
     }
 
     fn read(&self) -> (usize, usize) {
-        (self.expansions.get(), self.nodes.get())
+        (
+            self.expansions.get() + self.exempt_expansions.get(),
+            self.nodes.get() + self.exempt_nodes.get(),
+        )
     }
 
     /// Which counters these are: a frame counts the work of the frames

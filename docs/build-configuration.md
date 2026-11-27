@@ -456,13 +456,13 @@ only in the file, the commands and messages.
 | `:checked-arrays` | `:warn` or `:error`; implies `:cljs-warnings`, as the flags do | unset |
 | `:cljs-warnings` | boolean: undeclared Vars and conflicting arities are warnings, not errors | `false` in release, implied in dev |
 | `:closure-defines` | as the build key | `{}` |
-| `:macro-expansions` | positive integer | 1024 |
-| `:macro-nodes` | positive integer | 100000 |
+| `:macro-expansions` | positive integer (counts user source; compiler-owned bundled libraries are exempt) | 1024 |
+| `:macro-nodes` | positive integer (counts user source; compiler-owned bundled libraries are exempt) | 100000 |
 | `:macro-timeout-ms` | positive integer | 10000 |
 | `:macro-memory-limit` | positive integer in bytes for macro heaps and backing stores. Allow at least 16 MiB for V8 startup. Custom compiler data readers run in an isolate of their own, which may use up to this limit again. | 67108864 |
 | `:macro-poll-budget` | positive integer | 1000000 |
 
-The same memory rules apply with `:compile-threads` and `--jobs`.
+Expansions while compiling compiler-owned bundled libraries do not count against `:macro-expansions` or `:macro-nodes`; they remain subject to the nesting depth limit, timeout, memory limit, and poll budget. A namespace of the same name provided under `:source-paths` is user source and is charged normally. The same memory rules apply with `:compile-threads` and `--jobs`.
 [Parallel compilation](compiler-concurrency.md#parallel-compilation)
 
 Shadow-cljs's other compiler options (`:infer-externs`, `:externs`,
