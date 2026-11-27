@@ -4,10 +4,11 @@
 //
 // The small examples show one feature each, log through js/console.log and
 // end in a number or string, so that the emitted JavaScript holds little
-// beyond the feature; only "Printing", "Unit tests" and the calculator call
-// (enable-console-print!). At --optimize advanced a program that never prints
-// embeds no printer, so a collection as its final value has no toString and
-// the page shows [object Object]; check.mjs allows that at advanced only.
+// beyond the feature; only "Printing", "Unit tests", "Pretty printing" and the
+// calculator call (enable-console-print!). At --optimize advanced a program
+// that never prints embeds no printer, so a collection as its final value has
+// no toString and the page shows [object Object]; check.mjs allows that at
+// advanced only.
 
 export const EXAMPLES = [
   {
@@ -285,6 +286,41 @@ data
 
 (let [{:keys [test pass fail error]} @summary]
   (str test " tests, " pass " passed, " (+ fail error) " failed"))
+`,
+      },
+    ],
+  },
+  {
+    id: "pprint",
+    title: "Pretty printing with cljs.pprint",
+    entry: "demo.pprint",
+    expect: "light-cljs is third (XIV)",
+    files: [
+      {
+        path: "demo/pprint.cljs",
+        source: `(ns demo.pprint
+  (:require [cljs.pprint :as pp :refer [pprint cl-format print-table with-pprint-dispatch]]))
+
+;; The bundled cljs.pprint (also required as clojure.pprint) prints via
+;; *print-fn*, so enable console printing for pprint and print-table.
+(enable-console-print!)
+
+(binding [pp/*print-right-margin* 36]
+  (pprint {:compiler "light-cljs"
+           :levels [:none :prepare :advanced]
+           :counts (vec (range 12))}))
+
+(print-table [:name :kind]
+             [{:name "pprint" :kind :data}
+              {:name "cl-format" :kind :format}
+              {:name "code-dispatch" :kind :code}])
+
+(with-pprint-dispatch pp/code-dispatch
+  (pprint '(defn greet [who]
+             (let [msg (str "Hello, " who)]
+               (if (seq who) msg "Hello!")))))
+
+(cl-format nil "~a is ~:r (~@r)" "light-cljs" 3 14)
 `,
       },
     ],

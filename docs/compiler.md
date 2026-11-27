@@ -986,7 +986,7 @@ including collection splicing, before dependency discovery. `.cljs` and standalo
 ## Compiler-owned standard libraries and stream reading
 
 `clojure.string`, `clojure.set`, `clojure.walk`, `clojure.template`, `cljs.reader`,
-`clojure.edn`, `cljs.test`, `light.lazy` and `light.build` are embedded first-party sources (`src/compiler_libraries/`) compiled by the
+`clojure.edn`, `cljs.test`, `cljs.pprint`, `light.lazy` and `light.build` are embedded first-party sources (`src/compiler_libraries/`) compiled by the
 ordinary namespace resolver. Explicit source roots take precedence, as for other
 namespaces. Runtime imports, aliases, refers and unmarked macro helpers use the
 same sources and JavaScript runtime.
@@ -1058,6 +1058,36 @@ top-level `(defmethod cljs.test/assert-expr ...)` analyzed before the `is`
 call, in a namespace the test namespace requires or earlier in the same one,
 extends it; a method declared after the call or added by code that runs only in
 the application does not.
+
+`cljs.pprint` (`src/compiler_libraries/cljs/pprint.cljs`, adapted from upstream's
+`cljs/pprint.cljs` and `cljs/pprint.cljc`) holds the runtime and macros in one
+source, and a `clojure.pprint` require loads it through the `clojure.*` fallback
+above. It exposes `pprint`, `write`, `write-out`, `cl-format`, `print-table`,
+`pprint-newline`, `pprint-indent`, `pprint-tab` (which throws "not yet
+implemented", as upstream), `set-pprint-dispatch`, `get-pretty-writer`,
+`fresh-line`, `float?`, `char-code`, `simple-dispatch`, `code-dispatch`, the
+macros `pprint-logical-block`, `print-length-loop`, `formatter`, `formatter-out`,
+`with-pprint-dispatch` and `pp`, and the dynamic printer control Vars
+(`*print-pretty*`, `*print-pprint-dispatch*`, `*print-right-margin*`,
+`*print-miser-width*`, `*print-lines*`, `*print-circle*`, `*print-shared*`,
+`*print-suppress-namespaces*`, `*print-radix*`, `*print-base*`), binding
+`cljs.core/*out*` and printing through `*print-fn*` (so compiled programs need
+`enable-console-print!` or a bound `*print-fn*` when not printing to a string or
+explicit writer). Departures from upstream ClojureScript:
+
+- Macros live in the same namespace and load through ordinary `:require` rather
+  than `:require-macros` or `:refer-macros`.
+- `print-length-loop` counts iterations in a local `volatile!` cell instead of
+  macroexpanding its body to rewrite `recur`, so it needs no compile-time
+  `macroexpand` service and still truncates at `*print-length*` when `recur`
+  appears inside a nested macro call.
+- The identity number in `#<Atom@N: ...>` (and other `IDeref` values printed
+  under `code-dispatch`) is assigned on first use by a per-program `WeakMap`
+  counter instead of `goog/getUid`.
+- Upstream's private record-defining helper macro is kept private under a
+  non-shadowing name rather than exported as `cljs.pprint/deftype`, and the
+  Closure Library string/buffer helpers and private `lift-ns` are replaced by
+  small private helpers in the same file.
 
 **Dialect difference:** `clojure.string` follows the documented contracts where
 the pinned upstream implementation has JavaScript-level quirks:
