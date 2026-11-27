@@ -4154,3 +4154,59 @@ fn a_browser_test_page_runs_the_tests_again_after_a_reload() {
     );
     assert!(watch.child.try_wait().unwrap().is_none());
 }
+
+#[cfg(light_v8)]
+/// `--watch` builds a project requiring `cljs.pprint` with default limits, and
+/// editing a namespace that calls `pprint` recompiles only that namespace and
+/// reloads its updated pretty-printed output.
+#[test]
+fn watch_recompiles_a_namespace_calling_pprint() {
+    let view_v1 = "(ns app.view\n\
+                     (:require [app.macros :refer [labeled]]\n\
+                               [app.state :as state]\n\
+                               [cljs.pprint :as pp]))\n\
+                   (defprotocol Describe (describe [this]))\n\
+                   (defrecord Card [label clicks])\n\
+                   (extend-protocol Describe\n\
+                     Card\n\
+                     (describe [card]\n\
+                       (pp/write (sorted-map :label (:label card) :clicks (:clicks card))\n\
+                                 :stream nil\n\
+                                 :right-margin 20)))\n\
+                   (defn render []\n\
+                     (let [card (->Card \"clicks\" (:clicks @state/state))]\n\
+                       (swap! state/state assoc :card card)\n\
+                       (js/console.log (describe card))))\n";
+    let mut watch = Watch::start_with("dev-watch-cljs-pprint", |src| {
+        fs::write(src.join("app/view.cljs"), view_v1).unwrap();
+    });
+    assert!(
+        !watch.startup.iter().any(|line| line.contains("WARNING")),
+        "unexpected startup warnings: {:#?}",
+        watch.startup
+    );
+
+    let view_v2 = view_v1.replace(
+        "(pp/write (sorted-map :label (:label card) :clicks (:clicks card))\n\
+                                 :stream nil\n\
+                                 :right-margin 20)",
+        "(pp/cl-format nil \"~a=~:r\" (:label card) (:clicks card))",
+    );
+    let (lines, step) = watch.save("app/view.cljs", &view_v2);
+    assert!(
+        lines.is_empty(),
+        "unexpected warnings on pprint reload: {lines:#?}"
+    );
+    assert!(
+        step.starts_with("light-cljs: recompiled app.view in "),
+        "{step}"
+    );
+
+    assert_eq!(
+        watch.reload(&["app.view.js"]),
+        record("start\n{:clicks 1,\n :label \"clicks\"}\nreloading\nclicks=second\n")
+    );
+    let [now, fresh] = watch.now_and_fresh();
+    assert_eq!(now, record("start\nclicks=first\n"));
+    assert_eq!(now, fresh);
+}

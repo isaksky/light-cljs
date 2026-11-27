@@ -1273,3 +1273,32 @@ fn repl_defines_and_runs_cljs_tests() {
         "{:test 1, :pass 1, :fail 1, :error 0}"
     );
 }
+
+#[cfg(light_v8)]
+/// In a watch's REPL, `clojure.pprint` and `cljs.pprint` both load the bundled
+/// library, `cl-format` runs in the connected runtime, and `(pp)` pretty-prints
+/// `*1`.
+#[test]
+fn repl_requires_cljs_pprint_and_pp_prints_star_1() {
+    let watch = Watch::start("dev-repl-cljs-pprint");
+    let _runtime = watch.runtime();
+    let mut repl = watch.repl(&[]);
+    assert_eq!(
+        repl.value(
+            "(require '[clojure.pprint :as pp :refer [pp cl-format]] '[cljs.pprint :as cp])"
+        ),
+        "nil"
+    );
+    assert_eq!(
+        repl.value("[(cl-format nil \"~a is ~:r\" \"Bob\" 3) (cp/cl-format nil \"~@r\" 14)]"),
+        "[\"Bob is third\" \"XIV\"]"
+    );
+    assert_eq!(
+        repl.value("(sorted-map :alpha [1 2 3] :beta [4 5 6])"),
+        "{:alpha [1 2 3], :beta [4 5 6]}"
+    );
+    assert_eq!(
+        repl.value("(with-out-str (binding [pp/*print-right-margin* 20] (pp)))"),
+        "\"{:alpha [1 2 3],\\n :beta [4 5 6]}\\n\""
+    );
+}

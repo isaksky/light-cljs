@@ -437,3 +437,190 @@ fn clojure_pprint_fallback_and_private_surface() {
         );
     }
 }
+
+fn stats_value(stderr: &str, key: &str) -> String {
+    stderr
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{key} ")))
+        .unwrap_or_else(|| panic!("no {key} in {stderr}"))
+        .to_owned()
+}
+
+#[test]
+fn cached_build_and_macro_time_cl_format() {
+    let dir = TempDir::new("cljs-pprint-cache");
+    let root = dir.join("src");
+    write_file(
+        &root,
+        "app/macros.cljs",
+        "(ns app.macros (:require [cljs.pprint :as pp]))\n\
+         (defmacro formatted-const [label n]\n\
+           (pp/cl-format nil \"~a:~:r\" label n))",
+    );
+    write_file(
+        &root,
+        "app/main.cljs",
+        "(ns app.main\n\
+           (:require [app.macros :refer [formatted-const]]\n\
+                     [cljs.pprint :as pp :refer [pprint]]))\n\
+         (enable-console-print!)\n\
+         (println (formatted-const \"rank\" 3))\n\
+         (binding [pp/*print-right-margin* 15]\n\
+           (pprint (sorted-map :a 1 :b [2 3 4])))",
+    );
+    let root_text = root.to_str().unwrap();
+    // `pprint` appends a trailing newline before passing the string to
+    // `*print-fn*`, and `enable-console-print!` routes `*print-fn*` to
+    // `console.log`, which adds its own newline.
+    let expected = "rank:third\n{:a 1,\n :b [2 3 4]}\n\n";
+    let uncached = stdout(light_cljs(
+        dir.path(),
+        &[
+            "--compile",
+            "--entry",
+            "app.main",
+            "--source-root",
+            root_text,
+            "--no-cache",
+        ],
+        "",
+    ));
+    assert_eq!(run_node(&uncached), expected);
+
+    let cache = dir.join("cache");
+    let cached = || {
+        let output = light_cljs(
+            dir.path(),
+            &[
+                "--compile",
+                "--entry",
+                "app.main",
+                "--source-root",
+                root_text,
+                "--cache-dir",
+                cache.to_str().unwrap(),
+                "--stats",
+            ],
+            "",
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        (
+            stdout(output),
+            stats_value(&stderr, "cache.install.namespaces"),
+        )
+    };
+    // Cold cache builds and stores clojure.string, cljs.pprint, app.macros, app.main.
+    let (first_js, first_installed) = cached();
+    assert_eq!(first_installed, "0");
+    assert_eq!(first_js, uncached);
+    // Warm cache installs all four namespaces without re-running cljs.pprint's macros.
+    let (second_js, second_installed) = cached();
+    assert_eq!(second_installed, "4");
+    assert_eq!(second_js, uncached);
+
+    // Editing app.main re-expands formatted-const using cached cljs.pprint and app.macros.
+    write_file(
+        &root,
+        "app/main.cljs",
+        "(ns app.main\n\
+           (:require [app.macros :refer [formatted-const]]\n\
+                     [cljs.pprint :as pp :refer [pprint]]))\n\
+         (enable-console-print!)\n\
+         (println (formatted-const \"item\" 2))\n\
+         (pprint {:ok true})",
+    );
+    let (third_js, third_installed) = cached();
+    assert_eq!(third_installed, "3");
+    assert_eq!(run_node(&third_js), "item:second\n{:ok true}\n\n");
+}
+
+#[test]
+fn eval_and_repl_pprint_and_pp() {
+    let dir = TempDir::new("cljs-pprint-eval-repl");
+    let eval_code = "(require '[cljs.pprint :as pp :refer [pprint cl-format print-table with-pprint-dispatch code-dispatch]]\n\
+                              '[clojure.pprint :as cpp])\n\
+        [(with-out-str (binding [pp/*print-right-margin* 14] (pprint {:a 1 :b [2 3]})))\n\
+         (cpp/cl-format nil \"~a is ~:r\" \"Bob\" 3)\n\
+         (with-out-str (print-table [:k :v] [{:k :x :v 1}]))\n\
+         (with-out-str (with-pprint-dispatch code-dispatch (pprint '(defn f [x] (inc x)))))]";
+    assert_eq!(
+        stdout(light_cljs(dir.path(), &["--eval", "--text", eval_code], "")),
+        "[\"{:a 1,\\n :b [2 3]}\\n\" \"Bob is third\" \"\\n| :k | :v |\\n|----+----|\\n| :x |  1 |\\n\" \"(defn f [x] (inc x))\\n\"]\n"
+    );
+
+    let repl_input = "(require '[cljs.pprint :as pp :refer [pp cl-format]] '[clojure.pprint :as cpp])\n\
+                      (sorted-map :alpha [1 2 3] :beta [4 5 6])\n\
+                      (binding [pp/*print-right-margin* 20] (pp))\n\
+                      (cpp/cl-format nil \"~@r\" 9)\n";
+    let repl_out = light_cljs(dir.path(), &["--repl"], repl_input);
+    assert!(
+        repl_out.stderr.is_empty(),
+        "unexpected REPL stderr:\n{}",
+        String::from_utf8_lossy(&repl_out.stderr)
+    );
+    assert_eq!(
+        stdout(repl_out),
+        "nil\n\
+         {:alpha [1 2 3], :beta [4 5 6]}\n\
+         {:alpha [1 2 3],\n \
+         :beta [4 5 6]}\n\
+         nil\n\
+         \"IX\"\n"
+    );
+}
+
+#[test]
+fn an_explicit_source_root_overrides_bundled_cljs_pprint() {
+    let dir = TempDir::new("cljs-pprint-override");
+    let root = dir.join("src");
+    write_file(
+        &root,
+        "cljs/pprint.cljs",
+        "(ns cljs.pprint)\n\
+         (defn pprint [x] (println (str \"user-pprint:\" x)))\n\
+         (defn cl-format [_ fmt & args] (str \"user-fmt:\" fmt \":\" (count args)))\n\
+         (defmacro pp [] `(pprint *1))",
+    );
+    let expr = "[(pp/cl-format nil \"~a\" 1 2) (clojure.pprint/cl-format nil \"~d\" 3) (with-out-str (pp/pprint :ok))]";
+    write_file(
+        &root,
+        "app/main.cljs",
+        &format!(
+            "(ns app.main (:require [cljs.pprint :as pp] [clojure.pprint]))\n\
+             (js/console.log (pr-str {expr}))"
+        ),
+    );
+    let root_text = root.to_str().unwrap();
+    let expected = "[\"user-fmt:~a:2\" \"user-fmt:~d:1\" \"user-pprint::ok\\n\"]\n";
+    let js = stdout(light_cljs(
+        dir.path(),
+        &[
+            "--compile",
+            "--entry",
+            "app.main",
+            "--source-root",
+            root_text,
+            "--no-cache",
+        ],
+        "",
+    ));
+    assert_eq!(run_node(&js), expected);
+
+    for mode in ["--eval", "--repl"] {
+        let input = format!("(require '[cljs.pprint :as pp] '[clojure.pprint])\n{expr}\n");
+        let expected_mode = if mode == "--eval" {
+            expected.to_owned()
+        } else {
+            format!("nil\n{expected}")
+        };
+        assert_eq!(
+            stdout(light_cljs(
+                dir.path(),
+                &[mode, "--source-root", root_text],
+                &input
+            )),
+            expected_mode,
+            "{mode}"
+        );
+    }
+}
