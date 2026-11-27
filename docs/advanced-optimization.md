@@ -1087,8 +1087,15 @@ and `Prepare` output does not change.
   - Positional, map and `new` constructors of program types build instances
     of their type.
   - A global that is defined once and never assigned has its `def` site's
-    type. A later top-level form reads the initializer's type; every other
-    read may see `nil` first.
+    type. For `def`, bare uninitialized declarations (`declare` and `(def g)`
+    without `:test` or `defonce`) do not count against a single initialized
+    `def` of the same global because they write nothing at run time, and a
+    global with only a single bare declaration keeps `nil`; `deftype` and
+    `defprotocol` still require no `declare` on their globals, because their
+    callers (`core_protocols`, `stable_protocol`, `extend-type`,
+    `rta::devirtualize`) assume no earlier form can observe them before
+    definition (light-cljs-1175). A later top-level form reads the
+    initializer's type; every other read may see `nil` first.
   - Locals bound by `let`, `loop` and `letfn` join their initializer and
     their `recur` arguments. The parameters of closed functions join the
     arguments of their calls and their method's `recur` arguments (229).
@@ -2917,10 +2924,13 @@ shapes below.
     every call, so a method that none of them selects gets no entry and no
     `let` (`CallShapes::entry_used`); Closure drops such an arity because
     nothing reads its collapsed property. And the `Inert` removal treats an
-    alias, `(def f other/g)` where an earlier top-level `def` of a `fn`
-    literal defines `other/g` once and nothing assigns it, as inert: nothing
-    can tell whether it ran, so an unread alias goes, and its function no
-    longer escapes through it. On the generated project (seed 42, 200k
+    alias, `(def f other/g)`, or a pure/allocating call over `other/g` (such
+    as `(def m (memoize other/g))`), where an earlier top-level `def` of a
+    `fn` literal is `other/g`'s sole initialized definition (ignoring bare
+    uninitialized `declare` and `(def g)` forms, since light-cljs-1175),
+    nothing assigns it, and its name is no host path, as inert: nothing can
+    tell whether it ran, so an unread alias or wrapper goes, and its function
+    no longer escapes through it. On the generated project (seed 42, 200k
     lines) unused arities kept at advanced drop from 86 to 49 of 204
     (shadow-cljs keeps 51) and the output from 4,097,518 to 4,040,250
     bytes. A read alias, `apply`, `partial` or any other value use keeps
@@ -3461,9 +3471,11 @@ under `js*` below.
   top-level `deftype` or `defrecord` that runs earlier and is never
   reassigned. Since light-cljs-300 `new MultiFn` as `defmulti` builds it is
   inert too (`Inert::multimethod`): a keyword, `fn` literal, core value or
-  earlier, never assigned function Var as its dispatch, a scalar
-  default, the global hierarchy, whose lazy creation is unobservable, and
-  fresh atoms; a `:hierarchy` or computed dispatch is not. Since
+  earlier, never assigned function Var (whose sole initialized `def` is a `fn`
+  literal, ignoring bare uninitialized `declare`/`(def g)` forms, and whose
+  name is no dotted host path, since light-cljs-1175) as its dispatch, a
+  scalar default, the global hierarchy, whose lazy creation is unobservable,
+  and fresh atoms; a `:hierarchy` or computed dispatch is not. Since
   light-cljs-1161 a `set!` of the `cljs$lang$test` property of a local bound
   to a `fn` literal in the same initializer, with an inert value, is inert
   too: that is how a definition with `:test` metadata (every `deftest`) sets

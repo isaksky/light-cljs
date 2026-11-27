@@ -603,8 +603,8 @@ fn advanced_keeps_initializers_that_may_throw_run_code_or_see_replaced_operation
 #[test]
 fn forward_declared_unsafe_cases_preserve_behaviour_across_namespaces_and_levels() {
     // Reading a forward-declared global before its `defn` runs captures
-    // `undefined`, so calling the memoized wrapper throws `TypeError` at all
-    // levels.
+    // `undefined`, so calling the memoized wrapper or calling `f` directly at
+    // load time throws `TypeError` at all levels.
     both(
         r#"(declare f)
            (def m (memoize f))
@@ -612,6 +612,47 @@ fn forward_declared_unsafe_cases_preserve_behaviour_across_namespaces_and_levels
            (pr-str (try (m 1) (catch js/TypeError _ :type-error)))"#,
         ":type-error\n",
     );
+    both(
+        r#"(declare f)
+           (def x (try (f 1) (catch js/TypeError _ :type-error)))
+           (defn f [y] [:ok y])
+           (pr-str x)"#,
+        ":type-error\n",
+    );
+    // Forward-declared `^:dynamic` var rebound with `binding` still sees the
+    // new value at every level (`binding` marks the global assigned).
+    both(
+        r#"(declare ^:dynamic *x*)
+           (def ^:dynamic *x* 1)
+           (pr-str [(binding [*x* 2] *x*) *x*])"#,
+        "[2 1]\n",
+    );
+    // Non-top-level uninitialized `def` carrying `:test` (`test: Some(_)`)
+    // keeps the global unknown and removes nothing at `advanced`, while
+    // top-level `(declare ^{:test ...} f)` (which attaches no executable test)
+    // matches across all levels.
+    {
+        let p = program(
+            r#"(let [] (def ^{:test (fn [] 1)} f))
+               (defn f [x] ["KEPT_UNINIT_TEST" x])
+               (def m (memoize f))
+               (js/console.log 1)"#,
+        );
+        for level in OptimizationLevel::ALL {
+            let prepared = prepare_application(&p, ApplicationOptions::new(level));
+            assert_eq!(prepared.stats().removed_definitions, 0, "{level}");
+            let js = prepared.emit_js();
+            assert!(js.contains("KEPT_UNINIT_TEST"), "{level}");
+            assert_eq!(execute(&format!("{js};")), "1\n", "{level}");
+        }
+        both(
+            r#"(declare ^{:test (fn [] 1)} f)
+               (defn f [x] ["DECL_TEST_PAYLOAD" x])
+               (def m (memoize f))
+               (pr-str (f 1))"#,
+            "[\"DECL_TEST_PAYLOAD\" 1]\n",
+        );
+    }
     // A `declare` that is never defined keeps `memoize` and its global alive.
     {
         let p = program("(declare f) (def m (memoize f)) (js/console.log 1)");
@@ -736,6 +777,38 @@ fn advanced_removes_forward_declared_function_targets_for_memoize_and_aliases() 
                 baseline.len(),
                 "advanced output should match baseline"
             );
+        }
+    }
+    // Equivalent bare declaration shapes (`declare` + `defonce`, uninitialized
+    // `(def f)`, and multi-name `(declare a f b)`) also drop `f`, `m`, and
+    // `memoize` at `advanced` and match `baseline` output.
+    for (label, variant) in [
+        (
+            "declare-defonce",
+            "(declare f) (defonce f (fn [x] [\"P\" x])) (def m (memoize f)) (js/console.log 1)",
+        ),
+        (
+            "uninit-def",
+            "(def f) (defn f [x] [\"P\" x]) (def m (memoize f)) (js/console.log 1)",
+        ),
+        (
+            "multi-declare",
+            "(declare a f b) (defn f [x] [\"P\" x]) (def m (memoize f)) (js/console.log 1)",
+        ),
+    ] {
+        let vp = program(variant);
+        for level in OptimizationLevel::ALL {
+            let prepared = prepare_application(&vp, ApplicationOptions::new(level));
+            let js = prepared.emit_js();
+            assert_eq!(execute(&format!("{js};")), "1\n", "{label} at {level}");
+            if level.advanced() {
+                assert!(!js.contains("\"P\""), "{label}: {js}");
+                assert_eq!(
+                    js.len(),
+                    baseline.len(),
+                    "{label}: advanced output should match baseline"
+                );
+            }
         }
     }
     // Live calls of the memoized forward-declared function still work at every level.

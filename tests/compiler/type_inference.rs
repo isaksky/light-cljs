@@ -1096,6 +1096,30 @@ fn forward_declared_globals_preserve_inference_soundness() {
     );
     every_level("(def x 1) (def y x) (declare x) (pr-str [x y])", "[1 1]");
     every_level("(declare x) (pr-str x)", "nil");
+    // Textual-before-`defn` function case: `g` calls `f` before `f`'s `defn`
+    // runs, so `r` catches `TypeError` at every level and the `f` read inside
+    // `g` keeps `nil` in its inferred type.
+    let fn_before_defn = "(declare f) (defn g [] (f 1)) (def r (try (g) (catch js/TypeError _ :te))) (defn f [x] x) (pr-str r)";
+    every_level(fn_before_defn, ":te");
+    let app = prepared(fn_before_defn, OptimizationLevel::Advanced);
+    let inference = app.inference().expect("advanced inference");
+    let f_global = GlobalId(
+        app.program()
+            .globals
+            .iter()
+            .position(|g| g.name == "f")
+            .expect("global f"),
+    );
+    let f_read = light_cljs::ExprId(
+        app.program()
+            .exprs
+            .iter()
+            .position(
+                |e| matches!(e.kind, light_cljs::analyzer::ExprKind::Global(g) if g == f_global),
+            )
+            .expect("read of f inside g"),
+    );
+    assert_eq!(inference.ty(f_read), Type::FN.union(Type::NIL));
 }
 
 /// `(defn f0 [x] x) (defn f1 [x] (f0 x)) ... (fN "abc")`, or the same chain in

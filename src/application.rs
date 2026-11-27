@@ -2195,6 +2195,25 @@ mod tests {
             ),
             [0, 0]
         );
+        // Uninitialized `def` carrying an executable `:test` (`test: Some(_)`,
+        // produced for non-top-level `def`) is not a bare declaration, so the
+        // global stays `Definition::Unknown` and `m` is not removed.
+        assert_eq!(
+            removed(
+                "(let [] (def ^{:test (fn [] 1)} f)) (defn f [x] [\"KEPT\" x]) \
+                 (def m (memoize f)) (js/console.log 1)"
+            ),
+            [0, 0]
+        );
+        // `defn` with `:test` metadata wraps its initializer in a `let` that
+        // sets `cljs$lang$test`, not a bare `fn` literal, so `m` stays.
+        assert_eq!(
+            removed(
+                "(declare f) (defn ^{:test (fn [] 1)} f [x] [\"KEPT\" x]) \
+                 (def m (memoize f)) (js/console.log 1)"
+            ),
+            [0, 0]
+        );
     }
     /// Forward-declared globals with a single top-level `fn` definition before
     /// their reader are inert targets for `memoize`, aliases, and `defmulti`
@@ -2206,6 +2225,33 @@ mod tests {
                 "(declare f) (defn f [x] [\"big-dead-payload\" x]) \
                  (def m (memoize f)) (js/console.log 1)"
             ),
+            [0, 3]
+        );
+        // Forward `declare` before `defonce`, uninitialized `(def f)`, and
+        // multi-name `(declare ...)` all allow removing unused `f` and `m`.
+        assert_eq!(
+            removed(
+                "(declare f) (defonce f (fn [x] [\"P\" x])) \
+                 (def m (memoize f)) (js/console.log 1)"
+            ),
+            [0, 3]
+        );
+        assert_eq!(
+            removed("(defonce f (fn [x] [\"P\" x])) (def m (memoize f)) (js/console.log 1)"),
+            [0, 2]
+        );
+        assert_eq!(
+            removed("(def f) (defn f [x] x) (def m (memoize f)) (js/console.log 1)"),
+            [0, 3]
+        );
+        // In `(declare a f b)`, the emitted `Def` names `b` (unused even at
+        // `Prepare`); in `(declare a b f)`, it names `f`.
+        assert_eq!(
+            removed("(declare a f b) (defn f [x] x) (def m (memoize f)) (js/console.log 1)"),
+            [1, 3]
+        );
+        assert_eq!(
+            removed("(declare a b f) (defn f [x] x) (def m (memoize f)) (js/console.log 1)"),
             [0, 3]
         );
         // Repeated `declare` forms before or after the read stay inert.
