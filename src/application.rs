@@ -2809,7 +2809,10 @@ mod tests {
         ] {
             assert_eq!(valid(pattern), expected, "pattern: {pattern:?}");
         }
-        assert!(!valid(&"(".repeat(65)));
+        let nested = |n| format!("{}a{}", "(".repeat(n), ")".repeat(n));
+        assert!(valid(&nested(64)));
+        assert!(!valid(&nested(65)));
+        assert!(valid(&"a".repeat(4096)));
         assert!(!valid(&"a".repeat(4097)));
         assert!(!is_known_valid_js_regex(&[0xD800]));
         assert!(!is_known_valid_js_regex(&[
