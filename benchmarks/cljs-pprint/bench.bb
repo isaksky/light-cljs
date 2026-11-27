@@ -8,8 +8,8 @@
 ;;                                      [--only SCENARIOS]
 ;;
 ;; Scenarios (all run by default; comma-separated for --only):
-;;   dev-compile, dev-load, leaf-cache, uncached-prepare, uncached-release,
-;;   release-load, watch, test
+;;   dev-compile, dev-load, leaf-cache, shadow-warm-jvm, uncached-prepare,
+;;   uncached-release, release-load, watch, test
 ;;
 ;; Never waits for a quiet machine: records the 1-minute load average before
 ;; every run so all figures are labeled unreserved.
@@ -33,8 +33,8 @@
    {:id "pprint-test" :ns "pprint-bench.pprint-test" :file "test/pprint_bench/pprint_test.cljs"}])
 
 (def all-scenarios
-  ["dev-compile" "dev-load" "leaf-cache" "uncached-prepare"
-   "uncached-release" "release-load" "watch" "test"])
+  ["dev-compile" "dev-load" "leaf-cache" "shadow-warm-jvm"
+   "uncached-prepare" "uncached-release" "release-load" "watch" "test"])
 
 (defn log [& parts]
   (binding [*out* *err*]
@@ -284,13 +284,32 @@
             (log (format "  dev-compile r=%d %s %s wall=%.3fs peak=%.1fMB load=%.2f"
                          r (name tool) id (:wall-s sample) (:peak-memory-mb sample) (first (:load sample))))
             (swap! acc update [tool id] (fnil conj []) sample))))
-      ;; Re-write light dev runners so dev-load can run immediately
+      ;; Re-write light dev runners and snapshot distinct shadow dev entries
+      ;; so dev-load never collides with release's shared :output-to path.
       (doseq [{:keys [id]} twin-programs]
-        (write-light-dev-runner! (fs/path here (str "out/bench-dev-" id))))
+        (write-light-dev-runner! (fs/path here (str "out/bench-dev-" id)))
+        (fs/copy (fs/path here (str "out/shadow-" id ".js"))
+                 (fs/path here (str "out/shadow-" id "-dev-entry.js"))
+                 {:replace-existing true}))
       (into {} (for [[k v] @acc] [k (summarize v)])))))
 
-(defn run-dev-load [runs]
+(defn ensure-dev-outputs! [bin]
+  (let [cache-dir (str (fs/path here "out/.bench-cache-dev"))]
+    (doseq [{:keys [id ns]} twin-programs]
+      (let [out-dir (str (fs/path here (str "out/bench-dev-" id)))]
+        (fs/delete-tree out-dir)
+        (sh! {} bin "--compile" "--reloadable" "--entry" ns "--source-root" "src"
+             "--cache-dir" cache-dir "--out-dir" out-dir)
+        (write-light-dev-runner! out-dir))
+      (sh! {} "clojure" "-M:shadow" "compile" id)
+      (fs/copy (fs/path here (str "out/shadow-" id ".js"))
+               (fs/path here (str "out/shadow-" id "-dev-entry.js"))
+               {:replace-existing true}))))
+
+(defn run-dev-load [bin runs built-dev?]
   (log "== Scenario: dev build load in Node (first output)")
+  (when-not built-dev?
+    (ensure-dev-outputs! bin))
   (let [acc (atom {})
         outputs (atom {})]
     (doseq [r (range runs)
@@ -299,7 +318,7 @@
       (doseq [tool tools {:keys [id]} progs]
         (let [cmd (case tool
                     :light ["node" (str (fs/path here (str "out/bench-dev-" id "/run.cjs")))]
-                    :shadow ["node" (str (fs/path here (str "out/shadow-" id ".js")))])
+                    :shadow ["node" (str (fs/path here (str "out/shadow-" id "-dev-entry.js")))])
               {:keys [sample out]} (timed-streaming here cmd)]
           (if-let [prev (get @outputs id)]
             (when-not (= prev out)
@@ -360,6 +379,57 @@
           {:results (into {} (for [[k v] @acc] [k (summarize v)]))
            :stats @last-stats})))))
 
+(defn run-shadow-warm-jvm [runs]
+  (log "== Scenario: shadow-cljs compile in one resident JVM (unchanged and one-file edit)")
+  (let [files (mapv #(str (fs/path here (:file %))) twin-programs)
+        parse-rows (fn [out]
+                     (let [acc (atom {})]
+                       (doseq [[_ mode id wall cpu load]
+                               (re-seq #"WARM_RUN (\S+) (\S+) ([0-9.E+-]+) ([0-9.E+-]+) ([0-9.E+-]+)" out)]
+                         (swap! acc update [(keyword mode) id] (fnil conj [])
+                                {:wall-s (parse-double wall)
+                                 :cpu-s (parse-double cpu)
+                                 :load [(parse-double load) 0.0 0.0]}))
+                       (into {} (for [[k v] @acc] [k (summarize v)]))))]
+    (with-all-restored files
+      (fn [originals]
+        (let [prn-file (first files)
+              pp-file (second files)
+              form (str "(require '[shadow.cljs.devtools.api :as api])"
+                        "(let [os (java.lang.management.ManagementFactory/getOperatingSystemMXBean)"
+                        "      prn-file " (pr-str prn-file)
+                        "      pp-file " (pr-str pp-file)
+                        "      prn-orig (slurp prn-file)"
+                        "      pp-orig (slurp pp-file)"
+                        "      measure (fn [mode id kw]"
+                        "                (let [load (.getSystemLoadAverage os)"
+                        "                      t0 (System/nanoTime)"
+                        "                      c0 (.getProcessCpuTime os)]"
+                        "                  (api/compile kw)"
+                        "                  (println \"WARM_RUN\" mode id"
+                        "                           (/ (- (System/nanoTime) t0) 1e9)"
+                        "                           (/ (- (.getProcessCpuTime os) c0) 1e9)"
+                        "                           load)))]"
+                        "  (dotimes [_ 3]"
+                        "    (api/compile :prn)"
+                        "    (api/compile :pprint-only))"
+                        "  (dotimes [r " runs "]"
+                        "    (doseq [[id kw] (if (even? r) [[\"prn\" :prn] [\"pprint-only\" :pprint-only]]"
+                        "                                    [[\"pprint-only\" :pprint-only] [\"prn\" :prn]])]"
+                        "      (measure \"unchanged\" id kw)))"
+                        "  (dotimes [r " runs "]"
+                        "    (spit prn-file (str prn-orig \"\\n(def warm-jvm-edit-\" r \" \" r \")\\n\"))"
+                        "    (spit pp-file (str pp-orig \"\\n(def warm-jvm-edit-\" r \" \" r \")\\n\"))"
+                        "    (doseq [[id kw] (if (even? r) [[\"prn\" :prn] [\"pprint-only\" :pprint-only]]"
+                        "                                    [[\"pprint-only\" :pprint-only] [\"prn\" :prn]])]"
+                        "      (measure \"leaf\" id kw))))")
+              {:keys [sample out]} (timed-run here ["clojure" "-M:shadow" "clj-eval" form])
+              rows (parse-rows out)]
+          (doseq [[k s] (sort-by str rows)]
+            (log (format "  shadow-warm-jvm %s wall=%s cpu=%s"
+                         (pr-str k) (fmt-ms (:wall-s s)) (fmt-ms (:cpu-s s)))))
+          {:results rows :process sample})))))
+
 (defn run-uncached-prepare [bin runs]
   (log "== Scenario: uncached --compile --optimize prepare (--no-cache --stats)")
   (let [progs (conj (mapv #(assoc % :root "src") twin-programs)
@@ -401,6 +471,10 @@
           (when (= tool :light)
             (write-light-adv-runner! out-dir ns)
             (swap! last-stats assoc id stats-raw))
+          (when (= tool :shadow)
+            (fs/copy (fs/path here (str "out/shadow-" id ".js"))
+                     (fs/path here (str "out/shadow-" id "-release.js"))
+                     {:replace-existing true}))
           (log (format "  uncached-release r=%d %s %s wall=%.3fs peak=%.1fMB load=%.2f"
                        r (name tool) id (:wall-s sample) (:peak-memory-mb sample) (first (:load sample))))
           (swap! acc update [tool id] (fnil conj []) sample))))
@@ -417,8 +491,23 @@
     {:results (into {} (for [[k v] @acc] [k (summarize v)]))
      :stats @last-stats}))
 
-(defn run-release-load [runs]
+(defn ensure-release-outputs! [bin]
+  (doseq [{:keys [id ns]} twin-programs]
+    (let [out-dir (str (fs/path here (str "out/bench-adv-" id)))]
+      (fs/delete-tree out-dir)
+      (sh! {} bin "--compile" "--optimize" "advanced" "--entry" ns
+           "--source-root" "src" "--no-cache" "--out-dir" out-dir)
+      (write-light-adv-runner! out-dir ns))
+    (fs/delete-if-exists (fs/path here (str "out/shadow-" id ".js")))
+    (sh! {} "clojure" "-M:shadow" "release" id)
+    (fs/copy (fs/path here (str "out/shadow-" id ".js"))
+             (fs/path here (str "out/shadow-" id "-release.js"))
+             {:replace-existing true})))
+
+(defn run-release-load [bin runs built-release?]
   (log "== Scenario: advanced/release build load in Node (first output)")
+  (when-not built-release?
+    (ensure-release-outputs! bin))
   (let [acc (atom {})
         outputs (atom {})]
     (doseq [r (range runs)
@@ -427,7 +516,7 @@
       (doseq [tool tools {:keys [id]} progs]
         (let [cmd (case tool
                     :light ["node" (str (fs/path here (str "out/bench-adv-" id "/run.mjs")))]
-                    :shadow ["node" (str (fs/path here (str "out/shadow-" id ".js")))])
+                    :shadow ["node" (str (fs/path here (str "out/shadow-" id "-release.js")))])
               {:keys [sample out]} (timed-streaming here cmd)]
           (if-let [prev (get @outputs id)]
             (when-not (= prev out)
@@ -554,7 +643,7 @@
           (swap! acc update [:cached id] (fnil conj []) sample))))
     (into {} (for [[k v] @acc] [k (summarize v)]))))
 
-(defn print-summary [{:keys [environment runs dev-compile dev-load leaf-cache
+(defn print-summary [{:keys [environment runs dev-compile dev-load leaf-cache shadow-warm-jvm
                              uncached-prepare uncached-release release-load watch test]}]
   (println "\n=== Environment ===")
   (pp/pprint environment)
@@ -601,6 +690,16 @@
       (println (format "| `%s` | %s | %s | %s | %s | %s |"
                        id label (fmt-s (:wall-s s)) (fmt-s (:cpu-s s))
                        (fmt-mb (:peak-memory-mb s)) (fmt-load (:load-1m s))))))
+  (when shadow-warm-jvm
+    (println "\n### shadow-cljs compile in one resident JVM (shadow.cljs.devtools.api/compile, no JVM startup)")
+    (println (format "Resident JVM peak memory: %.1f MB" (get-in shadow-warm-jvm [:process :peak-memory-mb])))
+    (println "| Mode | Program | Wall time | JVM CPU | Load 1m |")
+    (println "|---|---|---:|---:|---:|")
+    (doseq [[mode label] [[:unchanged "unchanged"] [:leaf "one-file edit"]]
+            id ["prn" "pprint-only"]
+            :let [s (get-in shadow-warm-jvm [:results [mode id]])] :when s]
+      (println (format "| %s | `%s` | %s | %s | %s |"
+                       label id (fmt-ms (:wall-s s)) (fmt-ms (:cpu-s s)) (fmt-load (:load-1m s))))))
   (when watch
     (println "\n### light-cljs --watch step after editing calling namespace (library not recompiled)")
     (println "| Program | Compiler step | Edit-to-log | Watch peak memory | Load 1m |")
@@ -651,11 +750,12 @@
         env (environment bin opts)
         results (cond-> {:environment env :runs runs}
                   (only "dev-compile")      (assoc :dev-compile (run-dev-compile bin runs))
-                  (only "dev-load")         (assoc :dev-load (run-dev-load runs))
+                  (only "dev-load")         (assoc :dev-load (run-dev-load bin runs (boolean (only "dev-compile"))))
                   (only "leaf-cache")       (assoc :leaf-cache (run-leaf-cache bin runs))
+                  (only "shadow-warm-jvm")  (assoc :shadow-warm-jvm (run-shadow-warm-jvm runs))
                   (only "uncached-prepare") (assoc :uncached-prepare (run-uncached-prepare bin runs))
                   (only "uncached-release") (assoc :uncached-release (run-uncached-release bin runs))
-                  (only "release-load")     (assoc :release-load (run-release-load runs))
+                  (only "release-load")     (assoc :release-load (run-release-load bin runs (boolean (only "uncached-release"))))
                   (only "watch")            (assoc :watch (run-watch bin runs))
                   (only "test")             (assoc :test (run-test-cmd bin runs)))]
     (when-let [out (:out opts)]
