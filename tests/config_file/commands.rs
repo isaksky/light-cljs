@@ -744,6 +744,143 @@ fn release_elides_asserts_unless_elide_asserts_is_false() {
     assert!(holds_assert(tree(&project.join("out/other"))));
 }
 
+/// A project whose application namespace holds a `deftest` next to its
+/// code and runs its tests, so that every optimization level keeps a test
+/// that is defined: build `app` of light-cljs.edn, and `app.core` under
+/// `src` for the flag-only command.
+fn load_tests_project() -> (TempDir, PathBuf) {
+    let dir = TempDir::new("config-commands-load-tests");
+    let project = light_cljs::canonical_path::canonicalize(&*dir)
+        .unwrap()
+        .join("project");
+    fs::create_dir_all(project.join("src/app")).unwrap();
+    fs::write(
+        project.join("light-cljs.edn"),
+        "{:source-paths [\"src\"]\n :builds {:app {:target :esm :output-dir \"out/app\"\n \
+         :modules {:main {:entries [app.core]}}}}}\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("src/app/core.cljs"),
+        "(ns app.core (:require [cljs.test :refer [deftest is run-tests]]))\n\
+         (defn double-it [x] (* 2 x))\n\
+         (deftest colocated-test (is (= 4 (double-it 2)) \"colocated-test-marker\"))\n\
+         (run-tests)\n\
+         (def tests-defined (exists? app.core/colocated-test))\n",
+    )
+    .unwrap();
+    (dir, project)
+}
+
+/// Whether the files of `dir` hold the co-located test.
+fn holds_test(dir: &Path) -> bool {
+    let text: Vec<u8> = tree(dir).into_iter().flat_map(|(_, bytes)| bytes).collect();
+    String::from_utf8_lossy(&text).contains("colocated-test-marker")
+}
+
+/// `release` omits `deftest` forms by default, as shadow-cljs's release mode
+/// (`:load-tests false`) does, at every `:optimizations`, and keeps them with
+/// `:compiler-options {:load-tests true}` or `--load-tests`; `compile` keeps
+/// them unless `{:load-tests false}` or `--no-load-tests`. The builds share
+/// the default persistent cache, so toggling the option in either direction
+/// recompiles rather than installing the other setting's artifacts.
+#[test]
+fn release_omits_deftests_unless_load_tests_is_true() {
+    let (_dir, project) = load_tests_project();
+    let out = project.join("out/app");
+    let built = |args: &[&str]| {
+        let _ = fs::remove_dir_all(&out);
+        succeeds(&project, args);
+        holds_test(&out)
+    };
+    let load = ["--config-merge", "{:compiler-options {:load-tests true}}"];
+    let skip = ["--config-merge", "{:compiler-options {:load-tests false}}"];
+    for base in [
+        &["release", "app"][..],
+        &["release", "app", "--optimize", "none"],
+    ] {
+        assert!(!built(base), "{base:?}");
+        assert!(built(&[base, &load].concat()), "{base:?}");
+        assert!(built(&[base, &["--load-tests"]].concat()), "{base:?}");
+        assert!(!built(base), "{base:?} after loading tests");
+        assert!(
+            !built(&[base, &load, &["--no-load-tests"]].concat()),
+            "{base:?}"
+        );
+    }
+    let base = ["compile", "app"];
+    assert!(built(&base));
+    assert!(!built(&[&base[..], &skip].concat()));
+    assert!(!built(&[&base[..], &["--no-load-tests"]].concat()));
+    assert!(built(&base), "compile after omitting tests");
+    assert!(built(&[&base[..], &skip, &["--load-tests"]].concat()));
+
+    // `--print-config` attributes the setting; a watch is a dev build.
+    let printed = |args: &[&str]| {
+        let output = light(&project, &[args, &["--print-config"]].concat());
+        assert!(output.status.success(), "{args:?}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+    for (args, line) in [
+        (
+            &["release", "app", "--load-tests"][..],
+            ":load-tests true}              ; --load-tests, over the release default false",
+        ),
+        (
+            &["watch", "app", "--no-load-tests"],
+            ":load-tests false}             ; --no-load-tests, over the dev default true",
+        ),
+        (
+            &["compile", "app", skip[0], skip[1]],
+            ":load-tests false}             ; --config-merge 1:1:33",
+        ),
+    ] {
+        let text = printed(args);
+        assert!(text.contains(line), "{args:?}: {text}");
+    }
+    for args in [&["release", "app"][..], &["watch", "app"]] {
+        assert!(!printed(args).contains(":load-tests"), "{args:?}");
+    }
+
+    // Flag-only commands, without the file, load tests unless told not to,
+    // with the cache on and toggled both ways.
+    let flagged = |extra: &[&str]| {
+        let output = light(
+            &project,
+            &[
+                &[
+                    "--compile",
+                    "--entry",
+                    "app.core",
+                    "--source-root",
+                    "src",
+                    "--optimize",
+                    "advanced",
+                    "--cache-dir",
+                    "flag-cache",
+                ][..],
+                extra,
+            ]
+            .concat(),
+        );
+        assert!(output.status.success(), "{extra:?}");
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .contains("colocated-test-marker")
+    };
+    assert!(flagged(&[]));
+    assert!(!flagged(&["--no-load-tests"]));
+    assert!(flagged(&[]));
+    assert!(flagged(&["--load-tests"]));
+    assert!(!flagged(&["--load-tests", "--no-load-tests"]));
+    assert!(!flagged(&["--config", "light-cljs/load-tests=false"]));
+    assert!(flagged(&[
+        "--config",
+        "light-cljs/load-tests=false",
+        "--load-tests"
+    ]));
+}
+
 /// The compiler options of a build, given here by `--config-merge` (or
 /// `LIGHT_CLJS` for the top-level `:compile-threads`), reach the build
 /// exactly as their flags do, and a flag after the command wins.

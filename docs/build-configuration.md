@@ -220,7 +220,7 @@ Shadow-cljs's shape, subcommands with build ids:
 |---|---|---|
 | `light-cljs compile ID [ID ...] [FLAGS]` | dev | `--compile --reloadable --entry NS --source-root ... --out-dir DIR` |
 | `light-cljs watch ID [ID ...] [FLAGS]` | dev | `--watch --entry NS --source-root ... --out-dir DIR --serve PORT` |
-| `light-cljs release ID [ID ...] [FLAGS]` | release | `--compile --optimize advanced --elide-asserts --entry NS --source-root ... --out-dir DIR` |
+| `light-cljs release ID [ID ...] [FLAGS]` | release | `--compile --optimize advanced --elide-asserts --no-load-tests --entry NS --source-root ... --out-dir DIR` |
 | `light-cljs cljs-repl ID [FLAGS]` (Phase 3) | - | `--repl --connect 127.0.0.1:PORT`, PORT the running watch's, then `(light.dev/repl :ID)` |
 
 **Why subcommands, not flags.** e05a164 chose `--watch --build app` to fit
@@ -318,6 +318,7 @@ conditional, and no discard that hides a duplicate key.
 | `--pseudo-names` | `:compiler-options {:pseudo-names true}` | build | release (ignored in dev) |
 | `--runtime-key KEY` | `:compiler-options {:runtime-key "KEY"}` | build | release (ignored in dev) |
 | `--elide-asserts` | `:compiler-options {:elide-asserts true}` | build | both (release elides by default; `{:elide-asserts false}` keeps asserts) |
+| `--load-tests`, `--no-load-tests` | `:compiler-options {:load-tests true\|false}` | build | both (release omits tests by default) |
 | `--checked-arrays-warn`, `--checked-arrays-error` | `:compiler-options {:checked-arrays :warn\|:error}` | build | release |
 | `--warnings` | `:compiler-options {:cljs-warnings true}` | build | release (dev implies it) |
 | `--macro-expansions N`, `--macro-nodes N`, `--macro-timeout-ms N`, `--macro-memory-limit N`, `--macro-poll-budget N` | `:compiler-options {:macro-expansions N ...}`, the flag's name as key | build | both |
@@ -444,6 +445,7 @@ only in the file, the commands and messages.
 | `:pseudo-names` | boolean | `false` |
 | `:runtime-key` | nonempty string: derives the release output's runtime key from it as well ("As built (light-cljs-1018)") | unset |
 | `:elide-asserts` | boolean: omit every `assert` and `fn` `:pre`/`:post` check | `true` in release, as shadow-cljs's release mode; `false` in dev. `false` in release keeps asserts |
+| `:load-tests` | boolean: `false` makes every `cljs.test/deftest` expand to `nil`, as upstream's `:load-tests` does, so tests written next to application code define nothing | `false` in release, as shadow-cljs's release mode; `true` in dev. `true` in release keeps tests |
 | `:checked-arrays` | `:warn` or `:error`; implies `:cljs-warnings`, as the flags do | unset |
 | `:cljs-warnings` | boolean: undeclared Vars and conflicting arities are warnings, not errors | `false` in release, implied in dev |
 | `:closure-defines` | as the build key | `{}` |
@@ -484,6 +486,20 @@ after gzip in the re-frame examples (benchmarks/re-frame-vs-shadow.md).
 build, its `:release` map, `LIGHT_CLJS` or a `--config-merge` keeps them.
 Dev builds and the flag CLI (`--compile` at every `--optimize` level) keep
 asserts unless `--elide-asserts` or `:elide-asserts true` says otherwise.
+
+Release mode also omits tests by default, as shadow-cljs's release mode
+does (light-cljs-1162): `:load-tests` defaults to false there, so every
+`cljs.test/deftest` expands to `nil` and a test written next to the code it
+tests adds nothing to the release output. `:compiler-options {:load-tests
+true}` or `--load-tests` keeps them; `{:load-tests false}` or
+`--no-load-tests` omits them from a dev build too, and the flag after the
+command wins over the file. Dev builds and the flag CLI load tests unless
+`--no-load-tests` says otherwise. The setting reaches `deftest` as the
+configuration key `:light-cljs/load-tests`, which `light.build/config`
+answers: it is set, to `false`, only when tests are omitted (or to
+override a `:config` or `--config` that names the key), so a build that
+loads tests keeps the configuration, and the cache keys, of one that never
+names the option.
 
 ### Not in the file
 
@@ -623,6 +639,7 @@ for any flag-only build:
 | Setting | Where it enters | Key component |
 |---|---|---|
 | `:config` | `BuildConfiguration`, `MacroHost::set_build_configuration` | Config: the SHA-256 of the whole map's canonical text, in every namespace's front-end key and the `:config` broad view |
+| `:load-tests` | `BuildConfiguration`, key `:light-cljs/load-tests` when `false` | Config, as `:config` |
 | `:elide-asserts`, `:cljs-warnings`, `:checked-arrays`, dev mode's warning mode | `AnalysisOptions`, `MacroHost::set_assertions` | Options |
 | `:macro-expansions`, `:macro-nodes`, `:macro-memory-limit` | `MacroLimits`, `EvaluatorOptions` | Options (the logical limits and the memory limit) |
 | `:macro-timeout-ms`, `:macro-poll-budget` | `EvaluatorOptions` | None, as for the flags: they stop work, which is never stored |

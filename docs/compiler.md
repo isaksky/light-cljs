@@ -1032,8 +1032,11 @@ general capabilities:
   assertion reports the test's definition; `do-report` reads no JavaScript
   stack, so an event a custom method reports without a location prints none. `:formatter` is `pr-str`, and the `::pprint` reporter is
   the default one until `cljs.pprint` is bundled.
-- `deftest` defines a function that calls `(test-var (var name))`; every
-  `deftest` is compiled, since there is no `:load-tests` option yet.
+- `deftest` defines a function that calls `(test-var (var name))`. When
+  `(light.build/config :light-cljs/load-tests)` is `false`, which
+  `:compiler-options {:load-tests false}`, `--no-load-tests` and `release`'s
+  default set (docs/build-configuration.md), `deftest` expands to `nil`, as
+  upstream's does when `:load-tests` is false.
 
 Reports print with `println`, so a compiled program needs a print function
 such as `enable-console-print!`, which light-cljs does not install by itself

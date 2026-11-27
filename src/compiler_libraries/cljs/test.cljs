@@ -609,24 +609,28 @@
 
   Note: Actually, the test body goes in the :test metadata on the var,
   and the real function (the value of the var) calls test-var on
-  itself."
+  itself.
+
+  When the build's :load-tests is false (release builds' default),
+  deftest expands to nil and defines nothing."
   [name & body]
-  (let [body (if (:async (meta name))
-               (let [done-sym (gensym "done")
-                     e (gensym "e")]
-                 [`(cljs.test/async ~done-sym
-                                    (try ~@body
-                                         (catch :default ~e
-                                           (cljs.test/do-report
-                                            ~(assoc (select-keys &env [:file :line :column])
-                                                    :type :error
-                                                    :message "Uncaught exception, not in assertion."
-                                                    :expected nil
-                                                    :actual e)))
-                                         (finally (~done-sym))))])
-               body)]
-    `(def ~(vary-meta name assoc :test `(fn [] ~@body))
-       (fn [] (cljs.test/test-var (var ~name))))))
+  (when (not= false (build/config :light-cljs/load-tests))
+    (let [body (if (:async (meta name))
+                 (let [done-sym (gensym "done")
+                       e (gensym "e")]
+                   [`(cljs.test/async ~done-sym
+                                      (try ~@body
+                                           (catch :default ~e
+                                             (cljs.test/do-report
+                                              ~(assoc (select-keys &env [:file :line :column])
+                                                      :type :error
+                                                      :message "Uncaught exception, not in assertion."
+                                                      :expected nil
+                                                      :actual e)))
+                                           (finally (~done-sym))))])
+                 body)]
+      `(def ~(vary-meta name assoc :test `(fn [] ~@body))
+         (fn [] (cljs.test/test-var (var ~name)))))))
 
 (defmacro async
   "Wraps body as a CPS function that can be returned from a test to

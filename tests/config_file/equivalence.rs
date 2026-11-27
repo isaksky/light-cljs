@@ -176,8 +176,9 @@ impl Case {
 
     /// The command line the file's build is: `compile` is `--compile
     /// --reloadable`, `release` is `--compile --optimize advanced
-    /// --elide-asserts` (without `--elide-asserts` when the build says
-    /// `:elide-asserts false`), and every path is the project directory
+    /// --elide-asserts --no-load-tests` (without `--elide-asserts` when the
+    /// build says `:elide-asserts false`, and without `--no-load-tests` when
+    /// a flag says `--load-tests`), and every path is the project directory
     /// joined with the file's.
     fn flag_args(&self, project: &Path) -> Vec<String> {
         let at = |path: &str| project.join(path).to_str().unwrap().to_owned();
@@ -202,6 +203,10 @@ impl Case {
             // Release elides asserts by default, as shadow-cljs's does.
             if !given("--elide-asserts") && !self.build.contains(":elide-asserts false") {
                 args.push("--elide-asserts".into());
+            }
+            // and omits deftest forms (`:load-tests false`), as shadow-cljs's does.
+            if !given("--load-tests") {
+                args.push("--no-load-tests".into());
             }
         }
         args.extend(strings(&["--entry", self.entry]));
@@ -503,6 +508,7 @@ fn environment_values_enter_the_key_as_their_values() {
             "--optimize",
             "advanced",
             "--elide-asserts",
+            "--no-load-tests",
             "--entry",
             "app.main",
             "--source-root",
@@ -668,6 +674,7 @@ fn release_features_equals_its_flags() {
         "--optimize",
         "advanced",
         "--elide-asserts",
+        "--no-load-tests",
         "--entry",
         "app.main",
         "--source-root",

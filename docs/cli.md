@@ -22,7 +22,7 @@ Build IDs can be written with or without a leading colon (`features` or `:featur
 ### `compile` and `release`
 
 - **`compile ID [ID ...]`** writes each build's reloadable dev build (equivalent to `--compile --reloadable --out-dir`), in the order named, stopping at the first failure.
-- **`release ID [ID ...]`** writes each build's chunked release build at its configured `:optimizations` (`:advanced` by default, with assertions elided unless `:compiler-options {:elide-asserts false}`), equivalent to `--compile --optimize advanced --out-dir`.
+- **`release ID [ID ...]`** writes each build's chunked release build at its configured `:optimizations` (`:advanced` by default, with assertions elided unless `:compiler-options {:elide-asserts false}` and `deftest` forms omitted unless `:compiler-options {:load-tests true}`), equivalent to `--compile --optimize advanced --out-dir`.
 
 ### `watch`
 
@@ -198,6 +198,7 @@ See [Application preparation](compiler.md#application-preparation).
 | `--size-report` | Prints embedded runtime units (with sizes and first-demanding expressions) and constant-table size to stderr. |
 | `--define ns/NAME=VALUE` | Repeatable. Overrides a `(goog-define NAME default)` Var at every optimization level; dead branches are eliminated at `advanced`. |
 | `--elide-asserts` | Omits all `assert` and `fn` `:pre`/`:post` checks at every level (and binds `*assert*` to `false` during macro expansion). `--define cljs.core/*assert*=false` is rejected. |
+| `--load-tests`, `--no-load-tests` | Whether `cljs.test/deftest` defines its test: `--no-load-tests` makes every `deftest` expand to `nil`, as upstream's `:load-tests false` does. Tests load by default; `release` omits them unless `--load-tests` or `:compiler-options {:load-tests true}`. The last of the two flags wins. |
 | `--config KEY=EDN` | Repeatable (with `--compile --entry`, `--reloadable`, `--watch`). Exposes build config values to macros via `(light.build/config :KEY)`. Keys are written without a leading colon; values are finite EDN literals (no symbols or tagged literals; duplicate keys are an error). See [Compile-time services](compiler.md#compile-time-services-lightbuild). |
 | `--runtime-key KEY` | Derives the build's runtime isolation key from `KEY` so two builds of the same program can coexist on one page. Rejected on dev builds. |
 | `--source-map PATH` | Writes a Source Map v3 to `PATH` (at any `--optimize` level, including `--esm`) and appends `//# sourceMappingURL=`. Maps expressions, macro expansions (to the call site), renamed `advanced` symbols, and runtime frames (`light-cljs/js_runtime.js`). Paths are relative to `PATH`'s directory. |

@@ -233,13 +233,18 @@ impl ConfigFile {
                     Setting::PseudoNames,
                     Setting::RuntimeKey,
                     Setting::ElideAsserts,
+                    Setting::LoadTests,
                     Setting::CljsWarnings,
                 ]
                 .into_iter()
                 .filter_map(given),
             );
         } else {
-            options.extend(given(Setting::ElideAsserts));
+            options.extend(
+                [Setting::ElideAsserts, Setting::LoadTests]
+                    .into_iter()
+                    .filter_map(given),
+            );
         }
         options.extend(
             [

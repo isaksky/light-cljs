@@ -999,6 +999,17 @@ fn apply_flags(
             "--elide-asserts",
         );
     }
+    if let Some(load) = user.load_tests {
+        settings.set_by_flag(
+            Setting::LoadTests,
+            ValueKind::Boolean(load),
+            if load {
+                "--load-tests"
+            } else {
+                "--no-load-tests"
+            },
+        );
+    }
     let limits = &user.macro_limits;
     for (setting, flag, value) in [
         (
@@ -1568,6 +1579,14 @@ fn translate(
             .set(key, value)
             .map_err(|error| format!("--config {key}={value}: {error}"))?;
     }
+    // `:load-tests` reaches `cljs.test/deftest` through the configuration,
+    // false by default in release, as shadow-cljs's release mode.
+    let load_tests = user.load_tests.unwrap_or_else(|| {
+        settings
+            .get(Setting::LoadTests)
+            .map_or(!release, |value| value.kind == ValueKind::Boolean(true))
+    });
+    crate::apply_load_tests(&mut compile.configuration, load_tests);
 
     // `--cache-dir` names the store and turns the cache on over
     // `:cache-level :off`; `--no-cache` turns it off.

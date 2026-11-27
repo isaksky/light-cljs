@@ -137,6 +137,9 @@ pub enum Setting {
     RuntimeKey,
     /// `:compiler-options :elide-asserts`.
     ElideAsserts,
+    /// `:compiler-options :load-tests`: whether `cljs.test/deftest` defines
+    /// its test, as upstream's `:load-tests` (false in release).
+    LoadTests,
     /// `:compiler-options :checked-arrays`.
     CheckedArrays,
     /// `:compiler-options :cljs-warnings`.
@@ -165,7 +168,7 @@ impl Setting {
     pub const COUNT: usize = Self::ALL.len();
 
     /// Every setting, in discriminant order.
-    pub const ALL: [Setting; 31] = [
+    pub const ALL: [Setting; 32] = [
         Self::SourcePaths,
         Self::CacheRoot,
         Self::CacheBlockers,
@@ -186,6 +189,7 @@ impl Setting {
         Self::PseudoNames,
         Self::RuntimeKey,
         Self::ElideAsserts,
+        Self::LoadTests,
         Self::CheckedArrays,
         Self::CljsWarnings,
         Self::CompilerClosureDefines,
@@ -227,6 +231,7 @@ impl Setting {
             Self::PseudoNames => "pseudo-names",
             Self::RuntimeKey => "runtime-key",
             Self::ElideAsserts => "elide-asserts",
+            Self::LoadTests => "load-tests",
             Self::CheckedArrays => "checked-arrays",
             Self::CljsWarnings => "cljs-warnings",
             Self::MacroExpansions => "macro-expansions",
@@ -1386,6 +1391,7 @@ const COMPILER_OPTIONS: Table = &[
         Key::Setting(Setting::CompilerClosureDefines),
     ),
     ("elide-asserts", Key::Setting(Setting::ElideAsserts)),
+    ("load-tests", Key::Setting(Setting::LoadTests)),
     ("macro-expansions", Key::Setting(Setting::MacroExpansions)),
     (
         "macro-memory-limit",
@@ -2132,6 +2138,7 @@ impl Validator {
             Setting::HttpStrict
             | Setting::PseudoNames
             | Setting::ElideAsserts
+            | Setting::LoadTests
             | Setting::CljsWarnings => {
                 expect(matches!(value.kind, ValueKind::Boolean(_)), "true or false")
             }
@@ -2923,7 +2930,10 @@ impl BuildSettings {
     fn over(&self, setting: Setting, lower: &SettingValue) -> String {
         if lower.origin.source == ConfigSource::Default {
             let mode = match setting {
-                Setting::Optimizations | Setting::ElideAsserts | Setting::CljsWarnings => {
+                Setting::Optimizations
+                | Setting::ElideAsserts
+                | Setting::LoadTests
+                | Setting::CljsWarnings => {
                     format!("{} ", self.mode.name())
                 }
                 _ => String::new(),
@@ -3008,8 +3018,8 @@ fn combine(lower: Option<Slot>, upper: Option<Slot>) -> Option<Slot> {
 }
 
 /// Layer 1, the built-in defaults: today's flag defaults, with release's
-/// `:optimizations :advanced` and `:elide-asserts true` (as shadow-cljs's
-/// release mode) and the watch's `:http`, `:fs-watch` and cache
+/// `:optimizations :advanced`, `:elide-asserts true` and `:load-tests false`
+/// (as shadow-cljs's release mode) and the watch's `:http`, `:fs-watch` and cache
 /// root ("Schema"). Dev builds run at none semantics and with ClojureScript's
 /// warnings, so dev's `:optimizations` is `:none` and `:cljs-warnings` true.
 fn defaults(mode: BuildMode) -> Slots {
@@ -3042,6 +3052,7 @@ fn defaults(mode: BuildMode) -> Slots {
         ),
         (Setting::PseudoNames, ValueKind::Boolean(false)),
         (Setting::ElideAsserts, ValueKind::Boolean(release)),
+        (Setting::LoadTests, ValueKind::Boolean(!release)),
         (Setting::CljsWarnings, ValueKind::Boolean(!release)),
         (Setting::MacroExpansions, integer(limits.expansions as u128)),
         (Setting::MacroNodes, integer(limits.generated_nodes as u128)),
