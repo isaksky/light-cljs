@@ -3367,6 +3367,7 @@ fn test_command_reports_a_run_that_waits_on_a_timer() {
     assert!(!ok);
     assert!(stdout.contains("ERROR in (waits)"), "{stdout}");
     assert!(stdout.contains("setTimeout is not defined"), "{stdout}");
+    assert!(stdout.contains("0 failures, 1 errors."), "{stdout}");
     assert!(stderr.contains("tests failed"), "{stderr}");
     // A test that awaits a promise that never settles does not finish.
     write_source(
