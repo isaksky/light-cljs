@@ -2929,7 +2929,7 @@ pub enum AnalysisErrorKind {
     InvalidForm(&'static str),
     InvalidBinding,
     DuplicateParameter(String),
-    NumberOutOfRange,
+    NumberOutOfRange(String),
     MacroExpansion(String),
     /// A `light.lazy/loadable` site whose target is not a defined Var of a
     /// loadable namespace other than the site's own.
@@ -2985,9 +2985,7 @@ impl fmt::Display for AnalysisError {
             AnalysisErrorKind::DuplicateParameter(name) => write!(f, "duplicate parameter: {name}"),
             AnalysisErrorKind::MacroExpansion(message) => write!(f, "macro expansion: {message}"),
             AnalysisErrorKind::LazyTarget(message) => f.write_str(message),
-            AnalysisErrorKind::NumberOutOfRange => {
-                f.write_str("number is not a valid ClojureScript constant")
-            }
+            AnalysisErrorKind::NumberOutOfRange(message) => f.write_str(message),
         }
     }
 }
@@ -6348,7 +6346,17 @@ impl Analyzer<'_> {
                     .copied()
                     .flatten()
                     .unwrap_or_else(|| number(self.spelling(id), *kind))
-                    .ok_or_else(|| self.error(id, AnalysisErrorKind::NumberOutOfRange))?;
+                    .ok_or_else(|| {
+                        let literal = self.spelling(id);
+                        let message = if *kind == NumberKind::Ratio {
+                            format!(
+                                "non-integral ratio literal {literal} is not a valid ClojureScript constant"
+                            )
+                        } else {
+                            format!("number literal {literal} is not a valid ClojureScript constant")
+                        };
+                        self.error(id, AnalysisErrorKind::NumberOutOfRange(message))
+                    })?;
                 ExprKind::Number(value)
             }
             NodeKind::Character(value) => {
@@ -12484,14 +12492,28 @@ impl Analyzer<'_> {
     }
 
     fn read_discard(&mut self, id: NodeId) -> Result<(), AnalysisError> {
+        let check_discard_sets = |analyzer: &mut Self, discard: NodeId| {
+            let inner = match analyzer.syntax.nodes[discard.0].kind {
+                NodeKind::Discard { form } => form,
+                _ => discard,
+            };
+            analyzer.check_compiler_sets(inner)
+        };
+        if self.resolution.cljc {
+            check_discard_sets(self, id)?;
+        }
         self.compiler_read_form(id).map_err(|e| AnalysisError {
             span: e.span.bytes(),
             kind: AnalysisErrorKind::MacroExpansion(format!("reader: {e}")),
         })?;
-        while self.discards.get(self.next_discard).is_some_and(|discard| {
-            self.syntax.nodes[discard.0].span.start < self.syntax.nodes[id.0].span.end
-        }) {
+        while let Some(&discard) = self.discards.get(self.next_discard) {
+            if self.syntax.nodes[discard.0].span.start >= self.syntax.nodes[id.0].span.end {
+                break;
+            }
             self.next_discard += 1;
+            if self.resolution.cljc {
+                check_discard_sets(self, discard)?;
+            }
         }
         Ok(())
     }

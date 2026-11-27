@@ -289,7 +289,29 @@ struct Lowerer<'a> {
     spans: Vec<SourceSpan>,
 }
 impl Lowerer<'_> {
+    fn non_integral_ratio_text(&self, id: FormId) -> Option<&str> {
+        let bytes = self.spans[id.0].bytes();
+        let text = self.spans[id.0].text();
+        self.syntax.nodes().iter().find_map(|node| {
+            if node.span == bytes
+                && matches!(node.kind, NodeKind::Number(NumberKind::Ratio))
+                && crate::reader_literals::number_key(text, NumberKind::Ratio).is_none()
+            {
+                Some(text)
+            } else {
+                None
+            }
+        })
+    }
     fn reader_equal(&self, a: FormId, b: FormId) -> bool {
+        match (
+            self.non_integral_ratio_text(a),
+            self.non_integral_ratio_text(b),
+        ) {
+            (Some(a), Some(b)) => return crate::reader_literals::ratio_equal(a, b),
+            (Some(_), None) | (None, Some(_)) => return false,
+            (None, None) => {}
+        }
         // Source spelling carries reader numeric categories; Datum equality is
         // the canonical JS data model and may already equate distinct categories.
         let number = |id: FormId| {
@@ -475,7 +497,12 @@ impl Lowerer<'_> {
             let mut seen: HashMap<u64, Vec<usize>> = HashMap::new();
             let step = 2;
             for i in (0..values.len()).step_by(step) {
-                let bucket = seen.entry(values[i].value_hash()).or_default();
+                let hash = if self.non_integral_ratio_text(children[i]).is_some() {
+                    0
+                } else {
+                    values[i].value_hash()
+                };
+                let bucket = seen.entry(hash).or_default();
                 if let Some(&first) = bucket
                     .iter()
                     .find(|&&j| self.reader_equal(children[i], children[j]))
@@ -1176,12 +1203,7 @@ impl Lowerer<'_> {
                 return self.builder.ratio(numerator, denominator);
             }
         }
-        self.builder.compiler_literal(
-            crate::compiler_data::CompilerLiteralKind::BigInteger,
-            &self
-                .builder
-                .string(format!("{n}/{d}").encode_utf16().collect::<Vec<_>>()),
-        )
+        self.builder.double(crate::reader_literals::ratio_f64(n, d))
     }
     fn number(&self, text: &str, kind: NumberKind, span: Range<usize>) -> Result<Datum, ReadError> {
         let invalid_number = |message: String| ReadError {

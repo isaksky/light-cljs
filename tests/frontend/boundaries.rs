@@ -20,7 +20,7 @@ fn category(kind: &AnalysisErrorKind) -> &'static str {
         AnalysisErrorKind::DuplicateParameter(_) => "duplicate-parameter",
         AnalysisErrorKind::UnresolvedSymbol(_) => "unresolved",
         AnalysisErrorKind::Unsupported(_) => "unsupported",
-        AnalysisErrorKind::NumberOutOfRange => "number-range",
+        AnalysisErrorKind::NumberOutOfRange(_) => "number-range",
         AnalysisErrorKind::MacroExpansion(_) => "macro-expansion",
         AnalysisErrorKind::LazyTarget(_) => "lazy-target",
     }

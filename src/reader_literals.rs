@@ -286,6 +286,86 @@ pub(crate) fn integral_ratio(n: &str, d: &str) -> Option<f64> {
     integral_ratio_text(n, d)?.parse().ok()
 }
 
+pub(crate) fn ratio_equal(a: &str, b: &str) -> bool {
+    fn limbs(s: &str) -> Vec<u32> {
+        let digits = s.trim_start_matches(['+', '-']).trim_start_matches('0');
+        let mut out = Vec::new();
+        let mut end = digits.len();
+        while end > 0 {
+            let start = end.saturating_sub(9);
+            out.push(digits[start..end].parse::<u32>().unwrap());
+            end = start;
+        }
+        out
+    }
+    fn mul(x: &[u32], y: &[u32]) -> Vec<u32> {
+        if x.is_empty() || y.is_empty() {
+            return Vec::new();
+        }
+        const BASE: u64 = 1_000_000_000;
+        let mut out = vec![0u32; x.len() + y.len()];
+        for (i, &a) in x.iter().enumerate() {
+            let mut carry = 0u64;
+            for (j, &b) in y.iter().enumerate() {
+                let sum = u64::from(out[i + j]) + u64::from(a) * u64::from(b) + carry;
+                out[i + j] = (sum % BASE) as u32;
+                carry = sum / BASE;
+            }
+            out[i + y.len()] = (u64::from(out[i + y.len()]) + carry) as u32;
+        }
+        while out.last() == Some(&0) {
+            out.pop();
+        }
+        out
+    }
+    let Some((an, ad)) = a.split_once('/') else {
+        return false;
+    };
+    let Some((bn, bd)) = b.split_once('/') else {
+        return false;
+    };
+    let an_limbs = limbs(an);
+    let bn_limbs = limbs(bn);
+    if an_limbs.is_empty() && bn_limbs.is_empty() {
+        return true;
+    }
+    if an.starts_with('-') != bn.starts_with('-') {
+        return false;
+    }
+    mul(&an_limbs, &limbs(bd)) == mul(&bn_limbs, &limbs(ad))
+}
+
+pub(crate) fn ratio_f64(n: &str, d: &str) -> f64 {
+    let neg = n.starts_with('-');
+    let nu = n.trim_start_matches(['+', '-']).trim_start_matches('0');
+    let du = d.trim_start_matches('0');
+    if nu.is_empty() {
+        return 0.0;
+    }
+    let n_take = nu.len().min(30);
+    let d_take = du.len().min(30);
+    let n_val: f64 = nu[..n_take].parse().unwrap();
+    let d_val: f64 = du[..d_take].parse().unwrap();
+    let mut v = n_val / d_val;
+    let mut exp = (nu.len() - n_take) as i64 - (du.len() - d_take) as i64;
+    if exp > 400 {
+        v = f64::INFINITY;
+    } else if exp < -400 {
+        v = 0.0;
+    } else {
+        while exp > 300 {
+            v *= 1e300;
+            exp -= 300;
+        }
+        while exp < -300 {
+            v *= 1e-300;
+            exp += 300;
+        }
+        v *= 10f64.powi(exp as i32);
+    }
+    if neg && v != 0.0 { -v } else { v }
+}
+
 pub(crate) fn integral_ratio_text(n: &str, d: &str) -> Option<String> {
     let digits = |s: &str| {
         s.trim_start_matches(['+', '-'])

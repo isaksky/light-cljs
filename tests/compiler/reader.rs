@@ -935,7 +935,7 @@ fn discarded_and_unselected_ratio_literals_are_never_lowered() {
     }
 
     // Discarded ratio inside a macro body and alongside a data reader whose
-    // side effects still run in source order.
+    // side effects still run in source order, including huge ratios (> i64).
     let mut host = MacroHost::new();
     host.register_compiler_data_reader(
         Name::new(Some("test"), "tag"),
@@ -944,19 +944,32 @@ fn discarded_and_unselected_ratio_literals_are_never_lowered() {
     .unwrap();
     let js = compile_with_macros(
         r#"(defmacro dropped [] [1 #_4/5 2])
-           #_4/5 #_#test/tag 1
+           #_4/5 #_#test/tag 1 #_#test/tag 99999999999999999999/7
            (pr-str [(dropped) #test/tag 2])"#,
         &mut host,
     )
     .unwrap();
-    assert_eq!(run(&js), "[[1 2] [2 2]]\n");
+    assert_eq!(run(&js), "[[1 2] [2 3]]\n");
 
-    // Duplicate ratio keys inside a discarded map are still rejected, and
-    // zero-denominator / malformed ratios fail in the parser even under #_.
-    let err = MacroHost::new()
-        .read_compiler_form(&Source::new("dup.cljs", "[1 #_{1/2 :a 2/4 :b} 2]"))
-        .unwrap_err();
-    assert!(err.message.contains("DuplicateMapKey"), "{err}");
+    // Duplicate ratio keys (both i64 and huge) inside a discarded map are still
+    // rejected; distinct huge ratios and a huge ratio beside its f64 value stay
+    // distinct. Zero-denominator and malformed ratios fail in the parser even under #_.
+    for dup in [
+        "[1 #_{1/2 :a 2/4 :b} 2]",
+        "[1 #_{99999999999999999999/2 :a 199999999999999999998/4 :b} 2]",
+        "[1 #_{99999999999999999999/2 :a 299999999999999999997/6 :b} 2]",
+    ] {
+        let err = MacroHost::new()
+            .read_compiler_form(&Source::new("dup.cljs", dup))
+            .unwrap_err();
+        assert!(err.message.contains("DuplicateMapKey"), "{dup}: {err}");
+    }
+    for distinct in [
+        "(pr-str [1 #_{99999999999999999999/2 :a 199999999999999999999/4 :b} 2])",
+        "(pr-str [1 #_{99999999999999999999/2 :a 5.0e19 :b} 2])",
+    ] {
+        check(distinct, "[1 2]");
+    }
     for bad in ["4/0", "0/0", "4/-2", "#_4/0 1", "#_0/0 1"] {
         assert!(
             light_cljs::parse(bad).is_err(),
@@ -979,6 +992,7 @@ fn discarded_and_unselected_ratio_literals_are_never_lowered() {
         r#"(ns app)
            #_4/5
            #_#?(:cljs 4/5)
+           #_#{1/2 0.5}
            (pr-str [#?(:clj 4/5 :cljs 1)
                     #?(:clj (foo 314159/100000) :cljs 2)
                     #?(:clj 4/5)
@@ -989,6 +1003,43 @@ fn discarded_and_unselected_ratio_literals_are_never_lowered() {
     .unwrap();
     let js = light_cljs::compile_namespace("app", std::slice::from_ref(root.path())).unwrap();
     assert_eq!(run(&js), "[1 2 3]\n");
+
+    // Discarded duplicate sets in .cljc still fail with "duplicate set member",
+    // both via compile_namespace and via the --compile --entry CLI.
+    for (i, dup_set) in ["#_#{1 1} 2", "#_#_#{1 1} 3 2", "#_[1 #_#{1 1} 2] 3"]
+        .into_iter()
+        .enumerate()
+    {
+        let ns = format!("bad-set-{i}");
+        std::fs::write(
+            root.join(format!("bad_set_{i}.cljc")),
+            format!("(ns {ns}) {dup_set}"),
+        )
+        .unwrap();
+        let ns_err =
+            light_cljs::compile_namespace(&ns, std::slice::from_ref(root.path())).unwrap_err();
+        assert!(
+            ns_err.message.contains("duplicate set member"),
+            "{ns}.cljc ({dup_set}): {ns_err}"
+        );
+    }
+    let cli_dup = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+        .args([
+            "--compile",
+            "--no-cache",
+            "--entry",
+            "bad-set-0",
+            "--source-root",
+        ])
+        .arg(root.path())
+        .output()
+        .unwrap();
+    assert!(!cli_dup.status.success(), "--compile accepted bad-set-0");
+    let stderr = String::from_utf8(cli_dup.stderr).unwrap();
+    assert!(
+        stderr.contains("duplicate set member"),
+        "--compile bad-set-0: {stderr}"
+    );
 
     // Runtime read-string / cljs.reader still reads ratios as JS Numbers and drops #_ ratios.
     check(
@@ -1105,11 +1156,11 @@ fn undiscarded_non_integral_ratio_literals_fail_with_located_error_naming_litera
     }
 
     // --compile CLI rejects both direct and reader-expanded undiscarded ratios
-    // without Lower(NumericOverflow).
-    for (source, literal, col, require_literal_in_msg) in [
-        ("(+ 1 4/5)", "4/5", 6, false),
-        ("[#_1 4/5]", "4/5", 6, true),
-        ("(defmacro m [] 4/5) (m)", "4/5", 16, true),
+    // with a located message naming the literal, never Lower(NumericOverflow).
+    for (source, literal, col) in [
+        ("(+ 1 4/5)", "4/5", 6),
+        ("[#_1 4/5]", "4/5", 6),
+        ("(defmacro m [] 4/5) (m)", "4/5", 16),
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
             .args(["--compile", "--text", source])
@@ -1119,9 +1170,10 @@ fn undiscarded_non_integral_ratio_literals_fail_with_located_error_naming_litera
         let stderr = String::from_utf8(output.stderr).unwrap();
         assert!(
             stderr.contains(&format!("1:{col}:"))
+                && stderr.contains("non-integral ratio literal")
+                && stderr.contains(literal)
                 && stderr.contains("is not a valid ClojureScript constant")
-                && !stderr.contains("NumericOverflow")
-                && (!require_literal_in_msg || stderr.contains(literal)),
+                && !stderr.contains("NumericOverflow"),
             "--compile {source}: {stderr}"
         );
     }

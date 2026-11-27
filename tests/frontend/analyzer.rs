@@ -456,7 +456,13 @@ fn additional_numeric_categories_compile_in_nested_contexts() {
         panic!()
     };
     assert_eq!(error.span, 10..13);
-    assert_eq!(error.kind, Error::NumberOutOfRange);
+    assert!(
+        matches!(error.kind, Error::NumberOutOfRange(_))
+            && error
+                .to_string()
+                .contains("non-integral ratio literal 1/2 is not a valid ClojureScript constant"),
+        "{error}"
+    );
 }
 
 #[test]

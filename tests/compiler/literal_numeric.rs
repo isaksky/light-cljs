@@ -503,11 +503,11 @@ fn canonical_numeric_literal_constants_and_same_host_diagnostic_recovery() {
         ),
         (
             r###"{1/2 :first 2/4 :second}"###,
-            r###"number is not a valid ClojureScript constant"###,
+            r###"non-integral ratio literal 1/2 is not a valid ClojureScript constant"###,
         ),
         (
             r###"#{1/2 2/4}"###,
-            r###"number is not a valid ClojureScript constant"###,
+            r###"non-integral ratio literal 1/2 is not a valid ClojureScript constant"###,
         ),
         (
             r###"{:x {[1] :first [0x1] :second}}"###,
@@ -519,7 +519,7 @@ fn canonical_numeric_literal_constants_and_same_host_diagnostic_recovery() {
         (r###"#{1 1.0"###, r###"expected"###),
         (
             r###"[(count {1/2 :ratio 0.5 :float}) (get {1/2 :ratio 0.5 :float} 0.5) (count #{1/2 0.5}) (vec (seq #{1/2 0.5}))]"###,
-            r###"number is not a valid ClojureScript constant"###,
+            r###"non-integral ratio literal 1/2 is not a valid ClojureScript constant"###,
         ),
     ];
     for (source, diagnostic) in diagnostics {
@@ -534,10 +534,6 @@ fn canonical_numeric_literal_constants_and_same_host_diagnostic_recovery() {
                 .to_string();
             assert!(
                 error.contains(diagnostic)
-                    || (*diagnostic == "number is not a valid ClojureScript constant"
-                        && error.contains(
-                            "non-integral ratio literal 1/2 is not a valid ClojureScript constant"
-                        ))
                     || (phase
                         && *diagnostic == "duplicate map key"
                         && error.contains("DuplicateMapKey")),
