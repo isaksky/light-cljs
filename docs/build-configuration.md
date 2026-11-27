@@ -11,7 +11,8 @@ built (light-cljs-400)"), `--print-config` ("As built
 builds in one process"), several builds in one watch ("As built
 (light-cljs-406)"), `light.dev/repl` with the Phase 3 exit criterion's
 server and nREPL parts ("As built (light-cljs-407)") and `cljs-repl` ("As
-built (light-cljs-408)") are implemented.
+built (light-cljs-408)") are implemented, and so are the `:node-test` and
+`:browser-test` targets ("Test builds", light-cljs-1164).
 The implementation is queued as the pellets group `build-configuration`,
 one or more pellets per phase ("Phases"). Names that shadow-cljs has no
 word for are listed under "Names for review"; the pellets use them as
@@ -75,7 +76,11 @@ key, value and behavior.
 
 | shadow-cljs | light-cljs | Why |
 |---|---|---|
-| `:target` `:browser`, `:esm`, `:node-script`, `:npm-module`, ... | `:esm` only | The compiler writes one output shape, ES modules, which runs in browsers, Node and bundlers; another target is a new output format, not a key |
+| `:target` `:browser`, `:esm`, `:node-script`, `:npm-module`, ... | `:esm`, and the test targets `:node-test` and `:browser-test` | The compiler writes one output shape, ES modules, which runs in browsers, Node and bundlers; another target is a new output format, not a key. The test targets write the same output for a runner light-cljs generates ("Test builds") |
+| `:node-test` `:output-to "out/node-tests.js"`, `:main`; `:browser-test` `:test-dir`, `:runner-ns` | `:output-dir`, as every build; no `:main` or `:runner-ns` | A build writes a directory of ES modules, never one file: Node runs the dev build's `index.js` or the release build's `light-cljs.test-runner.js`, and the dev server serves a `:browser-test` build's `:output-dir` with its built-in page. The runner is generated, so there is no runner namespace to name |
+| `:node-test` `:autorun` runs Node after each dev compile | after `compile`, each `watch` step that compiles, and `release` | One rule for every command; a failing run fails `compile` and `release` |
+| `:browser-test` renders results in its own page with `:devtools {:http-root ...}` | the console, which the built-in dev page shows, and the page's title | The dev server's built-in page already shows console output; the runner adds `PASS`/`FAIL` counts to the title and `globalThis.lightCljsTestResult` for drivers |
+| Release mode defaults `:load-tests false` for every build | `true` for a test build | A test build's release output without tests would run nothing |
 | `:modules`, an explicit chunk graph | Exactly one module with one `:entries` namespace; its chunk is named after the namespace (`app.main.js`), not the module id; no `:init-fn`, `:depends-on`, `:exports` | Chunks are inferred from `light.lazy/loadable` sites (code-splitting.md) and named by the compiler; the entry's value is the startup chunk's default export. More modules arrive with code-splitting's Phase 4 shaping |
 | `:optimizations` `:advanced`, `:simple`, `:whitespace` | `:none`, `:prepare`, `:advanced` | light-cljs's optimizer levels (`--optimize`) are not Closure's |
 | `:dependencies`, `:deps`, `:js-options`, `classpath:` | none | The compiler resolves no dependencies and has no classpath: library sources are source paths, and JavaScript packages are host- or bundler-supplied (compiler.md, "JavaScript packages") |
@@ -397,9 +402,11 @@ only in the file, the commands and messages.
 
 | Key | Value | Required |
 |---|---|---|
-| `:target` | `:esm` | yes |
+| `:target` | `:esm`, or a test target, `:node-test` or `:browser-test` ("Test builds") | yes |
 | `:output-dir` | directory string | yes |
-| `:modules` | `{ID {:entries [NS]}}`: one module, conventionally `:main`, with one namespace | yes |
+| `:modules` | `{ID {:entries [NS]}}`: one module, conventionally `:main`, with one namespace | yes for `:esm`; an error for a test target |
+| `:ns-regexp` | a JavaScript regular expression string selecting the test namespaces | no; test targets only, `"-test$"` by default |
+| `:autorun` | boolean: run the build in Node once it is written | no; `:node-test` only, `false` by default |
 | `:config` | map of keyword to EDN value | no |
 | `:compiler-options` | map, below | no |
 | `:closure-defines` | map of qualified symbol to boolean, number or string | no; release only |
@@ -734,7 +741,8 @@ that run.
 | Unknown key, close to a valid one | `light-cljs.edn:8:4: unknown key :output-path in build :app; did you mean :output-dir?` |
 | A shadow-cljs key with no equivalent | `light-cljs.edn:1:2: :dependencies: light-cljs resolves no dependencies; put library sources in :source-paths, and let the host or a bundler supply JavaScript packages` |
 | `:dev-http`, `:asset-path`, `:js-options`, `:build-hooks` | the reason from "Deviations", and what to use instead |
-| `:target :browser` | `light-cljs.edn:7:12: :target of build :app must be :esm: light-cljs writes ES modules, which run in browsers, Node and bundlers` |
+| `:target :browser` | `light-cljs.edn:7:12: :target of build :app must be :esm, :node-test or :browser-test: light-cljs writes ES modules, which run in browsers, Node and bundlers` |
+| `:modules` in a test build, `:autorun` in a `:browser-test` build, `:ns-regexp` or `:autorun` in an `:esm` build | `light-cljs compile test: build :test is a :node-test build, whose entry is the cljs.test runner light-cljs generates; delete its :modules`, and the like, when the command runs the build |
 | A second module or entry, `:init-fn`, `:depends-on` | `light-cljs.edn:9:13: build :app has two modules; chunks are inferred from light.lazy/loadable sites (docs/code-splitting.md), and named chunks arrive with its Phase 4` |
 | A key in the wrong place | `light-cljs.edn:12:4: :http in build :app is a top-level key, as in shadow-cljs` |
 | A dev-only or release-only key reaching the other mode, where it is an error | `light-cljs.edn:13:10: :closure-defines of build :app applies in dev mode, whose dev build takes no defines; write it under :release` |
@@ -872,6 +880,66 @@ merged settings with the new ones:
   `research/penpot-light/port.bb`, which could write the port's
   `light-cljs.edn` from Penpot's `:main` build, keeping its `#shadow/env`
   forms as `#light-cljs/env`), following AGENTS.md: babashka, not Python.
+
+## Test builds
+
+A build whose `:target` is `:node-test` or `:browser-test` runs `cljs.test`
+suites outside the embedded V8 heap of `light-cljs test`, which has no
+timers, DOM or Node APIs (light-cljs-1164). The names are shadow-cljs's
+targets and keys; the deviations table lists where they differ.
+
+```clojure
+{:source-paths ["src" "test"]
+ :builds
+ {:node-test    {:target :node-test :output-dir "out/node-test" :autorun true}
+  :browser-test {:target :browser-test :output-dir "out/browser-test"}}}
+```
+
+- **Discovery.** The build's test namespaces are the namespaces of the
+  `.cljs` and `.cljc` files under `:source-paths` whose name the JavaScript
+  regular expression `:ns-regexp` finds a match in, `"-test$"` by default,
+  as `light-cljs test` discovers them (docs/cli.md). No match is an error.
+- **The runner.** The build's entry is a runner namespace,
+  `light-cljs.test-runner`, that light-cljs writes, with
+  `light-cljs.test-console` (which calls `enable-console-print!`), under
+  `<:cache-root>/test-runner/<build id>/`, one more source root of the
+  build. It requires the test namespaces and runs them with
+  `cljs.test/run-tests`; its `:end-run-tests` report sets
+  `globalThis.lightCljsTestResult` to the run's `test`, `pass`, `fail` and
+  `error` counts after the default reporter prints the summary. A test
+  build takes no `:modules` and no `--entry`.
+- **`:node-test`.** The runner runs the tests when it loads and sets
+  `process.exitCode = 1` when a test failed or threw, so `node FILE` exits
+  nonzero; Node waits for timers, so `async` tests with `js/setTimeout`
+  finish first. FILE is `<:output-dir>/index.js` for `compile` (a dev build,
+  which Node loads as CommonJS) and `<:output-dir>/light-cljs.test-runner.js`
+  for `release` (an ES module). With `:autorun true`, `compile` and
+  `release` run `node FILE` once the build is written and fail with
+  `light-cljs compile ID: tests failed` when it exits nonzero, and `watch`
+  runs it after its startup build and after each step that compiles,
+  printing `[:ID] tests passed` or `[:ID] tests failed`.
+- **`:browser-test`.** The runner runs the tests when the page loads, and
+  again from its `^:dev/after-load` function after every reload the dev
+  client applies: a saved test, the code it tests, or the runner itself.
+  Its report goes to the console, which the dev server's built-in page
+  shows, and the page's title says `PASS` or `FAIL` with the counts.
+  `light-cljs watch ID` serves it; open the printed URL.
+- **New and removed tests in `watch`.** Each step that sees a source change
+  discovers the test namespaces again and rewrites the runner when they
+  changed; the next poll recompiles it, which loads a new test namespace.
+- **`:load-tests`** is `true` for a test build in both modes, so its release
+  build keeps its `deftest`s; `{:load-tests false}` still omits them.
+
+```sh
+light-cljs compile node-test    # dev build, then node out/node-test/index.js
+light-cljs release node-test    # :advanced build, then node runs it
+light-cljs watch node-test      # rebuilt on save, the tests run again
+light-cljs watch browser-test   # open http://127.0.0.1:9630/
+```
+
+examples/testing is this file with a suite whose asynchronous test waits
+on `js/setTimeout`; `tests/config_file/test_builds.rs` and
+`tests/dev_watch.rs` run it.
 
 ## Example: examples/features
 

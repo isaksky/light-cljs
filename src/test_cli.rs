@@ -51,7 +51,8 @@ output goes to stdout; the exit status is 0 only when every test passed.
 
 Synchronous tests and promise-based tests (^:async deftest, async with a
 promise) run; the heap is ECMAScript only, with console but no timers, DOM or
-Node APIs, so tests that need them belong in a Node or browser build.";
+Node APIs, so tests that need them belong in a :node-test or :browser-test
+build of light-cljs.edn.";
 
 /// The flags of `light-cljs test`.
 struct TestFlags {

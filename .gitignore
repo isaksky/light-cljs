@@ -7,3 +7,4 @@
 /site/dist
 .light-cljs/
 /examples/features/out/
+/examples/testing/out/

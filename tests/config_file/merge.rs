@@ -733,7 +733,7 @@ fn config_merge_errors_have_exact_messages() {
         ),
         (
             "{:target :browser}".into(),
-            "--config-merge 1:1:10: :target of the merged build must be :esm: light-cljs writes \
+            "--config-merge 1:1:10: :target of the merged build must be :esm, :node-test or :browser-test: light-cljs writes \
              ES modules, which run in browsers, Node and bundlers"
                 .into(),
         ),

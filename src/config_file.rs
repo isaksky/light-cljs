@@ -162,13 +162,19 @@ pub enum Setting {
     BuildCacheBlockers,
     /// `:devtools :reload-strategy`.
     ReloadStrategy,
+    /// A test build's `:ns-regexp`: the JavaScript regular expression that
+    /// selects its test namespaces, `-test$` by default.
+    NsRegexp,
+    /// A `:node-test` build's `:autorun`: run the tests in Node after each
+    /// build.
+    Autorun,
 }
 
 impl Setting {
     pub const COUNT: usize = Self::ALL.len();
 
     /// Every setting, in discriminant order.
-    pub const ALL: [Setting; 32] = [
+    pub const ALL: [Setting; 34] = [
         Self::SourcePaths,
         Self::CacheRoot,
         Self::CacheBlockers,
@@ -201,6 +207,8 @@ impl Setting {
         Self::CacheLevel,
         Self::BuildCacheBlockers,
         Self::ReloadStrategy,
+        Self::NsRegexp,
+        Self::Autorun,
     ];
 
     /// The slot index.
@@ -241,6 +249,8 @@ impl Setting {
             Self::MacroPollBudget => "macro-poll-budget",
             Self::CacheLevel => "cache-level",
             Self::ReloadStrategy => "reload-strategy",
+            Self::NsRegexp => "ns-regexp",
+            Self::Autorun => "autorun",
         }
     }
 }
@@ -568,6 +578,16 @@ impl BuildDefinition {
     /// `setting` as the build's own map, or its mode map, writes it.
     pub fn setting(&self, mode: Option<BuildMode>, setting: Setting) -> Option<&Value> {
         self.layer(mode).get(setting).map(|entry| &entry.value)
+    }
+
+    /// Whether the build's `:target` in `mode`, its mode map's or its own,
+    /// is a test target, `:node-test` or `:browser-test`, whose entry is a
+    /// generated runner instead of `:modules`.
+    pub fn test_target(&self, mode: BuildMode) -> bool {
+        self.setting(Some(mode), Setting::Target)
+            .or_else(|| self.setting(None, Setting::Target))
+            .and_then(Value::as_keyword)
+            .is_some_and(|target| target == "node-test" || target == "browser-test")
     }
 
     /// The module id and entry namespace a layer's `:modules` names.
@@ -1372,6 +1392,7 @@ const FS_WATCH: Table = &[
 ];
 const NREPL: Table = &[("port", Key::Field)];
 const BUILD: Table = &[
+    ("autorun", Key::Setting(Setting::Autorun)),
     ("build-options", Key::Map(MapKind::BuildOptions)),
     ("closure-defines", Key::Setting(Setting::ClosureDefines)),
     ("compiler-options", Key::Map(MapKind::CompilerOptions)),
@@ -1379,6 +1400,7 @@ const BUILD: Table = &[
     ("dev", Key::Mode(BuildMode::Dev)),
     ("devtools", Key::Map(MapKind::Devtools)),
     ("modules", Key::Setting(Setting::Modules)),
+    ("ns-regexp", Key::Setting(Setting::NsRegexp)),
     ("output-dir", Key::Setting(Setting::OutputDir)),
     ("release", Key::Mode(BuildMode::Release)),
     ("target", Key::Setting(Setting::Target)),
@@ -2135,10 +2157,15 @@ impl Validator {
             Setting::HttpPort => expect(port(value).is_some(), "a port number, 0 to 65535"),
             Setting::HttpHost => expect(nonempty_string(value), "a host name string"),
             Setting::RuntimeKey => expect(nonempty_string(value), "a nonempty string"),
+            Setting::NsRegexp => expect(
+                nonempty_string(value),
+                "a JavaScript regular expression string, such as \"-test$\"",
+            ),
             Setting::HttpStrict
             | Setting::PseudoNames
             | Setting::ElideAsserts
             | Setting::LoadTests
+            | Setting::Autorun
             | Setting::CljsWarnings => {
                 expect(matches!(value.kind, ValueKind::Boolean(_)), "true or false")
             }
@@ -2148,14 +2175,14 @@ impl Validator {
                 ":polling, the one watcher light-cljs has",
             ),
             Setting::Target => {
-                if keyword_in(&["esm"]) {
+                if keyword_in(&["esm", "node-test", "browser-test"]) {
                     return Ok(());
                 }
                 Err(place.error(
                     &value.span,
                     format!(
-                        ":target{} must be :esm: light-cljs writes ES modules, which run in \
-                         browsers, Node and bundlers",
+                        ":target{} must be :esm, :node-test or :browser-test: light-cljs \
+                         writes ES modules, which run in browsers, Node and bundlers",
                         place.owner_phrase()
                     ),
                 ))
@@ -2444,6 +2471,8 @@ fn required(build: &BuildDefinition) -> Result<(), Located> {
                 build.layers[0].get(setting).is_none()
                     && build.layers[mode.layer()].get(setting).is_none()
             })
+            // A test target's entry is its generated runner.
+            .filter(|mode| setting != Setting::Modules || !build.test_target(*mode))
             .collect();
         let key = setting.key();
         match missing[..] {
@@ -3175,6 +3204,17 @@ impl ConfigFile {
         let compiler = slots[Setting::CompilerClosureDefines.index()].take();
         let own = slots[Setting::ClosureDefines.index()].take();
         slots[Setting::ClosureDefines.index()] = combine(compiler, own);
+        // A test build loads its tests in release too, as its whole point.
+        let test_target = slots[Setting::Target.index()]
+            .as_ref()
+            .and_then(|slot| slot.value.as_keyword())
+            .is_some_and(|target| target == "node-test" || target == "browser-test");
+        if let Some(slot) = &mut slots[Setting::LoadTests.index()]
+            && test_target
+            && slot.value.source == ConfigSource::Default
+        {
+            slot.value = Value::default_of(ValueKind::Boolean(true));
+        }
         let top_blockers = slots[Setting::CacheBlockers.index()].clone();
         let own = slots[Setting::BuildCacheBlockers.index()].take();
         slots[Setting::BuildCacheBlockers.index()] = combine(top_blockers, own);

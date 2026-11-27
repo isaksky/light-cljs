@@ -227,6 +227,12 @@ pub(crate) struct Options {
     /// `--macro-expansions N` and the other macro limit flags, for the
     /// startup build and the session.
     pub(crate) macro_limits: crate::MacroLimitFlags,
+    /// A `:node-test` or `:browser-test` build of `light-cljs watch ID`:
+    /// its runner, whose root is the last of `roots`, is written before the
+    /// build starts and again when a step finds the test namespaces
+    /// changed, and with `:autorun` the build runs in Node after its
+    /// startup build and each step that compiles. None for `--watch`.
+    pub(crate) test: Option<light_cljs::test_runner::TestBuild>,
 }
 
 /// The configuration file of `light-cljs watch ID ...` in the watch's poll
@@ -399,6 +405,7 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
         cache_dir,
         cache_retention,
         macro_limits,
+        test: None,
     }))
 }
 
@@ -703,8 +710,12 @@ fn tagged(tag: &str, mut diagnostic: Diagnostic) -> Diagnostic {
 }
 
 /// The source roots of `options`, canonical: they name files as the source
-/// provider does.
+/// provider does. A test build's runner is written first, so its root
+/// exists.
 fn canonical_roots(options: &Options) -> Result<Vec<PathBuf>> {
+    if let Some(test) = &options.test {
+        test.write_runner()?;
+    }
     let roots = options
         .roots
         .iter()
@@ -946,6 +957,9 @@ enum Work {
     Restart(Box<Options>),
     /// The server started: serve the build on mount `MountId` of it.
     Attach(Arc<DevServer>, MountId),
+    /// The watch printed every build's startup line: run a `:node-test`
+    /// build's startup build with `:autorun`.
+    Started,
     /// A form of a connected REPL, for the session of the build's start
     /// numbered `u64`: one for a session that ended is dropped unanswered,
     /// as a session's requests were when it ended.
@@ -1017,7 +1031,14 @@ pub(crate) fn run_builds(
     let named = first.mount.is_some();
     // The stamps come first, so a file saved while a build is made is a
     // change.
-    let mut roots = canonical_roots(first).map_err(general)?;
+    // Each build's roots: the shared source paths, and a test build's
+    // runner root, which the poll watches too.
+    let mut build_roots = builds
+        .iter()
+        .enumerate()
+        .map(|(index, options)| canonical_roots(options).map_err(|error| (Some(index), error)))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut roots = union(&build_roots);
     let mut scan = Scan::new(roots.clone());
     // Restarts, too, make one analysis at a time, in the order named.
     let starts = Arc::new(Starts::default());
@@ -1031,8 +1052,12 @@ pub(crate) fn run_builds(
         let out_dir = options.out_dir.clone();
         let name = options.mount.clone().unwrap_or_default();
         let thread = {
-            let (roots, report, work, starts) =
-                (roots.clone(), report.clone(), work.clone(), starts.clone());
+            let (roots, report, work, starts) = (
+                build_roots[index].clone(),
+                report.clone(),
+                work.clone(),
+                starts.clone(),
+            );
             // The first build's time counts from the process's start, as a
             // single build's always has.
             let begun = if index == 0 { begun } else { Instant::now() };
@@ -1176,6 +1201,9 @@ pub(crate) fn run_builds(
     for line in lines.into_iter().flatten() {
         eprintln!("{line}");
     }
+    for index in 0..workers.len() {
+        send(&mut workers, index, Work::Started)?;
+    }
     // The configuration file's stamp at the last poll; none before the first
     // poll, which reads the file in case it was saved since it was read.
     let mut config_stamp = None;
@@ -1208,11 +1236,13 @@ pub(crate) fn run_builds(
                         // A restart that moves the source roots, which every
                         // build shares, moves the poll, stamped before the
                         // build reads them.
-                        if let Some(next) = restarts
-                            .first()
-                            .and_then(|(_, options)| canonical_roots(options).ok())
-                            .filter(|next| *next != roots)
-                        {
+                        for (index, options) in &restarts {
+                            if let Ok(next) = canonical_roots(options) {
+                                build_roots[*index] = next;
+                            }
+                        }
+                        let next = union(&build_roots);
+                        if next != roots {
                             roots = next;
                             scan = Scan::new(roots.clone());
                         }
@@ -1245,6 +1275,35 @@ pub(crate) fn run_builds(
             };
             send(&mut workers, index, changes)?;
         }
+    }
+}
+
+/// Every root of `builds`, in order, each once.
+fn union(builds: &[Vec<PathBuf>]) -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = Vec::new();
+    for root in builds.iter().flatten() {
+        if !roots.contains(root) {
+            roots.push(root.clone());
+        }
+    }
+    roots
+}
+
+/// With `:autorun`, run the test build `options` writes in Node, as
+/// shadow-cljs's `:node-test` does after each compile: its output goes to
+/// the watch's own streams, and a line on stderr says how it ended.
+fn autorun(options: &Options) {
+    if !options.test.as_ref().is_some_and(|test| test.autorun) {
+        return;
+    }
+    let tag = tag(options);
+    let lead = lead(&tag);
+    let file = light_cljs::test_runner::TestBuild::node_file(&options.out_dir, false);
+    eprintln!("{lead}running node {}", file.display());
+    match light_cljs::test_runner::TestBuild::run_node(&options.out_dir, false) {
+        Ok(true) => eprintln!("{lead}tests passed"),
+        Ok(false) => eprintln!("{lead}tests failed"),
+        Err(error) => eprintln!("{lead}{error}"),
     }
 }
 
@@ -1421,6 +1480,11 @@ impl BuildThread {
                         restart = true;
                     }
                     Work::Attach(..) => {}
+                    Work::Started => {
+                        if current.is_some() {
+                            autorun(&self.options);
+                        }
+                    }
                 }
             }
             // A restart is due: the build's settings changed, or a restart
@@ -1451,9 +1515,20 @@ impl BuildThread {
             if changed.is_empty() && deleted.is_empty() && resources.is_empty() {
                 continue;
             }
-            watch
+            // A test namespace added, removed or renamed rewrites the
+            // runner, a source the next poll finds changed.
+            if let Some(test) = &self.options.test
+                && (!changed.is_empty() || !deleted.is_empty())
+                && let Err(error) = test.write_runner()
+            {
+                eprintln!("{}{error}; the runner keeps its tests", lead(&tag));
+            }
+            let compiled = watch
                 .step(&changed, &deleted, &resources, noticed)
                 .map_err(text)?;
+            if compiled {
+                autorun(&self.options);
+            }
         }
     }
 
@@ -1497,6 +1572,7 @@ impl BuildThread {
                     watch.server = Some(served);
                 }
                 eprintln!("{}", built(options, &watch, begun, self.poll));
+                autorun(options);
                 Ok(Some(watch))
             }
             Err(error) => {
@@ -1644,7 +1720,7 @@ impl Watch {
         deleted: &[PathBuf],
         resources: &[PathBuf],
         noticed: Instant,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         for path in deleted {
             if let Some(namespace) = self.namespace_of(path) {
                 eprintln!(
@@ -1655,7 +1731,7 @@ impl Watch {
             }
         }
         if changed.is_empty() && resources.is_empty() {
-            return Ok(());
+            return Ok(false);
         }
         let mut queue = std::mem::take(&mut self.pending);
         let enqueue = |queue: &mut Vec<String>, namespace: String| {
@@ -1676,7 +1752,7 @@ impl Watch {
             }
         }
         if queue.is_empty() {
-            return Ok(());
+            return Ok(false);
         }
         // A triggered step recompiles the always-compile set before it keeps
         // any retained unit (docs/compiler-cache.md, "Opt-outs and their
@@ -1764,6 +1840,7 @@ impl Watch {
                 build: (failed.is_none() && !recompiled.is_empty()).then(|| self.build()),
             });
         }
+        let compiled = failed.is_none() && !recompiled.is_empty();
         let millis = noticed.elapsed().as_secs_f64() * 1000.0;
         let lead = lead(&self.tag);
         match failed {
@@ -1783,7 +1860,7 @@ impl Watch {
             };
             eprintln!("{lead}live {} value-roots={roots}", live.summary());
         }
-        Ok(())
+        Ok(compiled)
     }
 
     /// Compile the source of `namespace` again, as the source provider finds

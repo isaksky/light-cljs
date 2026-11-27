@@ -65,7 +65,11 @@ light-cljs test app.math-test                          # one namespace; :source-
 persistent compiler cache, runs synchronous and promise-based (`^:async`) tests
 in the embedded V8 isolate, and exits nonzero on any failure or error. The
 isolate has no timers, DOM, or Node APIs, so tests that need them belong in a
-Node or browser build ([docs/cli.md](docs/cli.md#running-cljstest-suites-light-cljs-test)).
+Node or browser test build: a `light-cljs.edn` build with `:target :node-test`
+or `:target :browser-test` generates the runner, runs it in Node (`:autorun`) or
+in the dev page, and reruns it on every change in `light-cljs watch`
+([examples/testing](examples/testing/light-cljs.edn),
+[docs/cli.md](docs/cli.md#test-builds-node-test-browser-test)).
 
 ### Build and watch a project (`light-cljs.edn`)
 

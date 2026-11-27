@@ -1,0 +1,19 @@
+;; cljs.test in Node and in a browser (docs/build-configuration.md,
+;; "Test builds"). From this directory or below it:
+;;   light-cljs compile node-test    the dev build in out/node-test, then
+;;                                   node out/node-test/index.js (:autorun)
+;;   light-cljs release node-test    the release build, then node runs it
+;;   light-cljs watch node-test      rebuilt on save, the tests run again
+;;   light-cljs watch browser-test   served on http://127.0.0.1:9630/, the
+;;                                   page runs the tests again after reloads
+;; Each build finds the namespaces under :source-paths whose name matches
+;; :ns-regexp, "-test$" by default, and runs them with a generated runner.
+{:source-paths ["src" "test"]
+ :builds
+ {:node-test
+  {:target :node-test
+   :output-dir "out/node-test"
+   :autorun true}
+  :browser-test
+  {:target :browser-test
+   :output-dir "out/browser-test"}}}

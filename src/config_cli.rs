@@ -38,6 +38,8 @@ use light_cljs::config_file::{
     ValueKind,
 };
 
+use light_cljs::test_runner::{self, TestBuild, TestTarget};
+
 use crate::{CompileFlags, NamespaceFlags, build_namespace};
 
 /// A command that runs builds of the configuration file.
@@ -311,9 +313,9 @@ pub(crate) fn run(
         let mut builds = Vec::with_capacity(settings.len());
         let mut names = Vec::with_capacity(settings.len());
         let mut running = Vec::with_capacity(settings.len());
-        for (settings, (namespace, _, compile)) in settings.iter().zip(translated) {
+        for (settings, (namespace, _, compile, test)) in settings.iter().zip(translated) {
             builds.push(
-                watch_options(&file, settings, namespace, compile, &flags)
+                watch_options(&file, settings, namespace, compile, test, &flags)
                     .map_err(|error| failure(words, error))?,
             );
             names.push(settings.name().to_owned());
@@ -330,18 +332,32 @@ pub(crate) fn run(
             failure(&format!("watch {named}"), error)
         });
     }
-    for (settings, (namespace, options, compile)) in settings.iter().zip(translated) {
+    for (settings, (namespace, options, compile, test)) in settings.iter().zip(translated) {
         let name = settings.name();
         let out_dir = namespace.out_dir.clone().unwrap_or_default();
+        let words = format!("{} {name}", command.name());
+        if let Some(test) = &test {
+            test.write_runner()
+                .map_err(|error| failure(&words, error))?;
+        }
         eprintln!("[:{name}] Compiling ...");
         let begun = Instant::now();
-        build_namespace(namespace, options, compile)
-            .map_err(|error| failure(&format!("{} {name}", command.name()), error))?;
+        build_namespace(namespace, options, compile).map_err(|error| failure(&words, error))?;
         eprintln!(
             "[:{name}] Build completed in {} ms: {}",
             begun.elapsed().as_millis(),
             out_dir.display()
         );
+        // `:autorun`: the tests run in Node once the build is written, and
+        // a failing run fails the command, as shadow-cljs's does.
+        if test.is_some_and(|test| test.autorun) {
+            let release = command == Command::Release;
+            let file = TestBuild::node_file(&out_dir, release);
+            eprintln!("[:{name}] Running node {}", file.display());
+            if !TestBuild::run_node(&out_dir, release).map_err(|error| failure(&words, error))? {
+                return Err(failure(&words, "tests failed"));
+            }
+        }
     }
     Ok(())
 }
@@ -1203,6 +1219,7 @@ fn watch_options(
     settings: &BuildSettings,
     namespace: NamespaceFlags,
     compile: CompileFlags,
+    test: Option<TestBuild>,
     flags: &CommandFlags,
 ) -> Result<crate::dev_watch::Options, String> {
     use crate::dev_watch::PortRule;
@@ -1276,6 +1293,7 @@ fn watch_options(
         blockers: compile.cache_blockers,
         configuration: compile.configuration,
         macro_limits: compile.macro_limits,
+        test,
     })
 }
 
@@ -1404,8 +1422,9 @@ fn config_watch(
                 if flags.replaces_directories() {
                     check_directories(&file, settings, &merges, &flags)?;
                 }
-                let (namespace, _, compile) = translate(&file, settings, Command::Watch, &flags)?;
-                watch_options(&file, settings, namespace, compile, &flags)
+                let (namespace, _, compile, test) =
+                    translate(&file, settings, Command::Watch, &flags)?;
+                watch_options(&file, settings, namespace, compile, test, &flags)
             })();
             match translated {
                 Ok(translated) => options.push(translated),
@@ -1459,19 +1478,86 @@ fn config_watch(
     }
 }
 
+/// The build's test target and what selects its tests, when its `:target`
+/// is `:node-test` or `:browser-test`, with `roots` its source roots; the
+/// error of a key the target does not take (docs/build-configuration.md,
+/// "Test builds").
+fn test_build(
+    file: &ConfigFile,
+    settings: &BuildSettings,
+    roots: &[PathBuf],
+    flags: &CommandFlags,
+) -> Result<Option<TestBuild>, String> {
+    let name = settings.name();
+    let target = keyword(settings, Setting::Target).and_then(TestTarget::named);
+    let Some(target) = target else {
+        for setting in [Setting::NsRegexp, Setting::Autorun] {
+            if settings.get(setting).is_some() {
+                return Err(format!(
+                    ":{} of build :{name} applies to a :node-test or :browser-test build, \
+                     and its :target is :esm",
+                    setting.key()
+                ));
+            }
+        }
+        return Ok(None);
+    };
+    let target_name = target.name();
+    if settings.get(Setting::Modules).is_some() {
+        return Err(format!(
+            "build :{name} is a :{target_name} build, whose entry is the cljs.test runner \
+             light-cljs generates; delete its :modules"
+        ));
+    }
+    if flags.namespace.entry.is_some() {
+        return Err(format!(
+            "--entry: build :{name} is a :{target_name} build, whose entry is the cljs.test \
+             runner light-cljs generates; select its tests with :ns-regexp"
+        ));
+    }
+    let autorun = boolean(settings, Setting::Autorun);
+    if autorun && target == TestTarget::Browser {
+        return Err(format!(
+            ":autorun of build :{name} runs a :node-test build in Node; a :browser-test \
+             build runs its tests in the page, again after each reload"
+        ));
+    }
+    let cache_root = string(settings, Setting::CacheRoot).unwrap_or(".light-cljs");
+    Ok(Some(TestBuild {
+        target,
+        roots: roots.to_vec(),
+        ns_regexp: string(settings, Setting::NsRegexp).map(str::to_owned),
+        autorun,
+        runner_root: file
+            .resolve(Path::new(cache_root))
+            .join("test-runner")
+            .join(name),
+    }))
+}
+
 /// Translate `settings` into the flags' structures, as the equivalent
-/// flags would set them, then write the flags after the command over them.
+/// flags would set them, then write the flags after the command over them;
+/// for a test build, its entry is the runner, whose root is one more source
+/// root, and the [`TestBuild`] says how to write it.
 fn translate(
     file: &ConfigFile,
     settings: &BuildSettings,
     command: Command,
     flags: &CommandFlags,
-) -> Result<(NamespaceFlags, AnalysisOptions, CompileFlags), String> {
+) -> Result<
+    (
+        NamespaceFlags,
+        AnalysisOptions,
+        CompileFlags,
+        Option<TestBuild>,
+    ),
+    String,
+> {
     let release = command == Command::Release;
     let user = &flags.compile;
     let resolve = |path: &Path| file.resolve(path);
 
-    let namespace = NamespaceFlags {
+    let mut namespace = NamespaceFlags {
         entry: flags.namespace.entry.clone().or_else(|| entry(settings)),
         roots: if flags.namespace.roots.is_empty() {
             elements(settings, Setting::SourcePaths)
@@ -1497,6 +1583,12 @@ fn translate(
             .or_else(|| string(settings, Setting::OutputDir).map(Path::new))
             .map(resolve),
     };
+
+    let test = test_build(file, settings, &namespace.roots, flags)?;
+    if let Some(test) = &test {
+        namespace.entry = Some(test_runner::RUNNER_NAMESPACE.to_owned());
+        namespace.roots.push(test.runner_root.clone());
+    }
 
     let mut options = AnalysisOptions::default();
     let mut compile = CompileFlags::default();
@@ -1591,7 +1683,9 @@ fn translate(
     });
     match load_tests {
         Some(load) => crate::apply_load_tests(&mut compile.configuration, load),
-        None if release => crate::apply_load_tests(&mut compile.configuration, false),
+        None if release && test.is_none() => {
+            crate::apply_load_tests(&mut compile.configuration, false)
+        }
         None => {}
     }
 
@@ -1635,5 +1729,5 @@ fn translate(
     compile.cache_retention = user
         .cache_retention
         .or_else(|| count(settings, Setting::CacheRetention).and_then(|n| usize::try_from(n).ok()));
-    Ok((namespace, options, compile))
+    Ok((namespace, options, compile, test))
 }

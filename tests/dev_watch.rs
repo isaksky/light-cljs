@@ -2984,9 +2984,9 @@ fn an_invalid_reread_is_reported_and_the_build_keeps_its_settings() {
     let config = project.join("light-cljs.edn");
     let (lines, error) = watch.until("light-cljs: ");
     assert!(lines.is_empty(), "{lines:#?}");
-    let message = "unknown key :bogus in build :app; the keys here are :build-options, \
-                   :closure-defines, :compiler-options, :config, :dev, :devtools, :modules, \
-                   :output-dir, :release, :target";
+    let message = "unknown key :bogus in build :app; the keys here are :autorun, \
+                   :build-options, :closure-defines, :compiler-options, :config, :dev, \
+                   :devtools, :modules, :ns-regexp, :output-dir, :release, :target";
     assert_eq!(
         error,
         format!("light-cljs: {}:12:9: {message}", config.display())
@@ -4015,4 +4015,130 @@ fn cljs_test_suites_run_at_startup_and_after_a_step() {
     );
     let failing = record("start\nclicks: [1] {:test 1, :pass 1, :fail 1}\n");
     assert_eq!(watch.now_and_fresh(), [failing.clone(), failing]);
+}
+
+/// examples/testing: a `:node-test` and a `:browser-test` build of
+/// `cljs.test` suites (docs/build-configuration.md, "Test builds").
+const TESTING: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/testing");
+
+/// A temporary copy of examples/testing whose server takes any free port and
+/// whose poll runs every 20 ms.
+fn testing_project(label: &str) -> (TempDir, PathBuf) {
+    let (dir, project) = file_watch::project(label, Path::new(TESTING));
+    let config = project.join("light-cljs.edn");
+    let text = fs::read_to_string(&config).unwrap();
+    let text = text.replace(
+        "{:source-paths [\"src\" \"test\"]",
+        "{:source-paths [\"src\" \"test\"]\n :http {:port 0}\n :fs-watch {:loop-wait 20}",
+    );
+    assert!(text.contains(":fs-watch"));
+    fs::write(&config, text).unwrap();
+    (dir, project)
+}
+
+#[cfg(light_v8)]
+/// `light-cljs watch node-test` runs the tests in Node after its startup
+/// build (`:autorun true`) and again after each step that compiles: a test
+/// changed to fail, its fix, and a new failing test namespace, which the
+/// runner is rewritten to require.
+#[test]
+fn a_node_test_watch_runs_the_tests_again_after_each_step() {
+    let (_dir, project) = testing_project("dev-watch-node-test");
+    let mut watch = file_watch::Light::spawn(&project, &["watch", "node-test"], None);
+    let (lines, run) = watch.until("[:node-test] running node ");
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.starts_with("[:node-test] built light-cljs.test-runner (")),
+        "{lines:#?}"
+    );
+    assert!(run.ends_with("out/node-test/index.js"), "{run}");
+    watch.until("[:node-test] tests passed");
+
+    let test = project.join("test/example/cart_test.cljs");
+    let text = fs::read_to_string(&test).unwrap();
+    let failing = text.replace("(is (= 4 price))", "(is (= 5 price))");
+    assert_ne!(failing, text);
+    file_watch::save(&test, &failing);
+    let (_, step) = watch.until("[:node-test] recompiled ");
+    assert!(
+        step.starts_with("[:node-test] recompiled example.cart-test in "),
+        "{step}"
+    );
+    watch.until("[:node-test] tests failed");
+    file_watch::save(&test, &text);
+    watch.until("[:node-test] tests passed");
+
+    // A new namespace the default :ns-regexp selects joins the runner.
+    fs::write(
+        project.join("test/example/extra_test.cljs"),
+        "(ns example.extra-test (:require [cljs.test :refer [deftest is]]))\n\n\
+         (deftest fails (is (= 1 2)))\n",
+    )
+    .unwrap();
+    let (_, step) = watch.until("[:node-test] recompiled ");
+    assert!(
+        step.starts_with("[:node-test] recompiled example.extra-test, light-cljs.test-runner in "),
+        "{step}"
+    );
+    watch.until("[:node-test] tests failed");
+    let runner = project.join(".light-cljs/test-runner/node-test/light_cljs/test_runner.cljs");
+    assert!(
+        fs::read_to_string(runner)
+            .unwrap()
+            .contains("'example.cart-test 'example.extra-test")
+    );
+    assert!(watch.child.try_wait().unwrap().is_none());
+}
+
+#[cfg(light_v8)]
+/// `light-cljs watch browser-test` serves a runner that runs the tests when
+/// the page loads and again after each reload: a dev client in Node (the
+/// driver of tests/support/dev_execution.mjs) prints the first run, and,
+/// after a test is saved failing, the second, from the runner's
+/// `^:dev/after-load` function.
+#[test]
+fn a_browser_test_page_runs_the_tests_again_after_a_reload() {
+    let (_dir, project) = testing_project("dev-watch-browser-test");
+    let mut watch = file_watch::Light::spawn(&project, &["watch", "browser-test"], None);
+    let (address, _, _) = watch.serving();
+    watch.until("[:browser-test] built light-cljs.test-runner (");
+    let out = project.join("out/browser-test");
+    let mut runtime =
+        file_watch::node_runtime(&out, &format!("http://{address}/browser-test/events"), 2);
+    let (lines, _) = runtime.until("message load replay");
+    assert_eq!(lines.last().map(String::as_str), Some("message hello 1"));
+
+    let test = project.join("test/example/cart_test.cljs");
+    let text = fs::read_to_string(&test).unwrap();
+    file_watch::save(&test, &text.replace("(is (= 4 price))", "(is (= 5 price))"));
+    let (_, step) = watch.until("[:browser-test] recompiled ");
+    assert!(
+        step.starts_with("[:browser-test] recompiled example.cart-test in "),
+        "{step}"
+    );
+    let (_, load) = runtime.until("message load ");
+    assert_eq!(load, "message load example.cart-test");
+
+    let mut stdout = String::new();
+    std::io::Read::read_to_string(runtime.child.stdout.as_mut().unwrap(), &mut stdout).unwrap();
+    assert!(runtime.child.wait().unwrap().success(), "{stdout}");
+    let record = stdout
+        .lines()
+        .find(|line| line.starts_with("{\"id\":\"program\""))
+        .unwrap_or_else(|| panic!("no record in {stdout}"));
+    let passed = "Ran 3 tests containing 5 assertions.\\n0 failures, 0 errors.\\n";
+    let again = "\\nRunning the tests again after a reload\\n";
+    let failed = "Ran 3 tests containing 5 assertions.\\n1 failures, 0 errors.\\n";
+    let (first, rest) = record
+        .split_once(passed)
+        .unwrap_or_else(|| panic!("no passing run in {record}"));
+    assert!(first.contains("Testing example.cart-test"), "{record}");
+    assert!(
+        rest.contains(again)
+            && rest.contains("FAIL in (price-arrives-later)")
+            && rest.contains(failed),
+        "{record}"
+    );
+    assert!(watch.child.try_wait().unwrap().is_none());
 }

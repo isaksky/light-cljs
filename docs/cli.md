@@ -6,7 +6,7 @@ If you have not installed the binary (`cargo install --path .`), replace `light-
 
 ## Project builds (`light-cljs.edn`)
 
-`light-cljs.edn` defines a project's builds, modeled on `shadow-cljs.edn`: top-level `:source-paths`, cache settings, dev server/nREPL config, and `:builds` (each with `:target :esm`, `:output-dir`, one module's `:entries` namespace, and `:dev` / `:release` overrides). See [docs/build-configuration.md](build-configuration.md) for the full schema.
+`light-cljs.edn` defines a project's builds, modeled on `shadow-cljs.edn`: top-level `:source-paths`, cache settings, dev server/nREPL config, and `:builds` (each with `:target :esm`, `:output-dir`, one module's `:entries` namespace, and `:dev` / `:release` overrides, or a `:node-test` / `:browser-test` test target). See [docs/build-configuration.md](build-configuration.md) for the full schema.
 
 The subcommands `compile`, `release`, `watch`, and `cljs-repl` walk up from the current directory to locate `light-cljs.edn`. Every relative path in the file and in CLI flags resolves against the file's directory, so running from a subdirectory produces the same output in the same location.
 
@@ -23,6 +23,22 @@ Build IDs can be written with or without a leading colon (`features` or `:featur
 
 - **`compile ID [ID ...]`** writes each build's reloadable dev build (equivalent to `--compile --reloadable --out-dir`), in the order named, stopping at the first failure.
 - **`release ID [ID ...]`** writes each build's chunked release build at its configured `:optimizations` (`:advanced` by default, with assertions elided unless `:compiler-options {:elide-asserts false}` and `deftest` forms omitted unless `:compiler-options {:load-tests true}`), equivalent to `--compile --optimize advanced --out-dir`.
+
+### Test builds (`:node-test`, `:browser-test`)
+
+A build with `:target :node-test` or `:target :browser-test` runs `cljs.test` suites in Node or a page, where timers, the DOM, Node APIs and npm packages exist ([build-configuration.md, "Test builds"](build-configuration.md#test-builds)). It takes no `:modules`: light-cljs discovers the namespaces under `:source-paths` whose name `:ns-regexp` matches (`"-test$"` by default) and generates the entry, a runner under `<:cache-root>/test-runner/ID/`.
+
+```sh
+cd examples/testing
+light-cljs compile node-test    # dev build, then node out/node-test/index.js (:autorun true)
+light-cljs release node-test    # release build (tests kept), then node out/node-test/light-cljs.test-runner.js
+light-cljs watch node-test      # the tests run again in Node after each recompile
+light-cljs watch browser-test   # the served page runs the tests again after each hot reload
+```
+
+- **`:node-test`:** the runner sets `process.exitCode = 1` when a test fails or throws, so `node FILE` exits nonzero. With `:autorun true`, `compile` and `release` run Node once the build is written and exit nonzero with `tests failed` when it does; `watch` runs it after the startup build and after each step that compiles, printing `[:ID] tests passed` or `[:ID] tests failed`.
+- **`:browser-test`:** the runner runs the tests when the page loads and again from a `^:dev/after-load` function after every reload; the report goes to the console, which the built-in dev page shows, and the page title shows `PASS` or `FAIL` with the counts.
+- In `watch`, adding or removing a matching namespace rewrites the runner, and the next poll recompiles it.
 
 ### `watch`
 

@@ -322,6 +322,17 @@ directive loads the new dependency through the source provider, which
 appends its unit to the manifest ahead of the requiring namespace. A new
 file is picked up when a namespace requires it, as in the session.
 
+Test builds (`:node-test`, `:browser-test`; [build-configuration.md,
+"Test builds"](build-configuration.md#test-builds)) use this loop
+unchanged, with two additions (light-cljs-1164). A step that sees a source
+change discovers the build's test namespaces again and rewrites its
+generated runner when they changed, so the next poll recompiles the runner
+and loads a new test namespace. A `:node-test` build with `:autorun true`
+runs `node <out>/index.js` after the startup build and after each step that
+compiled something, without stopping the watch when the tests fail. A
+`:browser-test` runner reruns its tests from its own `^:dev/after-load`
+function, so the client's hook protocol reruns them after every reload.
+
 ### The reload set
 
 Given the changed namespace N:

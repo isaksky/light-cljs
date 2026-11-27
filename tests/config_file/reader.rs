@@ -108,9 +108,18 @@ fn error_rows() -> Vec<(String, String)> {
     );
     row(
         app(":zzz 1"),
-        "light-cljs.edn:7:4: unknown key :zzz in build :app; the keys here are :build-options, \
-         :closure-defines, :compiler-options, :config, :dev, :devtools, :modules, :output-dir, \
-         :release, :target",
+        "light-cljs.edn:7:4: unknown key :zzz in build :app; the keys here are :autorun, \
+         :build-options, :closure-defines, :compiler-options, :config, :dev, :devtools, :modules, \
+         :ns-regexp, :output-dir, :release, :target",
+    );
+    row(
+        app(":ns-regexp 1"),
+        "light-cljs.edn:7:15: :ns-regexp of build :app must be a JavaScript regular expression \
+         string, such as \"-test$\", got 1",
+    );
+    row(
+        app(":autorun :yes"),
+        "light-cljs.edn:7:13: :autorun of build :app must be true or false, got :yes",
     );
     row(
         top(":source-path [\"x\"]"),
@@ -239,7 +248,7 @@ fn error_rows() -> Vec<(String, String)> {
    :output-dir \"out\"
    :modules {:main {:entries [app.main]}}",
         ),
-        "light-cljs.edn:4:12: :target of build :app must be :esm: light-cljs writes ES \
+        "light-cljs.edn:4:12: :target of build :app must be :esm, :node-test or :browser-test: light-cljs writes ES \
          modules, which run in browsers, Node and bundlers",
     );
     row(
@@ -618,7 +627,7 @@ fn type_rows() -> Vec<(String, String)> {
    :output-dir \"out\"
    :modules {:main {:entries [app.main]}}",
         ),
-        "light-cljs.edn:4:12: :target of build :app must be :esm: light-cljs writes ES \
+        "light-cljs.edn:4:12: :target of build :app must be :esm, :node-test or :browser-test: light-cljs writes ES \
          modules, which run in browsers, Node and bundlers",
     );
     row(

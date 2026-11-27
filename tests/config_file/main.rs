@@ -13,3 +13,4 @@ mod merge;
 mod print_config;
 mod reader;
 mod retention;
+mod test_builds;

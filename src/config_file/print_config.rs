@@ -220,10 +220,16 @@ impl ConfigFile {
             ));
         }
 
-        let mut build: Vec<Item> = [Setting::Target, Setting::OutputDir, Setting::Modules]
-            .into_iter()
-            .filter_map(leaf)
-            .collect();
+        let mut build: Vec<Item> = [
+            Setting::Target,
+            Setting::OutputDir,
+            Setting::Modules,
+            Setting::NsRegexp,
+            Setting::Autorun,
+        ]
+        .into_iter()
+        .filter_map(leaf)
+        .collect();
         build.extend(self.config_item(settings, merges));
         let mut options: Vec<Item> = Vec::new();
         if release {
