@@ -523,3 +523,43 @@ fn features_startup_is_the_application_without_its_features_within_its_slack() {
         counted.saturating_sub(lower)
     );
 }
+
+/// light-cljs-1171: at `Advanced`, a program whose only use of `cljs.pprint`
+/// is data-only `pprint` drops `cl-format` (its directive table, numeral
+/// tables, and formatters) and `code-dispatch`.
+#[test]
+fn cljs_pprint_data_only_drops_cl_format_and_code_dispatch() {
+    let find = |name: &str| {
+        NAMESPACE_FIXTURES
+            .iter()
+            .find(|fixture| fixture.name == name)
+            .unwrap()
+    };
+    let pprint_only = emit(
+        &namespace_program(find("cljs-pprint-only")),
+        OptimizationLevel::Advanced,
+    );
+    let cl_format_only = emit(
+        &namespace_program(find("cljs-pprint-format")),
+        OptimizationLevel::Advanced,
+    );
+    for forbidden in [
+        "vigintillion",
+        "thousand",
+        "Not enough arguments for format",
+        "Too many parameters for directive",
+        "Infinite loop!",
+        "Control-",
+    ] {
+        assert!(
+            !pprint_only.contains(forbidden),
+            "data-only cljs.pprint output unexpectedly kept cl-format string {forbidden:?}"
+        );
+    }
+    assert!(
+        pprint_only.len() + 50_000 < cl_format_only.len(),
+        "expected cljs-pprint-only ({}) to be at least 50 KB smaller than cljs-pprint-format ({})",
+        pprint_only.len(),
+        cl_format_only.len()
+    );
+}

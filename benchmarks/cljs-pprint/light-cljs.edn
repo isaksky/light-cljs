@@ -1,0 +1,24 @@
+;; light-cljs release builds of the four cljs.pprint size-benchmark programs
+;; (benchmarks/cljs-pprint.md). Run via `light-cljs release <id>`.
+{:source-paths ["src"]
+ :builds
+ {:prn
+  {:target :esm
+   :output-dir "out/light-prn"
+   :modules {:main {:entries [pprint-bench.prn]}}
+   :build-options {:cache-level :off}}
+  :pprint-only
+  {:target :esm
+   :output-dir "out/light-pprint-only"
+   :modules {:main {:entries [pprint-bench.pprint-only]}}
+   :build-options {:cache-level :off}}
+  :cl-format-only
+  {:target :esm
+   :output-dir "out/light-cl-format-only"
+   :modules {:main {:entries [pprint-bench.cl-format-only]}}
+   :build-options {:cache-level :off}}
+  :code-dispatch
+  {:target :esm
+   :output-dir "out/light-code-dispatch"
+   :modules {:main {:entries [pprint-bench.code-dispatch]}}
+   :build-options {:cache-level :off}}}}

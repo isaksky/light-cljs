@@ -1,0 +1,3 @@
+{:paths ["src"]
+ :deps {thheller/shadow-cljs {:mvn/version "3.5.3"}}
+ :aliases {:shadow {:jvm-opts ["-Xmx4g"] :main-opts ["-m" "shadow.cljs.devtools.cli"]}}}

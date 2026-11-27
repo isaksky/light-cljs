@@ -26,6 +26,12 @@
 ;;;   runtime Var allocation.
 ;;; - print-length-loop counts iterations in a local volatile instead of
 ;;;   macroexpanding its body to rewrite recur.
+;;; - pprint-set, pprint-array and pprint-pqueue are written directly with
+;;;   pprint-logical-block / print-length-loop instead of formatter-out,
+;;;   simple-dispatch and code-dispatch register methods with defmethod, and
+;;;   cl-format / code-dispatch tables and formatters initialize on first use
+;;;   so advanced builds that only pretty-print data drop cl-format and
+;;;   code-dispatch.
 
 (ns cljs.pprint
   (:refer-clojure :exclude [print println pr prn float?])
@@ -51,21 +57,24 @@
                 (let [code (.charCodeAt ch 0)]
                   (and (>= code 0x80) (< code 0xfffd))))))))
 
-(def ^:private empty-or-whitespace-re #"^[\s\xa0]*$")
+(def ^:private empty-or-whitespace-re nil)
 
 (defn- empty-or-whitespace? [s]
-  (.test empty-or-whitespace-re s))
+  (.test (or empty-or-whitespace-re
+             (set! empty-or-whitespace-re #"^[\s\xa0]*$"))
+         s))
 
 (def ^:private uid-counter (atom 0))
-(def ^:private uid-map (js/WeakMap.))
+(def ^:private uid-map nil)
 
 (defn- object-uid [o]
   (if (identical? (js/Object o) o)
-    (if-let [id (.get uid-map o)]
-      id
-      (let [id (swap! uid-counter inc)]
-        (.set uid-map o id)
-        id))
+    (let [m (or uid-map (set! uid-map (js/WeakMap.)))]
+      (if-let [id (.get m o)]
+        id
+        (let [id (swap! uid-counter inc)]
+          (.set m o id)
+          id)))
     0))
 
 (defn- strip-ns [named]
@@ -174,8 +183,12 @@
 (defmacro ^{:private true}
   defdirectives
   [& directives]
-  `(def ^{:private true}
-        ~'directive-table (hash-map ~@(mapcat process-directive-table-element directives))))
+  `(do
+     (def ^{:private true} ~'directive-table-cache nil)
+     (defn- ~'get-directive-table []
+       (or ~'directive-table-cache
+           (set! ~'directive-table-cache
+                 (hash-map ~@(mapcat process-directive-table-element directives)))))))
 
 (defmacro formatter
   "Makes a function which can directly run format-in. The function is
@@ -2661,13 +2674,13 @@ not a pretty writer (which keeps track of columns), this function always outputs
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (def ^{:private true}
-     param-pattern #"^([vV]|#|('.)|([+-]?\d+)|(?=,))")
+     param-pattern-source "^([vV]|#|('.)|([+-]?\\d+)|(?=,))")
 
 (def ^{:private true}
      special-params #{:parameter-from-args :remaining-arg-count})
 
 (defn- extract-param [[s offset saw-comma]]
-  (let [m (js/RegExp. (.-source param-pattern) "g")
+  (let [m (js/RegExp. param-pattern-source "g")
         param (.exec m s)]
     (if param
       (let [token-str (first param)
@@ -2760,7 +2773,7 @@ of parameters as well."
   (let [[raw-params [rest offset]] (extract-params s offset)
         [_ [rest offset flags]] (extract-flags rest offset)
         directive (first rest)
-        def (get directive-table (string/upper-case directive))
+        def (get (get-directive-table) (string/upper-case directive))
         params (if def (map-params def (map translate-param raw-params) flags offset))]
     (if (not directive)
       (format-error "Format string ended in the middle of a directive" offset))
@@ -2969,9 +2982,13 @@ column number or pretty printing"
 
 ;;; This is a bad idea, but it prevents us from leaking private symbols
 ;;; This should all be replaced by really compiled formats anyway.
-(def ^{:doc "Implementation detail of formatter and formatter-out; not part of the supported API."
-       :skip-wiki true}
-  cached-compile (memoize compile-format))
+(def ^:private cached-compile-fn nil)
+
+(defn cached-compile
+  "Implementation detail of formatter and formatter-out; not part of the supported API."
+  {:skip-wiki true}
+  [format-str]
+  ((or cached-compile-fn (set! cached-compile-fn (memoize compile-format))) format-str))
 
 ;;======================================================================
 ;; dispatch.clj
@@ -3052,7 +3069,17 @@ column number or pretty printing"
           (pprint-newline :linear)
           (recur (next aseq)))))))
 
-(def ^{:private true} pprint-array (formatter-out "~<[~;~@{~w~^, ~:_~}~;]~:>"))
+;;; (def ^{:private true} pprint-array (formatter-out "~<[~;~@{~w~^, ~:_~}~;]~:>"))
+(defn- pprint-array [arr]
+  (pprint-logical-block :prefix "[" :suffix "]"
+    (when-let [aseq (seq arr)]
+      (print-length-loop [aseq aseq]
+        (when aseq
+          (write-out (first aseq))
+          (when (next aseq)
+            (-write *out* ", ")
+            (pprint-newline :fill)
+            (recur (next aseq))))))))
 
 ;;; (def pprint-map (formatter-out "~<{~;~@{~<~w~^ ~_~w~:>~^, ~_~}~;}~:>"))
 (defn- pprint-map [amap]
@@ -3080,7 +3107,17 @@ column number or pretty printing"
   ;;TODO: Update to handle arrays (?) and suppressing namespaces
   (-write *out* (pr-str obj)))
 
-(def pprint-set (formatter-out "~<#{~;~@{~w~^ ~:_~}~;}~:>"))
+;;; (def pprint-set (formatter-out "~<#{~;~@{~w~^ ~:_~}~;}~:>"))
+(defn pprint-set [aset]
+  (pprint-logical-block :prefix "#{" :suffix "}"
+    (when-let [aseq (seq aset)]
+      (print-length-loop [aseq aseq]
+        (when aseq
+          (write-out (first aseq))
+          (when (next aseq)
+            (-write *out* " ")
+            (pprint-newline :fill)
+            (recur (next aseq))))))))
 
 (def ^{:private true}
 type-map {"core$future_call" "Future",
@@ -3104,7 +3141,17 @@ type-map {"core$future_call" "Future",
           :not-delivered
           @o)))))
 
-(def ^{:private true} pprint-pqueue (formatter-out "~<<-(~;~@{~w~^ ~_~}~;)-<~:>"))
+;;; (def ^{:private true} pprint-pqueue (formatter-out "~<<-(~;~@{~w~^ ~_~}~;)-<~:>"))
+(defn- pprint-pqueue [q]
+  (pprint-logical-block :prefix "<-(" :suffix ")-<"
+    (when-let [aseq (seq q)]
+      (print-length-loop [aseq aseq]
+        (when aseq
+          (write-out (first aseq))
+          (when (next aseq)
+            (-write *out* " ")
+            (pprint-newline :linear)
+            (recur (next aseq))))))))
 
 (defn- type-dispatcher [obj]
   (cond
@@ -3122,12 +3169,12 @@ type-map {"core$future_call" "Future",
   "The pretty print dispatch function for simple data structure format."
   type-dispatcher)
 
-(use-method simple-dispatch :list pprint-list)
-(use-method simple-dispatch :vector pprint-vector)
-(use-method simple-dispatch :map pprint-map)
-(use-method simple-dispatch :set pprint-set)
-(use-method simple-dispatch nil #(-write *out* (pr-str nil)))
-(use-method simple-dispatch :default pprint-simple-default)
+(defmethod simple-dispatch :list [alis] (pprint-list alis))
+(defmethod simple-dispatch :vector [avec] (pprint-vector avec))
+(defmethod simple-dispatch :map [amap] (pprint-map amap))
+(defmethod simple-dispatch :set [aset] (pprint-set aset))
+(defmethod simple-dispatch nil [_] (-write *out* (pr-str nil)))
+(defmethod simple-dispatch :default [obj] (pprint-simple-default obj))
 
 (set-pprint-dispatch simple-dispatch)
 
@@ -3215,7 +3262,9 @@ type-map {"core$future_call" "Future",
 ;;; won't give it to us now).
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(def ^{:private true} pprint-hold-first (formatter-out "~:<~w~^ ~@_~w~^ ~_~@{~w~^ ~_~}~:>"))
+(defn- pprint-hold-first [& args]
+  (execute-format (cached-compile "~:<~w~^ ~@_~w~^ ~_~@{~w~^ ~_~}~:>")
+                  (init-navigator args)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Format something that looks like a defn or defmacro
@@ -3291,7 +3340,9 @@ type-map {"core$future_call" "Future",
 ;;; Format something that looks like "if"
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(def ^{:private true} pprint-if (formatter-out "~:<~1I~w~^ ~@_~w~@{ ~_~w~}~:>"))
+(defn- pprint-if [& args]
+  (execute-format (cached-compile "~:<~1I~w~^ ~@_~w~@{ ~_~w~}~:>")
+                  (init-navigator args)))
 
 (defn- pprint-cond [alis]
   (pprint-logical-block :prefix "(" :suffix ")"
@@ -3386,26 +3437,29 @@ type-map {"core$future_call" "Future",
                %))
         amap))))
 
-(def ^:dynamic ^{:private true} *code-table*
-  (two-forms
-    (add-core-ns
-      {'def pprint-hold-first, 'defonce pprint-hold-first,
-       'defn pprint-defn, 'defn- pprint-defn, 'defmacro pprint-defn, 'fn pprint-defn,
-       'let pprint-let, 'loop pprint-let, 'binding pprint-let,
-       'with-local-vars pprint-let, 'with-open pprint-let, 'when-let pprint-let,
-       'if-let pprint-let, 'doseq pprint-let, 'dotimes pprint-let,
-       'when-first pprint-let,
-       'if pprint-if, 'if-not pprint-if, 'when pprint-if, 'when-not pprint-if,
-       'cond pprint-cond, 'condp pprint-condp,
-       'fn* pprint-anon-func,
-       '. pprint-hold-first, '.. pprint-hold-first, '-> pprint-hold-first,
-       'locking pprint-hold-first, 'struct pprint-hold-first,
-       'struct-map pprint-hold-first, 'ns pprint-ns
-       })))
+(def ^:dynamic ^{:private true} *code-table* nil)
+
+(defn- get-code-table []
+  (or *code-table*
+      (set! *code-table*
+            (two-forms
+              (add-core-ns
+                {'def pprint-hold-first, 'defonce pprint-hold-first,
+                 'defn pprint-defn, 'defn- pprint-defn, 'defmacro pprint-defn, 'fn pprint-defn,
+                 'let pprint-let, 'loop pprint-let, 'binding pprint-let,
+                 'with-local-vars pprint-let, 'with-open pprint-let, 'when-let pprint-let,
+                 'if-let pprint-let, 'doseq pprint-let, 'dotimes pprint-let,
+                 'when-first pprint-let,
+                 'if pprint-if, 'if-not pprint-if, 'when pprint-if, 'when-not pprint-if,
+                 'cond pprint-cond, 'condp pprint-condp,
+                 'fn* pprint-anon-func,
+                 '. pprint-hold-first, '.. pprint-hold-first, '-> pprint-hold-first,
+                 'locking pprint-hold-first, 'struct pprint-hold-first,
+                 'struct-map pprint-hold-first, 'ns pprint-ns})))))
 
 (defn- pprint-code-list [alis]
   (if-not (pprint-reader-macro alis)
-    (if-let [special-form (*code-table* (first alis))]
+    (if-let [special-form ((get-code-table) (first alis))]
       (special-form alis)
       (pprint-simple-code-list alis))))
 
@@ -3422,19 +3476,17 @@ type-map {"core$future_call" "Future",
   {:added "1.2" :arglists '[[object]]}
   type-dispatcher)
 
-(use-method code-dispatch :list pprint-code-list)
-(use-method code-dispatch :symbol pprint-code-symbol)
+(defmethod code-dispatch :list [alis] (pprint-code-list alis))
+(defmethod code-dispatch :symbol [sym] (pprint-code-symbol sym))
 
 ;; The following are all exact copies of simple-dispatch
-(use-method code-dispatch :vector pprint-vector)
-(use-method code-dispatch :map pprint-map)
-(use-method code-dispatch :set pprint-set)
-(use-method code-dispatch :queue pprint-pqueue)
-(use-method code-dispatch :deref pprint-ideref)
-(use-method code-dispatch nil pr)
-(use-method code-dispatch :default pprint-simple-default)
-
-(set-pprint-dispatch simple-dispatch)
+(defmethod code-dispatch :vector [avec] (pprint-vector avec))
+(defmethod code-dispatch :map [amap] (pprint-map amap))
+(defmethod code-dispatch :set [aset] (pprint-set aset))
+(defmethod code-dispatch :queue [q] (pprint-pqueue q))
+(defmethod code-dispatch :deref [o] (pprint-ideref o))
+(defmethod code-dispatch nil [o] (pr o))
+(defmethod code-dispatch :default [obj] (pprint-simple-default obj))
 
 ;;; For testing
 (comment

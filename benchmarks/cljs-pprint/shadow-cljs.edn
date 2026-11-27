@@ -1,0 +1,28 @@
+;; shadow-cljs 3.5.3 release builds of the four cljs.pprint size-benchmark
+;; programs (benchmarks/cljs-pprint.md). Run via `clojure -M:shadow release <id>`.
+{:deps {:aliases [:shadow]}
+ :builds
+ {:prn
+  {:target :node-script
+   :output-to "out/shadow-prn.js"
+   :output-dir "out/shadow-prn-dev"
+   :main pprint-bench.prn/main
+   :compiler-options {:source-map false}}
+  :pprint-only
+  {:target :node-script
+   :output-to "out/shadow-pprint-only.js"
+   :output-dir "out/shadow-pprint-only-dev"
+   :main pprint-bench.pprint-only/main
+   :compiler-options {:source-map false}}
+  :cl-format-only
+  {:target :node-script
+   :output-to "out/shadow-cl-format-only.js"
+   :output-dir "out/shadow-cl-format-only-dev"
+   :main pprint-bench.cl-format-only/main
+   :compiler-options {:source-map false}}
+  :code-dispatch
+  {:target :node-script
+   :output-to "out/shadow-code-dispatch.js"
+   :output-dir "out/shadow-code-dispatch-dev"
+   :main pprint-bench.code-dispatch/main
+   :compiler-options {:source-map false}}}}

@@ -646,3 +646,74 @@ fn an_explicit_source_root_overrides_bundled_cljs_pprint() {
         );
     }
 }
+
+/// light-cljs-1171: `pprint-set`, `pprint-array` and `pprint-pqueue` were
+/// rewritten without `formatter-out`; verify their output matches the original
+/// `cl-format` format strings across empty collections, wrapping margins,
+/// `*print-length*` and `*print-level*` at every optimization level.
+#[test]
+fn pprint_set_array_and_pqueue_match_original_format_strings() {
+    let dir = TempDir::new("cljs-pprint-inlined-printers");
+    let root = dir.join("src");
+    write_file(
+        &root,
+        "app/main.cljs",
+        r#"(ns app.main
+             (:require [cljs.pprint :as pp :refer [write cl-format]]))
+           (defn fmt-via [fmt x opts]
+             (let [f (fn [o]
+                       (if (or (set? o) (array? o) (instance? PersistentQueue o))
+                         (cl-format *out* fmt o)
+                         (pp/simple-dispatch o)))]
+               (apply write x :stream nil :dispatch f opts)))
+           (defn fmt-fn [f x opts]
+             (let [d (fn [o]
+                       (if (or (set? o) (array? o) (instance? PersistentQueue o))
+                         (f o)
+                         (pp/simple-dispatch o)))]
+               (apply write x :stream nil :dispatch d opts)))
+           (def cases
+             [["set" pp/pprint-set "~<#{~;~@{~w~^ ~:_~}~;}~:>"
+               [#{} (sorted-set 1) (sorted-set 1 2 3)
+                (sorted-set 100 200 300 400 500)
+                (sorted-set [1 2] [3 4])]]
+              ["array" @#'pp/pprint-array "~<[~;~@{~w~^, ~:_~}~;]~:>"
+               [#js [] #js [1] #js [1 2 3] #js [100 200 300 400 500]]]
+              ["pqueue" @#'pp/pprint-pqueue "~<<-(~;~@{~w~^ ~_~}~;)-<~:>"
+               [cljs.core.PersistentQueue.EMPTY
+                (into cljs.core.PersistentQueue.EMPTY [1])
+                (into cljs.core.PersistentQueue.EMPTY [1 2 3])
+                (into cljs.core.PersistentQueue.EMPTY [100 200 300 400 500])]]])
+           (def opt-sets
+             [[] [:right-margin 8] [:right-margin 12]
+              [:length 0] [:length 1] [:length 2]
+              [:level 0] [:level 1] [:level 2]])
+           (let [mismatches
+                 (for [[label f fmt vals] cases
+                       v vals
+                       opts opt-sets
+                       :let [a (fmt-fn f v opts)
+                             b (fmt-via fmt v opts)]
+                       :when (not= a b)]
+                   [label (pr-str v) opts a b])]
+             (js/console.log (count mismatches)))"#,
+    );
+    let root_text = root.to_str().unwrap();
+    for level in ["none", "prepare", "advanced"] {
+        let js = stdout(light_cljs(
+            dir.path(),
+            &[
+                "--compile",
+                "--optimize",
+                level,
+                "--entry",
+                "app.main",
+                "--source-root",
+                root_text,
+                "--no-cache",
+            ],
+            "",
+        ));
+        assert_eq!(run_node(&js), "0\n", "at {level}");
+    }
+}

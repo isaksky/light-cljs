@@ -2158,4 +2158,36 @@ pub const NAMESPACE_FIXTURES: &[NamespaceFixture] = &[
         removed: [0, 25, 43],
         printed: "true\nnull\n",
     },
+    // Programs that require bundled `cljs.pprint` for data-only `pprint` or
+    // `cl-format` only (light-cljs-1171): at `advanced`, `cljs-pprint-only`
+    // drops `cl-format` (the directive table and all formatters) and
+    // `code-dispatch`, and `cljs-pprint-format` drops `code-dispatch`.
+    NamespaceFixture {
+        name: "cljs-pprint-only",
+        entry: "app.main",
+        files: &[(
+            "app/main.cljs",
+            "(ns app.main (:require [cljs.pprint :refer [pprint]]))
+             (enable-console-print!)
+             (pprint {:a 1 :b (vec (range 20)) :c #{:x :y :z} :d '(foo bar baz)})
+             nil",
+        )],
+        ceilings: [1_394_000, 1_394_000, 199_000],
+        removed: [0, 0, 224],
+        printed: "{:a 1,\n :b [0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19],\n :c #{:y :z :x}, \n :d (foo bar baz)}\n\nnull\n",
+    },
+    NamespaceFixture {
+        name: "cljs-pprint-format",
+        entry: "app.main",
+        files: &[(
+            "app/main.cljs",
+            "(ns app.main (:require [cljs.pprint :refer [cl-format]]))
+             (enable-console-print!)
+             (cl-format true \"~a is ~:r: ~{~d~^, ~}~%\" \"Bob\" 3 [10 20 30])
+             nil",
+        )],
+        ceilings: [1_394_000, 1_394_000, 257_000],
+        removed: [0, 0, 112],
+        printed: "Bob is third: 10, 20, 30\n\nnull\n",
+    },
 ];
