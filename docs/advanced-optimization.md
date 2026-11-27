@@ -3498,14 +3498,25 @@ under `js*` below.
   definition `Retained::pinned`: removable when unread, but not movable,
   since a feature chunk would evaluate it later. Since light-cljs-1176, a
   regex literal (`#"..."`) or `re-pattern` call on a single constant string
-  literal whose JavaScript pattern and inline flags (`(?...)` matching
-  `rt$rePattern`) are syntactically proven valid by `is_known_valid_js_regex`,
-  while `re-pattern` is not replaced and core protocols are intact, is inert
-  (`Purity::Allocates`, opaque `host`, never pooled because `lastIndex` is
-  mutable), so unread top-level `(def r #"...")` definitions drop along with
-  `rePattern`; invalid patterns, dynamic `(re-pattern s)` calls and patterns
-  outside the conservative syntactic subset stay effectful and keep their
-  load-time `SyntaxError`. Other `throws` and
+  literal is inert (`Purity::Allocates`, opaque `host`, never pooled because
+  `lastIndex` is mutable) while `re-pattern` is not replaced, core protocols
+  are intact, and `is_known_valid_js_regex` proves the pattern in a small
+  conservative subset: at most 4,096 UTF-16 code units, an optional leading
+  `(?...)` prefix with unique flags from `g`, `i`, `m`, `s`, `y` (matching
+  `rt$rePattern`'s prefix strip, rejecting `d`, `u`, `v`, `x` and duplicates),
+  non-syntax non-surrogate characters, `.`, `^`, `$`, `|`, escapes `\d \D \s
+  \S \w \W \b \B \f \n \r \t \v \xHH` and escaped syntax characters, `* + ?`
+  quantifiers (with optional lazy `?`) on quantifiable atoms, balanced `(...)`,
+  `(?:...)`, `(?=...)`, `(?!...)` groups up to depth 64, and `[...]` / `[^...]`
+  classes whose ranges join ascending plain or `\xHH` endpoints. The subset is
+  kept small because every construct in it is valid in every ECMAScript edition
+  the runtime supports (ES2021+), whereas newer or subtler features (such as
+  lookbehind, the `d` or `u` flag, named groups, backreferences, `{...}`
+  quantifiers, `\u`, `\c` and `\p`), invalid patterns and dynamic
+  `(re-pattern s)` calls stay effectful roots and preserve load-time
+  `SyntaxError`s. Like other host-backed operations, the proof assumes the
+  host's global `RegExp` constructor is unmodified (`rt$rePattern` calls
+  `new RegExp`). Other `throws` and
   `effect` rows, calls outside a row's domain, other global reads, `map->T`
   and everything else stay effectful. Since
   light-cljs-210, element-wise `invoke` rows are inert when their function

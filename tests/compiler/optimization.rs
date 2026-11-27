@@ -964,6 +964,22 @@ fn invalid_and_dynamic_regexes_preserve_throwing_and_effects_at_every_level() {
         assert!(js.contains("KEPT_JS_HOLE"), "{level}: {js}");
         assert_eq!(traced(&js), "42\n[]\n", "{level}");
     }
+    // Engine-version-dependent syntax outside the ES2021-safe subset (such as
+    // lookbehind and the ES2022 `d` flag) stays a root at `Advanced` so older
+    // engines that reject it still throw at load time.
+    for (source, sentinel) in [
+        (r#"(def ^:private r #"(?<=a)b") 42"#, "(?<=a)b"),
+        (r#"(def ^:private r #"(?d)a") 42"#, "(?d)a"),
+    ] {
+        let p = program(source);
+        for level in OptimizationLevel::ALL {
+            let prepared = prepare_application(&p, ApplicationOptions::new(level));
+            let js = prepared.emit_js();
+            assert_eq!(prepared.stats().removed_definitions, 0, "{level}: {source}");
+            assert!(js.contains(sentinel), "{level}: {js}");
+            assert_eq!(traced(&js), "42\n[]\n", "{level}: {source}");
+        }
+    }
     // Redefined `re-pattern` in a namespace (`:refer-clojure :exclude [re-pattern]`)
     // is not `cljs.core/re-pattern`.
     let sources = Sources::new();
@@ -1040,11 +1056,10 @@ fn advanced_removes_unread_valid_regex_literals_and_re_pattern_calls() {
            (def ^:private r2 #"^([vV]|#|('.)|([+-]?\d+)|(?=,))")
            (def ^:private r3 #"(?i)foo")
            (def ^:private r4 #"(?m)^bar$")
-           (def ^:private r5 #"(?imsu)baz\u{1F600}")
-           (def ^:private r6 '#"quoted\s+\"text\"")
-           (def ^:private r7 #"(?<word>\w+)\k<word>")
-           (def ^:private r8 [#"a{1,3}?" {:k (re-pattern "^[a-z-]+$")}])
-           (def ^:private r9 (re-pattern "(?i)hello"))
+           (def ^:private r5 #"(?gimsy)baz")
+           (def ^:private r6 '#"quoted\s+text")
+           (def ^:private r7 [#"a+?" {:k (re-pattern "^[a-z-]+$")}])
+           (def ^:private r8 (re-pattern "(?i)hello"))
            (js/console.log 1)"#,
     );
     for level in OptimizationLevel::ALL {
@@ -1052,7 +1067,7 @@ fn advanced_removes_unread_valid_regex_literals_and_re_pattern_calls() {
         let js = prepared.emit_js();
         assert_eq!(execute(&format!("{js};")), "1\n", "{level}");
         if level.advanced() {
-            assert_eq!(prepared.stats().removed_definitions, 9);
+            assert_eq!(prepared.stats().removed_definitions, 8);
             assert_eq!(
                 js.len(),
                 baseline.len(),
