@@ -76,6 +76,7 @@ mod case_numeric;
 mod chunks;
 mod cljc_prefixes;
 mod cljs_pprint;
+mod cljs_pprint_conformance;
 mod cljs_test;
 mod cljs_test_conformance;
 mod clojure_template;

@@ -247,6 +247,19 @@ fn fixture_ids_are_unique_and_have_complete_provenance() {
                     contains_rust_test(include_str!("compiler/cljs_test_conformance.rs"), id),
                     "unknown cljs.test conformance test: {id}"
                 ),
+                "tests/compiler/cljs_pprint_conformance.rs" => assert!(
+                    contains_rust_test(include_str!("compiler/cljs_pprint_conformance.rs"), id),
+                    "unknown cljs.pprint conformance test: {id}"
+                ),
+                "tests/fixtures/cljs-pprint/cljs/pprint_test.cljs" => {
+                    let source = include_str!("fixtures/cljs-pprint/cljs/pprint_test.cljs");
+                    assert!(
+                        source.contains(&format!("(simple-tests {id}"))
+                            || source.contains(&format!("(code-block {id}"))
+                            || source.contains(&format!("(deftest {id}")),
+                        "unknown cljs.pprint upstream test: {id}"
+                    );
+                }
                 "tests/compiler/reader.rs" => assert!(
                     contains_rust_test(include_str!("compiler/reader.rs"), id),
                     "unknown compiler reader test: {id}"

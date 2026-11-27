@@ -25,6 +25,9 @@ here.
     Grapenthin)
   - `src/compiler_libraries/cljs/pprint.cljs` (from
     `src/main/cljs/cljs/pprint.cljs` and `src/main/cljs/cljs/pprint.cljc`)
+  - `tests/fixtures/cljs-pprint/cljs/pprint_test.cljs` (adapted from
+    `src/test/cljs/cljs/pprint_test.cljs` and `src/test/cljs/cljs/pprint_test.clj`,
+    origin recorded in `tests/reference/fixture-origins.tsv`)
   - Test fixtures under `tests/fixtures/` whose header carries the ClojureScript
     notice. These hold complete or adapted bodies from the upstream test suite
     (`src/test/cljs/...`), with per-body SHA-256 provenance recorded in the
