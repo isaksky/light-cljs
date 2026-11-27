@@ -3468,7 +3468,17 @@ under `js*` below.
   to a `fn` literal in the same initializer, with an inert value, is inert
   too: that is how a definition with `:test` metadata (every `deftest`) sets
   its test on its function, so an unread test goes with its body. Other
-  properties stay effectful (a function's own `name` or `length` throws). Reading any core
+  properties stay effectful (a function's own `name` or `length` throws).
+  Since light-cljs-1165 a top-level `defmethod`, `(-add-method g dispatch
+  (fn ...))`, whose dispatch value is inert plain data, on a global `g` whose
+  only definition is an earlier inert one (a `defmulti`), is a root only once
+  something else reads `g` (`Inert::method`): adding a method changes only
+  the fresh tables of that multimethod, so a multimethod nothing dispatches
+  is removed with its methods and what only they read. A replaced
+  `-add-method` or a second definition of `g` keeps the methods roots. A
+  program that requires `cljs.test` and runs no test so loses its `report`
+  and compile-time `assert-expr` methods: the `cljs-test-require` ratchet row
+  is 165 bytes at `advanced`, from 158,979 before. Reading any core
   value is inert, but since light-cljs-363 an initializer that reads one
   whose value may change while the program runs (a dynamic var or settable
   value, row value `any`, or a core value the program replaces) marks its

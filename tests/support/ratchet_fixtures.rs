@@ -2127,4 +2127,35 @@ pub const NAMESPACE_FIXTURES: &[NamespaceFixture] = &[
         removed: [0, 0, 0],
         printed: "null\nhello lazy\n",
     },
+    // A program that requires the bundled cljs.test and runs no test, and one
+    // that runs one test (light-cljs-1165): at `advanced` the `defmethod`s of
+    // multimethods nothing reads leave with them, so the first keeps only
+    // its own form.
+    NamespaceFixture {
+        name: "cljs-test-require",
+        entry: "app.main",
+        files: &[(
+            "app/main.cljs",
+            "(ns app.main (:require [cljs.test]))
+             (js/console.log \"no tests\")
+             nil",
+        )],
+        ceilings: [994_000, 936_000, 200],
+        removed: [0, 40, 77],
+        printed: "no tests\nnull\n",
+    },
+    NamespaceFixture {
+        name: "cljs-test-one",
+        entry: "app.main",
+        files: &[(
+            "app/main.cljs",
+            "(ns app.main (:require [cljs.test :refer [deftest is test-vars]]))
+             (deftest one (js/console.log (is (= 2 (inc 1)))))
+             (test-vars [#'one])
+             nil",
+        )],
+        ceilings: [998_000, 955_000, 162_000],
+        removed: [0, 25, 43],
+        printed: "true\nnull\n",
+    },
 ];

@@ -1038,7 +1038,10 @@ general capabilities:
   default set (docs/build-configuration.md), `deftest` expands to `nil`, as
   upstream's does when `:load-tests` is false. Otherwise, at `advanced`, a
   test nothing reads (no `run-tests`, `test-ns` or `ns-interns` of its
-  namespace, no `(var name)`) is removed with its body.
+  namespace, no `(var name)`) is removed with its body, and the methods of a
+  multimethod nothing dispatches, such as `report` and the compile-time
+  `assert-expr`, are removed with it, so a program that only requires
+  `cljs.test` keeps none of it.
 - An `async` body runs as an `^:async` function, so it may `await`. An
   exception it throws or a rejection it awaits before it calls `done` is
   reported as an error at the `async` form and the run continues as if

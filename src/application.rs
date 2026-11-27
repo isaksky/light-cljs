@@ -1017,6 +1017,9 @@ fn retain(prepared: &mut PreparedApplication, exports: &[GlobalId]) -> Retained 
     let mut definitions = vec![Vec::new(); program.globals.len()];
     let mut pending = Vec::new();
     let mut pinned = vec![false; program.exprs.len()];
+    // By global: the top-level `defmethod`s on the multimethod it names that
+    // run only once something else reads it (`Inert::method`).
+    let mut methods = vec![Vec::new(); program.globals.len()];
     let mut facts = level.advanced().then(|| {
         let top_ids: Vec<ExprId> = top.iter().map(|(id, _)| *id).collect();
         ProgramFacts::new_light(program, &top_ids)
@@ -1042,7 +1045,22 @@ fn retain(prepared: &mut PreparedApplication, exports: &[GlobalId]) -> Retained 
                 continue;
             }
         }
+        if !result
+            && let Some(global) = inert.method(id, position)
+            && let [definition] = definitions[global.0][..]
+            && candidates[definition.0]
+        {
+            methods[global.0].push(id);
+            continue;
+        }
         pending.push(id);
+    }
+    // A later definition of the multimethod's global would let the methods
+    // reach another value; they stay roots then.
+    for (global, ids) in methods.iter_mut().enumerate() {
+        if definitions[global].len() > 1 {
+            pending.append(ids);
+        }
     }
     for g in exports {
         if let Some(defs) = definitions.get(g.0) {
@@ -1073,6 +1091,7 @@ fn retain(prepared: &mut PreparedApplication, exports: &[GlobalId]) -> Retained 
         visit_globals(&program.exprs[id.0].kind, |global| {
             if !std::mem::replace(&mut retained[global.0], true) {
                 pending.extend(&definitions[global.0]);
+                pending.extend(&methods[global.0]);
             }
         });
         visit_children(&program.exprs[id.0].kind, |child| pending.push(child));
@@ -1082,6 +1101,13 @@ fn retain(prepared: &mut PreparedApplication, exports: &[GlobalId]) -> Retained 
     for (index, candidate) in candidates.iter().enumerate() {
         if *candidate && !visited[index] {
             prepared.program.exprs[index].kind = ExprKind::Nil;
+            prepared.stats.removed_definitions += 1;
+            removed += 1;
+        }
+    }
+    for id in methods.into_iter().flatten() {
+        if !visited[id.0] {
+            prepared.program.exprs[id.0].kind = ExprKind::Nil;
             prepared.stats.removed_definitions += 1;
             removed += 1;
         }
@@ -1288,6 +1314,41 @@ impl<'p> Inert<'p> {
         self.changeable = false;
         self.shape(init)?;
         Some(self.changeable)
+    }
+
+    /// When the top-level form `id` at `position` in the flattened top level
+    /// is a `defmethod` whose evaluation only changes the method table of the
+    /// multimethod it adds to (light-cljs-1165), that multimethod's global, so
+    /// the form can run only once something else reads the global and be
+    /// removed with an unread `defmulti`. That holds at `Advanced` for
+    /// `(-add-method g dispatch (fn ...))` of a `-add-method` the program does
+    /// not replace, an inert dispatch value that is plain data (adding it
+    /// hashes and compares it without running program code) and a `fn`
+    /// literal, when `g` is a global that the caller checks an earlier inert
+    /// definition is the only one of: the multimethod `defmulti` builds,
+    /// whose fresh tables nothing else holds.
+    fn method(&mut self, id: ExprId, position: usize) -> Option<GlobalId> {
+        let program = self.program;
+        let ExprKind::Call { callee, args } = &program.exprs[id.0].kind else {
+            return None;
+        };
+        let (ExprKind::CoreFn(CoreFnId::AddMethod), [target, dispatch, method]) =
+            (&program.exprs[callee.0].kind, &args[..])
+        else {
+            return None;
+        };
+        let ExprKind::Global(global) = program.exprs[target.0].kind else {
+            return None;
+        };
+        if !self.advanced
+            || !self.core_calls
+            || self.replaced[CoreFnId::AddMethod.table_row()]
+            || !matches!(program.exprs[method.0].kind, ExprKind::Fn { .. })
+        {
+            return None;
+        }
+        self.position = position;
+        self.shape(*dispatch)?.plain.then_some(global)
     }
 
     /// The shape of `id` when it is inert.
@@ -2051,6 +2112,46 @@ mod tests {
                  (def e (mapv (fn [x] (inc x)) [[1]])) (def f (group-by identity [(fn [])])) \
                  (def h (reduce + [1 2])) 42"
             ),
+            [0, 0]
+        );
+    }
+    /// Top-level `defmethod`s on a multimethod nothing else reads are removed
+    /// with its `defmulti` at `Advanced` (light-cljs-1165).
+    #[test]
+    fn advanced_removes_methods_of_unread_multimethods() {
+        let multi = "(defmulti m (fn [x] x)) (defmethod m :a [x] 1) (defmethod m [:b 'c] [x] 2)";
+        assert_eq!(removed(&format!("{multi} 42")), [0, 3]);
+        // A read of the multimethod keeps every method.
+        assert_eq!(removed(&format!("{multi} (m :a)")), [0, 0]);
+        assert_eq!(removed(&format!("{multi} (def f m) 42")), [0, 0]);
+        // A dispatch value that runs code, or is not plain data, keeps its
+        // method and so the multimethod.
+        assert_eq!(
+            removed("(defmulti m (fn [x] x)) (defmethod m (js/console.log 1) [x] 1) 42"),
+            [0, 0]
+        );
+        assert_eq!(
+            removed("(defmulti m (fn [x] x)) (defmethod m [(fn [] 1)] [x] 1) 42"),
+            [0, 0]
+        );
+        // Only the sole, earlier, inert definition of the global qualifies.
+        assert_eq!(
+            removed("(declare m) (defmethod m :a [x] 1) (defmulti m (fn [x] x)) 42"),
+            [0, 0]
+        );
+        assert_eq!(
+            removed(&format!("{multi} (defmulti m (fn [x] (inc x))) 42")),
+            [0, 0]
+        );
+        assert_eq!(
+            removed(
+                "(defmulti m (fn [x] x) :hierarchy (atom (make-hierarchy))) \
+                 (defmethod m :a [x] 1) 42"
+            ),
+            [0, 0]
+        );
+        assert_eq!(
+            removed(&format!("(set! cljs.core/-add-method nil) {multi} 42")),
             [0, 0]
         );
     }
