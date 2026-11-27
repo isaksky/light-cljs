@@ -1,7 +1,7 @@
 //! Validate the provenance contract without requiring the research checkout.
 use std::collections::HashSet;
 
-const CASE_FILES: [(&str, &str, usize); 14] = [
+const CASE_FILES: [(&str, &str, usize); 15] = [
     (
         "tests/fixtures/compiler-core-factories.tsv",
         include_str!("fixtures/compiler-core-factories.tsv"),
@@ -71,6 +71,11 @@ const CASE_FILES: [(&str, &str, usize); 14] = [
         "tests/reference/lexical-reference-limits.tsv",
         include_str!("reference/lexical-reference-limits.tsv"),
         4,
+    ),
+    (
+        "tests/fixtures/cljs-pprint/differential-corpus.tsv",
+        include_str!("fixtures/cljs-pprint/differential-corpus.tsv"),
+        3,
     ),
 ];
 const ORIGINS: &str = include_str!("reference/fixture-origins.tsv");
@@ -208,7 +213,8 @@ fn fixture_ids_are_unique_and_have_complete_provenance() {
                 | "tests/fixtures/execution-outcomes.tsv"
                 | "tests/fixtures/execution-literals.tsv"
                 | "tests/fixtures/analysis-boundaries.tsv"
-                | "tests/reference/lexical-reference-limits.tsv" => {
+                | "tests/reference/lexical-reference-limits.tsv"
+                | "tests/fixtures/cljs-pprint/differential-corpus.tsv" => {
                     assert!(
                         cases.contains(&(local_path, id)),
                         "unknown fixture ID: {id}"

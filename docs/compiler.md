@@ -1089,13 +1089,37 @@ explicit writer). Departures from upstream ClojureScript:
   appears inside a nested macro call.
 - The identity number in `#<Atom@N: ...>` (and other `IDeref` values printed
   under `code-dispatch`) is assigned on first use by a per-program `WeakMap`
-  counter instead of `goog/getUid`.
+  counter instead of `goog/getUid`. In addition, `pprint-ideref` reads
+  `(.-name (type o))`: upstream ClojureScript emits anonymous constructor
+  functions for `Atom`, `Delay` and `Volatile`, leaving the type name empty
+  (`#<@N: ...>`), whereas `light-cljs` emits named JavaScript classes and prints
+  `#<Atom@N: ...>`, `#<Delay@N: ...>` and `#<Volatile@N: ...>`.
 - Upstream's internal record-defining helper macro is kept private under a
   non-shadowing name rather than exported as `cljs.pprint/deftype`;
   `with-pretty-writer`, `getf` and `setf` (public macros in upstream's
   `cljs/pprint.cljc`) are also private here; and the Closure Library
   string/buffer helpers and private `lift-ns` are replaced by small private
   helpers in the same file.
+
+Upstream `cljs.pprint` quirks preserved as expected output (verified against
+ClojureScript 1.12.134 in `tests/compiler/cljs_pprint_conformance.rs`):
+
+- **Trailing spaces before line breaks in broken forms:** once a logical block
+  breaks across lines and the pretty writer switches from `:buffering` to
+  `:writing` mode, buffered trailing whitespace is emitted before `\n` on later
+  broken lines—visible after the comma of entries near the end of a broken map
+  (for example `{:alpha 1,\n :beta 2,\n :delta 4, \n :gamma 3}` at margin 20),
+  after the second-to-last element of a broken vector (`[100\n ...\n 500 \n 600]`),
+  after `(let ` or `(defn ` when the following form wraps, before the final
+  clause or argument of broken `cond`/`case`/call forms, and after `:` when an
+  `IDeref` value wraps under `code-dispatch`.
+- **Unimplemented printer controls:** `*print-lines*`, `:base`/`*print-base*`
+  and `:radix`/`*print-radix*` are accepted by `write` without effect (no line
+  truncation or alternate integer radix), and `pprint-tab` throws
+  `"pprint-tab is not yet implemented"`.
+- **`code-dispatch` reader-macro shortening:** `(quote x)` prints as `'x` and
+  `(var x)` prints as `#'x`, while `(deref x)` and `(meta x)` stay in list
+  syntax.
 
 **Dialect difference:** `clojure.string` follows the documented contracts where
 the pinned upstream implementation has JavaScript-level quirks:
