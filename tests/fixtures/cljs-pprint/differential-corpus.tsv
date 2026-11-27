@@ -1,5 +1,5 @@
 # id	expr	expected_json
-# Hand-authored 45-expression differential corpus for cljs.pprint (light-cljs-1170).
+# Hand-authored 50-expression differential corpus for cljs.pprint (light-cljs-1170).
 # Expected outputs are captured from Maven ClojureScript 1.12.134 (Node) via
 # `bb tests/fixtures/cljs-pprint/capture_reference.bb --update` and verified via
 # `bb tests/fixtures/cljs-pprint/capture_reference.bb --check`.
@@ -48,3 +48,8 @@ pprint-table-missing-keys-explicit	(with-out-str (pp/print-table [:a :b :c] [{:a
 pprint-table-missing-keys-implicit	(with-out-str (pp/print-table [(sorted-map :a 1 :b 2 :c 3) {:a 10} {:b 20 :d 40}]))	"\n| :a | :b | :c |\n|----+----+----|\n|  1 |  2 |  3 |\n| 10 |    |    |\n|    | 20 |    |\n"
 pprint-table-nil-and-empty-values	(with-out-str (pp/print-table [:k :v :note] [{:k :first :v nil :note ""} {:k :second} {:k :third :v false :note [1 2]}]))	"\n|      :k |    :v | :note |\n|---------+-------+-------|\n|  :first |       |       |\n| :second |       |       |\n|  :third | false | [1 2] |\n"
 pprint-table-empty-rows	(with-out-str (pp/print-table [:a :b] []) (pp/print-table []))	""
+pprint-write-print-lines-ignored	(pp/write [100 200 300 400 500] :stream nil :lines 2 :right-margin 10)	"[100\n 200\n 300\n 400 \n 500]"
+pprint-write-base-radix-ignored	(str (pp/write 255 :stream nil :base 16 :radix true) "|" (pp/write 255 :stream nil :base 8 :radix true) "|" (pp/write 5 :stream nil :base 2 :radix true))	"255|255|5"
+pprint-cl-format-print-base	(binding [pp/*print-base* 16 pp/*print-radix* true] (pp/cl-format nil "~a|~s|~d" 255 255 255))	"#xff|#xff|255"
+pprint-tab-not-implemented	(try (binding [*out* (pp/get-pretty-writer (StringBufferWriter. #js {:append (fn [_])}))] (pp/pprint-tab :line 1 1)) (catch js/Error e (.-message e)))	"pprint-tab is not yet implemented"
+pprint-code-reader-macros	(pp/with-pprint-dispatch pp/code-dispatch (with-out-str (pp/pprint '[(quote a) (var foo) (deref bar) (meta baz)])))	"['a #'foo (deref bar) (meta baz)]\n"

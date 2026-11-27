@@ -49,7 +49,8 @@
 (defmacro simple-tests [name & test-pairs]
   `(cljs.test/deftest ~name
      ~@(for [[x y] (partition 2 test-pairs)]
-         `(assert-simple-test (fn [] ~x) ~y ~(pr-str x)))))
+         (let [line (or (:line (meta x)) (:line (meta &form)))]
+           `(assert-simple-test (fn [] ~x) ~y ~(str (when line (str "line " line ": ")) (pr-str x)))))))
 
 (defmacro code-block
   "Read a string then print it with code-dispatch and succeed if it comes out the same"

@@ -1,7 +1,7 @@
 //! Conformance of the bundled `cljs.pprint` with upstream ClojureScript:
 //! upstream's own `cljs.pprint-test` suite (49 tests, 434 assertions) run
 //! through `light-cljs test` and compiled at `none`, `prepare`, and `advanced`
-//! under the default macro limits, plus a 45-expression differential corpus
+//! under the default macro limits, plus a 50-expression differential corpus
 //! pinned against Maven ClojureScript 1.12.134 (light-cljs-1170).
 use crate::{json::Json, temp_dir::TempDir};
 use std::{
@@ -150,7 +150,7 @@ fn parse_differential_corpus() -> Vec<(&'static str, &'static str, String)> {
 
 fn run_differential_corpus_at_level(level: &str) {
     let cases = parse_differential_corpus();
-    assert_eq!(cases.len(), 45);
+    assert_eq!(cases.len(), 50);
     let mut source = String::from(
         "(ns app.pprint-diff-corpus\n\
            (:require [cljs.pprint :as pp]\n\
@@ -237,6 +237,64 @@ fn differential_corpus_matches_upstream_at_prepare() {
 #[test]
 fn differential_corpus_matches_upstream_at_advanced() {
     run_differential_corpus_at_level("advanced");
+}
+
+/// Pin `light-cljs`'s named class prefixes (`#<Atom@`, `#<Delay@`,
+/// `#<Volatile@`) under `code-dispatch` across all optimization levels,
+/// normalizing only the WeakMap identity number (`@\d+:`).
+#[test]
+fn ideref_code_dispatch_preserves_class_names_across_optimization_levels() {
+    let dir = TempDir::new("cljs-pprint-ideref-names");
+    let root = dir.join("src");
+    write_file(
+        &root,
+        "app/ideref_names.cljs",
+        "(ns app.ideref-names\n\
+           (:require [cljs.pprint :as pp]\n\
+                     [clojure.string :as str]))\n\
+         (enable-console-print!)\n\
+         (defn norm-uid [s] (str/replace s #\"@\\d+:\" \"@ID:\"))\n\
+         (pp/with-pprint-dispatch pp/code-dispatch\n\
+           (let [a (atom {:a 1})\n\
+                 d (delay [1 2])\n\
+                 v (volatile! {:b 2})\n\
+                 d-before (pp/write d :stream nil)\n\
+                 _ @d\n\
+                 d-after (pp/write d :stream nil)]\n\
+             (println (norm-uid (pp/write a :stream nil)))\n\
+             (println (str (norm-uid d-before) \" -> \" (norm-uid d-after)))\n\
+             (println (norm-uid (pp/write v :stream nil)))))\n",
+    );
+    let expected = "#<Atom@ID: {:a 1}>\n\
+                    #<Delay@ID: :not-delivered> -> #<Delay@ID: [1 2]>\n\
+                    #<Volatile@ID: {:b 2}>\n";
+    for level in ["none", "prepare", "advanced"] {
+        let output = light_cljs(
+            dir.path(),
+            &[
+                "--warnings",
+                "--compile",
+                "--optimize",
+                level,
+                "--entry",
+                "app.ideref-names",
+                "--source-root",
+                root.to_str().unwrap(),
+                "--no-cache",
+            ],
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.is_empty(),
+            "--optimize {level} emitted unexpected stderr:\n{stderr}"
+        );
+        let js = stdout(output);
+        assert_eq!(
+            crate::canonical_json::node_stdout(&js),
+            expected,
+            "--optimize {level}: IDeref class-name prefix mismatch"
+        );
+    }
 }
 
 /// Live differential check against Maven ClojureScript 1.12.134 via the

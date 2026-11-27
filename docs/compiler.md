@@ -1113,9 +1113,11 @@ ClojureScript 1.12.134 in `tests/compiler/cljs_pprint_conformance.rs`):
   after `(let ` or `(defn ` when the following form wraps, before the final
   clause or argument of broken `cond`/`case`/call forms, and after `:` when an
   `IDeref` value wraps under `code-dispatch`.
-- **Unimplemented printer controls:** `*print-lines*`, `:base`/`*print-base*`
-  and `:radix`/`*print-radix*` are accepted by `write` without effect (no line
-  truncation or alternate integer radix), and `pprint-tab` throws
+- **Printer controls and `pprint-tab`:** `:lines` in `write` does not truncate
+  lines; `write` accepts `:base` and `:radix` without changing integer output
+  (`255` still prints as `"255"`), whereas `cl-format` `~a` and `~s` apply
+  `*print-base*` and `*print-radix*` (`"#xff"` for `255` in base 16 with radix,
+  while `~d` remains decimal); and `pprint-tab` throws
   `"pprint-tab is not yet implemented"`.
 - **`code-dispatch` reader-macro shortening:** `(quote x)` prints as `'x` and
   `(var x)` prints as `#'x`, while `(deref x)` and `(meta x)` stay in list
