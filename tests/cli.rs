@@ -3063,3 +3063,308 @@ fn cache_retention_requires_a_positive_integer() {
         assert!(output.stdout.is_empty(), "{args:?}");
     }
 }
+
+/// `light-cljs test ARGS` run in `dir`: its success, stdout and stderr.
+fn test_command(dir: &Path, args: &[&str]) -> (bool, String, String) {
+    let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+        .current_dir(dir)
+        .arg("test")
+        .args(args)
+        .output()
+        .unwrap();
+    (
+        output.status.success(),
+        String::from_utf8(output.stdout).unwrap(),
+        String::from_utf8(output.stderr).unwrap(),
+    )
+}
+
+fn write_source(root: &Path, path: &str, text: &str) {
+    let path = root.join(path);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, text).unwrap();
+}
+
+/// A passing suite: synchronous, `async` and `^:async` tests in two test
+/// namespaces, one `.cljc`, a helper namespace the tests require, and an
+/// application namespace that is no test namespace and must not load.
+fn passing_suite(root: &Path) {
+    write_source(
+        root,
+        "app/math.cljs",
+        "(ns app.math) (defn add [a b] (+ a b))",
+    );
+    write_source(
+        root,
+        "app/main.cljs",
+        "(ns app.main) (throw (js/Error. \"the application must not load\"))",
+    );
+    write_source(
+        root,
+        "app/math_test.cljs",
+        r#"(ns app.math-test
+  (:require [cljs.test :refer [deftest is testing async]]
+            [app.math :as math]))
+
+(println "loading app.math-test")
+
+(deftest adds
+  (testing "two numbers"
+    (is (= 4 (math/add 2 2)))))
+
+(deftest continued
+  (async done
+    (.then (js/Promise.resolve 5)
+           (fn [v] (is (= 5 v)) (done)))))
+
+(deftest ^:async awaited
+  (let [v (await (js/Promise.resolve 3))]
+    (is (= 3 (math/add v 0)))))
+"#,
+    );
+    write_source(
+        root,
+        "app/util_test.cljc",
+        "(ns app.util-test (:require [clojure.test :refer [deftest is]])) (deftest strs (is (= \"ab\" (str \"a\" \"b\"))))",
+    );
+}
+
+const PASSING_OUTPUT: &str = "loading app.math-test
+
+Testing app.math-test
+
+Testing app.util-test
+
+Ran 4 tests containing 4 assertions.
+0 failures, 0 errors.
+";
+
+#[test]
+fn test_command_runs_passing_suites_with_async_tests_in_embedded_v8() {
+    let dir = TempDir::new("test-command-pass");
+    passing_suite(&dir.join("src"));
+    let (ok, stdout, stderr) = test_command(&dir, &["--source-root", "src"]);
+    assert!(ok, "{stderr}");
+    assert_eq!(stdout, PASSING_OUTPUT);
+    assert_eq!(stderr, "");
+    // The runner is generated under the cache root, beside the cache.
+    let runner =
+        std::fs::read_to_string(dir.join(".light-cljs/test-runner/light_cljs/test_runner.cljs"))
+            .unwrap();
+    assert!(
+        runner.contains("(t/run-tests 'app.math-test 'app.util-test)"),
+        "{runner}"
+    );
+    assert!(dir.join(".light-cljs/cache").is_dir());
+}
+
+#[test]
+fn test_command_exits_nonzero_on_failures_errors_and_compile_errors() {
+    let dir = TempDir::new("test-command-fail");
+    let root = dir.join("src");
+    passing_suite(&root);
+    let run = || test_command(&dir, &["--source-root", "src", "--no-cache"]);
+    write_source(
+        &root,
+        "app/bad_test.cljs",
+        "(ns app.bad-test (:require [cljs.test :refer [deftest is]])) (deftest wrong (is (= 1 2)))",
+    );
+    let (ok, stdout, stderr) = run();
+    assert!(!ok);
+    assert!(
+        stdout.contains("FAIL in (wrong)") && stdout.contains("1 failures, 0 errors."),
+        "{stdout}"
+    );
+    assert_eq!(stderr, "light-cljs: tests failed\n");
+
+    // An exception in a test is an error of the run, synchronous or async.
+    write_source(
+        &root,
+        "app/bad_test.cljs",
+        r#"(ns app.bad-test (:require [cljs.test :refer [deftest is]]))
+(deftest throws (throw (js/Error. "boom")))
+(deftest ^:async rejects (await (js/Promise.reject (js/Error. "later"))))
+"#,
+    );
+    let (ok, stdout, stderr) = run();
+    assert!(!ok);
+    assert!(
+        stdout.contains("ERROR in (throws)")
+            && stdout.contains("ERROR in (rejects)")
+            && stdout.contains("0 failures, 2 errors."),
+        "{stdout}"
+    );
+    assert_eq!(stderr, "light-cljs: tests failed\n");
+
+    // An exception while a namespace loads ends the run.
+    write_source(
+        &root,
+        "app/bad_test.cljs",
+        "(ns app.bad-test) (throw (js/Error. \"at load\"))",
+    );
+    let (ok, _, stderr) = run();
+    assert!(!ok);
+    assert!(stderr.contains("at load"), "{stderr}");
+
+    // So does a compile error, before anything runs.
+    write_source(
+        &root,
+        "app/bad_test.cljs",
+        "(ns app.bad-test) (undefined-thing)",
+    );
+    let (ok, stdout, stderr) = run();
+    assert!(!ok);
+    assert_eq!(stdout, "");
+    assert!(stderr.contains("undefined-thing"), "{stderr}");
+}
+
+#[test]
+fn test_command_selects_namespaces_by_name_and_ns_regexp() {
+    let dir = TempDir::new("test-command-filter");
+    passing_suite(&dir.join("src"));
+    let named = |args: &[&str]| {
+        let mut all = vec!["--source-root", "src", "--no-cache"];
+        all.extend_from_slice(args);
+        test_command(&dir, &all)
+    };
+    let (ok, stdout, stderr) = named(&["app.util-test"]);
+    assert!(ok, "{stderr}");
+    assert_eq!(
+        stdout,
+        "\nTesting app.util-test\n\nRan 1 tests containing 1 assertions.\n0 failures, 0 errors.\n"
+    );
+    let (ok, stdout, stderr) = named(&["--ns-regexp", "math"]);
+    assert!(ok, "{stderr}");
+    assert!(
+        stdout.contains("Testing app.math-test") && !stdout.contains("app.util-test"),
+        "{stdout}"
+    );
+    // A namespace named that is not under a root, an invalid pattern, a
+    // pattern that matches nothing and an output flag are errors that run
+    // nothing.
+    let (ok, stdout, stderr) = named(&["app.missing-test"]);
+    assert!(!ok && stdout.is_empty());
+    assert_eq!(
+        stderr,
+        "light-cljs: no namespace app.missing-test under the source roots src\n"
+    );
+    let (ok, _, stderr) = named(&["--ns-regexp", "("]);
+    assert!(!ok);
+    assert!(
+        stderr.starts_with("light-cljs: invalid --ns-regexp (: "),
+        "{stderr}"
+    );
+    let (ok, _, stderr) = named(&["--ns-regexp", "-spec$"]);
+    assert!(!ok);
+    assert_eq!(
+        stderr,
+        "light-cljs: no test namespaces match -spec$ under the source roots src\n"
+    );
+    let (ok, _, stderr) = named(&["--optimize", "advanced"]);
+    assert!(!ok);
+    assert!(
+        stderr.starts_with("light-cljs: --optimize is not a flag of test"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn test_command_reads_source_paths_and_cache_root_from_light_cljs_edn() {
+    let dir = TempDir::new("test-command-config");
+    write_source(
+        &dir,
+        "light-cljs.edn",
+        r#"{:source-paths ["src" "test"]
+ :cache-root "build/cache-root"
+ :builds {:app {:target :esm :output-dir "out" :modules {:main {:entries [app.math]}}}}}"#,
+    );
+    write_source(
+        &dir.join("src"),
+        "app/math.cljs",
+        "(ns app.math) (defn add [a b] (+ a b))",
+    );
+    write_source(
+        &dir.join("test"),
+        "app/math_test.cljs",
+        "(ns app.math-test (:require [cljs.test :refer [deftest is]] [app.math :as m])) (deftest adds (is (= 3 (m/add 1 2))))",
+    );
+    // From a subdirectory: the file is the nearest one above it.
+    let (ok, stdout, stderr) = test_command(&dir.join("test/app"), &[]);
+    assert!(ok, "{stderr}");
+    assert_eq!(
+        stdout,
+        "\nTesting app.math-test\n\nRan 1 tests containing 1 assertions.\n0 failures, 0 errors.\n"
+    );
+    assert!(stderr.starts_with("light-cljs - config: "), "{stderr}");
+    assert!(dir.join("build/cache-root/cache").is_dir());
+    assert!(
+        dir.join("build/cache-root/test-runner/light_cljs/test_runner.cljs")
+            .is_file()
+    );
+
+    // Without a file or --source-root, there are no roots to search.
+    let bare = TempDir::new("test-command-bare");
+    let (ok, _, stderr) = test_command(&bare, &[]);
+    assert!(!ok);
+    assert!(
+        stderr.starts_with("light-cljs: test requires --source-root DIR or a light-cljs.edn"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn test_command_reruns_from_the_warm_compiler_cache() {
+    let dir = TempDir::new("test-command-cache");
+    let root = dir.join("src");
+    passing_suite(&root);
+    let run = || {
+        let (ok, stdout, stderr) = test_command(&dir, &["--source-root", "src", "--stats"]);
+        assert!(ok, "{stderr}");
+        let installed = stderr
+            .lines()
+            .find_map(|line| line.strip_prefix("cache.install.namespaces "))
+            .unwrap_or_else(|| panic!("{stderr}"))
+            .to_owned();
+        (stdout, installed)
+    };
+    assert_eq!(run(), (PASSING_OUTPUT.to_owned(), "0".to_owned()));
+    let (stdout, installed) = run();
+    assert_eq!(stdout, PASSING_OUTPUT);
+    assert_ne!(installed, "0");
+    // A new test namespace is discovered, compiled and run on the warm cache.
+    write_source(
+        &root,
+        "app/extra_test.cljs",
+        "(ns app.extra-test (:require [cljs.test :refer [deftest is]])) (deftest extra (is true))",
+    );
+    let (stdout, installed) = run();
+    assert_ne!(installed, "0");
+    assert!(
+        stdout.contains("Testing app.extra-test") && stdout.contains("Ran 5 tests"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn test_command_reports_a_run_that_waits_on_a_timer() {
+    let dir = TempDir::new("test-command-timer");
+    let root = dir.join("src");
+    let run = || test_command(&dir, &["--source-root", "src", "--no-cache"]);
+    write_source(
+        &root,
+        "app/timer_test.cljs",
+        "(ns app.timer-test (:require [cljs.test :refer [deftest is async]])) (deftest waits (async done (js/setTimeout (fn [] (is true) (done)) 1)))",
+    );
+    let (ok, _, stderr) = run();
+    assert!(!ok);
+    assert!(stderr.contains("setTimeout"), "{stderr}");
+    // A test that awaits a promise that never settles does not finish.
+    write_source(
+        &root,
+        "app/timer_test.cljs",
+        "(ns app.timer-test (:require [cljs.test :refer [deftest is]])) (deftest ^:async waits (await (js/Promise. (fn [_ _]))) (is true))",
+    );
+    let (ok, _, stderr) = run();
+    assert!(!ok);
+    assert!(stderr.contains("the test run did not finish"), "{stderr}");
+}

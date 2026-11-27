@@ -17,7 +17,7 @@ light-cljs compile features   # dev build in out/dev, once
 light-cljs watch features     # dev build in out/dev, watched and served
 ```
 
-Build IDs can be written with or without a leading colon (`features` or `:features`). A command that begins with a flag never reads `light-cljs.edn`. To tokenize a file literally named `compile`, `watch`, `release`, or `cljs-repl`, pass `./compile`.
+Build IDs can be written with or without a leading colon (`features` or `:features`). A command that begins with a flag never reads `light-cljs.edn`. To tokenize a file literally named `compile`, `watch`, `release`, `cljs-repl`, or `test`, pass `./compile`. `light-cljs test` (below) also finds `light-cljs.edn` this way when it is given no `--source-root`.
 
 ### `compile` and `release`
 
@@ -102,6 +102,26 @@ printf '(+ 20\n 22)\n(* *1 2)\n' | light-cljs --repl
 - **`--engine`** accepts only `v8` (legacy `--engine quickjs` reports that QuickJS was removed).
 
 See [docs/evaluation.md](evaluation.md#script-and-repl-commands) for details.
+
+---
+
+## Running `cljs.test` suites (`light-cljs test`)
+
+`light-cljs test` discovers the test namespaces of the source roots, compiles a runner for them, and runs it in an embedded V8 isolate. No runner namespace, Node, or JVM is needed:
+
+```sh
+light-cljs test --source-root src --source-root test    # every namespace ending in -test
+light-cljs test                                         # :source-paths of light-cljs.edn
+light-cljs test app.math-test app.util-test             # just these namespaces
+light-cljs test --ns-regexp '^app\.(math|util)-test$'   # by pattern
+```
+
+- **Selection:** a `NAMESPACE` argument runs that namespace and must name a `.cljs`/`.cljc` file under a root. `--ns-regexp REGEX`, named after shadow-cljs's `:ns-regexp`, also runs every namespace whose name REGEX finds a match in. REGEX is a JavaScript regular expression, the dialect of `#"..."`. With neither, the pattern is `-test$`. A namespace's name comes from its path, as `require` resolves it: `app/math_test.cljs` is `app.math-test`. Hidden directories and directories reached through a symbolic link are skipped. If nothing matches, the command reports the pattern and the roots, and exits nonzero.
+- **Source roots:** `--source-root DIR` (repeatable, relative to the current directory). Without it, the command finds `light-cljs.edn` the way `compile` does and uses its top-level `:source-paths`, `:cache-root`, `:cache-retention` and `:cache-blockers`. It never reads a build.
+- **Runner:** the command writes two namespaces under `<cache root>/test-runner` (`.light-cljs/test-runner` by default). `light-cljs.test-console` turns on console printing before any test namespace loads. `light-cljs.test-runner` requires the selected namespaces, records the result through a `(defmethod cljs.test/report [:cljs.test/default :end-run-tests] ...)`, and calls `(cljs.test/run-tests ...)` on them. The entry is compiled like `--compile --entry` at the default `prepare` level, with the persistent compiler cache (`.light-cljs/cache`, or `<:cache-root>/cache` from the file). On a warm rerun, unchanged namespaces are installed from the cache.
+- **Run and exit status:** `cljs.test`'s report goes to stdout as the tests run. `console.error` and `console.warn` go to stderr. The command exits 0 only when `(cljs.test/successful? summary)` holds. Any of the following makes it exit nonzero: a failed assertion, an error in a test, an exception while a namespace loads, a promise rejection with no handler, or a compile error.
+- **What runs:** synchronous tests, and promise-based tests (`^:async deftest` with `await`, or `async` with a `done` that a promise chain calls). The isolate's promise jobs are drained after the program runs. The isolate is ECMAScript only, with a `console` but no timers (`js/setTimeout`), DOM, or Node APIs. A test that calls one fails with that name's `ReferenceError`. If the run ends while a test still waits on something other than a promise, the command reports that the run did not finish. Tests that need timers, the DOM, Node, or npm packages belong in a Node or browser test build.
+- **Flags:** `--cache-dir DIR` or `--no-cache`, `--cache-blocker NS`, `--cache-retention N`, the `--macro-*` limits, `--config KEY=EDN`, `--elide-asserts`, `--jobs N` and `--stats` work as they do for `--compile --entry`. `--timeout-ms N` (10000 by default) and `--memory-limit N` (67108864 bytes by default) bound the run, as they bound `--eval`. Output flags such as `--optimize` are refused.
 
 ---
 

@@ -4,7 +4,8 @@ light-cljs is a Clojure-to-JavaScript compiler written in Rust. It reads
 `.cljs`/`.cljc` source, resolves and analyzes it in Rust, and emits self-contained
 JavaScript carrying its own persistent-collection runtime. The same compiler
 powers a project build tool (`light-cljs.edn` with `compile`, `watch`, `release`,
-and `cljs-repl`), a script runner, and a REPL backed by an embedded V8 isolate.
+and `cljs-repl`), a script runner, a `cljs.test` runner (`light-cljs test`), and a
+REPL backed by an embedded V8 isolate.
 No Node, JVM, or installed `cljs.core` is required to run code.
 
 Try it in the [browser playground](https://isaksky.github.io/light-cljs/playground/)
@@ -52,6 +53,19 @@ light-cljs --eval --source-root examples/native examples/native/demo.cljs
 
 light-cljs --repl
 ```
+
+### Run `cljs.test` suites (embedded V8)
+
+```sh
+light-cljs test --source-root src --source-root test   # every namespace ending in -test
+light-cljs test app.math-test                          # one namespace; :source-paths from light-cljs.edn
+```
+
+`light-cljs test` discovers the test namespaces, compiles a runner with the
+persistent compiler cache, runs synchronous and promise-based (`^:async`) tests
+in the embedded V8 isolate, and exits nonzero on any failure or error. The
+isolate has no timers, DOM, or Node APIs, so tests that need them belong in a
+Node or browser build ([docs/cli.md](docs/cli.md#running-cljstest-suites-light-cljs-test)).
 
 ### Build and watch a project (`light-cljs.edn`)
 

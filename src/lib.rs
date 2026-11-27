@@ -84,6 +84,7 @@ pub mod runtime_slice;
 pub mod source_map;
 pub mod source_provider;
 mod terse;
+pub mod test_runner;
 pub mod value_hash;
 
 pub use analyzer::{
