@@ -3099,6 +3099,12 @@ fn passing_suite(root: &Path) {
         "app/main.cljs",
         "(ns app.main) (throw (js/Error. \"the application must not load\"))",
     );
+    // A hyphenated file name no require resolves is not discovered.
+    write_source(
+        root,
+        "app/stray-test.cljs",
+        "(ns app.stray-test) (throw (js/Error. \"never loaded\"))",
+    );
     write_source(
         root,
         "app/math_test.cljs",
@@ -3251,7 +3257,7 @@ fn test_command_selects_namespaces_by_name_and_ns_regexp() {
     let (ok, _, stderr) = named(&["--ns-regexp", "("]);
     assert!(!ok);
     assert!(
-        stderr.starts_with("light-cljs: invalid --ns-regexp (: "),
+        stderr.starts_with("light-cljs: --ns-regexp: invalid regular expression (: "),
         "{stderr}"
     );
     let (ok, _, stderr) = named(&["--ns-regexp", "-spec$"]);

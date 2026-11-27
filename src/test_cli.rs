@@ -86,7 +86,13 @@ fn flags(mut args: impl Iterator<Item = OsString>) -> Result<Option<TestFlags>, 
         ns_regexp: None,
         roots: Vec::new(),
         compile: CompileFlags::default(),
-        limits: EvaluatorOptions::default(),
+        // The deadline bounds the run, not a poll budget: watchdog
+        // interrupts and console output spend polls, and a long suite would
+        // run out of the default's whatever --timeout-ms says.
+        limits: EvaluatorOptions {
+            poll_budget: u64::MAX,
+            ..EvaluatorOptions::default()
+        },
     };
     while let Some(arg) = args.next() {
         let text = arg
@@ -212,7 +218,13 @@ pub(crate) fn run(args: impl Iterator<Item = OsString>) -> Result<(), Box<dyn Er
         PathBuf::from(".light-cljs")
     };
     let namespaces =
-        test_runner::test_namespaces(&flags.roots, &flags.names, flags.ns_regexp.as_deref())?;
+        test_runner::test_namespaces(&flags.roots, &flags.names, flags.ns_regexp.as_deref())
+            .map_err(|error| match &flags.ns_regexp {
+                Some(_) if error.starts_with("invalid regular expression") => {
+                    format!("--ns-regexp: {error}")
+                }
+                _ => error,
+            })?;
     if namespaces.is_empty() {
         return Err(format!(
             "no test namespaces match {} under the source roots {}",

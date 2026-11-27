@@ -61,7 +61,9 @@ fn walk(dir: &Path, segments: &mut Vec<String>, out: &mut Vec<String>) -> io::Re
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
             continue;
         };
-        if name.starts_with('.') {
+        // A hidden entry, or one with a hyphen, which no require resolves
+        // (`app.sum-test` is `app/sum_test.cljs`).
+        if name.starts_with('.') || name.contains('-') {
             continue;
         }
         let kind = entry.file_type()?;
@@ -145,6 +147,14 @@ pub fn matching(pattern: &str, names: &[String]) -> Result<Vec<String>, String> 
     if names.is_empty() {
         return Ok(Vec::new());
     }
+    // The default needs no engine: no namespace name holds a line break.
+    if pattern == DEFAULT_NS_REGEXP {
+        return Ok(names
+            .iter()
+            .filter(|name| name.ends_with("-test"))
+            .cloned()
+            .collect());
+    }
     let engine = session_evaluator(EvalEngine::V8, EvaluatorOptions::default())
         .map_err(|error| error.to_string())?;
     engine
@@ -164,7 +174,7 @@ pub fn matching(pattern: &str, names: &[String]) -> Result<Vec<String>, String> 
         .map_err(|error| error.to_string())?;
     let flags = engine.string(value).map_err(|error| error.to_string())?;
     if let Some(message) = flags.strip_prefix('E') {
-        return Err(format!("invalid --ns-regexp {pattern}: {message}"));
+        return Err(format!("invalid regular expression {pattern}: {message}"));
     }
     Ok(names
         .iter()
@@ -269,7 +279,11 @@ pub fn run_script(
             "(out, err) => {
   const text = args => args.map(value => { try { return String(value); } catch { return Object.prototype.toString.call(value); } }).join(' ') + '\\n';
   const to = sink => (...args) => { sink(text(args)); };
-  globalThis.console = {log: to(out), info: to(out), error: to(err), warn: to(err), debug: to(err)};
+  const none = () => {};
+  globalThis.console = {log: to(out), info: to(out), dir: to(out), group: to(out), groupCollapsed: to(out),
+    error: to(err), warn: to(err), debug: to(err), trace: to(err),
+    assert: (ok, ...args) => { if (!ok) to(err)('Assertion failed:', ...args); },
+    groupEnd: none, time: none, timeEnd: none, timeLog: none, count: none, countReset: none, table: to(out)};
   return null;
 }",
         )
