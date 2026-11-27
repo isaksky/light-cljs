@@ -908,3 +908,221 @@ fn local_macro_shadows_referred_value_in_syntax_quote() {
         );
     }
 }
+
+#[test]
+fn discarded_and_unselected_ratio_literals_are_never_lowered() {
+    use light_cljs::compiler_data::{Name, Source};
+    // Discarded non-integral ratios in compile mode (top-level, nested, chained,
+    // metadata, maps, huge ratios, macros, syntax-quote, anonymous functions).
+    for (source, expected) in [
+        ("(pr-str [1 #_4/5 2])", "[1 2]"),
+        ("(pr-str [1 #_(foo 314159/100000) 2])", "[1 2]"),
+        ("#_4/5 1", "1"),
+        ("#_4/5", "null"),
+        ("(pr-str [1 #_#_4/5 3/4 2])", "[1 2]"),
+        ("(pr-str [1 #_^{:a 4/5} x 2])", "[1 2]"),
+        ("(pr-str [1 #_{1/2 :a 1/3 :b} 2])", "[1 2]"),
+        ("(pr-str [1 #_{1/2 :a 0.5 :b} 2])", "[1 2]"),
+        (
+            "(pr-str [1 #_99999999999999999999999999999999999999/3 2])",
+            "[1 2]",
+        ),
+        ("(pr-str `[1 #_4/5 2])", "[1 2]"),
+        ("(#(+ % #_4/5) 7)", "7"),
+        ("(pr-str [4/2 +4/2 -4/2 0/5 -0/5])", "[2 2 -2 0 0]"),
+    ] {
+        check(source, expected);
+    }
+
+    // Discarded ratio inside a macro body and alongside a data reader whose
+    // side effects still run in source order.
+    let mut host = MacroHost::new();
+    host.register_compiler_data_reader(
+        Name::new(Some("test"), "tag"),
+        "(let [seen (atom 0)] (fn [x] [x (swap! seen inc)]))",
+    )
+    .unwrap();
+    let js = compile_with_macros(
+        r#"(defmacro dropped [] [1 #_4/5 2])
+           #_4/5 #_#test/tag 1
+           (pr-str [(dropped) #test/tag 2])"#,
+        &mut host,
+    )
+    .unwrap();
+    assert_eq!(run(&js), "[[1 2] [2 2]]\n");
+
+    // Duplicate ratio keys inside a discarded map are still rejected, and
+    // zero-denominator / malformed ratios fail in the parser even under #_.
+    let err = MacroHost::new()
+        .read_compiler_form(&Source::new("dup.cljs", "[1 #_{1/2 :a 2/4 :b} 2]"))
+        .unwrap_err();
+    assert!(err.message.contains("DuplicateMapKey"), "{err}");
+    for bad in ["4/0", "0/0", "4/-2", "#_4/0 1", "#_0/0 1"] {
+        assert!(
+            light_cljs::parse(bad).is_err(),
+            "expected parse error: {bad}"
+        );
+    }
+
+    // Discard-only input with a non-integral ratio reads as None.
+    assert!(
+        MacroHost::new()
+            .read_compiler_form(&Source::new("discard.cljs", "#_4/5"))
+            .unwrap()
+            .is_none()
+    );
+
+    // Inactive reader conditional branches and discarded ratios in .cljc files.
+    let root = TempDir::new("cljc-ratio-discards");
+    std::fs::write(
+        root.join("app.cljc"),
+        r#"(ns app)
+           #_4/5
+           #_#?(:cljs 4/5)
+           (pr-str [#?(:clj 4/5 :cljs 1)
+                    #?(:clj (foo 314159/100000) :cljs 2)
+                    #?(:clj 4/5)
+                    #_4/5
+                    #_(foo 314159/100000)
+                    3])"#,
+    )
+    .unwrap();
+    let js = light_cljs::compile_namespace("app", std::slice::from_ref(root.path())).unwrap();
+    assert_eq!(run(&js), "[1 2 3]\n");
+
+    // Runtime read-string / cljs.reader still reads ratios as JS Numbers and drops #_ ratios.
+    check(
+        r#"(pr-str [(read-string "4/5")
+                    (read-string "4/2")
+                    (read-string "[1 #_4/5 2]")])"#,
+        "[0.8 2 [1 2]]",
+    );
+    std::fs::write(
+        root.join("runtime_ratio.cljs"),
+        r#"(ns runtime-ratio (:require [cljs.reader :as r] [clojure.edn :as edn]))
+           (pr-str [(r/read-string "4/5")
+                    (r/read-string "4/2")
+                    (r/read-string "[1 #_4/5 2]")
+                    (edn/read-string "[1 #_4/5 2]")])"#,
+    )
+    .unwrap();
+    let js =
+        light_cljs::compile_namespace("runtime-ratio", std::slice::from_ref(root.path())).unwrap();
+    assert_eq!(run(&js), "[0.8 2 [1 2] [1 2]]\n");
+
+    // CLI --compile and --eval for discarded and unselected ratio literals.
+    for (args, expected) in [
+        (&["--eval", "--text", "[1 #_4/5 2]"][..], "[1 2]\n"),
+        (
+            &["--eval", "--text", "[1 #_(foo 314159/100000) 2]"][..],
+            "[1 2]\n",
+        ),
+        (&["--eval", "--text", "#_4/5 1"][..], "1\n"),
+        (
+            &["--eval", "--text", "[1 #?(:clj 4/5 :cljs 2) #?(:clj 3/4)]"][..],
+            "[1 2]\n",
+        ),
+        (
+            &["--eval", "--text", "[4/2 +4/2 -4/2 0/5 -0/5]"][..],
+            "[2 2 -2 0 0]\n",
+        ),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            expected,
+            "{args:?}"
+        );
+    }
+    let compile_out = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+        .args([
+            "--compile",
+            "--text",
+            "(pr-str [1 #_4/5 #_(foo 314159/100000) 2])",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        compile_out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compile_out.stderr)
+    );
+    assert_eq!(
+        run(&String::from_utf8(compile_out.stdout).unwrap()),
+        "[1 2]\n"
+    );
+}
+
+#[test]
+fn undiscarded_non_integral_ratio_literals_fail_with_located_error_naming_literal() {
+    use light_cljs::compiler_data::Source;
+    // Reader API (MacroHost::read_compiler_form) reports the literal, never Lower(NumericOverflow).
+    for (source, literal) in [
+        ("(+ 1 4/5)", "4/5"),
+        ("'4/5", "4/5"),
+        ("(- 1 -314159/100000)", "-314159/100000"),
+        ("[#_1 4/5]", "4/5"),
+    ] {
+        let err = MacroHost::new()
+            .read_compiler_form(&Source::new("ratio.cljs", source))
+            .unwrap_err();
+        assert!(
+            err.message.contains("non-integral ratio literal")
+                && err.message.contains(literal)
+                && !err.message.contains("NumericOverflow"),
+            "{source}: {err}"
+        );
+        assert_eq!(err.span.text(), literal, "{source}");
+    }
+
+    // --eval CLI gives a located error naming the literal, not Lower(NumericOverflow).
+    for (source, literal, col) in [
+        ("(+ 1 4/5)", "4/5", 6),
+        ("'4/5", "4/5", 2),
+        ("[#_1 314159/100000]", "314159/100000", 6),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+            .args(["--eval", "--text", source])
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "--eval accepted {source}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(
+            stderr.contains(&format!("1:{col}:"))
+                && stderr.contains("non-integral ratio literal")
+                && stderr.contains(literal)
+                && !stderr.contains("NumericOverflow"),
+            "--eval {source}: {stderr}"
+        );
+    }
+
+    // --compile CLI rejects both direct and reader-expanded undiscarded ratios
+    // without Lower(NumericOverflow).
+    for (source, literal, col, require_literal_in_msg) in [
+        ("(+ 1 4/5)", "4/5", 6, false),
+        ("[#_1 4/5]", "4/5", 6, true),
+        ("(defmacro m [] 4/5) (m)", "4/5", 16, true),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_light-cljs"))
+            .args(["--compile", "--text", source])
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "--compile accepted {source}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(
+            stderr.contains(&format!("1:{col}:"))
+                && stderr.contains("is not a valid ClojureScript constant")
+                && !stderr.contains("NumericOverflow")
+                && (!require_literal_in_msg || stderr.contains(literal)),
+            "--compile {source}: {stderr}"
+        );
+    }
+}

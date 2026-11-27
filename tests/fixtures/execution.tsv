@@ -482,3 +482,8 @@ deferred-lazy-thrown-undefined	(do (let [n (atom 0) xs (lazy-seq (swap! n inc) (
 deferred-lazy-hash-cache	(do (let [n (atom 0) raw (reify ISeqable (-seq [_] (swap! n inc) (list 4))) xs (lazy-seq raw) h (hash xs) a @n ys (with-meta xs {:m 1})] (assert (= h (hash xs) (hash ys))) (assert (= a @n)) (assert (not (realized? ys))) (assert (number? (.-__hash xs)))) true)	true	[]
 deferred-deferred-fields	(do (let [d (delay 7) xs (lazy-seq [8])] (assert (fn? (.-f d))) (assert (fn? (.-fn xs))) (assert (nil? (.-value d))) (force d) (seq xs) (assert (= 7 (.-value d))) (assert (nil? (.-f d))) (assert (nil? (.-fn xs))) (assert (= [8] (.-s xs)))) true)	true	[]
 deferred-deferred-constructor-false	(do (let [d (Delay. false 7) xs (LazySeq. nil false nil nil)] (assert (realized? d)) (assert (= 7 @d)) (assert (realized? xs)) (assert (= :error (try (seq xs) (catch js/TypeError _ :error))))) true)	true	[]
+reader-runtime-discard-ratio	(= [1 #_4/5 2] [1 2])	true	[]
+reader-runtime-discard-ratio-nested	(= [1 #_(foo 314159/100000) 2] [1 2])	true	[]
+reader-runtime-discard-ratio-chained	(= [1 #_#_4/5 3/4 2] [1 2])	true	[]
+reader-runtime-discard-ratio-top-level	#_4/5 9	9	[]
+reader-runtime-integral-ratios	(= [4/2 +4/2 -4/2 0/5 -0/5] [2 2 -2 0 0])	true	[]

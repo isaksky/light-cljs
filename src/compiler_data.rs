@@ -686,6 +686,12 @@ impl DataBuilder {
     pub(crate) fn double(&self, v: f64) -> Datum {
         Datum::new(DatumKind::Double(v))
     }
+    pub(crate) fn ratio(&self, numerator: i64, denominator: i64) -> Datum {
+        Datum::new(DatumKind::Ratio {
+            numerator,
+            denominator,
+        })
+    }
     pub(crate) fn character(&self, v: u16) -> Datum {
         Datum::new(DatumKind::Character(v))
     }

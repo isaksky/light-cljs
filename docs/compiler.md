@@ -1098,7 +1098,10 @@ expansion. For example, `(/ 1 2)` returns `0.5`, `(= 1 1.0)` is true, and
 `(inc 9007199254740992)` stays `9007199254740992`. Rounding, overflow, NaN,
 infinities and signed zero follow the host. Reader integer/decimal distinctions
 remain source data for diagnostics and duplicate checks; wide radix integers
-round once at execution. Non-integral ratio literals are rejected; ordinary
+round once at execution. Undiscarded non-integral ratio literals are rejected
+(matching upstream ClojureScript, where `clojure.lang.Ratio` is not a valid
+constant); integral ratio literals reduce to Numbers, and ratio literals inside
+`#_` discards or inactive reader conditional branches are not lowered. Ordinary
 division produces fractional Numbers. There is no exact integer or ratio
 arithmetic.
 

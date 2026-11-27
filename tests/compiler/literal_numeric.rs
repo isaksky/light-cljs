@@ -535,7 +535,9 @@ fn canonical_numeric_literal_constants_and_same_host_diagnostic_recovery() {
             assert!(
                 error.contains(diagnostic)
                     || (*diagnostic == "number is not a valid ClojureScript constant"
-                        && error.contains("NumericOverflow"))
+                        && error.contains(
+                            "non-integral ratio literal 1/2 is not a valid ClojureScript constant"
+                        ))
                     || (phase
                         && *diagnostic == "duplicate map key"
                         && error.contains("DuplicateMapKey")),

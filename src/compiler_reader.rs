@@ -45,7 +45,9 @@ pub(crate) fn select_cljs(
                     unreachable!("parser retains discard prefix frames")
                 };
                 let selected = self.one(form, input, collection)?;
-                self.selected_discards.push(selected);
+                self.tree.nodes[id.0].span.end = self.tree.nodes[selected.0].span.end;
+                self.tree.nodes[id.0].kind = NodeKind::Discard { form: selected };
+                self.selected_discards.push(id);
             }
             Ok(())
         }
@@ -198,6 +200,9 @@ pub(crate) fn select_cljs(
         selected_discards: vec![],
     };
     selection.tree.roots = selection.forms(&roots, false, source.len())?;
+    selection
+        .selected_discards
+        .sort_by_key(|id| selection.tree.nodes[id.0].span.start);
     *discards = selection.selected_discards;
     Ok(())
 }
@@ -274,6 +279,7 @@ struct Lowerer<'a> {
     splices: HashSet<FormId>,
     discarded: Vec<NodeId>,
     next_discard: usize,
+    discard_depth: usize,
     suppress_arguments: usize,
     anonymous: Option<Anonymous>,
     gensyms: HashMap<Name, Datum>,
@@ -527,8 +533,10 @@ impl Lowerer<'_> {
             // Discards are read/validated, but Edamame does not include discarded
             // argument placeholders in the surrounding shorthand's parameter set.
             let mark = self.nodes.len();
+            self.discard_depth += 1;
             input.pending.push_front(InputForm::Syntax(id));
             let result = self.required(input, depth, self.syntax.nodes()[id.0].span.clone());
+            self.discard_depth -= 1;
             result?;
             self.nodes.truncate(mark);
             self.values.truncate(mark);
@@ -689,8 +697,11 @@ impl Lowerer<'_> {
                 map,
             } => self.namespaced_map(*auto_resolve, namespace.clone(), *map, span, depth),
             NodeKind::Discard { form } => {
+                self.discard_depth += 1;
                 input.pending.push_front(InputForm::Syntax(*form));
-                self.required(input, depth + 1, span)
+                let result = self.required(input, depth + 1, span);
+                self.discard_depth -= 1;
+                result
             }
             NodeKind::Tagged { tag, form } => self.tagged(*tag, *form, span, depth, input),
             NodeKind::Argument { rest, index } => self.argument(*rest, *index, span),
@@ -1146,10 +1157,47 @@ impl Lowerer<'_> {
         }
         Ok(result)
     }
+    fn discarded_ratio(&self, n: &str, d: &str) -> Datum {
+        fn gcd(mut a: u128, mut b: u128) -> u128 {
+            while b != 0 {
+                let r = a % b;
+                a = b;
+                b = r;
+            }
+            a
+        }
+        if let (Ok(num), Ok(den)) = (n.parse::<i128>(), d.parse::<i128>())
+            && den > 0
+        {
+            let g = gcd(num.unsigned_abs(), den as u128) as i128;
+            if let (Ok(numerator), Ok(denominator)) =
+                (i64::try_from(num / g), i64::try_from(den / g))
+            {
+                return self.builder.ratio(numerator, denominator);
+            }
+        }
+        self.builder.compiler_literal(
+            crate::compiler_data::CompilerLiteralKind::BigInteger,
+            &self
+                .builder
+                .string(format!("{n}/{d}").encode_utf16().collect::<Vec<_>>()),
+        )
+    }
     fn number(&self, text: &str, kind: NumberKind, span: Range<usize>) -> Result<Datum, ReadError> {
-        let overflow = || self.error(LowerErrorKind::NumericOverflow, span.clone());
+        let invalid_number = |message: String| ReadError {
+            message,
+            span: self
+                .source
+                .span(span.clone())
+                .unwrap_or_else(|| self.source.span(0..0).unwrap()),
+            related: None,
+        };
         if kind == NumberKind::Ratio {
-            let (n, d) = text.split_once('/').ok_or_else(overflow)?;
+            let (n, d) = text.split_once('/').ok_or_else(|| {
+                invalid_number(format!(
+                    "non-integral ratio literal {text} is not a valid ClojureScript constant"
+                ))
+            })?;
             if let Some(exact) = crate::reader_literals::integral_ratio_text(n, d) {
                 return Ok(if let Ok(n) = exact.parse::<i64>() {
                     self.builder.integer(n)
@@ -1162,39 +1210,44 @@ impl Lowerer<'_> {
                     )
                 });
             }
+            if self.discard_depth > 0 {
+                return Ok(self.discarded_ratio(n, d));
+            }
+            return Err(invalid_number(format!(
+                "non-integral ratio literal {text} is not a valid ClojureScript constant"
+            )));
         }
-        if kind != NumberKind::Ratio {
-            if matches!(kind, NumberKind::Integer | NumberKind::BigInteger)
-                && let Some(n) = integer(if kind == NumberKind::BigInteger {
-                    text.strip_suffix('N').unwrap()
-                } else {
-                    text
-                })
-                .and_then(|n| i64::try_from(n).ok())
-            {
-                return Ok(self.builder.integer(n));
-            }
-            if matches!(kind, NumberKind::Integer | NumberKind::BigInteger) {
-                let text = if kind == NumberKind::BigInteger {
-                    text.strip_suffix('N').unwrap()
-                } else {
-                    text
-                };
-                let exact = crate::reader_literals::integer_key(text);
-                return Ok(self.builder.compiler_literal(
-                    crate::compiler_data::CompilerLiteralKind::BigInteger,
-                    &self
-                        .builder
-                        .string(exact.encode_utf16().collect::<Vec<_>>()),
-                ));
-            }
-            return crate::analyzer::number(text, kind)
-                .map(|v| self.builder.double(v))
-                .ok_or_else(overflow);
+        if matches!(kind, NumberKind::Integer | NumberKind::BigInteger)
+            && let Some(n) = integer(if kind == NumberKind::BigInteger {
+                text.strip_suffix('N').unwrap()
+            } else {
+                text
+            })
+            .and_then(|n| i64::try_from(n).ok())
+        {
+            return Ok(self.builder.integer(n));
+        }
+        if matches!(kind, NumberKind::Integer | NumberKind::BigInteger) {
+            let text = if kind == NumberKind::BigInteger {
+                text.strip_suffix('N').unwrap()
+            } else {
+                text
+            };
+            let exact = crate::reader_literals::integer_key(text);
+            return Ok(self.builder.compiler_literal(
+                crate::compiler_data::CompilerLiteralKind::BigInteger,
+                &self
+                    .builder
+                    .string(exact.encode_utf16().collect::<Vec<_>>()),
+            ));
         }
         crate::analyzer::number(text, kind)
             .map(|v| self.builder.double(v))
-            .ok_or_else(overflow)
+            .ok_or_else(|| {
+                invalid_number(format!(
+                    "number literal {text} is not a valid ClojureScript constant"
+                ))
+            })
     }
 
     fn metadata(
@@ -1672,6 +1725,7 @@ pub(crate) fn lower_form_with_reader(
         splices: HashSet::new(),
         discarded,
         next_discard: 0,
+        discard_depth: 0,
         suppress_arguments: 0,
         anonymous: None,
         gensyms: HashMap::new(),

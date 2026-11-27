@@ -12478,7 +12478,20 @@ impl Analyzer<'_> {
                 break;
             }
             self.next_discard += 1;
-            self.expand_reader(id)?;
+            self.read_discard(id)?;
+        }
+        Ok(())
+    }
+
+    fn read_discard(&mut self, id: NodeId) -> Result<(), AnalysisError> {
+        self.compiler_read_form(id).map_err(|e| AnalysisError {
+            span: e.span.bytes(),
+            kind: AnalysisErrorKind::MacroExpansion(format!("reader: {e}")),
+        })?;
+        while self.discards.get(self.next_discard).is_some_and(|discard| {
+            self.syntax.nodes[discard.0].span.start < self.syntax.nodes[id.0].span.end
+        }) {
+            self.next_discard += 1;
         }
         Ok(())
     }
