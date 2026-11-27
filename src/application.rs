@@ -2,6 +2,7 @@
 //! Compile-time unit emission never enters this boundary.
 use crate::analyzer::{CoreFnId, ExprId, ExprKind, GlobalId, Program};
 use crate::call_shapes::{CallShapes, FunctionShape};
+use crate::compiler_data::CompilerLiteralKind;
 use crate::core_operations::{Calls, Purity, Type};
 use crate::inference::{Definition, Inference, ProgramFacts, TypeRole};
 use crate::program_fragment::visit_children;
@@ -1233,8 +1234,11 @@ struct Constructor {
 /// and whose arguments run no code (`-` calls, or `dispatch` over plain data),
 /// element-wise `invoke` calls (`mapv`, `filterv`, `every?`, ...) of a `fn`
 /// literal or core operation that is inert on the elements of plain
-/// collections, and `new` or `->T` of a [`Constructor`] after its definition.
-/// `throws` and `effect` rows stay effectful.
+/// collections, regex literals and `re-pattern` calls on a constant string
+/// literal whose JavaScript pattern and inline flags are syntactically proven
+/// valid (when `re-pattern` is not replaced, light-cljs-1176), and `new` or
+/// `->T` of a [`Constructor`] after its definition. `throws` and `effect` rows
+/// stay effectful.
 ///
 /// The core rows hold under the program-wide conditions of the
 /// `crate::core_operations` module docs, checked here: a core operation that
@@ -1483,6 +1487,11 @@ impl<'p> Inert<'p> {
                 let arguments = [self.shape(*value)?, self.shape(*metadata)?];
                 Shape::opaque(self.core_call(CoreFnId::WithMeta, &arguments)?)
             }
+            ReaderLiteral {
+                kind: CompilerLiteralKind::Regex,
+                items,
+                ..
+            } => self.valid_re_pattern(items)?,
             Call { callee, args } => {
                 if let Some((keys, values)) = hash_map_expansion(program, *callee, args) {
                     return self.hash_map(keys, values);
@@ -1549,6 +1558,9 @@ impl<'p> Inert<'p> {
         args: &[ExprId],
         arguments: &[Shape],
     ) -> Option<Shape> {
+        if core == CoreFnId::RePattern {
+            return self.valid_re_pattern(args);
+        }
         let types: Vec<_> = arguments.iter().map(|shape| shape.ty).collect();
         let call = core.operation().call(&types);
         if call.calls != Calls::Invoke {
@@ -1722,6 +1734,601 @@ impl<'p> Inert<'p> {
         let constructor = self.constructors.get(global.0).copied().flatten()?;
         (constructor.factory == factory && constructor.position < self.position)
             .then_some(constructor.instance)
+    }
+
+    /// A `#"..."` regex literal or `(re-pattern "...")` call on a single
+    /// constant string literal whose JavaScript regular expression pattern and
+    /// inline flags are syntactically proven valid, when `re-pattern` is not
+    /// replaced and core protocols are intact (light-cljs-1176). Because a
+    /// `RegExp` has mutable `lastIndex` and is a host value, its shape is
+    /// opaque `Type::HOST` (`Purity::Allocates`: removable when unread, never
+    /// pooled or treated as plain data).
+    fn valid_re_pattern(&self, args: &[ExprId]) -> Option<Shape> {
+        if !self.core_calls || self.replaced[CoreFnId::RePattern.table_row()] {
+            return None;
+        }
+        let [arg] = args else {
+            return None;
+        };
+        let ExprKind::String(pattern) = self.program.exprs[arg.0].kind else {
+            return None;
+        };
+        is_known_valid_js_regex(&self.program.strings[pattern.0])
+            .then_some(Shape::opaque(Type::HOST))
+    }
+}
+
+/// Conservative syntactic proof that `rePattern(pattern)` in `src/js_runtime.js`
+/// will construct a JavaScript `RegExp` without throwing `SyntaxError`.
+///
+/// Matches `rePattern`'s leading inline-flag prefix `/^\(\?([dgimsuxy]*)\)/`,
+/// rejects invalid or duplicate JS flags (including `x`), and parses the body
+/// with a strict recursive-descent subset of ECMAScript RegExp syntax (taking
+/// the `u` flag into account for escapes and `\u{...}`). Anything outside the
+/// proven-valid subset returns `false` and is kept as potentially throwing.
+fn is_known_valid_js_regex(pattern: &[u16]) -> bool {
+    const MAX_LEN: usize = 4096;
+    if pattern.len() > MAX_LEN {
+        return false;
+    }
+    let (flags, body) = split_re_pattern_prefix(pattern);
+    let mut seen_flags = 0u8;
+    for &flag in flags {
+        let bit = match flag {
+            0x64 => 1 << 0,    // d
+            0x67 => 1 << 1,    // g
+            0x69 => 1 << 2,    // i
+            0x6d => 1 << 3,    // m
+            0x73 => 1 << 4,    // s
+            0x75 => 1 << 5,    // u
+            0x79 => 1 << 6,    // y
+            _ => return false, // including `x`, which JS rejects
+        };
+        if (seen_flags & bit) != 0 {
+            return false;
+        }
+        seen_flags |= bit;
+    }
+    let unicode = (seen_flags & (1 << 5)) != 0;
+    let mut validator = JsRegexValidator {
+        body,
+        pos: 0,
+        unicode,
+        depth: 0,
+        captures: 0,
+        max_backref: 0,
+        named_groups: Vec::new(),
+        named_backrefs: Vec::new(),
+    };
+    if !validator.parse_disjunction() || validator.pos != body.len() {
+        return false;
+    }
+    if validator.max_backref > validator.captures {
+        return false;
+    }
+    validator
+        .named_backrefs
+        .iter()
+        .all(|name| validator.named_groups.contains(name))
+}
+
+/// Mirrors `const prefix = /^\(\?([dgimsuxy]*)\)/.exec(pattern)` in
+/// `src/js_runtime.js`'s `rePattern`.
+fn split_re_pattern_prefix(pattern: &[u16]) -> (&[u16], &[u16]) {
+    if pattern.len() >= 3 && pattern[0] == u16::from(b'(') && pattern[1] == u16::from(b'?') {
+        let mut i = 2;
+        while i < pattern.len()
+            && matches!(
+                pattern[i],
+                0x64 | 0x67 | 0x69 | 0x6d | 0x73 | 0x75 | 0x78 | 0x79
+            )
+        {
+            i += 1;
+        }
+        if pattern.get(i) == Some(&u16::from(b')')) {
+            return (&pattern[2..i], &pattern[i + 1..]);
+        }
+    }
+    (&[], pattern)
+}
+
+enum ClassAtom {
+    Char(u32),
+    ClassEscape,
+}
+
+struct JsRegexValidator<'a> {
+    body: &'a [u16],
+    pos: usize,
+    unicode: bool,
+    depth: usize,
+    captures: u32,
+    max_backref: u32,
+    named_groups: Vec<&'a [u16]>,
+    named_backrefs: Vec<&'a [u16]>,
+}
+
+impl<'a> JsRegexValidator<'a> {
+    const MAX_DEPTH: usize = 64;
+    const MAX_CAPTURES: u32 = 256;
+    const MAX_QUANTIFIER: u32 = 65_535;
+
+    fn peek(&self) -> Option<u16> {
+        self.body.get(self.pos).copied()
+    }
+
+    fn peek_at(&self, offset: usize) -> Option<u16> {
+        self.body.get(self.pos + offset).copied()
+    }
+
+    fn is_surrogate(cu: u16) -> bool {
+        (0xD800..=0xDFFF).contains(&cu)
+    }
+
+    fn is_syntax_char(cu: u16) -> bool {
+        matches!(
+            cu,
+            0x5E // ^
+            | 0x24 // $
+            | 0x5C // \
+            | 0x2E // .
+            | 0x2A // *
+            | 0x2B // +
+            | 0x3F // ?
+            | 0x28 // (
+            | 0x29 // )
+            | 0x5B // [
+            | 0x5D // ]
+            | 0x7B // {
+            | 0x7D // }
+            | 0x7C // |
+            | 0x2F // /
+        )
+    }
+
+    fn is_ascii_non_alnum(cu: u16) -> bool {
+        (0x20..=0x7E).contains(&cu) && !(cu as u8).is_ascii_alphanumeric()
+    }
+
+    fn parse_disjunction(&mut self) -> bool {
+        if !self.parse_alternative() {
+            return false;
+        }
+        while self.peek() == Some(u16::from(b'|')) {
+            self.pos += 1;
+            if !self.parse_alternative() {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn parse_alternative(&mut self) -> bool {
+        while let Some(cu) = self.peek() {
+            match cu {
+                0x7C | 0x29 => break,                                    // | or )
+                0x2A | 0x2B | 0x3F | 0x7B | 0x7D | 0x5D => return false, // * + ? { } ]
+                0x5E | 0x24 => {
+                    // ^ or $: non-quantifiable assertion
+                    self.pos += 1;
+                }
+                0x2E => {
+                    // .
+                    self.pos += 1;
+                    if !self.parse_optional_quantifier() {
+                        return false;
+                    }
+                }
+                0x28 => {
+                    // (
+                    let Some(quantifiable) = self.parse_group() else {
+                        return false;
+                    };
+                    if quantifiable && !self.parse_optional_quantifier() {
+                        return false;
+                    }
+                }
+                0x5B => {
+                    // [
+                    if !self.parse_char_class() || !self.parse_optional_quantifier() {
+                        return false;
+                    }
+                }
+                0x5C => {
+                    // \
+                    let Some(quantifiable) = self.parse_atom_escape() else {
+                        return false;
+                    };
+                    if quantifiable && !self.parse_optional_quantifier() {
+                        return false;
+                    }
+                }
+                _ => {
+                    if (0xD800..=0xDBFF).contains(&cu) {
+                        if self
+                            .peek_at(1)
+                            .is_some_and(|low| (0xDC00..=0xDFFF).contains(&low))
+                        {
+                            self.pos += 2;
+                        } else {
+                            return false;
+                        }
+                    } else if (0xDC00..=0xDFFF).contains(&cu) {
+                        return false;
+                    } else {
+                        self.pos += 1;
+                    }
+                    if !self.parse_optional_quantifier() {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    fn parse_group(&mut self) -> Option<bool> {
+        self.pos += 1; // consume '('
+        if self.depth >= Self::MAX_DEPTH {
+            return None;
+        }
+        self.depth += 1;
+        let quantifiable = if self.peek() == Some(u16::from(b'?')) {
+            self.pos += 1;
+            match self.peek()? {
+                0x3A => {
+                    // (?:...)
+                    self.pos += 1;
+                    true
+                }
+                0x3D | 0x21 => {
+                    // (?=...) or (?!...): assertion, not quantifiable
+                    self.pos += 1;
+                    false
+                }
+                0x3C => {
+                    // (?<=...), (?<!...), or (?<name>...)
+                    self.pos += 1;
+                    match self.peek()? {
+                        0x3D | 0x21 => {
+                            self.pos += 1;
+                            false
+                        }
+                        _ => {
+                            let name = self.parse_group_name()?;
+                            if self.peek() != Some(u16::from(b'>')) {
+                                return None;
+                            }
+                            self.pos += 1;
+                            if self.captures >= Self::MAX_CAPTURES {
+                                return None;
+                            }
+                            self.captures += 1;
+                            if self.named_groups.contains(&name) {
+                                return None;
+                            }
+                            self.named_groups.push(name);
+                            true
+                        }
+                    }
+                }
+                _ => return None,
+            }
+        } else {
+            if self.captures >= Self::MAX_CAPTURES {
+                return None;
+            }
+            self.captures += 1;
+            true
+        };
+        if !self.parse_disjunction() || self.peek() != Some(u16::from(b')')) {
+            return None;
+        }
+        self.pos += 1;
+        self.depth -= 1;
+        Some(quantifiable)
+    }
+
+    fn parse_group_name(&mut self) -> Option<&'a [u16]> {
+        let start = self.pos;
+        let first = self.peek()?;
+        if !matches!(first, 0x41..=0x5A | 0x61..=0x7A | 0x5F | 0x24) {
+            return None;
+        }
+        self.pos += 1;
+        while let Some(cu) = self.peek() {
+            if matches!(cu, 0x41..=0x5A | 0x61..=0x7A | 0x30..=0x39 | 0x5F | 0x24) {
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+        Some(&self.body[start..self.pos])
+    }
+
+    fn parse_optional_quantifier(&mut self) -> bool {
+        match self.peek() {
+            Some(0x2A | 0x2B | 0x3F) => {
+                // * + ?
+                self.pos += 1;
+                if self.peek() == Some(u16::from(b'?')) {
+                    self.pos += 1;
+                }
+                true
+            }
+            Some(0x7B) => {
+                // {m}, {m,}, {m,n}
+                self.pos += 1;
+                let Some(min) = self.parse_decimal_bounded(Self::MAX_QUANTIFIER) else {
+                    return false;
+                };
+                match self.peek() {
+                    Some(0x7D) => {
+                        self.pos += 1;
+                    }
+                    Some(0x2C) => {
+                        self.pos += 1;
+                        if self.peek() == Some(u16::from(b'}')) {
+                            self.pos += 1;
+                        } else {
+                            let Some(max) = self.parse_decimal_bounded(Self::MAX_QUANTIFIER) else {
+                                return false;
+                            };
+                            if min > max || self.peek() != Some(u16::from(b'}')) {
+                                return false;
+                            }
+                            self.pos += 1;
+                        }
+                    }
+                    _ => return false,
+                }
+                if self.peek() == Some(u16::from(b'?')) {
+                    self.pos += 1;
+                }
+                true
+            }
+            _ => true,
+        }
+    }
+
+    fn parse_decimal_bounded(&mut self, max: u32) -> Option<u32> {
+        let mut saw_digit = false;
+        let mut value = 0u32;
+        while let Some(cu) = self.peek() {
+            if (0x30..=0x39).contains(&cu) {
+                saw_digit = true;
+                self.pos += 1;
+                value = value.checked_mul(10)?.checked_add(u32::from(cu - 0x30))?;
+                if value > max {
+                    return None;
+                }
+            } else {
+                break;
+            }
+        }
+        saw_digit.then_some(value)
+    }
+
+    fn parse_hex_exact(&mut self, digits: usize) -> Option<u32> {
+        let mut value = 0u32;
+        for _ in 0..digits {
+            let cu = self.peek()?;
+            let digit = Self::hex_digit(cu)?;
+            self.pos += 1;
+            value = (value << 4) | digit;
+        }
+        Some(value)
+    }
+
+    fn parse_unicode_braced(&mut self) -> Option<u32> {
+        self.pos += 1; // consume '{'
+        let mut saw_digit = false;
+        let mut value = 0u32;
+        while let Some(cu) = self.peek() {
+            if let Some(digit) = Self::hex_digit(cu) {
+                saw_digit = true;
+                self.pos += 1;
+                value = value.checked_mul(16)?.checked_add(digit)?;
+                if value > 0x10_FFFF {
+                    return None;
+                }
+            } else {
+                break;
+            }
+        }
+        if !saw_digit || self.peek() != Some(u16::from(b'}')) {
+            return None;
+        }
+        self.pos += 1;
+        if (0xD800..=0xDFFF).contains(&value) {
+            return None;
+        }
+        Some(value)
+    }
+
+    fn hex_digit(cu: u16) -> Option<u32> {
+        match cu {
+            0x30..=0x39 => Some(u32::from(cu - 0x30)),
+            0x41..=0x46 => Some(u32::from(cu - 0x41 + 10)),
+            0x61..=0x66 => Some(u32::from(cu - 0x61 + 10)),
+            _ => None,
+        }
+    }
+
+    fn parse_atom_escape(&mut self) -> Option<bool> {
+        self.pos += 1; // consume '\'
+        let esc = self.peek()?;
+        self.pos += 1;
+        match esc {
+            0x62 | 0x42 => Some(false), // \b \B: non-quantifiable assertion
+            0x64 | 0x44 | 0x73 | 0x53 | 0x77 | 0x57 => Some(true), // \d \D \s \S \w \W
+            0x66 | 0x6E | 0x72 | 0x74 | 0x76 => Some(true), // \f \n \r \t \v
+            0x30 => {
+                // \0 not followed by a decimal digit
+                if self
+                    .peek()
+                    .is_some_and(|next| (0x30..=0x39).contains(&next))
+                {
+                    None
+                } else {
+                    Some(true)
+                }
+            }
+            0x31..=0x39 => {
+                // Decimal backreference \1..
+                let mut value = u32::from(esc - 0x30);
+                while let Some(cu) = self.peek() {
+                    if (0x30..=0x39).contains(&cu) {
+                        self.pos += 1;
+                        value = value.checked_mul(10)?.checked_add(u32::from(cu - 0x30))?;
+                        if value > Self::MAX_CAPTURES {
+                            return None;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                self.max_backref = self.max_backref.max(value);
+                Some(true)
+            }
+            0x63 => {
+                // \cA..\cZ, \ca..\cz
+                let letter = self.peek()?;
+                if matches!(letter, 0x41..=0x5A | 0x61..=0x7A) {
+                    self.pos += 1;
+                    Some(true)
+                } else {
+                    None
+                }
+            }
+            0x78 => {
+                // \xHH
+                self.parse_hex_exact(2)?;
+                Some(true)
+            }
+            0x75 => {
+                // \uHHHH or (with `u` flag) \u{H+}
+                if self.unicode && self.peek() == Some(u16::from(b'{')) {
+                    self.parse_unicode_braced()?;
+                    Some(true)
+                } else {
+                    let v = self.parse_hex_exact(4)?;
+                    if (0xD800..=0xDFFF).contains(&v) {
+                        return None;
+                    }
+                    Some(true)
+                }
+            }
+            0x6B => {
+                // \k<name>
+                if self.peek() != Some(u16::from(b'<')) {
+                    return None;
+                }
+                self.pos += 1;
+                let name = self.parse_group_name()?;
+                if self.peek() != Some(u16::from(b'>')) {
+                    return None;
+                }
+                self.pos += 1;
+                self.named_backrefs.push(name);
+                Some(true)
+            }
+            _ if Self::is_syntax_char(esc) => Some(true),
+            _ if !self.unicode && Self::is_ascii_non_alnum(esc) => Some(true),
+            _ => None,
+        }
+    }
+
+    fn parse_char_class(&mut self) -> bool {
+        self.pos += 1; // consume '['
+        if self.peek() == Some(u16::from(b'^')) {
+            self.pos += 1;
+        }
+        loop {
+            let Some(cu) = self.peek() else {
+                return false;
+            };
+            if cu == u16::from(b']') {
+                self.pos += 1;
+                return true;
+            }
+            let Some(first) = self.parse_class_atom() else {
+                return false;
+            };
+            if self.peek() == Some(u16::from(b'-')) && self.peek_at(1) != Some(u16::from(b']')) {
+                let ClassAtom::Char(start) = first else {
+                    return false;
+                };
+                self.pos += 1; // consume '-'
+                let Some(ClassAtom::Char(end)) = self.parse_class_atom() else {
+                    return false;
+                };
+                if start > end {
+                    return false;
+                }
+            }
+        }
+    }
+
+    fn parse_class_atom(&mut self) -> Option<ClassAtom> {
+        let cu = self.peek()?;
+        self.pos += 1;
+        if cu == u16::from(b'\\') {
+            let esc = self.peek()?;
+            self.pos += 1;
+            match esc {
+                0x64 | 0x44 | 0x73 | 0x53 | 0x77 | 0x57 => Some(ClassAtom::ClassEscape),
+                0x62 => Some(ClassAtom::Char(0x08)), // \b backspace
+                0x66 => Some(ClassAtom::Char(0x0C)), // \f
+                0x6E => Some(ClassAtom::Char(0x0A)), // \n
+                0x72 => Some(ClassAtom::Char(0x0D)), // \r
+                0x74 => Some(ClassAtom::Char(0x09)), // \t
+                0x76 => Some(ClassAtom::Char(0x0B)), // \v
+                0x30 => {
+                    if self
+                        .peek()
+                        .is_some_and(|next| (0x30..=0x39).contains(&next))
+                    {
+                        None
+                    } else {
+                        Some(ClassAtom::Char(0))
+                    }
+                }
+                0x63 => {
+                    let letter = self.peek()?;
+                    if matches!(letter, 0x41..=0x5A | 0x61..=0x7A) {
+                        self.pos += 1;
+                        Some(ClassAtom::Char(u32::from(letter & 0x1F)))
+                    } else {
+                        None
+                    }
+                }
+                0x78 => Some(ClassAtom::Char(self.parse_hex_exact(2)?)),
+                0x75 => {
+                    let v = if self.unicode && self.peek() == Some(u16::from(b'{')) {
+                        self.parse_unicode_braced()?
+                    } else {
+                        let v = self.parse_hex_exact(4)?;
+                        if (0xD800..=0xDFFF).contains(&v) {
+                            return None;
+                        }
+                        v
+                    };
+                    Some(ClassAtom::Char(v))
+                }
+                0x2D => Some(ClassAtom::Char(0x2D)), // \- valid in class in both modes
+                _ if Self::is_syntax_char(esc) => Some(ClassAtom::Char(u32::from(esc))),
+                _ if !self.unicode && Self::is_ascii_non_alnum(esc) => {
+                    Some(ClassAtom::Char(u32::from(esc)))
+                }
+                _ => None,
+            }
+        } else {
+            if Self::is_surrogate(cu) {
+                return None;
+            }
+            Some(ClassAtom::Char(u32::from(cu)))
+        }
     }
 }
 
@@ -2485,5 +3092,111 @@ mod tests {
         // Initial retain + round 0 post-fold retain; round 1 skips retain and call_shapes.
         RETAINS.with(|count| assert_eq!(count.get(), 2));
         SIMPLIFY_CALL_SHAPES.with(|count| assert_eq!(count.get(), 1));
+    }
+
+    #[test]
+    fn js_regex_validator_accepts_safe_subset_and_rejects_invalid_patterns() {
+        let valid = |s: &str| is_known_valid_js_regex(&s.encode_utf16().collect::<Vec<_>>());
+        for pattern in [
+            "",
+            "^$",
+            r"^[\s\xa0]*$",
+            r"^([vV]|#|('.)|([+-]?\d+)|(?=,))",
+            "(?i)foo",
+            "(?dgimsuy)bar",
+            "(?)baz",
+            r"(?u)[\u{10000}-\u{10001}]",
+            r"(?u)\u{00000061}",
+            r"(?u)[\-]",
+            r#"a\"b"#,
+            r"a\-b",
+            "[]",
+            "[^]",
+            "[a-]",
+            "[-a]",
+            "[a-z-]",
+            "[--0]",
+            r"[\d-]",
+            r"[\b-z]",
+            r"[\cA-\cZ]",
+            r"[\0-\x1f]",
+            r"a{0}",
+            r"a{0,0}",
+            r"a{1,3}?",
+            r"a{2,}",
+            r"(?:a|b)+?",
+            r"(?<=a+)(?<!b*)",
+            r"(?<word>\w+)\k<word>",
+            r"\k<word>(?<word>\w+)",
+            r"(a)(b)\1\2",
+            r"\1(a)",
+            "😀+",
+        ] {
+            assert!(valid(pattern), "expected valid: {pattern:?}");
+        }
+        for pattern in [
+            "(",
+            "a)",
+            "[a",
+            "*",
+            "+",
+            "?",
+            "a*+",
+            "a???",
+            "a{1,2}??",
+            "^+",
+            "$*",
+            r"\b+",
+            "(?=a)+",
+            "(?<=a)+",
+            "a{2,1}",
+            "a{1,999999}",
+            "a{foo}",
+            "}",
+            "]",
+            "[z-a]",
+            "[a--b]",
+            "[--!]",
+            r"[z-\b]",
+            r"[a-\-]",
+            r"[\d-a]",
+            r"[a-\d]",
+            r"\",
+            r"\01",
+            r"\c1",
+            r"\x1",
+            r"\u123",
+            r"\uD800",
+            r"(?u)\a",
+            r"(?u)\-",
+            r#"(?u)\""#,
+            r"(?u)\1",
+            r"(?u)\u{110000}",
+            r"(?u)\u{}",
+            r"(?u)[\u{10001}-\u{10000}]",
+            r"(?u)\k<missing>",
+            "(?x)abc",
+            "(?ii)abc",
+            "(?v)abc",
+            "(?i)(?m)abc",
+            "(?a)x",
+            "(?<1a>x)",
+            "(?<>x)",
+            "(?<a>x)(?<a>y)",
+            "(a)\\2",
+            &"(".repeat(65),
+            &"a".repeat(4097),
+        ] {
+            assert!(!valid(pattern), "expected rejected: {pattern:?}");
+        }
+        // Lone UTF-16 surrogates are rejected.
+        assert!(!is_known_valid_js_regex(&[0xD800]));
+        assert!(!is_known_valid_js_regex(&[0xDC00]));
+        assert!(!is_known_valid_js_regex(&[
+            u16::from(b'['),
+            0xD800,
+            0xDC00,
+            u16::from(b']')
+        ]));
     }
 }

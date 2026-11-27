@@ -849,6 +849,273 @@ fn advanced_removes_forward_declared_function_targets_for_memoize_and_aliases() 
     }
 }
 
+/// Invalid regex literals, invalid constant `(re-pattern ...)` calls, dynamic
+/// `(re-pattern s)` calls, and replaced/redefined/shadowed `re-pattern` calls
+/// must keep their throwing and side-effecting behaviour at every optimization
+/// level even when unread (light-cljs-1176).
+#[test]
+fn invalid_and_dynamic_regexes_preserve_throwing_and_effects_at_every_level() {
+    // Unread invalid regex literals and constant `(re-pattern ...)` calls must
+    // still throw `SyntaxError` (or `TypeError` for non-strings) at load time.
+    for source in [
+        r#"(def ^:private r #"(") 42"#,
+        r#"(def ^:private r #"[a") 42"#,
+        r#"(def ^:private r #"*") 42"#,
+        r#"(def ^:private r #"+") 42"#,
+        r#"(def ^:private r #"a*+") 42"#,
+        r#"(def ^:private r #"^+") 42"#,
+        r#"(def ^:private r #"(?<=a)+") 42"#,
+        r#"(def ^:private r #"a{2,1}") 42"#,
+        r#"(def ^:private r #"[z-a]") 42"#,
+        r#"(def ^:private r #"[a--b]") 42"#,
+        r#"(def ^:private r #"(?u)\a") 42"#,
+        r#"(def ^:private r #"(?u)\-") 42"#,
+        r#"(def ^:private r #"(?u)\1") 42"#,
+        r#"(def ^:private r #"(?u)[\w-a]") 42"#,
+        r#"(def ^:private r #"(?u)\u{110000}") 42"#,
+        r#"(def ^:private r #"(?x)abc") 42"#,
+        r#"(def ^:private r #"(?ii)abc") 42"#,
+        r#"(def ^:private r #"(?<1a>x)") 42"#,
+        r#"(def ^:private r #"(?<a>x)(?<a>y)") 42"#,
+        r#"(def ^:private r #"(?u)\k<missing>") 42"#,
+        r#"(def ^:private r #"(?a)x") 42"#,
+        r#"(def ^:private r #"a)") 42"#,
+        r#"(def ^:private r (re-pattern "(")) 42"#,
+        r#"(def ^:private r (re-pattern "a{2,1}")) 42"#,
+        r#"(def ^:private r (re-pattern "(?u)\\a")) 42"#,
+        r#"(def ^:private r (re-pattern 123)) 42"#,
+        r#"(def ^:private r (mapv re-pattern ["("])) 42"#,
+        r#"(def ^:private r (with-meta #"abc" {:a 1})) 42"#,
+        // Dynamic `(re-pattern s)` on a non-constant string.
+        r#"(def s "(") (def ^:private r (re-pattern s)) 42"#,
+        r#"(def ^:private r (let [s "["] (re-pattern s))) 42"#,
+        r#"(def a (atom "(")) (def ^:private r (re-pattern @a)) 42"#,
+        r#"(set! js/hostBadPat "[") (def ^:private r (re-pattern js/hostBadPat)) 42"#,
+    ] {
+        let p = program(source);
+        let oracle = traced(
+            &prepare_application(&p, ApplicationOptions::new(OptimizationLevel::None)).emit_js(),
+        );
+        assert!(
+            oracle.starts_with("threw "),
+            "expected oracle throw for `{source}`, got: {oracle}"
+        );
+        for level in OptimizationLevel::ALL {
+            let js = prepare_application(&p, ApplicationOptions::new(level)).emit_js();
+            assert_eq!(traced(&js), oracle, "{level}: {source}");
+        }
+    }
+    // Truly dynamic (non-constant) `(re-pattern s)` stays untouched at every level.
+    for (source, sentinel) in [
+        (
+            r#"(def a (atom "KEEP_DYNAMIC_ATOM")) (def ^:private r (re-pattern @a)) 42"#,
+            "KEEP_DYNAMIC_ATOM",
+        ),
+        (
+            r#"(def s (if (.-x js/globalThis) "KEEP_BRANCH" "OTHER")) (def ^:private r (re-pattern s)) 42"#,
+            "KEEP_BRANCH",
+        ),
+    ] {
+        let p = program(source);
+        for level in OptimizationLevel::ALL {
+            let js = prepare_application(&p, ApplicationOptions::new(level)).emit_js();
+            assert!(js.contains(sentinel), "{level}: {js}");
+            assert_eq!(traced(&js), "42\n[]\n", "{level}");
+        }
+    }
+    // Replaced `cljs.core/re-pattern` (via `set!`, `with-redefs`, or a `js*`
+    // hole) keeps both regex literals and `(re-pattern "...")` calls at every level.
+    for (source, expected) in [
+        (
+            r#"(set! cljs.core/re-pattern (fn [s] (.push js/trace s) (js/RegExp. s)))
+               (def ^:private r1 #"lit")
+               (def ^:private r2 (re-pattern "call"))
+               42"#,
+            "42\n[\"lit\",\"call\"]\n",
+        ),
+        (
+            r#"(with-redefs [cljs.core/re-pattern (fn [s] (.push js/trace s) (js/RegExp. s))]
+                 (re-pattern "inside"))
+               (def ^:private r #"after")
+               42"#,
+            "42\n[\"inside\"]\n",
+        ),
+        // Shadowed `re-pattern` in a `let` is not `cljs.core/re-pattern`.
+        (
+            r#"(def ^:private r (let [re-pattern (fn [s] (.push js/trace s) s)] (re-pattern "local")))
+               42"#,
+            "42\n[\"local\"]\n",
+        ),
+    ] {
+        let p = program(source);
+        for level in OptimizationLevel::ALL {
+            let js = prepare_application(&p, ApplicationOptions::new(level)).emit_js();
+            assert_eq!(traced(&js), expected, "{level}: {source}");
+        }
+    }
+    // `re-pattern` appearing in a `js*` hole is treated as potentially replaced.
+    let js_hole = program(
+        r#"(js* "void ~{}" cljs.core/re-pattern)
+           (def ^:private r #"KEPT_JS_HOLE")
+           42"#,
+    );
+    for level in OptimizationLevel::ALL {
+        let js = prepare_application(&js_hole, ApplicationOptions::new(level)).emit_js();
+        assert!(js.contains("KEPT_JS_HOLE"), "{level}: {js}");
+        assert_eq!(traced(&js), "42\n[]\n", "{level}");
+    }
+    // Redefined `re-pattern` in a namespace (`:refer-clojure :exclude [re-pattern]`)
+    // is not `cljs.core/re-pattern`.
+    let sources = Sources::new();
+    sources.write(
+        "app/redef.cljs",
+        "(ns app.redef (:refer-clojure :exclude [re-pattern]))\n\
+         (defn re-pattern [s] (.push js/trace s) s)\n\
+         (def ^:private r (re-pattern \"redefined\"))\n\
+         42\n",
+    );
+    let redef_program = light_cljs::compiler::analyze_namespace_entry(
+        "app.redef",
+        std::slice::from_ref(sources.0.path()),
+        &mut MacroHost::new(),
+        light_cljs::analyzer::AnalysisOptions::default(),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    for level in OptimizationLevel::ALL {
+        let js = prepare_application(&redef_program, ApplicationOptions::new(level)).emit_js();
+        assert_eq!(traced(&js), "42\n[\"redefined\"]\n", "{level}");
+    }
+}
+
+/// At `Advanced`, unread top-level definitions initialized with syntactically
+/// valid regex literals or `(re-pattern "...")` on valid constant strings are
+/// inert and removed along with `rePattern`, while live regexes (including
+/// inline flags and mutable `lastIndex`) behave identically at every level
+/// (light-cljs-1176).
+#[test]
+fn advanced_removes_unread_valid_regex_literals_and_re_pattern_calls() {
+    let baseline = prepare_application(
+        &program("(js/console.log 1)"),
+        ApplicationOptions::new(OptimizationLevel::Advanced),
+    )
+    .emit_js();
+    // Exact pellet input: drops `r` and `rt$rePattern` at `Advanced`.
+    let single = program(
+        r#"(def ^:private r #"^[\s\xa0]*$")
+           (js/console.log 1)"#,
+    );
+    for level in OptimizationLevel::ALL {
+        let prepared = prepare_application(&single, ApplicationOptions::new(level));
+        let js = prepared.emit_js();
+        assert_eq!(execute(&format!("{js};")), "1\n", "{level}");
+        if level.advanced() {
+            assert_eq!(prepared.stats().removed_definitions, 1);
+            let units: Vec<_> = prepared
+                .retention()
+                .units
+                .iter()
+                .map(|unit| {
+                    light_cljs::runtime_manifest::RuntimeManifest::embedded()
+                        .unit(unit.unit)
+                        .name
+                })
+                .collect();
+            assert!(
+                !units.contains(&"rePattern"),
+                "rePattern retained: {units:?}"
+            );
+            assert_eq!(
+                js.len(),
+                baseline.len(),
+                "advanced output should match baseline"
+            );
+        } else {
+            assert_eq!(prepared.stats().removed_definitions, 0, "{level}");
+        }
+    }
+    // Diverse valid regex literals and constant `(re-pattern ...)` calls are all dropped.
+    let many = program(
+        r#"(def ^:private r1 #"^[\s\xa0]*$")
+           (def ^:private r2 #"^([vV]|#|('.)|([+-]?\d+)|(?=,))")
+           (def ^:private r3 #"(?i)foo")
+           (def ^:private r4 #"(?m)^bar$")
+           (def ^:private r5 #"(?imsu)baz\u{1F600}")
+           (def ^:private r6 '#"quoted\s+\"text\"")
+           (def ^:private r7 #"(?<word>\w+)\k<word>")
+           (def ^:private r8 [#"a{1,3}?" {:k (re-pattern "^[a-z-]+$")}])
+           (def ^:private r9 (re-pattern "(?i)hello"))
+           (js/console.log 1)"#,
+    );
+    for level in OptimizationLevel::ALL {
+        let prepared = prepare_application(&many, ApplicationOptions::new(level));
+        let js = prepared.emit_js();
+        assert_eq!(execute(&format!("{js};")), "1\n", "{level}");
+        if level.advanced() {
+            assert_eq!(prepared.stats().removed_definitions, 9);
+            assert_eq!(
+                js.len(),
+                baseline.len(),
+                "advanced output should match baseline"
+            );
+        }
+    }
+    // Live regexes (including inline flags and stateful `lastIndex`) keep exact behaviour.
+    both(
+        r#"(def ws #"^[\s\xa0]*$")
+           (def ci #"(?i)foo")
+           (def ml #"(?m)^bbb")
+           (def rp (re-pattern "(?i)bar"))
+           (def g1 #"(?g)a")
+           (def g2 #"(?g)a")
+           (re-find g1 "aba")
+           (pr-str [(some? (re-matches ws " \u00a0\t"))
+                    (re-find ci "FOO")
+                    (re-find ml "aaa\nbbb")
+                    (re-find rp "BAR")
+                    (.-flags ci)
+                    (.-lastIndex g1)
+                    (.-lastIndex g2)])"#,
+        "[true \"FOO\" \"bbb\" \"BAR\" \"i\" 1 0]\n",
+    );
+    // Cross-namespace unread valid regex literal is dropped at `Advanced`.
+    let sources = Sources::new();
+    sources.write(
+        "lib/re.cljs",
+        "(ns lib.re)\n\
+         (def ^:private dead-re #\"^DEAD_REGEX_SENTINEL[\\s\\xa0]*$\")\n\
+         (def ^:private dead-rp (re-pattern \"^DEAD_RP_SENTINEL$\"))\n",
+    );
+    sources.write(
+        "lib/main.cljs",
+        "(ns lib.main (:require [lib.re]))\n\
+         (js/console.log 1)\n",
+    );
+    let ns_program = light_cljs::compiler::analyze_namespace_entry(
+        "lib.main",
+        std::slice::from_ref(sources.0.path()),
+        &mut MacroHost::new(),
+        light_cljs::analyzer::AnalysisOptions::default(),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    for level in OptimizationLevel::ALL {
+        let prepared = prepare_application(&ns_program, ApplicationOptions::new(level));
+        let js = prepared.emit_js();
+        assert_eq!(execute(&format!("{js};")), "1\n", "{level}");
+        assert_eq!(
+            js.contains("DEAD_REGEX_SENTINEL"),
+            !level.advanced(),
+            "{level}"
+        );
+        assert_eq!(
+            js.contains("DEAD_RP_SENTINEL"),
+            !level.advanced(),
+            "{level}"
+        );
+    }
+}
+
 /// Raw text that terse output's lexer may read otherwise than an engine (a
 /// regular expression after a block, a name before a no-break space, an
 /// HTML-like comment) keeps the hygienic layout at `Advanced`

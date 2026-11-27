@@ -3496,7 +3496,16 @@ under `js*` below.
   whose value may change while the program runs (a dynamic var or settable
   value, row value `any`, or a core value the program replaces) marks its
   definition `Retained::pinned`: removable when unread, but not movable,
-  since a feature chunk would evaluate it later. `throws` and
+  since a feature chunk would evaluate it later. Since light-cljs-1176, a
+  regex literal (`#"..."`) or `re-pattern` call on a single constant string
+  literal whose JavaScript pattern and inline flags (`(?...)` matching
+  `rt$rePattern`) are syntactically proven valid by `is_known_valid_js_regex`,
+  while `re-pattern` is not replaced and core protocols are intact, is inert
+  (`Purity::Allocates`, opaque `host`, never pooled because `lastIndex` is
+  mutable), so unread top-level `(def r #"...")` definitions drop along with
+  `rePattern`; invalid patterns, dynamic `(re-pattern s)` calls and patterns
+  outside the conservative syntactic subset stay effectful and keep their
+  load-time `SyntaxError`. Other `throws` and
   `effect` rows, calls outside a row's domain, other global reads, `map->T`
   and everything else stay effectful. Since
   light-cljs-210, element-wise `invoke` rows are inert when their function
