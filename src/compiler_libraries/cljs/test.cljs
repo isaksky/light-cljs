@@ -643,13 +643,30 @@
                        ;; make assertions in async context...
                        (done) ;; ...then call done
                        )
-                     0)))"
+                     0)))
+
+  The body may await. An exception it throws, or a rejection it awaits,
+  is reported as an error at the async form, and the test continues as
+  if done had been called (unless it already was)."
   [done & body]
-  `(reify
-     cljs.test/IAsyncTest
-     cljs.core/IFn
-     (~'-invoke [_# ~done]
-      ((^:async fn [] ~@body)))))
+  (let [continue (gensym "continue")
+        called (gensym "called")
+        e (gensym "e")]
+    `(reify
+       cljs.test/IAsyncTest
+       cljs.core/IFn
+       (~'-invoke [_# ~continue]
+        (let [~called (cljs.core/volatile! false)
+              ~done (fn [] (cljs.core/vreset! ~called true) (~continue))]
+          (.catch ((^:async fn [] ~@body))
+                  (fn [~e]
+                    (cljs.test/do-report
+                     ~(assoc (location &env &form)
+                             :type :error
+                             :message "Uncaught exception, not in assertion."
+                             :expected nil
+                             :actual e))
+                    (when-not (deref ~called) (~done)))))))))
 
 ;; =============================================================================
 ;; Running Tests

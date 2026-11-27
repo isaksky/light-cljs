@@ -243,6 +243,10 @@ fn fixture_ids_are_unique_and_have_complete_provenance() {
                     contains_rust_test(include_str!("compiler/macros.rs"), id),
                     "unknown compiler macro test: {id}"
                 ),
+                "tests/compiler/cljs_test_conformance.rs" => assert!(
+                    contains_rust_test(include_str!("compiler/cljs_test_conformance.rs"), id),
+                    "unknown cljs.test conformance test: {id}"
+                ),
                 "tests/compiler/reader.rs" => assert!(
                     contains_rust_test(include_str!("compiler/reader.rs"), id),
                     "unknown compiler reader test: {id}"

@@ -1217,6 +1217,9 @@ struct Inert<'p> {
     /// The shape of each `let` binding examined so far; every local has one
     /// binding site.
     locals: Vec<Option<Shape>>,
+    /// By local: whether its one binding is a `fn` literal, a function the
+    /// initializer creates, so setting a property of it changes nothing else.
+    fresh: Vec<bool>,
     /// Index in the flattened top level of the definition being examined.
     position: usize,
     /// Whether the initializer examined so far read a core value that may
@@ -1233,6 +1236,7 @@ impl<'p> Inert<'p> {
             constructors: Vec::new(),
             functions: Vec::new(),
             locals: Vec::new(),
+            fresh: Vec::new(),
             position: 0,
             changeable: false,
         };
@@ -1244,6 +1248,7 @@ impl<'p> Inert<'p> {
             .map(|core| facts.replaced(core))
             .collect();
         inert.locals = vec![None; program.locals.len()];
+        inert.fresh = vec![false; program.locals.len()];
         inert.constructors = vec![None; program.globals.len()];
         inert.functions = vec![None; program.globals.len()];
         for global in 0..program.globals.len() {
@@ -1361,9 +1366,24 @@ impl<'p> Inert<'p> {
             Let { bindings, body } => {
                 for (local, init) in bindings {
                     self.locals[local.0] = Some(self.shape(*init)?);
+                    self.fresh[local.0] = matches!(program.exprs[init.0].kind, Fn { .. });
                 }
                 self.shape(*body)?
             }
+            // A definition's `:test` metadata: an inert test function set on
+            // the fresh function the definition's value is (light-cljs-1161),
+            // so an unread `deftest` is removed with its body.
+            SetGlobal { target, value }
+                if matches!(
+                    program.exprs[target.0].kind,
+                    Property { receiver, .. }
+                        if matches!(program.exprs[receiver.0].kind,
+                                    Local(local) if self.fresh[local.0])
+                ) =>
+            {
+                self.shape(*value)?
+            }
+            DefinitionTest { value, .. } => self.shape(*value)?,
             If { test, yes, no } => {
                 self.shape(*test)?;
                 let (yes, no) = (self.shape(*yes)?, self.shape(*no)?);

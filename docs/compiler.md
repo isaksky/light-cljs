@@ -1036,7 +1036,16 @@ general capabilities:
   `(light.build/config :light-cljs/load-tests)` is `false`, which
   `:compiler-options {:load-tests false}`, `--no-load-tests` and `release`'s
   default set (docs/build-configuration.md), `deftest` expands to `nil`, as
-  upstream's does when `:load-tests` is false.
+  upstream's does when `:load-tests` is false. Otherwise, at `advanced`, a
+  test nothing reads (no `run-tests`, `test-ns` or `ns-interns` of its
+  namespace, no `(var name)`) is removed with its body.
+- An `async` body runs as an `^:async` function, so it may `await`. An
+  exception it throws or a rejection it awaits before it calls `done` is
+  reported as an error at the `async` form and the run continues as if
+  `done` had been called, where an unhandled rejection would otherwise stop
+  the run; after `done`, which may run the rest of the run inside the body,
+  it propagates as before. Calling `done` a second time prints upstream's
+  warning.
 
 Reports print with `println`, so a compiled program needs a print function
 such as `enable-console-print!`, which light-cljs does not install by itself

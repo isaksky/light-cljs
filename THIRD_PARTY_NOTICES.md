@@ -47,6 +47,11 @@ committed beyond the adapted files listed above.
   header notice that must not be removed:
   - `src/compiler_libraries/clojure/template.cljs` (from
     `src/clj/clojure/template.clj`, by Stuart Sierra)
+  - The `UPSTREAM_ASSERTIONS` and `UPSTREAM_FIXTURES` sources in
+    `tests/compiler/cljs_test_conformance.rs` (from
+    `test/clojure/test_clojure/test.clj` and `test_fixtures.clj`, by Stuart
+    Sierra), whose origins are recorded in
+    `tests/reference/fixture-origins.tsv`
 - Compiled programs that use `clojure.template` may embed JavaScript compiled
   from that file.
 
