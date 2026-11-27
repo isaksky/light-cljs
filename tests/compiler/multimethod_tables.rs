@@ -593,8 +593,9 @@ fn upstream_multimethod_fixtures_pass_at_every_level() {
 /// `fn` literal, a core value or a function Var defined before it and
 /// never assigned, it gives no `:hierarchy`, and its default is a literal
 /// (light-cljs-300): unread and without methods it is removed, and the
-/// runtime's `MultiFn` with it. A `defmethod` reads its multimethod, so one
-/// with methods stays, and so does one with a `:hierarchy`, a computed
+/// runtime's `MultiFn` with it. Since light-cljs-1165 its top-level
+/// `defmethod`s go with it; one that something else reads stays with its
+/// methods, and so does one with a `:hierarchy`, a computed
 /// dispatch, a collection default, or a dispatch Var defined later or
 /// assigned. Every level prints what `None` prints.
 #[test]
@@ -609,7 +610,11 @@ fn an_unread_defmulti_without_methods_is_removed() {
             true,
         ),
         ("(defn k [x] (:k x)) (defmulti m k)", true),
-        ("(defmulti m :k) (defmethod m :a [_] 1)", false),
+        ("(defmulti m :k) (defmethod m :a [_] 1)", true),
+        (
+            "(defmulti m :k) (defmethod m :a [_] 1) (js/console.log (m {:k :a}))",
+            false,
+        ),
         ("(defmulti m :k) (js/console.log (fn? m))", false),
         (
             "(def h (make-hierarchy)) (defmulti m :k :hierarchy #'h)",
