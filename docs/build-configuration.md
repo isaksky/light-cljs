@@ -913,11 +913,16 @@ targets and keys; the deviations table lists where they differ.
   nonzero; Node waits for timers, so `async` tests with `js/setTimeout`
   finish first. FILE is `<:output-dir>/index.js` for `compile` (a dev build,
   which Node loads as CommonJS) and `<:output-dir>/light-cljs.test-runner.js`
-  for `release` (an ES module). With `:autorun true`, `compile` and
+  for `release` (an ES module, which Node runs as one from version 22.12,
+  which detects module syntax in a `.js` file). A run that ends before
+  `cljs.test` reports its end, as when an `async` test never calls `done`,
+  also exits nonzero. With `:autorun true`, `compile` and
   `release` run `node FILE` once the build is written and fail with
   `light-cljs compile ID: tests failed` when it exits nonzero, and `watch`
   runs it after its startup build and after each step that compiles,
-  printing `[:ID] tests passed` or `[:ID] tests failed`.
+  printing `[:ID] tests passed` or `[:ID] tests failed`; the build waits for
+  Node to exit before its next step, so a suite that leaves a server or an
+  interval open holds it.
 - **`:browser-test`.** The runner runs the tests when the page loads, and
   again from its `^:dev/after-load` function after every reload the dev
   client applies: a saved test, the code it tests, or the runner itself.

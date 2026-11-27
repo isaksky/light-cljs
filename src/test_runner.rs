@@ -303,8 +303,16 @@ pub fn build_runner_sources(
         TestTarget::Node => format!(
             "{head}(defmethod t/report [::t/default :end-run-tests] [m]\n  \
              {record}\n  \
-             (when-not (t/successful? m)\n    \
+             (when (and (exists? js/process) (not (t/successful? m)))\n    \
              (set! (.-exitCode js/process) 1)))\n\n\
+             ;; A run Node ends before cljs.test reports its end, as when an\n\
+             ;; async test never calls done, fails.\n\
+             (when (exists? js/process)\n  \
+             (.on js/process \"exit\"\n       \
+             (fn [_]\n         \
+             (when (undefined? (.-{BUILD_RESULT_GLOBAL} js/globalThis))\n           \
+             (js/console.error \"The test run did not finish: a test never called done\")\n           \
+             (set! (.-exitCode js/process) 1)))))\n\n\
              (t/run-tests{quoted})\n"
         ),
         TestTarget::Browser => format!(
@@ -520,6 +528,7 @@ mod tests {
         let names = ["app.a-test".to_owned()];
         let [_, (_, node)] = build_runner_sources(TestTarget::Node, &names);
         assert!(node.contains("(set! (.-exitCode js/process) 1)"));
+        assert!(node.contains("(.on js/process \"exit\""));
         assert!(node.ends_with("(t/run-tests 'app.a-test)\n"));
         assert!(!node.contains("after-load"));
         let [_, (_, page)] = build_runner_sources(TestTarget::Browser, &names);

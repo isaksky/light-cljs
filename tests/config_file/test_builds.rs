@@ -135,6 +135,28 @@ fn node_test_builds_run_in_node_and_fail_with_their_tests() {
         assert_eq!(direct, stdout, "{command}");
     }
 
+    // A run that Node ends before cljs.test reports its end fails: an async
+    // test that never calls done leaves nothing for Node to wait on.
+    fs::remove_file(project.join("test/example/broken_test.cljs")).unwrap();
+    fs::write(
+        project.join("test/example/hang_test.cljs"),
+        "(ns example.hang-test (:require [cljs.test :refer [deftest async]]))\n\n\
+         (deftest never-done (async done nil))\n",
+    )
+    .unwrap();
+    let output = light(&project, &["compile", "node-test"]);
+    let (_, stderr) = texts(&output);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.ends_with(
+            "The test run did not finish: a test never called done\n\
+             light-cljs compile node-test: tests failed\n"
+        ),
+        "{stderr}"
+    );
+    fs::remove_file(project.join("test/example/hang_test.cljs")).unwrap();
+    fs::write(project.join("test/example/broken_test.cljs"), BROKEN).unwrap();
+
     // Without :autorun the command writes the build and runs nothing.
     let config = project.join("light-cljs.edn");
     let text = fs::read_to_string(&config).unwrap();

@@ -4044,6 +4044,18 @@ fn testing_project(label: &str) -> (TempDir, PathBuf) {
 #[test]
 fn a_node_test_watch_runs_the_tests_again_after_each_step() {
     let (_dir, project) = testing_project("dev-watch-node-test");
+    // A pattern other than the default is matched in a V8 heap of its own,
+    // beside the watch session's, at startup and in each step.
+    let config = project.join("light-cljs.edn");
+    let text = fs::read_to_string(&config).unwrap();
+    fs::write(
+        &config,
+        text.replace(
+            "   :autorun true}",
+            "   :autorun true\n   :ns-regexp \"[.][a-z]+-test$\"}",
+        ),
+    )
+    .unwrap();
     let mut watch = file_watch::Light::spawn(&project, &["watch", "node-test"], None);
     let (lines, run) = watch.until("[:node-test] running node ");
     assert!(

@@ -1495,8 +1495,9 @@ fn test_build(
             if settings.get(setting).is_some() {
                 return Err(format!(
                     ":{} of build :{name} applies to a :node-test or :browser-test build, \
-                     and its :target is :esm",
-                    setting.key()
+                     and its :target is :{}",
+                    setting.key(),
+                    keyword(settings, Setting::Target).unwrap_or("esm")
                 ));
             }
         }

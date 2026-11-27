@@ -1521,7 +1521,7 @@ impl BuildThread {
                 && (!changed.is_empty() || !deleted.is_empty())
                 && let Err(error) = test.write_runner()
             {
-                eprintln!("{}{error}; the runner keeps its tests", lead(&tag));
+                eprintln!("{}{error}; the runner is left as it was", lead(&tag));
             }
             let compiled = watch
                 .step(&changed, &deleted, &resources, noticed)
