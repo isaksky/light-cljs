@@ -646,8 +646,8 @@
                      0)))
 
   The body may await. An exception it throws, or a rejection it awaits,
-  is reported as an error at the async form, and the test continues as
-  if done had been called (unless it already was)."
+  before done is called is reported as an error at the async form, and the
+  test continues as if done had been called; after done, it propagates."
   [done & body]
   (let [continue (gensym "continue")
         called (gensym "called")
@@ -660,13 +660,16 @@
               ~done (fn [] (cljs.core/vreset! ~called true) (~continue))]
           (.catch ((^:async fn [] ~@body))
                   (fn [~e]
+                    ;; After done, the rest of the run has run inside
+                    ;; this body: what it threw is no failure of this test.
+                    (when (deref ~called) (throw ~e))
                     (cljs.test/do-report
                      ~(assoc (location &env &form)
                              :type :error
                              :message "Uncaught exception, not in assertion."
                              :expected nil
                              :actual e))
-                    (when-not (deref ~called) (~done)))))))))
+                    (~done))))))))
 
 ;; =============================================================================
 ;; Running Tests

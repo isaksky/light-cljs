@@ -218,8 +218,8 @@ fn upstream_assertion_tests_pass_under_their_rebinding_test_ns_hook() {
         "conf/print.cljs",
         "(ns conf.print) (enable-console-print!)",
     );
-    // Every one of the 50 assertions is the type its message names, and
-    // the `are` clause runs with the original reporter.
+    // Each of the 50 messaged assertions is the type its message names, and
+    // the one `are` clause (the 51st) runs with the original reporter.
     assert_eq!(
         run_everywhere(
             dir.path(),

@@ -3464,10 +3464,11 @@ under `js*` below.
   earlier, never assigned function Var as its dispatch, a scalar
   default, the global hierarchy, whose lazy creation is unobservable, and
   fresh atoms; a `:hierarchy` or computed dispatch is not. Since
-  light-cljs-1161 a `set!` of a property of a local bound to a `fn` literal
-  in the same initializer, with an inert value, is inert too: that is how a
-  definition with `:test` metadata (every `deftest`) sets `cljs$lang$test`
-  on its function, so an unread test goes with its body. Reading any core
+  light-cljs-1161 a `set!` of the `cljs$lang$test` property of a local bound
+  to a `fn` literal in the same initializer, with an inert value, is inert
+  too: that is how a definition with `:test` metadata (every `deftest`) sets
+  its test on its function, so an unread test goes with its body. Other
+  properties stay effectful (a function's own `name` or `length` throws). Reading any core
   value is inert, but since light-cljs-363 an initializer that reads one
   whose value may change while the program runs (a dynamic var or settable
   value, row value `any`, or a core value the program replaces) marks its

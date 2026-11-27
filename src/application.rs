@@ -1219,6 +1219,7 @@ struct Inert<'p> {
     locals: Vec<Option<Shape>>,
     /// By local: whether its one binding is a `fn` literal, a function the
     /// initializer creates, so setting a property of it changes nothing else.
+    /// Only `let` sets it, and each local has one binding site.
     fresh: Vec<bool>,
     /// Index in the flattened top level of the definition being examined.
     position: usize,
@@ -1372,13 +1373,15 @@ impl<'p> Inert<'p> {
             }
             // A definition's `:test` metadata: an inert test function set on
             // the fresh function the definition's value is (light-cljs-1161),
-            // so an unread `deftest` is removed with its body.
+            // so an unread `deftest` is removed with its body. Only that
+            // property: a function's own `name` or `length` would throw.
             SetGlobal { target, value }
                 if matches!(
-                    program.exprs[target.0].kind,
-                    Property { receiver, .. }
-                        if matches!(program.exprs[receiver.0].kind,
-                                    Local(local) if self.fresh[local.0])
+                    &program.exprs[target.0].kind,
+                    Property { receiver, property }
+                        if &**property == "cljs$lang$test"
+                            && matches!(program.exprs[receiver.0].kind,
+                                        Local(local) if self.fresh[local.0])
                 ) =>
             {
                 self.shape(*value)?
