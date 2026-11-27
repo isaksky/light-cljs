@@ -74,33 +74,42 @@ fn cljs_test_with_deftest_compiles_under_tight_limits_uncached_and_cached_at_one
 
     // Uncached builds at --jobs 1 and --jobs 4 with --macro-expansions 20 and
     // tight --macro-nodes (far below cljs.test's own ~273 expansions / tens of
-    // thousands of nodes).
+    // thousands of nodes). Give --jobs 4 256 MiB so pool workers actually spin
+    // up V8 isolates (exercising UnitEvent::Script and parallel top-level
+    // overlay analysis on worker isolates).
     let mut uncached_outputs = Vec::new();
     let mut uncached_stats = Vec::new();
-    for jobs in ["1", "4"] {
-        let output = light_cljs(
-            dir.path(),
-            &[
-                "--compile",
-                "--entry",
-                "app.main",
-                "--source-root",
-                root_str,
-                "--no-cache",
-                "--jobs",
-                jobs,
-                "--macro-expansions",
-                "20",
-                "--macro-nodes",
-                "5000",
-                "--stats",
-            ],
-        );
+    for (jobs, memory_limit) in [("1", None), ("4", Some("268435456"))] {
+        let mut args = vec![
+            "--compile",
+            "--entry",
+            "app.main",
+            "--source-root",
+            root_str,
+            "--no-cache",
+            "--jobs",
+            jobs,
+            "--macro-expansions",
+            "20",
+            "--macro-nodes",
+            "5000",
+            "--stats",
+        ];
+        if let Some(limit) = memory_limit {
+            args.extend_from_slice(&["--macro-memory-limit", limit]);
+        }
+        let output = light_cljs(dir.path(), &args);
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
         assert!(
             output.status.success(),
             "uncached --jobs {jobs} failed:\n{stderr}"
         );
+        if jobs == "4" {
+            assert!(
+                parse_stat(&stderr, "pool.worker-isolates") > 0,
+                "expected --jobs 4 with 256 MiB to use worker V8 isolates:\n{stderr}"
+            );
+        }
         let js = String::from_utf8(output.stdout).unwrap();
         let printed = crate::canonical_json::node_stdout(&js);
         assert!(
@@ -109,7 +118,8 @@ fn cljs_test_with_deftest_compiles_under_tight_limits_uncached_and_cached_at_one
         );
 
         // --stats stays truthful: bundled expansions are counted in both
-        // macro-calls and [macro-calls-by-namespace].
+        // macro-calls and [macro-calls-by-namespace], while macro-nodes.peak
+        // consistently reports the charged --macro-nodes budget.
         let total = parse_stat(&stderr, "macro-calls");
         let peak_nodes = parse_stat(&stderr, "macro-nodes.peak");
         let cljs_test_calls = parse_ns_macro_calls(&stderr, "cljs.test")
@@ -125,16 +135,21 @@ fn cljs_test_with_deftest_compiles_under_tight_limits_uncached_and_cached_at_one
             "expected app.main to report 1..=20 macro calls, got {app_calls}"
         );
         assert!(total >= cljs_test_calls + app_calls);
-        assert!(peak_nodes > 5000);
+        assert!(
+            peak_nodes > 0 && peak_nodes <= 5000,
+            "expected macro-nodes.peak to reflect charged user nodes (1..=5000), got {peak_nodes}"
+        );
         uncached_outputs.push(js);
         uncached_stats.push((total, peak_nodes, cljs_test_calls, app_calls));
     }
     assert_eq!(uncached_outputs[0], uncached_outputs[1]);
     assert_eq!(uncached_stats[0], uncached_stats[1]);
 
-    // Populate persistent cache with --macro-expansions 20 --macro-nodes 5000,
-    // then build from cache at --jobs 1 and --jobs 4 (both partial hit when
-    // app.main changes, and full warm hit).
+    // Populate persistent cache with --macro-expansions 20 --macro-nodes 5000
+    // (at the 256 MiB memory limit so both --jobs 1 and --jobs 4 with worker
+    // isolates share the exact same cache key), then build from cache at
+    // --jobs 1 and --jobs 4 (both partial hit when app.main changes, and full
+    // warm hit).
     let cache = dir.join("cache");
     let cache_str = cache.to_str().unwrap();
     let cold = light_cljs(
@@ -151,6 +166,8 @@ fn cljs_test_with_deftest_compiles_under_tight_limits_uncached_and_cached_at_one
             "20",
             "--macro-nodes",
             "5000",
+            "--macro-memory-limit",
+            "268435456",
         ],
     );
     assert!(
@@ -181,6 +198,8 @@ fn cljs_test_with_deftest_compiles_under_tight_limits_uncached_and_cached_at_one
                 "20",
                 "--macro-nodes",
                 "5000",
+                "--macro-memory-limit",
+                "268435456",
                 "--stats",
             ],
         );
@@ -216,6 +235,8 @@ fn cljs_test_with_deftest_compiles_under_tight_limits_uncached_and_cached_at_one
                 "20",
                 "--macro-nodes",
                 "5000",
+                "--macro-memory-limit",
+                "268435456",
                 "--stats",
             ],
         );
@@ -261,6 +282,8 @@ fn user_namespace_exceeding_macro_limit_fails_at_users_call() {
             cache_str,
             "--macro-expansions",
             "20",
+            "--macro-memory-limit",
+            "268435456",
         ],
     );
     assert!(
@@ -288,6 +311,8 @@ fn user_namespace_exceeding_macro_limit_fails_at_users_call() {
                 jobs,
                 "--macro-expansions",
                 "20",
+                "--macro-memory-limit",
+                "268435456",
             ];
             args.extend_from_slice(&cache_args);
             let output = light_cljs(dir.path(), &args);
@@ -397,6 +422,8 @@ fn user_source_root_overriding_clojure_template_is_charged() {
             override_root.to_str().unwrap(),
             "--cache-dir",
             cache.to_str().unwrap(),
+            "--macro-memory-limit",
+            "268435456",
         ],
     );
     assert!(
@@ -420,6 +447,8 @@ fn user_source_root_overriding_clojure_template_is_charged() {
                 jobs,
                 "--macro-expansions",
                 "5",
+                "--macro-memory-limit",
+                "268435456",
             ];
             args.extend_from_slice(&extra);
             let fail = light_cljs(dir.path(), &args);
@@ -444,7 +473,13 @@ fn user_source_root_overriding_clojure_template_is_charged() {
 fn bundled_libraries_stay_subject_to_depth_limit() {
     let dir = TempDir::new("bundled-limits-depth");
     let root = dir.join("src");
-    write(&root, "app/main.cljs", DEFTEST_MAIN);
+    // app.main performs zero macro calls of its own, so a depth-limit failure
+    // can only originate inside the bundled libraries it requires.
+    write(
+        &root,
+        "app/main.cljs",
+        "(ns app.main (:require [cljs.test]))\n1\n",
+    );
     let roots = vec![PathBuf::from(&root)];
     let mut host = MacroHost::new();
     host.limits.expansion_depth = 1;
@@ -457,9 +492,18 @@ fn bundled_libraries_stay_subject_to_depth_limit() {
         EntryRecorders::default(),
     )
     .unwrap_err();
+    let text = err.to_string();
     assert!(
-        err.to_string().contains("depth"),
-        "expected depth limit error, got: {err}"
+        text.contains("depth"),
+        "expected depth limit error, got: {text}"
+    );
+    assert!(
+        text.contains("<first-party>/"),
+        "expected depth failure inside bundled library, got: {text}"
+    );
+    assert!(
+        !text.contains("app/main.cljs"),
+        "depth failure should not be in user namespace: {text}"
     );
 }
 
@@ -542,7 +586,13 @@ fn captured_bundled_artifact_has_zero_expansion_and_node_charges_and_keeps_depth
     );
     assert_eq!(stats.macro_calls_in("cljs.test"), Some(0));
 
-    // The same artifact is refused when the build's depth limit is too low.
+    // The same artifact is refused when the build's depth limit is too low,
+    // failing inside the bundled library even when app.main calls no macros.
+    write(
+        &root,
+        "app/main.cljs",
+        "(ns app.main (:require [cljs.test]))\n1\n",
+    );
     let mut shallow_host = MacroHost::new();
     shallow_host.limits.expansion_depth = 1;
     let lookup = |ns: &str| (ns != "app.main").then(|| captured.get(ns)).flatten();
@@ -558,9 +608,10 @@ fn captured_bundled_artifact_has_zero_expansion_and_node_charges_and_keeps_depth
         },
     )
     .unwrap_err();
+    let text = err.to_string();
     assert!(
-        err.to_string().contains("depth"),
-        "expected depth limit error after refusing bundled artifact, got: {err}"
+        text.contains("depth") && text.contains("<first-party>/"),
+        "expected bundled depth failure after refusing artifact, got: {text}"
     );
 }
 

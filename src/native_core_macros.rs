@@ -1905,9 +1905,8 @@ impl crate::MacroHost {
         if within(&call, DEPTH).is_none_or(|nodes| nodes > self.conversion_node_limit()) {
             return Ok(None);
         }
-        if !exempt && self.engine.expansions.get() >= self.limits.expansions {
-            return Err("compiler macro expansion limit exceeded".into());
-        }
+        self.engine
+            .check_expansion_limit(exempt, self.limits.expansions)?;
         // The room the engine's conversion of the call needs, as it notes
         // it ([`crate::macro_host::MacroHost::expand_javascript`]), so a
         // namespace's accounting admits it where this expands it. Its
@@ -1939,22 +1938,11 @@ impl crate::MacroHost {
             span: span.clone(),
             exempt,
         });
-        if exempt {
-            self.engine
-                .exempt_expansions
-                .set(self.engine.exempt_expansions.get() + 1);
-            self.engine
-                .exempt_nodes
-                .set(self.engine.exempt_nodes.get().saturating_add(nodes));
-        } else {
-            self.engine.expansions.set(self.engine.expansions.get() + 1);
-            self.engine
-                .generated_nodes
-                .set(self.engine.generated_nodes.get().saturating_add(nodes));
-            if self.engine.generated_nodes.get() > self.limits.generated_nodes {
-                return Err("compiler macro generated-node limit exceeded".into());
-            }
-        }
+        self.engine.charge_expansion(
+            exempt,
+            nodes,
+            (self.limits.expansions, self.limits.generated_nodes),
+        )?;
         Ok(Some(expanded))
     }
 }

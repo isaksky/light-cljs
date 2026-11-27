@@ -58,8 +58,9 @@ impl PhaseTimes {
 pub struct NamespaceStats {
     pub name: String,
     /// Macro calls executed while the namespace was analyzed, its deferred
-    /// units included: native, bootstrap and source macros alike, the
-    /// expansions `--macro-expansions` limits.
+    /// units included: native, bootstrap and source macros alike, including
+    /// expansions in compiler-owned bundled libraries that are exempt from
+    /// `--macro-expansions`.
     pub macro_calls: usize,
 }
 
@@ -122,13 +123,13 @@ pub struct CompileStats {
     pub wall: Duration,
     /// The namespaces compiled, by source index.
     pub namespaces: Vec<NamespaceStats>,
-    /// Macro calls executed in the whole compilation. The expansions
-    /// installed namespaces charge against `--macro-expansions` are not
-    /// executed and not counted.
+    /// Macro calls executed in the whole compilation, including those in
+    /// compiler-owned bundled libraries. The expansions installed namespaces
+    /// charge against `--macro-expansions` are not executed and not counted.
     pub macro_calls: usize,
-    /// The most form nodes macro expansions and compile-time data readers
-    /// had generated, the count `--macro-nodes` limits, including the nodes
-    /// installed namespaces charged.
+    /// The most form nodes charged against `--macro-nodes`, including the
+    /// nodes installed user namespaces charged (and excluding compiler-owned
+    /// bundled libraries, which are exempt from `--macro-nodes`).
     pub peak_macro_nodes: usize,
     pub deferred_units: DeferredUnitCounts,
     /// What the parse queue's pool did, when it had workers.

@@ -3823,8 +3823,7 @@ fn analyze_entry(
             stats.install = Some(install_counts);
         }
         stats.macro_calls = macros.executed_expansions();
-        stats.peak_macro_nodes =
-            macros.engine.generated_nodes.get() + macros.engine.exempt_nodes.get();
+        stats.peak_macro_nodes = macros.engine.generated_nodes.get();
         stats.trace = recording.and_then(crate::compile_trace::Recording::finish);
         if let Some(session) = macros.session_handle() {
             stats.deferred_units = if stopped {

@@ -200,7 +200,7 @@ impl UnitCharges {
         }
         WorkMarks::note(&binding.work.macro_depth, self.macro_depth);
         WorkMarks::note(&binding.work.analysis_depth, self.analysis_depth);
-        let (expansions, nodes) = (&binding.expansions, &binding.generated_nodes);
+        let nodes = &binding.generated_nodes;
         let fail = |span: &std::ops::Range<usize>, message: String| {
             let diagnostic = crate::AnalysisError {
                 span: span.clone(),
@@ -221,28 +221,13 @@ impl UnitCharges {
                     }
                 }
                 UnitEvent::Expansion(expansion) => {
-                    if expansion.exempt {
-                        binding
-                            .exempt_expansions
-                            .set(binding.exempt_expansions.get() + 1);
-                        binding
-                            .exempt_nodes
-                            .set(binding.exempt_nodes.get().saturating_add(expansion.nodes));
-                    } else {
-                        let exceeded = if expansions.get() >= self.limits.0 {
-                            Some("compiler macro expansion limit exceeded")
-                        } else {
-                            expansions.set(expansions.get() + 1);
-                            nodes.set(nodes.get().saturating_add(expansion.nodes));
-                            (nodes.get() > self.limits.1)
-                                .then_some("compiler macro generated-node limit exceeded")
-                        };
-                        if let Some(message) = exceeded {
-                            return fail(
-                                &expansion.span,
-                                format!("while expanding {}: {message}", expansion.operator),
-                            );
-                        }
+                    if let Err(message) =
+                        binding.charge_expansion(expansion.exempt, expansion.nodes, self.limits)
+                    {
+                        return fail(
+                            &expansion.span,
+                            format!("while expanding {}: {message}", expansion.operator),
+                        );
                     }
                 }
                 // The limits as `MacroHost::expand_javascript` checks them,
@@ -268,22 +253,9 @@ impl UnitCharges {
                             Err(error) => return fail(&error),
                         };
                     }
-                    if *exempt {
-                        binding
-                            .exempt_expansions
-                            .set(binding.exempt_expansions.get() + 1);
-                        binding
-                            .exempt_nodes
-                            .set(binding.exempt_nodes.get().saturating_add(*generated));
-                    } else {
-                        if expansions.get() >= self.limits.0 {
-                            return fail("compiler macro expansion limit exceeded");
-                        }
-                        expansions.set(expansions.get() + 1);
-                        nodes.set(nodes.get().saturating_add(*generated));
-                        if nodes.get() > self.limits.1 {
-                            return fail("compiler macro generated-node limit exceeded");
-                        }
+                    if let Err(message) = binding.charge_expansion(*exempt, *generated, self.limits)
+                    {
+                        return fail(message);
                     }
                 }
                 // What capture records, where a serial build records it.

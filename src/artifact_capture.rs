@@ -679,21 +679,26 @@ pub(crate) fn finish_bodies(
 }
 
 /// What a drain point's charge of `event` records for installation to
-/// charge again ([`ChargedExpansion`]).
+/// charge again ([`ChargedExpansion`]). `capture_charges` already drops
+/// exempt bundled-library events before they reach this function.
 fn charged_expansion(event: crate::macro_host::UnitEvent) -> Option<ChargedExpansion> {
     use crate::macro_host::UnitEvent;
     match event {
-        UnitEvent::Expansion(expansion) if !expansion.exempt => Some(ChargedExpansion {
-            operator: Some(expansion.operator),
-            call: bytes(&expansion.span),
-            nodes: expansion.nodes as u64,
-        }),
+        UnitEvent::Expansion(expansion) => {
+            debug_assert!(!expansion.exempt);
+            Some(ChargedExpansion {
+                operator: Some(expansion.operator),
+                call: bytes(&expansion.span),
+                nodes: expansion.nodes as u64,
+            })
+        }
         UnitEvent::Script {
             nodes,
             span,
             site,
-            exempt: false,
+            exempt,
         } => {
+            debug_assert!(!exempt);
             let (operator, call) = match site {
                 Some((operator, call)) => (Some(operator), call),
                 None => (None, span),

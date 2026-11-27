@@ -1010,6 +1010,68 @@ impl EngineBinding {
             (None, None) => 0,
         }
     }
+    /// Check `--macro-expansions` without charging yet (for native expansions
+    /// that may decline and fall back to the engine before charging).
+    pub(crate) fn check_expansion_limit(
+        &self,
+        exempt: bool,
+        limit: usize,
+    ) -> Result<(), &'static str> {
+        if !exempt && self.expansions.get() >= limit {
+            return Err("compiler macro expansion limit exceeded");
+        }
+        Ok(())
+    }
+    /// Check and charge one macro expansion call.
+    pub(crate) fn charge_expansion_call(
+        &self,
+        exempt: bool,
+        limit: usize,
+    ) -> Result<(), &'static str> {
+        if exempt {
+            self.exempt_expansions.set(self.exempt_expansions.get() + 1);
+            return Ok(());
+        }
+        self.check_expansion_limit(false, limit)?;
+        self.expansions.set(self.expansions.get() + 1);
+        Ok(())
+    }
+    /// Charge generated form nodes against `limit`, returning `error` when
+    /// exceeded.
+    pub(crate) fn charge_nodes(
+        &self,
+        exempt: bool,
+        nodes: usize,
+        limit: usize,
+        error: &'static str,
+    ) -> Result<(), &'static str> {
+        if exempt {
+            self.exempt_nodes
+                .set(self.exempt_nodes.get().saturating_add(nodes));
+            return Ok(());
+        }
+        let generated = self.generated_nodes.get().saturating_add(nodes);
+        self.generated_nodes.set(generated);
+        if generated > limit {
+            return Err(error);
+        }
+        Ok(())
+    }
+    /// Check and charge one macro expansion and its generated nodes.
+    pub(crate) fn charge_expansion(
+        &self,
+        exempt: bool,
+        nodes: usize,
+        limits: (usize, usize),
+    ) -> Result<(), &'static str> {
+        self.charge_expansion_call(exempt, limits.0)?;
+        self.charge_nodes(
+            exempt,
+            nodes,
+            limits.1,
+            "compiler macro generated-node limit exceeded",
+        )
+    }
     /// Record that this analysis frame entered the compile-time macro engine
     /// and, on a recorded unit's first engine entry, lazily initialize capture
     /// logging on `engine` (one-time gensym-log enable and namespace-log
@@ -1529,16 +1591,8 @@ impl MacroHost {
     ) -> Result<Form, String> {
         let exempt = self.budget_exempt();
         self.engine.on_engine_entry(evaluator);
-        if exempt {
-            self.engine
-                .exempt_expansions
-                .set(self.engine.exempt_expansions.get() + 1);
-        } else {
-            if self.engine.expansions.get() >= self.limits.expansions {
-                return Err("compiler macro expansion limit exceeded".into());
-            }
-            self.engine.expansions.set(self.engine.expansions.get() + 1);
-        }
+        self.engine
+            .charge_expansion_call(exempt, self.limits.expansions)?;
         // The conversions below take at most the node limit each, not
         // what the compilation has left of it, so that whether they fit
         // depends on the expansion alone and not on the units charged
@@ -1631,18 +1685,12 @@ impl MacroHost {
         let expanded = expanded.map_err(|e| expansion_failure(&origin, e))?;
         let nodes = expanded.nodes().len();
         record_script_expansion(nodes, exempt, || origin.call.bytes());
-        if exempt {
-            self.engine
-                .exempt_nodes
-                .set(self.engine.exempt_nodes.get().saturating_add(nodes));
-        } else {
-            self.engine
-                .generated_nodes
-                .set(self.engine.generated_nodes.get().saturating_add(nodes));
-            if self.engine.generated_nodes.get() > self.limits.generated_nodes {
-                return Err("compiler macro generated-node limit exceeded".into());
-            }
-        }
+        self.engine.charge_nodes(
+            exempt,
+            nodes,
+            self.limits.generated_nodes,
+            "compiler macro generated-node limit exceeded",
+        )?;
         Ok(expanded)
     }
 
@@ -2010,17 +2058,12 @@ impl MacroHost {
                 )
                 .nodes()
                 .len();
-                if self.budget_exempt() {
-                    self.engine
-                        .exempt_nodes
-                        .set(self.engine.exempt_nodes.get().saturating_add(size));
-                } else {
-                    let generated = self.engine.generated_nodes.get().saturating_add(size);
-                    if generated > self.limits.generated_nodes {
-                        return Err("compiler reader generated-node limit exceeded".into());
-                    }
-                    self.engine.generated_nodes.set(generated);
-                }
+                self.engine.charge_nodes(
+                    self.budget_exempt(),
+                    size,
+                    self.limits.generated_nodes,
+                    "compiler reader generated-node limit exceeded",
+                )?;
             }
             Ok(value)
         };
@@ -3019,25 +3062,11 @@ impl MacroHost {
                     exempt,
                 });
             }
-            if exempt {
-                self.engine
-                    .exempt_expansions
-                    .set(self.engine.exempt_expansions.get() + 1);
-                self.engine
-                    .exempt_nodes
-                    .set(self.engine.exempt_nodes.get().saturating_add(nodes));
-            } else {
-                if self.engine.expansions.get() >= self.limits.expansions {
-                    return Err("compiler macro expansion limit exceeded".into());
-                }
-                self.engine.expansions.set(self.engine.expansions.get() + 1);
-                self.engine
-                    .generated_nodes
-                    .set(self.engine.generated_nodes.get().saturating_add(nodes));
-                if self.engine.generated_nodes.get() > self.limits.generated_nodes {
-                    return Err("compiler macro generated-node limit exceeded".into());
-                }
-            }
+            self.engine.charge_expansion(
+                exempt,
+                nodes,
+                (self.limits.expansions, self.limits.generated_nodes),
+            )?;
         }
         Ok(expanded)
     }
