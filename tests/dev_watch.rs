@@ -4170,9 +4170,9 @@ fn watch_recompiles_a_namespace_calling_pprint() {
                    (extend-protocol Describe\n\
                      Card\n\
                      (describe [card]\n\
-                       (pp/write (sorted-map :label (:label card) :clicks (:clicks card))\n\
-                                 :stream nil\n\
-                                 :right-margin 20)))\n\
+                       (with-out-str\n\
+                         (binding [pp/*print-right-margin* 20]\n\
+                           (pp/pprint (sorted-map :label (:label card) :clicks (:clicks card)))))))\n\
                    (defn render []\n\
                      (let [card (->Card \"clicks\" (:clicks @state/state))]\n\
                        (swap! state/state assoc :card card)\n\
@@ -4187,9 +4187,9 @@ fn watch_recompiles_a_namespace_calling_pprint() {
     );
 
     let view_v2 = view_v1.replace(
-        "(pp/write (sorted-map :label (:label card) :clicks (:clicks card))\n\
-                                 :stream nil\n\
-                                 :right-margin 20)",
+        "(with-out-str\n\
+                         (binding [pp/*print-right-margin* 20]\n\
+                           (pp/pprint (sorted-map :label (:label card) :clicks (:clicks card)))))",
         "(pp/cl-format nil \"~a=~:r\" (:label card) (:clicks card))",
     );
     let (lines, step) = watch.save("app/view.cljs", &view_v2);
@@ -4204,7 +4204,7 @@ fn watch_recompiles_a_namespace_calling_pprint() {
 
     assert_eq!(
         watch.reload(&["app.view.js"]),
-        record("start\n{:clicks 1,\n :label \"clicks\"}\nreloading\nclicks=second\n")
+        record("start\n{:clicks 1,\n :label \"clicks\"}\n\nreloading\nclicks=second\n")
     );
     let [now, fresh] = watch.now_and_fresh();
     assert_eq!(now, record("start\nclicks=first\n"));

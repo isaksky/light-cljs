@@ -1077,6 +1077,12 @@ explicit writer). Departures from upstream ClojureScript:
 
 - Macros live in the same namespace and load through ordinary `:require` rather
   than `:require-macros` or `:refer-macros`.
+- `pprint-logical-block` runs its body in a closure through `run-logical-block`
+  instead of expanding inline.
+- `run-logical-block`, `cached-compile`, `init-navigator` and `execute-format`
+  are public implementation-detail functions (marked `:skip-wiki true`) so
+  expansions of `pprint-logical-block`, `formatter` and `formatter-out` call
+  them directly without private-var warnings or runtime `Var` allocation.
 - `print-length-loop` counts iterations in a local `volatile!` cell instead of
   macroexpanding its body to rewrite `recur`, so it needs no compile-time
   `macroexpand` service and still truncates at `*print-length*` when `recur`
@@ -1084,10 +1090,12 @@ explicit writer). Departures from upstream ClojureScript:
 - The identity number in `#<Atom@N: ...>` (and other `IDeref` values printed
   under `code-dispatch`) is assigned on first use by a per-program `WeakMap`
   counter instead of `goog/getUid`.
-- Upstream's private record-defining helper macro is kept private under a
-  non-shadowing name rather than exported as `cljs.pprint/deftype`, and the
-  Closure Library string/buffer helpers and private `lift-ns` are replaced by
-  small private helpers in the same file.
+- Upstream's internal record-defining helper macro is kept private under a
+  non-shadowing name rather than exported as `cljs.pprint/deftype`;
+  `with-pretty-writer`, `getf` and `setf` (public macros in upstream's
+  `cljs/pprint.cljc`) are also private here; and the Closure Library
+  string/buffer helpers and private `lift-ns` are replaced by small private
+  helpers in the same file.
 
 **Dialect difference:** `clojure.string` follows the documented contracts where
 the pinned upstream implementation has JavaScript-level quirks:

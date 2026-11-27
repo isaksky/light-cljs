@@ -118,10 +118,17 @@ const PPRINT_SURFACE_MAIN: &str = r#"(ns app.main
           (pprint [1 [2 [3 [4]]]]))))
 
 (emit "miser-width"
-      (binding [pp/*print-right-margin* 14
-                pp/*print-miser-width* 12]
-        (with-out-str
-          (pprint '(alpha beta gamma delta)))))
+      (with-pprint-dispatch code-dispatch
+        (let [form '(do (if cond-a then-val else-val))
+              with-miser (binding [pp/*print-right-margin* 22
+                                   pp/*print-miser-width* 20]
+                           (with-out-str (pprint form)))
+              without-miser (binding [pp/*print-right-margin* 22
+                                      pp/*print-miser-width* nil]
+                              (with-out-str (pprint form)))]
+          (when (= with-miser without-miser)
+            (throw (js/Error. "expected *print-miser-width* to change output")))
+          (str "miser=20:\n" with-miser "miser=nil:\n" without-miser))))
 
 (emit "namespace-maps"
       (with-out-str
@@ -267,10 +274,17 @@ const EXPECTED_PPRINT_SURFACE: &str = r#"=== types ===
 (a b ...)
 [1 [2 #]]
 === miser-width ===
-(alpha
- beta
- gamma 
- delta)
+miser=20:
+(do
+  (if
+    cond-a
+    then-val
+    else-val))
+miser=nil:
+(do
+  (if cond-a
+    then-val
+    else-val))
 === namespace-maps ===
 #:user{:a 1, :b 2}
 {:user/a 1, :user/b 2}
@@ -362,6 +376,12 @@ fn compile_pprint_surface_across_optimization_levels() {
             "--optimize {level} emitted unexpected warnings/stderr:\n{stderr}"
         );
         let js = stdout(output);
+        if level == "advanced" {
+            assert!(
+                !js.contains("definitionVar"),
+                "--optimize advanced emitted unexpected definitionVar from cljs.pprint"
+            );
+        }
         assert_eq!(
             run_node(&js),
             EXPECTED_PPRINT_SURFACE,
@@ -404,15 +424,17 @@ fn clojure_pprint_fallback_and_private_surface() {
     assert!(manifest.id("clojure.pprint").is_none());
 
     // Upstream's record-defining helper macro must not be exported as cljs.pprint/deftype,
-    // and private helpers must stay private.
+    // and private helpers not expanded into by public macros must stay private.
     for (bad_refer, expected_err) in [
         ("deftype", "cljs.pprint/deftype"),
-        ("cached-compile", "cljs.pprint/cached-compile is private"),
-        ("execute-format", "cljs.pprint/execute-format is private"),
+        ("level-exceeded", "cljs.pprint/level-exceeded is private"),
+        ("start-block", "cljs.pprint/start-block is private"),
         (
             "with-pretty-writer",
             "cljs.pprint/with-pretty-writer is private",
         ),
+        ("getf", "cljs.pprint/getf is private"),
+        ("setf", "cljs.pprint/setf is private"),
     ] {
         write_file(
             &root,

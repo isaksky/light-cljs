@@ -15,8 +15,15 @@
 ;;;   WeakMap counter for identity numbers in #<Atom@N: ...>).
 ;;; - #'cljs.core/lift-ns is reimplemented privately here, honouring
 ;;;   *print-namespace-maps*.
-;;; - Upstream's private record-defining helper macro is renamed so this
-;;;   namespace does not shadow cljs.core/deftype.
+;;; - Upstream's internal record-defining helper macro is private and renamed so
+;;;   this namespace does not shadow cljs.core/deftype; with-pretty-writer, getf
+;;;   and setf (public in upstream's pprint.cljc) are also private here.
+;;; - pprint-logical-block runs its body in a closure through run-logical-block
+;;;   instead of expanding inline.
+;;; - run-logical-block, cached-compile, init-navigator and execute-format are
+;;;   public implementation-detail functions (marked :skip-wiki true) so public
+;;;   macro expansions call them directly without private-var warnings or
+;;;   runtime Var allocation.
 ;;; - print-length-loop counts iterations in a local volatile instead of
 ;;;   macroexpanding its body to rewrite recur.
 
@@ -139,7 +146,7 @@
   and :suffix."
   [& args]
   (let [[options body] (parse-lb-options #{:prefix :per-line-prefix :suffix} args)]
-    `(@(var cljs.pprint/run-logical-block)
+    `(cljs.pprint/run-logical-block
        ~(:prefix options)
        ~(:per-line-prefix options)
        ~(:suffix options)
@@ -178,9 +185,9 @@ output to a string) in which case it returns the resulting string.
 format-in can be either a control string or a previously compiled format."
   [format-in]
   `(let [format-in# ~format-in
-         my-c-c# @(var cljs.pprint/cached-compile)
-         my-e-f# @(var cljs.pprint/execute-format)
-         my-i-n# @(var cljs.pprint/init-navigator)
+         my-c-c# cljs.pprint/cached-compile
+         my-e-f# cljs.pprint/execute-format
+         my-i-n# cljs.pprint/init-navigator
          cf# (if (string? format-in#) (my-c-c# format-in#) format-in#)]
      (fn [stream# & args#]
        (let [navigator# (my-i-n# args#)]
@@ -195,10 +202,10 @@ this is meant to be used as part of a pretty printer dispatch method.
 format-in can be either a control string or a previously compiled format."
   [format-in]
   `(let [format-in# ~format-in
-         cf# (if (string? format-in#) (@(var cljs.pprint/cached-compile) format-in#) format-in#)]
+         cf# (if (string? format-in#) (cljs.pprint/cached-compile format-in#) format-in#)]
      (fn [& args#]
-       (let [navigator# (@(var cljs.pprint/init-navigator) args#)]
-         (@(var cljs.pprint/execute-format) cf# navigator#)))))
+       (let [navigator# (cljs.pprint/init-navigator args#)]
+         (cljs.pprint/execute-format cf# navigator#)))))
 
 (defmacro with-pprint-dispatch
   "Execute body with the pretty print dispatch function bound to function."
@@ -1035,7 +1042,10 @@ The following keyword arguments can be passed with values:
 (defn- level-exceeded []
   (and *print-level* (>= *current-level* *print-level*)))
 
-(defn- run-logical-block [prefix per-line-prefix suffix body-fn]
+(defn run-logical-block
+  "Implementation detail of pprint-logical-block; not part of the supported API."
+  {:skip-wiki true}
+  [prefix per-line-prefix suffix body-fn]
   (if (level-exceeded)
     (-write *out* "#")
     (binding [*current-level* (inc *current-level*)
@@ -1150,8 +1160,8 @@ http://www.lispworks.com/documentation/HyperSpec/Body/22_c.htm"
 (defrecord ^{:private true}
   arg-navigator [seq rest pos])
 
-(defn- init-navigator
-  "Create a new arg-navigator from the sequence with the position set to 0"
+(defn init-navigator
+  "Implementation detail of formatter and formatter-out; not part of the supported API."
   {:skip-wiki true}
   [s]
   (let [s (seq s)]
@@ -2921,8 +2931,8 @@ column number or pretty printing"
 ;;  * stream                       => "1 2  3"
 ;;  * true (prints via *print-fn*) => "1 2 3"
 ;;  * nil (prints to string)       => "1 2 3"
-(defn- execute-format
-  "Executes the format with the arguments."
+(defn execute-format
+  "Implementation detail of formatter and formatter-out; not part of the supported API."
   {:skip-wiki true}
   ([stream format args]
    (let [sb (string-buffer)
@@ -2959,7 +2969,9 @@ column number or pretty printing"
 
 ;;; This is a bad idea, but it prevents us from leaking private symbols
 ;;; This should all be replaced by really compiled formats anyway.
-(def ^{:private true} cached-compile (memoize compile-format))
+(def ^{:doc "Implementation detail of formatter and formatter-out; not part of the supported API."
+       :skip-wiki true}
+  cached-compile (memoize compile-format))
 
 ;;======================================================================
 ;; dispatch.clj
