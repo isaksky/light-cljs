@@ -244,3 +244,86 @@ The two largest library contributors in `src/compiler_libraries/cljs/pprint.cljs
 
 1. **`defdirectives` (single largest contributor):** one giant top-level macro form at line 2394 that passes all ~30 directive definitions through the V8 macro host during top-level expansion and produces `cljs.pprint/get-directive-table`, the single slowest unit in the entire compilation at **`11.2 ms`** (`6.8 ms` V8 engine, `112` engine calls, `101` expansions — `23%` of all deferred-unit time).
 2. **`getf` and `setf` macros (second largest contributor):** `62` calls to `(getf :field)` and `20` calls to `(setf :field val)` across `21` pretty-writer units (`write-tokens`, `write-initial-lines`, `pretty-writer`, `start-block`, `end-block`, `write-token` methods, and helpers). Upstream already defines plain functions `get-field` and `set-field` for the exact same `@@this` map reads and `swap!` updates; using the macros turns all `21` units into V8-host units totaling **`7.1 ms`** and **`925` V8 engine calls** (`53%` of all unit engine calls).
+
+### After reducing the two largest contributors (`d60bf8a2`, unreserved)
+
+**Changes in `src/compiler_libraries/cljs/pprint.cljs` (`d60bf8a2`):**
+1. Replaced the top-level `defdirectives` macro (and the `process-directive-table-element` helper, plus the `hash-map` and three `dotimes` macro calls inside the generated table) with a plain map literal `{...}` of `directive-entry` calls and `loop` iterations in `get-directive-table`.
+2. Replaced all `62` `(getf ...)` and `20` `(setf ...)` macro calls in `pretty-writer` with direct calls to the existing `get-field` and `set-field` functions (keeping the private `getf` and `setf` macro definitions intact).
+
+**Setup (2026-11-27, unreserved):**
+- **light-cljs after:** release V8 build at commit `d60bf8a2` (`target/bench/light-cljs-d60bf8a2`, SHA-256 `43dadea0ac8bf629...`).
+- **shadow-cljs and other tools:** same as the baseline setup above (`shadow-cljs 3.5.3`, Node.js `v26.12.1`, OpenJDK `25.0.2`, Babashka `1.13.230`).
+- **Unreserved:** peer workers ran builds and test suites throughout; 1-minute load average ranged from `7.98` to `17.27` (higher than the `5.69` to `14.14` baseline session, especially during the standalone `uncached-prepare` sub-run at `16.27`). Because load shifted between sessions, a paired 10-round alternated comparison between `e13215e4` and `d60bf8a2` was also run back-to-back on the same load (`~8.0-8.9`).
+
+#### Paired before vs. after (10 alternated rounds on `pprint-only`, uncached, unreserved)
+
+| Optimization level | light-cljs before (`e13215e4`) | light-cljs after (`d60bf8a2`) | Wall change | Peak memory before -> after |
+|---|---:|---:|---:|---:|
+| `--optimize prepare` | 139.8 ms (135.0-236.9) | 113.2 ms (110.2-123.5) | **-26.6 ms (-19.0%)** | 96.7 MB -> **87.3 MB** (-9.4 MB) |
+| `--optimize advanced` | 152.5 ms (148.4-167.1) | 129.7 ms (126.6-143.0) | **-22.8 ms (-14.9%)** | 100.5 MB -> **88.3 MB** (-12.2 MB) |
+
+#### `--stats` before vs. after (`pprint-only`, uncached `--optimize prepare`)
+
+| Counter | Before (`e13215e4`) | After (`d60bf8a2`) | Change |
+|---|---:|---:|---:|
+| `macro-calls` (`cljs.pprint` share) | 1,561 (1,512) | 1,473 (1,424) | -88 (-5.6%) |
+| `trace.top-level.engine-ms` | 14.2 ms | 6.2 ms | -8.0 ms (-56%) |
+| `trace.unit.engine-ms` | 18.6 ms | 14.2 ms | -4.4 ms (-24%) |
+| `trace.engine-ms` | 37.3 ms | 25.4 ms | -11.9 ms (-32%) |
+| `trace.engine.entries` | 5,310 | 3,187 | -2,123 (-40%) |
+| `trace.units.host` | 46 | 24 | -22 (-48%) |
+| `trace.units.host-ms` | 33.2 ms | 21.1 ms | -12.1 ms (-36%) |
+| `cljs.pprint/get-directive-table` unit (`--stats-file`) | 11.1 ms (`host=1`, 112 calls) | 1.5 ms (`host=0`, 0 calls) | -9.6 ms (-86%) |
+| `trace.unit.longest-ms` | 11.2 ms | 3.2 ms | -8.0 ms (-71%) |
+| `memory.peak-rss-bytes` (peak memory) | 100.7 MB | 87.0 MB | -13.7 MB (-14%) |
+
+Output size (`size.bb --light-only`) also shrank slightly across all three `cljs.pprint` programs (`prn` unchanged at `118,064` raw / `30,947` `gzip -9`; `pprint-only` `198,748` -> `198,238` raw, `53,176` -> `53,096` `gzip -9`; `cl-format-only` `257,026` -> `255,561` raw; `code-dispatch` `276,015` -> `274,612` raw).
+
+#### Full 10-round suite after reductions (`d60bf8a2` vs. shadow-cljs 3.5.3, unreserved)
+
+| Scenario | Program | light-cljs (`d60bf8a2`) | shadow-cljs 3.5.3 | light-cljs peak memory | shadow-cljs peak memory | 1-minute load before |
+|---|---|---:|---:|---:|---:|---:|
+| Uncached `prepare` (`--no-cache`) | `prn` | 12.6 ms (11.6-17.7) | — | 14.4 MB (14.3-14.7) | — | 16.27-16.27 |
+| Uncached `prepare` (`--no-cache`) | `pprint-only` | 150.0 ms (121.4-193.3) | — | 94.3 MB (87.2-96.4) | — | 16.27-16.27 |
+| Uncached `prepare` (`--no-cache`) | `prn-test` | 72.8 ms (67.8-121.0) | — | 56.3 MB (55.0-57.7) | — | 16.27-16.27 |
+| Uncached `advanced` / `release` | `prn` | 0.023 s (0.022-0.025) | 11.400 s (9.135-13.128) | 19.5 MB (19.4-19.6) | 999.9 MB (879.3-1300.3) | 8.90-17.17 |
+| Uncached `advanced` / `release` | `pprint-only` | 0.178 s (0.125-0.238) | 11.708 s (10.283-13.418) | 91.3 MB (85.8-94.6) | 947.4 MB (874.0-1160.4) | 8.90-17.27 |
+| Uncached `advanced` / `release` | `prn-test` | 0.072 s (0.071-0.074) | — | 54.4 MB (54.0-54.9) | — | 8.90-8.90 |
+| Warm dev `compile` (unchanged) | `prn` | 0.023 s (0.022-0.030) | 5.307 s (4.865-5.946) | 19.5 MB (19.4-19.7) | 601.3 MB (541.8-687.6) | 12.78-15.10 |
+| Warm dev `compile` (unchanged) | `pprint-only` | 0.071 s (0.035-0.100) | 5.448 s (5.121-6.719) | 36.1 MB (35.4-36.7) | 600.0 MB (539.4-677.3) | 12.78-15.28 |
+| Cached one-file edit (`prepare`) | `prn` | 0.017 s (0.015-0.020) | 5.682 s (`compile`) | 15.3 MB (15.2-15.5) | 589.8 MB (522.0-676.2) | 14.92-16.27 |
+| Cached one-file edit (`prepare`) | `pprint-only` | 0.036 s (0.031-0.041) | 5.680 s (`compile`) | 32.9 MB (31.8-33.7) | 599.9 MB (523.3-669.2) | 14.82-16.27 |
+| Cached one-file edit (`advanced`) | `prn` | 0.027 s (0.026-0.029) | — | 20.2 MB (20.1-20.3) | — | 15.24-16.27 |
+| Cached one-file edit (`advanced`) | `pprint-only` | 0.079 s (0.046-0.118) | — | 33.2 MB (32.6-33.9) | — | 15.24-16.27 |
+| `--watch` step (compiler / edit-to-log) | `prn` | 0.9 ms (0.7-1.8) / 14.5 ms | — | 20.8 MB | — | 8.15-8.42 |
+| `--watch` step (compiler / edit-to-log) | `pprint-only` | 1.1 ms (1.0-2.1) / 29.5 ms | — | 94.2 MB | — | 8.15-8.15 |
+| `light-cljs test` (uncached) | `prn-test` | 104.3 ms (100.7-114.9) | — | 68.7 MB (61.6-78.8) | — | 7.98-8.15 |
+| `light-cljs test` (uncached) | `pprint-test` | 192.8 ms (184.8-214.1) | — | 114.1 MB (109.5-121.3) | — | 7.98-8.15 |
+| `light-cljs test` (warm cached) | `prn-test` | 53.9 ms (51.7-64.3) | — | 45.1 MB (41.7-46.3) | — | 7.98-7.98 |
+| `light-cljs test` (warm cached) | `pprint-test` | 76.4 ms (75.0-87.2) | — | 64.1 MB (60.8-67.6) | — | 7.98-7.98 |
+| Node.js dev load (first output) | `prn` | 70.6 ms (66.6-121.0) | 94.2 ms (90.1-108.9) | 52.4 MB (51.6-54.8) | 68.2 MB (67.2-71.4) | 15.10-15.17 |
+| Node.js dev load (first output) | `pprint-only` | 90.1 ms (87.7-114.3) | 115.0 ms (109.7-127.9) | 65.6 MB (61.7-68.7) | 85.1 MB (80.1-87.7) | 15.10-15.17 |
+| Node.js `advanced` load (first output) | `prn` | 55.8 ms (54.6-185.6) | 55.7 ms (53.1-57.6) | 44.6 MB (43.8-46.2) | 44.3 MB (43.1-45.6) | 8.42-8.90 |
+| Node.js `advanced` load (first output) | `pprint-only` | 69.0 ms (65.7-71.6) | 69.1 ms (66.1-71.8) | 54.0 MB (51.7-55.5) | 55.0 MB (52.8-57.0) | 8.42-8.42 |
+
+### Final wins, losses, stop rule, and remaining costs (`d60bf8a2`)
+
+- **Where light-cljs wins (every `pprint-only` comparison row):**
+  - **Uncached `advanced` / `release` (`pprint-only`):** `0.178 s` (`0.130 s` paired) vs. `11.708 s` (**66x faster**) and `91.3 MB` vs. `947.4 MB` peak memory (**10x lower**).
+  - **Warm development `compile` (`pprint-only`):** `0.071 s` vs. `5.448 s` (**77x faster**) and `36.1 MB` vs. `600.0 MB` peak memory (**17x lower**).
+  - **Cached rebuild after one-file edit (`pprint-only`):** `0.036 s` (`prepare`) and `0.079 s` (`advanced`) vs. `5.680 s` shadow-cljs `compile` (**72x-158x faster**) and `32.9-33.2 MB` vs. `599.9 MB` peak memory (**18x lower**).
+  - **Development build Node.js load (`pprint-only` and `prn`):** `90.1 ms` vs. `115.0 ms` (`-22%`, `65.6 MB` vs. `85.1 MB` peak memory) for `pprint-only`, and `70.6 ms` vs. `94.2 ms` (`-25%`) for `prn`.
+  - **`advanced` / `release` Node.js load (`pprint-only`):** `69.0 ms` vs. `69.1 ms` first output (`71.1 ms` vs. `71.7 ms` wall) and `54.0 MB` vs. `55.0 MB` peak memory (`-1.0 MB`), with `cljs.pprint` adding `+13.2 ms` vs. `+13.4 ms`.
+  - **`light-cljs test` (`pprint-test`):** uncached delta over `prn-test` fell from `+113.2 ms` to `+88.5 ms` (`-22%`), and cached delta fell from `+26.3 ms` to `+22.5 ms`.
+  - **`--watch` step (`pprint-only`):** `1.1 ms` compiler step (`+0.2 ms` over `prn`), library never recompiled, and watch peak memory fell from `118.4 MB` to `94.2 MB` (`-24.2 MB`).
+- **Where light-cljs still loses:**
+  - **`advanced` / `release` Node.js load on the `prn` baseline (without `cljs.pprint`):** light-cljs is `+0.1 ms` slower on median first output (`55.8 ms` vs. `55.7 ms`; wall `58.0 ms` vs. `57.8 ms`, with one `185.6 ms` outlier under load) and `+0.3 MB` higher peak memory (`44.6 MB` vs. `44.3 MB`). This comes from the `prn` runtime baseline (`118,064` vs. `103,116` raw bytes), not `cljs.pprint`.
+  - **Warm development `compile` delta over `prn`:** light-cljs adds `+48 ms` (`23 ms` -> `71 ms`), though shadow-cljs adds `+141 ms` (`5.307 s` -> `5.448 s`) in this session; shadow-cljs's ~1 s run-to-run JVM startup jitter makes its delta noisy while light-cljs stays `77x` faster in absolute time.
+- **Stop rule (`light-cljs-1172`):** Both stop conditions are met — the two largest library contributors (`defdirectives` and `getf`/`setf`) have been reduced, and every `pprint-only` row is at or below shadow-cljs (with only the `0.1 ms` `prn` baseline load-time gap remaining outside `cljs.pprint`).
+- **What remains in `cljs.pprint` (recorded, not changed here):**
+  - `24` remaining V8-host units (`21.1 ms` total in `prepare`): `21` of them call `cljs.pprint`'s own macros (`pprint-logical-block`, `print-length-loop`, `formatter-out` in `code-dispatch`, and `with-pretty-writer` in `pprint`/`write`); the remaining three are `clojure.string/reverse`, `cljs.pprint/string-buffer`, and `pprint-bench.pprint-only/main` (`1-2` engine bookkeeping calls each).
+  - Top-level `def-pprint-type` (5 calls) and remaining macro registrations (`6.2 ms` in `trace.top-level.engine-ms`).
+- **General compiler slownesses observed (recorded, not changed here):**
+  - **`cljs.core/hash-map` and `cljs.core/dotimes` are V8 core macros, not native core macros:** `hash-map` and `dotimes` are listed in `src/compiler_names.rs::core_macro` but absent from `src/native_core_macros.rs`. Before switching `get-directive-table` from `(hash-map ...)` to a map literal `{...}`, calling `(hash-map ...)` on 34 entries marshaled all `7,453` AST nodes through the V8 macro host (`15.5 ms`, `79` engine calls in a single unit), whereas `{...}` compiled natively in `1.5 ms` with `0` V8 engine calls.
+  - **Fixed V8 macro-host startup cost (`trace.drain-ms` / `trace.drain.bookkeeping-ms`):** any compilation that invokes at least one non-native macro pays `~27-32 ms` of fixed V8 macro-host startup and drain bookkeeping (measured at `28.6 ms` / `31.9 ms` for `pprint-only` and `27.8 ms` / `28.5 ms` for `prn-test` at `prepare`), whereas macro-free builds like `prn` skip V8 startup entirely (`11.0-12.6 ms` total, `14.4 MB` peak memory).
