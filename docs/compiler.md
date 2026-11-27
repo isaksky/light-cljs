@@ -1100,6 +1100,24 @@ explicit writer). Departures from upstream ClojureScript:
   `cljs/pprint.cljc`) are also private here; and the Closure Library
   string/buffer helpers and private `lift-ns` are replaced by small private
   helpers in the same file.
+- `pprint-set`, `pprint-array` and `pprint-pqueue` are hand-written functions
+  built from `pprint-logical-block`, `print-length-loop`, `write-out` and
+  `pprint-newline` instead of load-time `formatter-out` definitions, with the
+  same output.
+- `simple-dispatch` and `code-dispatch` install their methods with `defmethod`
+  rather than `use-method` so unread `code-dispatch` and its methods are
+  removed at `advanced`; each registered method is a `defmethod` wrapper
+  function rather than identical to the underlying handler (for example,
+  `(identical? (get-method simple-dispatch :set) pprint-set)` is `false`).
+- `cl-format` and `code-dispatch` tables and helpers initialize on first use
+  rather than at namespace load so data-only `advanced` builds drop them: the
+  private directive table is built on first `cl-format` compilation
+  (`directive-table-cache` / `get-directive-table` instead of an eager
+  `directive-table` Var), `cached-compile` is a `defn` that lazily memoizes
+  `compile-format`, `pprint-hold-first` and `pprint-if` compile their format
+  strings on first call, and the private dynamic Var `*code-table*` starts as
+  `nil` and populates on first `code-dispatch` list print (no code path binds
+  `*code-table*`, and only `pprint-code-list` reads it).
 
 Upstream `cljs.pprint` quirks preserved as expected output (verified against
 ClojureScript 1.12.134 in `tests/compiler/cljs_pprint_conformance.rs`):

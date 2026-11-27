@@ -11,11 +11,16 @@ Measured with [`benchmarks/cljs-pprint/size.bb`](cljs-pprint/size.bb), which bui
 - `cl-format-only` ([`cl_format_only.cljs`](cljs-pprint/src/pprint_bench/cl_format_only.cljs)): formats `"~a is ~:r: ~{~d~^, ~}~%"` with `cljs.pprint/cl-format`.
 - `code-dispatch` ([`code_dispatch.cljs`](cljs-pprint/src/pprint_bench/code_dispatch.cljs)): pretty-prints a `defn` form with `with-pprint-dispatch` and `cljs.pprint/code-dispatch`.
 
-Reproduce:
+Reproduce (build an immutable release binary first, then run the comparison script):
 
 ```sh
-bb benchmarks/cljs-pprint/size.bb --light target/bench/light-cljs-<sha> --size-report
+cargo build --locked --release
+mkdir -p target/bench
+cp target/release/light-cljs "target/bench/light-cljs-$(git rev-parse --short=8 HEAD)"
+bb benchmarks/cljs-pprint/size.bb --light "target/bench/light-cljs-$(git rev-parse --short=8 HEAD)" --size-report
 ```
+
+**Target difference:** `light-cljs.edn` builds `:target :esm` (an ECMAScript module exporting `main`, invoked by a one-line Node.js dynamic `import`), whereas `shadow-cljs.edn` builds `:target :node-script` (a CommonJS Node.js script that invokes `main` directly). Because the two targets carry different module/bootstrap wrappers, the absolute `prn` baselines (`118,064` vs. `103,116` raw; `30,947` vs. `21,277` `gzip -9`) are not strictly like-for-like; subtracting each compiler's own `prn` baseline cancels that fixed target overhead when comparing the bytes `cljs.pprint` adds.
 
 ### Setup (2026-11-27, unreserved)
 
@@ -54,11 +59,22 @@ bb benchmarks/cljs-pprint/size.bb --light target/bench/light-cljs-<sha> --size-r
 | `cl-format-only` | 257,026 | +138,962 | -18,529 | 68,860 | +37,913 | -3,558 |
 | `code-dispatch` | 276,015 | +157,951 | -220 | 72,730 | +41,783 | +90 |
 
-#### Summary for `pprint-only` (added bytes over each compiler's `prn` baseline)
+#### Summary (wins and losses across all four programs)
 
-- **Raw delta vs. `prn`:** light-cljs `+80,684` bytes vs. shadow-cljs `+142,782` bytes (**62,098 bytes less** added by light-cljs; total output 198,748 vs. 245,898 bytes).
-- **`gzip -9` delta vs. `prn`:** light-cljs `+22,229` bytes vs. shadow-cljs `+31,073` bytes (**8,844 bytes less** added by light-cljs).
-- Both stop-rule targets for `light-cljs-1171` are met: `pprint-only` adds fewer raw and gzipped bytes than shadow-cljs, and `--size-report` shows nothing of `cl-format` or `code-dispatch` in data-only builds.
+- **`pprint-only` (wins on deltas and total raw; loses on total `gzip -9`):**
+  - Raw delta vs. `prn`: light-cljs `+80,684` bytes vs. shadow-cljs `+142,782` bytes (**62,098 bytes less** added by light-cljs).
+  - `gzip -9` delta vs. `prn`: light-cljs `+22,229` bytes vs. shadow-cljs `+31,073` bytes (**8,844 bytes less** added by light-cljs).
+  - Total raw output: light-cljs `198,748` bytes vs. shadow-cljs `245,898` bytes (**47,150 bytes smaller**).
+  - Total `gzip -9` output: light-cljs `53,176` bytes vs. shadow-cljs `52,350` bytes (**light-cljs is 826 bytes larger**, because its `prn` baseline starts `9,670` gzip bytes higher: `30,947` vs. `21,277`).
+- **`cl-format-only` (wins on raw delta; loses on total raw, total `gzip -9`, and `gzip -9` delta):**
+  - Raw delta vs. `prn`: light-cljs `+138,962` vs. shadow-cljs `+142,187` bytes (`3,225` bytes less added).
+  - Total raw output: light-cljs `257,026` vs. shadow-cljs `245,303` bytes (`11,723` bytes larger).
+  - `gzip -9`: light-cljs `68,860` (`+37,913` delta) vs. shadow-cljs `52,106` (`+30,829` delta) — **light-cljs adds 7,084 more gzip bytes** and is `16,754` total gzip bytes larger.
+- **`code-dispatch` (loses on every column; `gzip -9` grew `+90` bytes vs. before):**
+  - Raw: light-cljs `276,015` (`+157,951` delta) vs. shadow-cljs `245,758` (`+142,642` delta) — `15,309` more raw bytes added (`30,257` total raw larger).
+  - `gzip -9`: light-cljs `72,730` (`+41,783` delta) vs. shadow-cljs `52,291` (`+31,014` delta) — `10,769` more gzip bytes added (`20,439` total gzip larger). Compared to `e9cb291c` before this change, `code-dispatch` shrank `220` raw bytes (`276,235` -> `276,015`) but **grew `+90` `gzip -9` bytes** (`72,640` -> `72,730`) from the lazy initialization wrappers and `defmethod` closures.
+- **`prn` baseline (loses on raw and `gzip -9`):** light-cljs `118,064` raw / `30,947` `gzip -9` vs. shadow-cljs `103,116` raw / `21,277` `gzip -9` (`14,948` raw and `9,670` gzip bytes larger before requiring `cljs.pprint`).
+- **Stop rule (`light-cljs-1171`):** both targets are met — `pprint-only` adds fewer raw and gzipped bytes over `prn` than shadow-cljs (`+80,684` vs. `+142,782` raw; `+22,229` vs. `+31,073` `gzip -9`), and `--size-report` shows nothing of `cl-format` or `code-dispatch` in data-only builds.
 
 ### `--size-report` diagnosis (what reached `directive-table`)
 
