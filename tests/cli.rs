@@ -3361,9 +3361,13 @@ fn test_command_reports_a_run_that_waits_on_a_timer() {
         "app/timer_test.cljs",
         "(ns app.timer-test (:require [cljs.test :refer [deftest is async]])) (deftest waits (async done (js/setTimeout (fn [] (is true) (done)) 1)))",
     );
-    let (ok, _, stderr) = run();
+    // The embedded V8 heap has no timers: the ReferenceError thrown before `done`
+    // is reported as an error in the test, and the run fails.
+    let (ok, stdout, stderr) = run();
     assert!(!ok);
-    assert!(stderr.contains("setTimeout"), "{stderr}");
+    assert!(stdout.contains("ERROR in (waits)"), "{stdout}");
+    assert!(stdout.contains("setTimeout is not defined"), "{stdout}");
+    assert!(stderr.contains("tests failed"), "{stderr}");
     // A test that awaits a promise that never settles does not finish.
     write_source(
         &root,
