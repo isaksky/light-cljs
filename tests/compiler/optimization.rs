@@ -570,6 +570,22 @@ fn advanced_keeps_initializers_that_may_throw_run_code_or_see_replaced_operation
             (set! js/hostDefs nil) (def unused hostDefs.f) 42"#,
             "threw Cannot read properties of null (reading 'f')\n[]\n",
         ),
+        // Forward-declared globals with unsafe definitions or read ordering
+        // stay intact at every level (light-cljs-1175).
+        (
+            r#"(declare f) (defn f [x] ["KEPT_TWICE_1" x]) (defn f [x] ["KEPT_TWICE_2" x])
+            (def m (memoize f)) 42"#,
+            "42\n[]\n",
+        ),
+        (
+            r#"(declare f) (defn f [x] ["KEPT_SET" x]) (def m (memoize f))
+            (set! f (fn [x] [:reassigned x])) 42"#,
+            "42\n[]\n",
+        ),
+        (
+            r#"(declare f) (def m (memoize f)) (defn f [x] ["KEPT_LATE" x]) 42"#,
+            "42\n[]\n",
+        ),
     ] {
         let p = program(source);
         for level in OptimizationLevel::ALL {
@@ -578,6 +594,185 @@ fn advanced_keeps_initializers_that_may_throw_run_code_or_see_replaced_operation
             assert!(js.contains("KEPT_"), "{level}: {source}");
             assert_eq!(traced(&js), expected, "{level}: {source}");
         }
+    }
+}
+
+/// Forward-declared functions redefined in another namespace (via `set!` or
+/// `with-redefs`), never defined, or read before their `defn` keep today's
+/// behaviour across `none`, `prepare`, and `advanced` (light-cljs-1175).
+#[test]
+fn forward_declared_unsafe_cases_preserve_behaviour_across_namespaces_and_levels() {
+    // Reading a forward-declared global before its `defn` runs captures
+    // `undefined`, so calling the memoized wrapper throws `TypeError` at all
+    // levels.
+    both(
+        r#"(declare f)
+           (def m (memoize f))
+           (defn f [x] [:ok x])
+           (pr-str (try (m 1) (catch js/TypeError _ :type-error)))"#,
+        ":type-error\n",
+    );
+    // A `declare` that is never defined keeps `memoize` and its global alive.
+    {
+        let p = program("(declare f) (def m (memoize f)) (js/console.log 1)");
+        for level in OptimizationLevel::ALL {
+            let prepared = prepare_application(&p, ApplicationOptions::new(level));
+            assert_eq!(prepared.stats().removed_definitions, 0, "{level}");
+            let js = prepared.emit_js();
+            assert_eq!(execute(&format!("{js};")), "1\n", "{level}");
+        }
+    }
+    // Redefined in another namespace via `set!` or `with-redefs`.
+    for (label, b_source) in [
+        (
+            "set!",
+            "(ns lib.b (:require [lib.a]))\n\
+             (set! lib.a/f (fn [x] [:redefined x]))\n\
+             (js/console.log 1)\n",
+        ),
+        (
+            "with-redefs",
+            "(ns lib.b (:require [lib.a]))\n\
+             (with-redefs [lib.a/f (fn [x] [:redefined x])] (js/console.log 1))\n",
+        ),
+    ] {
+        let sources = Sources::new();
+        sources.write(
+            "lib/a.cljs",
+            "(ns lib.a)\n\
+             (declare f)\n\
+             (defn f [x] [\"KEPT_CROSS_NS\" x])\n\
+             (def m (memoize f))\n",
+        );
+        sources.write("lib/b.cljs", b_source);
+        let program = light_cljs::compiler::analyze_namespace_entry(
+            "lib.b",
+            std::slice::from_ref(sources.0.path()),
+            &mut MacroHost::new(),
+            light_cljs::analyzer::AnalysisOptions::default(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        for level in OptimizationLevel::ALL {
+            let prepared = prepare_application(&program, ApplicationOptions::new(level));
+            let js = prepared.emit_js();
+            assert!(
+                js.contains("KEPT_CROSS_NS"),
+                "{label} at {level} should keep f and m"
+            );
+            assert_eq!(execute(&format!("{js};")), "1\n", "{label} at {level}");
+        }
+    }
+    // `declare` before `deftype`/`defprotocol` keeps `extend-type` and
+    // `satisfies?` sound when evaluated before the type/protocol definition.
+    both(
+        r#"(declare T)
+           (def res (try (extend-type T IHash (-hash [_] 77)) (catch js/TypeError _ :type-error)))
+           (deftype T [x])
+           (pr-str res)"#,
+        ":type-error\n",
+    );
+    both(
+        r#"(declare P)
+           (def before (try (satisfies? P 1) (catch js/TypeError _ :type-error)))
+           (defprotocol P (pm [this]))
+           (pr-str before)"#,
+        ":type-error\n",
+    );
+    // A dotted host path is never an inert dispatch function for `defmulti`.
+    let dotted = program(
+        r#"(set! js/hostDefs (js-obj))
+           (def hostDefs.k (fn [x] x))
+           (set! js/hostDefs nil)
+           (defmulti m hostDefs.k)
+           42"#,
+    );
+    for level in OptimizationLevel::ALL {
+        let js = prepare_application(&dotted, ApplicationOptions::new(level)).emit_js();
+        assert_eq!(
+            traced(&js),
+            "threw Cannot read properties of null (reading 'k')\n[]\n",
+            "{level}"
+        );
+    }
+}
+
+/// At `Advanced`, a forward-declared global whose only initialized definition
+/// is an earlier top-level `fn` literal is an inert target for `memoize` and
+/// aliases, removing both the wrapper and the dead function (light-cljs-1175).
+#[test]
+fn advanced_removes_forward_declared_function_targets_for_memoize_and_aliases() {
+    let source = r#"
+        (declare f)
+        (defn f [x] ["big-dead-payload" x])
+        (def m (memoize f))
+        (js/console.log 1)"#;
+    let p = program(source);
+    let baseline = prepare_application(
+        &program("(js/console.log 1)"),
+        ApplicationOptions::new(OptimizationLevel::Advanced),
+    )
+    .emit_js();
+    for level in OptimizationLevel::ALL {
+        let prepared = prepare_application(&p, ApplicationOptions::new(level));
+        let js = prepared.emit_js();
+        assert_eq!(execute(&format!("{js};")), "1\n", "{level}");
+        if level.advanced() {
+            assert!(!js.contains("big-dead-payload"), "{js}");
+            assert_eq!(prepared.stats().removed_definitions, 3);
+            let units: Vec<_> = prepared
+                .retention()
+                .units
+                .iter()
+                .map(|unit| {
+                    light_cljs::runtime_manifest::RuntimeManifest::embedded()
+                        .unit(unit.unit)
+                        .name
+                })
+                .collect();
+            assert!(!units.contains(&"memoize"), "memoize retained: {units:?}");
+            assert_eq!(
+                js.len(),
+                baseline.len(),
+                "advanced output should match baseline"
+            );
+        }
+    }
+    // Live calls of the memoized forward-declared function still work at every level.
+    both(
+        r#"(declare f)
+           (defn f [x] ["live-payload" x])
+           (def m (memoize f))
+           (pr-str [(m 1) (m 1)])"#,
+        "[[\"live-payload\" 1] [\"live-payload\" 1]]\n",
+    );
+    // Cross-namespace unused memoize of a forward-declared function is also removed.
+    let sources = Sources::new();
+    sources.write(
+        "lib/a.cljs",
+        "(ns lib.a)\n\
+         (declare f)\n\
+         (defn f [x] [\"CROSS_NS_DEAD\" x])\n\
+         (def m (memoize f))\n",
+    );
+    sources.write(
+        "lib/b.cljs",
+        "(ns lib.b (:require [lib.a]))\n\
+         (js/console.log 1)\n",
+    );
+    let ns_program = light_cljs::compiler::analyze_namespace_entry(
+        "lib.b",
+        std::slice::from_ref(sources.0.path()),
+        &mut MacroHost::new(),
+        light_cljs::analyzer::AnalysisOptions::default(),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    for level in OptimizationLevel::ALL {
+        let prepared = prepare_application(&ns_program, ApplicationOptions::new(level));
+        let js = prepared.emit_js();
+        assert_eq!(execute(&format!("{js};")), "1\n", "{level}");
+        assert_eq!(js.contains("CROSS_NS_DEAD"), !level.advanced(), "{level}");
     }
 }
 

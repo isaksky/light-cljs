@@ -610,6 +610,11 @@ fn an_unread_defmulti_without_methods_is_removed() {
             true,
         ),
         ("(defn k [x] (:k x)) (defmulti m k)", true),
+        ("(declare k) (defn k [x] (:k x)) (defmulti m k)", true),
+        (
+            "(declare k) (defn k [x] (:k x)) (defmulti m k) (defmethod m :a [_] 1)",
+            true,
+        ),
         ("(defmulti m :k) (defmethod m :a [_] 1)", true),
         (
             "(defmulti m :k) (defmethod m :a [_] 1) (js/console.log (m {:k :a}))",
@@ -624,6 +629,15 @@ fn an_unread_defmulti_without_methods_is_removed() {
         ("(defmulti m :k :default [:none])", false),
         ("(declare k) (defmulti m k) (defn k [x] x)", false),
         ("(defn k [x] x) (defmulti m k) (set! k (fn [x] 2))", false),
+        (
+            "(declare k) (defn k [x] x) (defn k [x] 2) (defmulti m k)",
+            false,
+        ),
+        (
+            "(declare k) (defn k [x] x) (defmulti m k) (set! k (fn [x] 2))",
+            false,
+        ),
+        ("(declare k) (defmulti m k)", false),
     ] {
         let source = format!("{source} (js/console.log 1)");
         let program = program(&source);

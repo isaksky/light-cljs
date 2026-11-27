@@ -1257,8 +1257,10 @@ struct Inert<'p> {
     /// Core operations the program may replace, by table row.
     replaced: Vec<bool>,
     constructors: Vec<Option<Constructor>>,
-    /// By global: the index in the flattened top level of its one definition,
-    /// when that is a `def` of a `fn` literal and nothing assigns it.
+    /// By global: the index in the flattened top level of its sole initialized
+    /// definition, when that is a `def` of a `fn` literal (ignoring bare
+    /// uninitialized `declare` forms), nothing assigns it, and its name is no
+    /// host path.
     functions: Vec<Option<usize>>,
     /// The shape of each `let` binding examined so far; every local has one
     /// binding site.
@@ -1300,6 +1302,7 @@ impl<'p> Inert<'p> {
         inert.functions = vec![None; program.globals.len()];
         for global in 0..program.globals.len() {
             if let Definition::Def(definition) = facts.definition(GlobalId(global))
+                && !program.globals[global].name.contains('.')
                 && let ExprKind::Def {
                     init: Some(init), ..
                 } = program.exprs[definition.0].kind
@@ -2134,6 +2137,116 @@ mod tests {
             [0, 0]
         );
     }
+    /// Forward-declared globals that are NOT single earlier top-level `fn`
+    /// definitions must never be treated as inert targets (light-cljs-1175).
+    #[test]
+    fn advanced_keeps_unsafe_forward_declared_function_uses() {
+        // Declared and then defined twice with initializers.
+        assert_eq!(
+            removed(
+                "(declare f) (defn f [x] [\"KEPT\" x]) (defn f [x] [\"KEPT2\" x]) \
+                 (def m (memoize f)) (js/console.log 1)"
+            ),
+            [0, 0]
+        );
+        // Declared, defined once, then reassigned with `set!`.
+        assert_eq!(
+            removed(
+                "(declare f) (defn f [x] [\"KEPT\" x]) (def m (memoize f)) \
+                 (set! f (fn [x] x)) (js/console.log 1)"
+            ),
+            [0, 0]
+        );
+        // Declared, defined once, then rebound with `with-redefs`.
+        assert_eq!(
+            removed(
+                "(declare f) (defn f [x] [\"KEPT\" x]) (def m (memoize f)) \
+                 (with-redefs [f identity] 1) (js/console.log 1)"
+            ),
+            [0, 0]
+        );
+        // Read at load time before the defining `defn` runs.
+        assert_eq!(
+            removed("(declare f) (def m (memoize f)) (defn f [x] [\"KEPT\" x]) (js/console.log 1)"),
+            [0, 0]
+        );
+        // Declared and never defined.
+        assert_eq!(
+            removed("(declare f) (def m (memoize f)) (js/console.log 1)"),
+            [0, 0]
+        );
+        assert_eq!(
+            removed("(declare f) (def alias f) (js/console.log 1)"),
+            [0, 0]
+        );
+        // Defining `defn` is not a direct top-level form.
+        assert_eq!(
+            removed(
+                "(declare f) (when (some? js/Object) (defn f [x] [\"KEPT\" x])) \
+                 (def m (memoize f)) (js/console.log 1)"
+            ),
+            [0, 0]
+        );
+        // Initializer is not a `fn` literal.
+        assert_eq!(
+            removed(
+                "(declare f) (def f (do (js/console.log \"init\") (fn [x] x))) \
+                 (def m (memoize f)) (js/console.log 1)"
+            ),
+            [0, 0]
+        );
+    }
+    /// Forward-declared globals with a single top-level `fn` definition before
+    /// their reader are inert targets for `memoize`, aliases, and `defmulti`
+    /// dispatch functions at `Advanced` (light-cljs-1175).
+    #[test]
+    fn advanced_treats_forward_declared_single_fn_as_inert_target() {
+        assert_eq!(
+            removed(
+                "(declare f) (defn f [x] [\"big-dead-payload\" x]) \
+                 (def m (memoize f)) (js/console.log 1)"
+            ),
+            [0, 3]
+        );
+        // Repeated `declare` forms before or after the read stay inert.
+        assert_eq!(
+            removed(
+                "(declare f) (declare f) (defn f [x] x) \
+                 (def m (memoize f)) (js/console.log 1)"
+            ),
+            [0, 4]
+        );
+        assert_eq!(
+            removed("(defn f [x] x) (def m (memoize f)) (declare f) (js/console.log 1)"),
+            [0, 3]
+        );
+        assert_eq!(
+            removed("(declare f) (defn f [x] x) (def alias f) (js/console.log 1)"),
+            [0, 3]
+        );
+        assert_eq!(
+            removed(
+                "(declare dispatch) (defn dispatch [x] (:k x)) \
+                 (defmulti m dispatch) (defmethod m :a [_] \"dead\") (js/console.log 1)"
+            ),
+            [0, 4]
+        );
+        // Live reads of `m` keep `f` and `m`.
+        assert_eq!(
+            removed("(declare f) (defn f [x] x) (def m (memoize f)) (js/console.log (m 1))"),
+            [0, 0]
+        );
+        // Reading `f` directly still removes unused `m` (and then inlines `(f 1)`).
+        assert_eq!(
+            removed("(declare f) (defn f [x] x) (def m (memoize f)) (js/console.log (f 1))"),
+            [0, 3]
+        );
+        // Escaping `f` keeps `f` and its `declare`, while still removing unused `m`.
+        assert_eq!(
+            removed("(declare f) (defn f [x] x) (def m (memoize f)) (js/console.log f)"),
+            [0, 1]
+        );
+    }
     /// Top-level `defmethod`s on a multimethod nothing else reads are removed
     /// with its `defmulti` at `Advanced` (light-cljs-1165).
     #[test]
@@ -2216,6 +2329,7 @@ mod tests {
     fn program_facts_new_light_matches_new_on_shared_fields() {
         let sources = [
             "(defprotocol P (m [x])) (deftype T [a] P (m [_] a)) (defrecord R [b]) (extend-type T IHash (-hash [_] 0)) (defn f [x] (+ x 1)) (f 2)",
+            "(declare f) (defn f [x] (+ x 1)) (declare g) (f 2)",
             "(set! cljs.core/inc (fn [x] x)) (extend-type number IEquiv (-equiv [_ _] true)) (reify IEquiv (-equiv [_ _] false)) (+ 1 2)",
             "(def k :a) (set! (.-cljs$core$IEquiv$_equiv$arity$2 k) (fn [_ _] true)) (= k :b)",
         ];

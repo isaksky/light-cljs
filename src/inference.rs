@@ -875,6 +875,10 @@ impl LatticeValue {
 
 /// How a global is defined, when the program defines it exactly once and
 /// never assigns it (`set!`, `binding`, `with-redefs`, a `js*` hole).
+/// Bare uninitialized declarations (`declare` / `(def g)`) do not count
+/// against a single initialized `def` of the same global, because they write
+/// nothing at run time; a global with only a single bare declaration keeps
+/// `Definition::Def` of that declaration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Definition {
     /// Defined more than once, assigned, or not defined by the program.
@@ -994,6 +998,7 @@ impl ProgramFacts {
 
     fn build<'p>(program: &'p Program, top: &[ExprId], full: bool) -> Self {
         let mut definitions = vec![0usize; program.globals.len()];
+        let mut declarations = vec![0usize; program.globals.len()];
         let mut assigned = vec![false; program.globals.len()];
         let mut replaced = vec![false; CoreFnId::ALL.len()];
         let mut extended = Vec::new();
@@ -1297,9 +1302,19 @@ impl ProgramFacts {
                         _ => (),
                     }
                     if emitted[index] {
-                        crate::application::visit_globals(kind, |global| {
-                            definitions[global.0] += 1;
-                        });
+                        if let ExprKind::Def {
+                            global,
+                            init: None,
+                            test: None,
+                            once: false,
+                        } = kind
+                        {
+                            declarations[global.0] += 1;
+                        } else {
+                            crate::application::visit_globals(kind, |global| {
+                                definitions[global.0] += 1;
+                            });
+                        }
                     }
                 }
             }
@@ -1316,10 +1331,29 @@ impl ProgramFacts {
         };
         {
             let sole = |global: GlobalId| definitions[global.0] == 1 && !assigned[global.0];
+            // Type and protocol callers (`core_protocols`, `stable_protocol`,
+            // `extend-type`, `rta::devirtualize`) assume no forward `declare`
+            // lets an earlier form observe the global before its definition.
+            let sole_undeclared = |global: GlobalId| {
+                definitions[global.0] == 1 && declarations[global.0] == 0 && !assigned[global.0]
+            };
             for index in def_exprs {
                 let index = index as usize;
                 let id = ExprId(index);
                 match &program.exprs[index].kind {
+                    ExprKind::Def {
+                        global,
+                        init: None,
+                        test: None,
+                        once: false,
+                    } => {
+                        if definitions[global.0] == 0
+                            && declarations[global.0] == 1
+                            && !assigned[global.0]
+                        {
+                            globals[global.0] = Definition::Def(id);
+                        }
+                    }
                     ExprKind::Def { global, .. } if sole(*global) => {
                         globals[global.0] = Definition::Def(id);
                     }
@@ -1328,7 +1362,7 @@ impl ProgramFacts {
                         global,
                         layout,
                         methods,
-                    } if sole(*global) => {
+                    } if sole_undeclared(*global) => {
                         let role = |role| Definition::Type {
                             definition: id,
                             type_global: *global,
@@ -1336,11 +1370,15 @@ impl ProgramFacts {
                             record: *record,
                         };
                         globals[global.0] = role(TypeRole::Constructor);
-                        if let Some(factory) = layout.constructor.filter(|factory| sole(*factory)) {
+                        if let Some(factory) = layout
+                            .constructor
+                            .filter(|factory| sole_undeclared(*factory))
+                        {
                             globals[factory.0] = role(TypeRole::Factory);
                         }
-                        if let Some(factory) =
-                            layout.map_constructor.filter(|factory| sole(*factory))
+                        if let Some(factory) = layout
+                            .map_constructor
+                            .filter(|factory| sole_undeclared(*factory))
                         {
                             globals[factory.0] = role(TypeRole::MapFactory);
                         }
@@ -1354,7 +1392,7 @@ impl ProgramFacts {
                         for global in
                             std::iter::once(*global).chain(methods.iter().map(|m| m.global))
                         {
-                            if sole(global) {
+                            if sole_undeclared(global) {
                                 globals[global.0] = Definition::Protocol(id);
                             }
                         }
@@ -1364,6 +1402,7 @@ impl ProgramFacts {
             }
         }
         drop(definitions);
+        drop(declarations);
         drop(assigned);
         let program_type = |target: ExprId| match program.exprs[target.0].kind {
             ExprKind::Global(global) => match globals[global.0] {

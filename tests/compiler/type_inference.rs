@@ -1069,6 +1069,35 @@ fn parameters_of_closed_functions_join_the_arguments_of_their_calls() {
     }
 }
 
+/// Forward-declared globals keep sound types across reads before and after the
+/// sole initializing `def`, when `declare` appears after a read, and when a
+/// `declare` is never defined (light-cljs-1175).
+#[test]
+fn forward_declared_globals_preserve_inference_soundness() {
+    let nil = Inferred::of(Type::NIL);
+    let number = Inferred::of(Type::NUMBER);
+    let number_or_nil = Inferred::of(Type::NUMBER.union(Type::NIL));
+    // A `declare` that is never defined stays `nil`.
+    assert_eq!(last("(declare x) x"), nil);
+    // Reading before the sole `def` includes `nil`.
+    assert_eq!(last("(declare x) (def y x) (def x 1) y"), number_or_nil);
+    assert_eq!(
+        last("(declare x) (defn get-x [] x) (def before (get-x)) (def x 1) before"),
+        number_or_nil
+    );
+    // Reading after the sole `def` sees its initialized type, even with a
+    // trailing `declare` after the read.
+    assert_eq!(last("(declare x) (def x 1) x"), number);
+    assert_eq!(last("(def x 1) (def y x) (declare x) y"), number);
+    // Runtime execution agrees across `none`, `prepare`, and `advanced`.
+    every_level(
+        "(declare x) (defn get-x [] x) (def before (get-x)) (def x 1) (pr-str [before (get-x)])",
+        "[nil 1]",
+    );
+    every_level("(def x 1) (def y x) (declare x) (pr-str [x y])", "[1 1]");
+    every_level("(declare x) (pr-str x)", "nil");
+}
+
 /// `(defn f0 [x] x) (defn f1 [x] (f0 x)) ... (fN "abc")`, or the same chain in
 /// one `letfn` followed by `(+ 1 2)`.
 fn chain(links: usize, letfn: bool) -> String {
