@@ -80,7 +80,8 @@ type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 pub const USAGE: &str = "Watch:
   light-cljs --watch --entry NAMESPACE --source-root DIR [--source-root DIR ...] --out-dir DIR
-             [--poll-ms N] [--elide-asserts] [--stats] [--config KEY=EDN ...]
+             [--poll-ms N] [--elide-asserts] [--load-tests | --no-load-tests]
+             [--stats] [--config KEY=EDN ...]
              [--macro-expansions N] [--macro-nodes N] [--macro-timeout-ms N]
              [--macro-memory-limit N] [--macro-poll-budget N]
              [--cache-dir DIR | --no-cache] [--cache-blocker NS ...] [--cache-retention N]
@@ -280,6 +281,7 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
     let (mut entry, mut roots, mut out_dir) = (None, Vec::new(), None);
     let mut poll = Duration::from_millis(100);
     let mut assertions = true;
+    let mut load_tests = None;
     let (mut serve, mut serve_host, mut reload_dependents) = (None, None, false);
     let (mut nrepl, mut no_nrepl) = (None, false);
     let mut stats = false;
@@ -312,6 +314,8 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
             "--out-dir" => out_dir = Some(PathBuf::from(value()?)),
             "--poll-ms" => poll = Duration::from_millis(poll_value(&value()?)?),
             "--elide-asserts" => assertions = false,
+            "--load-tests" => load_tests = Some(true),
+            "--no-load-tests" => load_tests = Some(false),
             "--serve" => serve = Some(port_value(flag, &value()?)?),
             "--serve-host" => {
                 serve_host = Some(
@@ -371,6 +375,9 @@ fn options(mut args: impl Iterator<Item = OsString>) -> Result<Option<Options>> 
     let cache_dir = (!no_cache).then(|| {
         cache_dir.unwrap_or_else(|| PathBuf::from(light_cljs::compile_cache::DEFAULT_DIR))
     });
+    if let Some(load) = load_tests {
+        crate::apply_load_tests(&mut configuration, load);
+    }
     Ok(Some(Options {
         entry,
         roots,
@@ -2387,6 +2394,43 @@ impl Watch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `--watch` takes `--load-tests` and `--no-load-tests` as `--compile`
+    /// does: the last one given, recorded in the configuration only when it
+    /// omits tests or overrides a `--config` of the key (light-cljs-1162).
+    #[test]
+    fn watch_load_tests_flags_reach_the_configuration() {
+        let configuration = |flags: &[&str]| {
+            let args = [
+                "--entry",
+                "app.main",
+                "--source-root",
+                "src",
+                "--out-dir",
+                "out",
+            ]
+            .iter()
+            .chain(flags)
+            .map(OsString::from)
+            .collect::<Vec<_>>();
+            options(args.into_iter())
+                .unwrap()
+                .unwrap()
+                .configuration
+                .text()
+        };
+        assert_eq!(configuration(&[]), "{}");
+        assert_eq!(configuration(&["--load-tests"]), "{}");
+        assert_eq!(
+            configuration(&["--no-load-tests"]),
+            "{:light-cljs/load-tests false}"
+        );
+        assert_eq!(configuration(&["--no-load-tests", "--load-tests"]), "{}");
+        assert_eq!(
+            configuration(&["--config", "light-cljs/load-tests=false", "--load-tests"]),
+            "{:light-cljs/load-tests true}"
+        );
+    }
 
     /// A save of light-cljs.edn between the poll's stamp and its read gives
     /// no text, so the poll keeps its stamp and the next one reads the file

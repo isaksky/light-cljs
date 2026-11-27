@@ -842,6 +842,20 @@ fn release_omits_deftests_unless_load_tests_is_true() {
         assert!(!printed(args).contains(":load-tests"), "{args:?}");
     }
 
+    // In the file itself: the build's `:release` map keeps tests, and dev's
+    // default leaves a `:config` that names the key as it is.
+    fs::write(
+        project.join("light-cljs.edn"),
+        "{:source-paths [\"src\"]\n :builds {:app {:target :esm :output-dir \"out/app\"\n \
+         :modules {:main {:entries [app.core]}}\n \
+         :config {:light-cljs/load-tests false}\n \
+         :release {:compiler-options {:load-tests true}}}}}\n",
+    )
+    .unwrap();
+    assert!(built(&["release", "app"]));
+    assert!(!built(&["compile", "app"]));
+    assert!(built(&["compile", "app", "--load-tests"]));
+
     // Flag-only commands, without the file, load tests unless told not to,
     // with the cache on and toggled both ways.
     let flagged = |extra: &[&str]| {

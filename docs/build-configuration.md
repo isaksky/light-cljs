@@ -493,13 +493,15 @@ does (light-cljs-1162): `:load-tests` defaults to false there, so every
 tests adds nothing to the release output. `:compiler-options {:load-tests
 true}` or `--load-tests` keeps them; `{:load-tests false}` or
 `--no-load-tests` omits them from a dev build too, and the flag after the
-command wins over the file. Dev builds and the flag CLI load tests unless
-`--no-load-tests` says otherwise. The setting reaches `deftest` as the
-configuration key `:light-cljs/load-tests`, which `light.build/config`
-answers: it is set, to `false`, only when tests are omitted (or to
-override a `:config` or `--config` that names the key), so a build that
-loads tests keeps the configuration, and the cache keys, of one that never
-names the option.
+command wins over the file. Dev builds and the flag CLI (`--compile`,
+`--watch`) load tests unless `{:load-tests false}` or `--no-load-tests`
+says otherwise. The setting reaches `deftest` as the configuration key
+`:light-cljs/load-tests`, which `light.build/config` answers: it is set to
+`false` when tests are omitted, and to the option's value when a flag or
+the file gives `:load-tests` over a `:config` or `--config` that names the
+key itself; otherwise it is left unset, so a build that loads tests keeps
+the configuration, and the cache keys, of one that never names the option.
+Release's default omits tests whatever `:config` says.
 
 ### Not in the file
 

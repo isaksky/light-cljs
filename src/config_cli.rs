@@ -1580,13 +1580,20 @@ fn translate(
             .map_err(|error| format!("--config {key}={value}: {error}"))?;
     }
     // `:load-tests` reaches `cljs.test/deftest` through the configuration,
-    // false by default in release, as shadow-cljs's release mode.
-    let load_tests = user.load_tests.unwrap_or_else(|| {
+    // false by default in release, as shadow-cljs's release mode. Dev's
+    // default names nothing, so a `:config` or `--config` that sets
+    // `:light-cljs/load-tests` itself is left as it is there.
+    let load_tests = user.load_tests.or_else(|| {
         settings
-            .get(Setting::LoadTests)
-            .map_or(!release, |value| value.kind == ValueKind::Boolean(true))
+            .slot(Setting::LoadTests)
+            .filter(|slot| slot.origin.source != light_cljs::config_file::ConfigSource::Default)
+            .map(|slot| slot.value.kind == ValueKind::Boolean(true))
     });
-    crate::apply_load_tests(&mut compile.configuration, load_tests);
+    match load_tests {
+        Some(load) => crate::apply_load_tests(&mut compile.configuration, load),
+        None if release => crate::apply_load_tests(&mut compile.configuration, false),
+        None => {}
+    }
 
     // `--cache-dir` names the store and turns the cache on over
     // `:cache-level :off`; `--no-cache` turns it off.
