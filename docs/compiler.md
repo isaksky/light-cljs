@@ -1039,7 +1039,7 @@ general capabilities:
   upstream's does when `:load-tests` is false. Otherwise, at `advanced`, a
   test nothing reads (no `run-tests`, `test-ns` or `ns-interns` of its
   namespace, no `(var name)`) is removed with its body, and the methods of a
-  multimethod nothing dispatches, such as `report` and the compile-time
+  multimethod nothing else reads, such as `report` and the compile-time
   `assert-expr`, are removed with it, so a program that only requires
   `cljs.test` keeps none of it.
 - An `async` body runs as an `^:async` function, so it may `await`. An

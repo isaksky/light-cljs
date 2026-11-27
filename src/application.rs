@@ -155,6 +155,8 @@ impl ApplicationOptions {
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ApplicationStats {
+    /// Top-level definitions removed, with the `defmethod`s removed with
+    /// their multimethod at `Advanced` (light-cljs-1165).
     pub removed_definitions: usize,
     pub specialized_calls: usize,
     pub retained_globals: usize,
@@ -1049,6 +1051,7 @@ fn retain(prepared: &mut PreparedApplication, exports: &[GlobalId]) -> Retained 
             && let Some(global) = inert.method(id, position)
             && let [definition] = definitions[global.0][..]
             && candidates[definition.0]
+            && builds_multimethod(program, definition)
         {
             methods[global.0].push(id);
             continue;
@@ -1132,6 +1135,23 @@ fn retain(prepared: &mut PreparedApplication, exports: &[GlobalId]) -> Retained 
         removed,
         facts,
     }
+}
+
+/// Whether `definition` is a `def` whose initializer is the `new MultiFn`
+/// that `defmulti` builds. A candidate's is one `Inert::multimethod` accepted:
+/// the multimethod and its fresh tables, which nothing else holds. Any other
+/// value, a program type implementing `IMultiFn` among them, may run code or
+/// throw when a method is added to it.
+fn builds_multimethod(program: &Program, definition: ExprId) -> bool {
+    let ExprKind::Def {
+        init: Some(init), ..
+    } = program.exprs[definition.0].kind
+    else {
+        return false;
+    };
+    matches!(&program.exprs[unwrap_do(program, init).0].kind,
+        ExprKind::Construct { callee, .. }
+            if matches!(program.exprs[callee.0].kind, ExprKind::CoreFn(CoreFnId::MultiFn)))
 }
 
 fn flatten(program: &Program, id: ExprId, result: bool, out: &mut Vec<(ExprId, bool)>) {
@@ -1324,9 +1344,8 @@ impl<'p> Inert<'p> {
     /// `(-add-method g dispatch (fn ...))` of a `-add-method` the program does
     /// not replace, an inert dispatch value that is plain data (adding it
     /// hashes and compares it without running program code) and a `fn`
-    /// literal, when `g` is a global that the caller checks an earlier inert
-    /// definition is the only one of: the multimethod `defmulti` builds,
-    /// whose fresh tables nothing else holds.
+    /// literal, when `g` is a global whose only definition the caller checks
+    /// is an earlier inert `defmulti` ([`builds_multimethod`]).
     fn method(&mut self, id: ExprId, position: usize) -> Option<GlobalId> {
         let program = self.program;
         let ExprKind::Call { callee, args } = &program.exprs[id.0].kind else {
@@ -2134,7 +2153,29 @@ mod tests {
             removed("(defmulti m (fn [x] x)) (defmethod m [(fn [] 1)] [x] 1) 42"),
             [0, 0]
         );
-        // Only the sole, earlier, inert definition of the global qualifies.
+        // Only the sole, earlier, inert `defmulti` of the global qualifies:
+        // adding to any other value may run code or throw.
+        assert_eq!(
+            removed(
+                "(deftype T [] IMultiFn (-add-method [this k f] (js/console.log 1) this)) \
+                 (def g (T.)) (-add-method g :a (fn [] 1)) 42"
+            ),
+            [0, 0]
+        );
+        for target in ["(def g (atom nil))", "(def g (fn [] 1))", "(declare g)"] {
+            assert_eq!(
+                removed(&format!("{target} (defmethod g :a [x] 1) 42")),
+                [0, 0],
+                "{target}"
+            );
+        }
+        // Exports, `var` and reads inside kept functions keep the methods.
+        assert_eq!(removed(&format!("{multi} (var m)")), [0, 0]);
+        assert_eq!(
+            removed(&format!("{multi} (defn f [] (m :a)) (js/console.log (f))")),
+            // Only `f`, inlined into its one call, is removed.
+            [0, 1]
+        );
         assert_eq!(
             removed("(declare m) (defmethod m :a [x] 1) (defmulti m (fn [x] x)) 42"),
             [0, 0]

@@ -3471,9 +3471,10 @@ under `js*` below.
   properties stay effectful (a function's own `name` or `length` throws).
   Since light-cljs-1165 a top-level `defmethod`, `(-add-method g dispatch
   (fn ...))`, whose dispatch value is inert plain data, on a global `g` whose
-  only definition is an earlier inert one (a `defmulti`), is a root only once
-  something else reads `g` (`Inert::method`): adding a method changes only
-  the fresh tables of that multimethod, so a multimethod nothing dispatches
+  only definition is an earlier inert `defmulti` (`builds_multimethod`: any
+  other value, such as a program type implementing `IMultiFn`, may run code
+  or throw), is a root only once something else reads `g` (`Inert::method`): adding a method changes only
+  the fresh tables of that multimethod, so a multimethod nothing else reads
   is removed with its methods and what only they read. A replaced
   `-add-method` or a second definition of `g` keeps the methods roots. A
   program that requires `cljs.test` and runs no test so loses its `report`
