@@ -153,6 +153,7 @@ mod ns_name;
 mod object_equiv;
 mod optimization;
 mod original_eval_source_probe;
+mod out_var;
 mod parallel_diagnostics;
 mod parallel_top_level;
 mod positional_constructors;

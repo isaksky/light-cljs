@@ -3218,9 +3218,13 @@ rules.
 
 Core printing supports `*print-length*`, `*print-level*`, `*print-meta*`,
 `*print-readably*`, configurable output/error sinks and nested capture through
-`with-out-str`. Public `pr-str*`, `StringBufferWriter`, and `->StringBufferWriter`
-execute in applications and macro computations; `pr-str*` calls the printing
-protocol with nil options.
+`with-out-str`. The dynamic Var `*out*` has a `nil` root value in applications
+and macro computations, is rebindable with `binding` and assignable with `set!`,
+and is reachable as `(var *out*)`; core `print`, `println`, `pr`, `prn`, and
+`with-out-str` ignore `*out*` and continue to go through `*print-fn*`, matching
+upstream ClojureScript. Public `pr-str*`, `StringBufferWriter`, and
+`->StringBufferWriter` execute in applications and macro computations;
+`pr-str*` calls the printing protocol with nil options.
 
 ## Compiler warnings
 

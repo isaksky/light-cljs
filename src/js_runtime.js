@@ -17236,6 +17236,10 @@
   coreCells.execTapFn = defaultTapSchedule;
   //@unit coreCells.rand effect: coreCells when: randomSample requires: coreCells, hostRand
   coreCells.rand = hostRand;
+  //@unit out
+  // Dynamic Var `cljs.core/*out*`, kept out of `coreCells` so programs that never
+  // name `*out*` pay zero bytes at `advanced` (light-cljs-1167).
+  const out = null;
   //@unit removeAllMethods effect requires: coreMethod, multiFnValue, resetMulti
   // Core operations without a function of their own, one unit each.
   const removeAllMethods = coreMethod("IMultiFn/-reset", [1], resetMulti, multiFnValue);
@@ -18311,7 +18315,7 @@
   //@ multiply, munge, mungeStr, name, nameProtocol, Namespace, namespace, NamespaceFactory,
   //@ namespaceProtocol, NeverEquiv, newline, next, nextProtocol, nfirst, nnext, NodeSeqType, not,
   //@ notAny, notEmpty, notEqual, notEvery, notifyWatches, nsName, nth, nthnext, nthProtocol,
-  //@ nthrest, numericEqual, objectArray, ObjMap, ObjMapIterator, parents, parseBoolean,
+  //@ nthrest, numericEqual, objectArray, ObjMap, ObjMapIterator, out, parents, parseBoolean,
   //@ parseDouble, parseLong, parseUuid, partial, partition, partitionAll, partitionBy, partitionV,
   //@ partitionVAll, peek, peekProtocol, PersistentArrayMapSeqType, PersistentArrayMapValue,
   //@ persistentBang, persistentBangProtocol, PersistentHashMapValue, PersistentHashSetValue,
@@ -18430,7 +18434,7 @@
     isUuid, isInst, printCore, someVals, requiredGet, minKey, maxKey, reductions, replace, distinct,
     isDistinct, sort, sortBy, someFn, everyPred, memoize, parseLong, parseDouble, parseUuid,
     parseBoolean, isJsSymbol, isSpecialSymbol, groupBy, frequencies, trampoline, comparator,
-    updateVals, updateKeys, setPrintFn, setPrintErrFn, stringPrint, enableConsolePrint,
+    updateVals, updateKeys, out, setPrintFn, setPrintErrFn, stringPrint, enableConsolePrint,
     prStrWithOpts, prnStrWithOpts, prSequentialWriter, prSeqWriter, prWriterFn, printMetaQ, printForHost,
     println, prn, pr, newline, prnStr, printStr, printlnStr, TaggedLiteral, taggedLiteral,
     isTaggedLiteral, splitVAt, partitionV, partitionVAll, jsIterable, iteration, cljToJs, jsToClj,

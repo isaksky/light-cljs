@@ -3191,3 +3191,28 @@ console.log('transient vector edit tokens stay hidden, preserve constructor tail
   assert.equal(saved({}), 'tx-default');
   console.log('saved_protocol_method_follows_declaration_replay');
 }
+{
+  // cljs.core/*out* root cell starts nil, is writable, and does not affect *print-fn*.
+  assert.equal(c.out, null);
+  assert.equal(Object.hasOwn(c, 'out'), true);
+  const printed = [];
+  const savedPrint = c.printFn;
+  const savedOut = c.out;
+  const buf = {text: '', append(s) { this.text += s; return this; }};
+  const writer = c.StringBufferWriter(buf);
+  try {
+    c.printFn = s => printed.push(s);
+    c.out = writer;
+    assert.equal(c.out, writer);
+    c.write(c.out, 'x');
+    assert.equal(buf.text, 'x');
+    c.printCore('y');
+    assert.deepEqual(printed, ['y']);
+    assert.equal(buf.text, 'x');
+  } finally {
+    c.out = savedOut;
+    c.printFn = savedPrint;
+  }
+  assert.equal(c.out, null);
+  console.log('core_out_cell_root_and_independence');
+}

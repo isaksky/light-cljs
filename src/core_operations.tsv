@@ -42,6 +42,7 @@ ReplThree	*3	any	-	any	any	effect	invoke	coreCells
 ReplError	*e	any	-	any	any	effect	invoke	coreCells
 SourceFile	*file*	any	-	any	any	effect	invoke	coreCells
 ReaderCurrentInputValue	*in*	any	-	any	any	effect	invoke	coreCells
+Out	*out*	any	-	any	any	effect	invoke	out
 PrintFn	*print-fn*	any	-	any	any	effect	invoke	coreCells
 UncheckedArrays	*unchecked-arrays*	any	-	any	any	effect	invoke	coreCells
 PrintNewline	*print-newline*	any	-	any	any	effect	invoke	coreCells
