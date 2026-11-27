@@ -2187,7 +2187,7 @@ pub const NAMESPACE_FIXTURES: &[NamespaceFixture] = &[
              nil",
         )],
         ceilings: [1_394_000, 1_394_000, 257_000],
-        removed: [0, 0, 112],
+        removed: [0, 0, 111],
         printed: "Bob is third: 10, 20, 30\n\nnull\n",
     },
 ];

@@ -32,6 +32,10 @@
 ;;;   cl-format / code-dispatch tables and formatters initialize on first use
 ;;;   so advanced builds that only pretty-print data drop cl-format and
 ;;;   code-dispatch.
+;;; - pretty-writer uses the existing get-field and set-field functions directly
+;;;   instead of the private getf and setf macros, and get-directive-table is
+;;;   written directly with directive-entry instead of the defdirectives macro
+;;;   to avoid macro-host expansion overhead at compile time.
 
 (ns cljs.pprint
   (:refer-clojure :exclude [print println pr prn float?])
@@ -171,24 +175,6 @@
          (if (or (not cljs.core/*print-length*) (< @~count-var cljs.core/*print-length*))
            (do (cljs.core/vswap! ~count-var cljs.core/inc) ~@body)
            (cljs.core/-write cljs.core/*out* "..."))))))
-
-(defn- process-directive-table-element [[char params flags bracket-info & generator-fn]]
-  [char,
-   {:directive char,
-    :params `(array-map ~@params),
-    :flags flags,
-    :bracket-info bracket-info,
-    :generator-fn (concat '(fn [params offset]) generator-fn)}])
-
-(defmacro ^{:private true}
-  defdirectives
-  [& directives]
-  `(do
-     (def ^{:private true} ~'directive-table-cache nil)
-     (defn- ~'get-directive-table []
-       (or ~'directive-table-cache
-           (set! ~'directive-table-cache
-                 (hash-map ~@(mapcat process-directive-table-element directives)))))))
 
 (defmacro formatter
   "Makes a function which can directly run format-in. The function is
@@ -480,18 +466,18 @@ beginning of aseq"
 (defmulti ^{:private true} write-token #(:type-tag %2))
 
 (defmethod write-token :start-block-t [this token]
-  (when-let [cb (getf :logical-block-callback)] (cb :start))
+  (when-let [cb (get-field this :logical-block-callback)] (cb :start))
   (let [lb (:logical-block token)]
     (when-let [prefix (:prefix lb)]
-      (-write (getf :base) prefix))
-    (let [col (get-column (getf :base))]
+      (-write (get-field this :base) prefix))
+    (let [col (get-column (get-field this :base))]
       (reset! (:start-col lb) col)
       (reset! (:indent lb) col))))
 
 (defmethod write-token :end-block-t [this token]
-  (when-let [cb (getf :logical-block-callback)] (cb :end))
+  (when-let [cb (get-field this :logical-block-callback)] (cb :end))
   (when-let [suffix (:suffix (:logical-block token))]
-    (-write (getf :base) suffix)))
+    (-write (get-field this :base) suffix)))
 
 (defmethod write-token :indent-t [this token]
   (let [lb (:logical-block token)]
@@ -499,31 +485,31 @@ beginning of aseq"
             (+ (:offset token)
                (condp = (:relative-to token)
                  :block @(:start-col lb)
-                 :current (get-column (getf :base)))))))
+                 :current (get-column (get-field this :base)))))))
 
 (defmethod write-token :buffer-blob [this token]
-  (-write (getf :base) (:data token)))
+  (-write (get-field this :base) (:data token)))
 
 (defmethod write-token :nl-t [this token]
   (if (or (= (:type token) :mandatory)
           (and (not (= (:type token) :fill))
                @(:done-nl (:logical-block token))))
     (emit-nl this token)
-    (if-let [tws (getf :trailing-white-space)]
-      (-write (getf :base) tws)))
-  (setf :trailing-white-space nil))
+    (if-let [tws (get-field this :trailing-white-space)]
+      (-write (get-field this :base) tws)))
+  (set-field this :trailing-white-space nil))
 
 (defn- write-tokens [this tokens force-trailing-whitespace]
   (doseq [token tokens]
     (if-not (= (:type-tag token) :nl-t)
-      (if-let [tws (getf :trailing-white-space)]
-        (-write (getf :base) tws)))
+      (if-let [tws (get-field this :trailing-white-space)]
+        (-write (get-field this :base) tws)))
     (write-token this token)
-    (setf :trailing-white-space (:trailing-white-space token))
-    (let [tws (getf :trailing-white-space)]
+    (set-field this :trailing-white-space (:trailing-white-space token))
+    (let [tws (get-field this :trailing-white-space)]
       (when (and force-trailing-whitespace tws)
-        (-write (getf :base) tws)
-        (setf :trailing-white-space nil)))))
+        (-write (get-field this :base) tws)
+        (set-field this :trailing-white-space nil)))))
 
 ;;======================================================================
 ;; emit-nl? method defs for each type of new line. This makes
@@ -531,10 +517,10 @@ beginning of aseq"
 ;;======================================================================
 
 (defn- tokens-fit? [this tokens]
-  (let [maxcol (get-max-column (getf :base))]
+  (let [maxcol (get-max-column (get-field this :base))]
     (or
       (nil? maxcol)
-      (< (+ (get-column (getf :base)) (buffer-length tokens)) maxcol))))
+      (< (+ (get-column (get-field this :base)) (buffer-length tokens)) maxcol))))
 
 (defn- linear-nl? [this lb section]
   (or @(:done-nl lb)
@@ -542,7 +528,7 @@ beginning of aseq"
 
 (defn- miser-nl? [this lb section]
   (let [miser-width (get-miser-width this)
-        maxcol (get-max-column (getf :base))]
+        maxcol (get-max-column (get-field this :base))]
     (and miser-width maxcol
          (>= @(:start-col lb) (- maxcol miser-width))
          (linear-nl? this lb section))))
@@ -595,14 +581,14 @@ beginning of aseq"
           (recur (:parent lb))))))
 
 (defn- emit-nl [this nl]
-  (-write (getf :base) (pp-newline))
-  (setf :trailing-white-space nil)
+  (-write (get-field this :base) (pp-newline))
+  (set-field this :trailing-white-space nil)
   (let [lb (:logical-block nl)
         prefix (:per-line-prefix lb)]
     (if prefix
-      (-write (getf :base) prefix))
+      (-write (get-field this :base) prefix))
     (let [istr (apply str (repeat (- @(:indent lb) (count prefix)) \space))]
-      (-write (getf :base) istr))
+      (-write (get-field this :base) istr))
     (update-nl-state lb)))
 
 (defn- split-at-newline [tokens]
@@ -636,8 +622,8 @@ beginning of aseq"
           result)))))
 
 (defn- write-line [this]
-  (loop [buffer (getf :buffer)]
-    (setf :buffer (into [] buffer))
+  (loop [buffer (get-field this :buffer)]
+    (set-field this :buffer (into [] buffer))
     (if (not (tokens-fit? this buffer))
       (let [new-buffer (write-token-string this buffer)]
         (if-not (identical? buffer new-buffer)
@@ -646,22 +632,22 @@ beginning of aseq"
 ;; Add a buffer token to the buffer and see if it's time to start
 ;; writing
 (defn- add-to-buffer [this token]
-  (setf :buffer (conj (getf :buffer) token))
-  (if (not (tokens-fit? this (getf :buffer)))
+  (set-field this :buffer (conj (get-field this :buffer) token))
+  (if (not (tokens-fit? this (get-field this :buffer)))
     (write-line this)))
 
 ;; Write all the tokens that have been buffered
 (defn- write-buffered-output [this]
   (write-line this)
-  (if-let [buf (getf :buffer)]
+  (if-let [buf (get-field this :buffer)]
     (do
       (write-tokens this buf true)
-      (setf :buffer []))))
+      (set-field this :buffer []))))
 
 (defn- write-white-space [this]
-  (when-let [tws (getf :trailing-white-space)]
-    (-write (getf :base) tws)
-    (setf :trailing-white-space nil)))
+  (when-let [tws (get-field this :trailing-white-space)]
+    (-write (get-field this :base) tws)
+    (set-field this :trailing-white-space nil)))
 
 ;;; If there are newlines in the string, print the lines up until the last newline,
 ;;; making the appropriate adjustments. Return the remainder of the string
@@ -670,36 +656,36 @@ beginning of aseq"
   (let [lines (string/split s "\n" -1)]
     (if (= (count lines) 1)
       s
-      (let [^String prefix (:per-line-prefix (first (getf :logical-blocks)))
+      (let [^String prefix (:per-line-prefix (first (get-field this :logical-blocks)))
             ^String l (first lines)]
-        (if (= :buffering (getf :mode))
-          (let [oldpos (getf :pos)
+        (if (= :buffering (get-field this :mode))
+          (let [oldpos (get-field this :pos)
                 newpos (+ oldpos (count l))]
-            (setf :pos newpos)
+            (set-field this :pos newpos)
             (add-to-buffer this (make-buffer-blob l nil oldpos newpos))
             (write-buffered-output this))
           (do
             (write-white-space this)
-            (-write (getf :base) l)))
-        (-write (getf :base) \newline)
+            (-write (get-field this :base) l)))
+        (-write (get-field this :base) \newline)
         (doseq [^String l (next (butlast lines))]
-          (-write (getf :base) l)
-          (-write (getf :base) (pp-newline))
+          (-write (get-field this :base) l)
+          (-write (get-field this :base) (pp-newline))
           (if prefix
-            (-write (getf :base) prefix)))
-        (setf :buffering :writing)
+            (-write (get-field this :base) prefix)))
+        (set-field this :buffering :writing)
         (last lines)))))
 
 (defn- p-write-char [this c]
-  (if (= (getf :mode) :writing)
+  (if (= (get-field this :mode) :writing)
     (do
       (write-white-space this)
-      (-write (getf :base) c))
+      (-write (get-field this :base) c))
     (if (= c \newline)
       (write-initial-lines this \newline)
-      (let [oldpos (getf :pos)
+      (let [oldpos (get-field this :pos)
             newpos (inc oldpos)]
-        (setf :pos newpos)
+        (set-field this :pos newpos)
         (add-to-buffer this (make-buffer-blob (char c) nil oldpos newpos))))))
 
 ;;======================================================================
@@ -733,28 +719,28 @@ beginning of aseq"
           (let [s0 (write-initial-lines this x)
                 s (string/replace-first s0 #"\s+$" "")
                 white-space (subs s0 (count s))
-                mode (getf :mode)]
+                mode (get-field this :mode)]
             (if (= mode :writing)
               (do
                 (write-white-space this)
-                (-write (getf :base) s)
-                (setf :trailing-white-space white-space))
-              (let [oldpos (getf :pos)
+                (-write (get-field this :base) s)
+                (set-field this :trailing-white-space white-space))
+              (let [oldpos (get-field this :pos)
                     newpos (+ oldpos (count s0))]
-                (setf :pos newpos)
+                (set-field this :pos newpos)
                 (add-to-buffer this (make-buffer-blob s white-space oldpos newpos)))))
           js/Number
           (p-write-char this x)))
       (-flush [this]
         (-ppflush this)
-        (-flush (getf :base)))
+        (-flush (get-field this :base)))
 
       IPrettyFlush
       (-ppflush [this]
-        (if (= (getf :mode) :buffering)
+        (if (= (get-field this :mode) :buffering)
           (do
-            (write-tokens this (getf :buffer) true)
-            (setf :buffer []))
+            (write-tokens this (get-field this :buffer) true)
+            (set-field this :buffer []))
           (write-white-space this)))
 
       )))
@@ -765,58 +751,58 @@ beginning of aseq"
 
 (defn- start-block
   [this prefix per-line-prefix suffix]
-  (let [lb (logical-block. (getf :logical-blocks) nil (atom 0) (atom 0)
+  (let [lb (logical-block. (get-field this :logical-blocks) nil (atom 0) (atom 0)
                            (atom false) (atom false)
                            prefix per-line-prefix suffix nil)]
-    (setf :logical-blocks lb)
-    (if (= (getf :mode) :writing)
+    (set-field this :logical-blocks lb)
+    (if (= (get-field this :mode) :writing)
       (do
         (write-white-space this)
-        (when-let [cb (getf :logical-block-callback)] (cb :start))
+        (when-let [cb (get-field this :logical-block-callback)] (cb :start))
         (if prefix
-          (-write (getf :base) prefix))
-        (let [col (get-column (getf :base))]
+          (-write (get-field this :base) prefix))
+        (let [col (get-column (get-field this :base))]
           (reset! (:start-col lb) col)
           (reset! (:indent lb) col)))
-      (let [oldpos (getf :pos)
+      (let [oldpos (get-field this :pos)
             newpos (+ oldpos (if prefix (count prefix) 0))]
-        (setf :pos newpos)
+        (set-field this :pos newpos)
         (add-to-buffer this (make-start-block-t lb oldpos newpos))))))
 
 (defn- end-block [this]
-  (let [lb (getf :logical-blocks)
+  (let [lb (get-field this :logical-blocks)
         suffix (:suffix lb)]
-    (if (= (getf :mode) :writing)
+    (if (= (get-field this :mode) :writing)
       (do
         (write-white-space this)
         (if suffix
-          (-write (getf :base) suffix))
-        (when-let [cb (getf :logical-block-callback)] (cb :end)))
-      (let [oldpos (getf :pos)
+          (-write (get-field this :base) suffix))
+        (when-let [cb (get-field this :logical-block-callback)] (cb :end)))
+      (let [oldpos (get-field this :pos)
             newpos (+ oldpos (if suffix (count suffix) 0))]
-        (setf :pos newpos)
+        (set-field this :pos newpos)
         (add-to-buffer this (make-end-block-t lb oldpos newpos))))
-    (setf :logical-blocks (:parent lb))))
+    (set-field this :logical-blocks (:parent lb))))
 
 (defn- nl [this type]
-  (setf :mode :buffering)
-  (let [pos (getf :pos)]
-    (add-to-buffer this (make-nl-t type (getf :logical-blocks) pos pos))))
+  (set-field this :mode :buffering)
+  (let [pos (get-field this :pos)]
+    (add-to-buffer this (make-nl-t type (get-field this :logical-blocks) pos pos))))
 
 (defn- indent [this relative-to offset]
-  (let [lb (getf :logical-blocks)]
-    (if (= (getf :mode) :writing)
+  (let [lb (get-field this :logical-blocks)]
+    (if (= (get-field this :mode) :writing)
       (do
         (write-white-space this)
         (reset! (:indent lb)
                 (+ offset (condp = relative-to
                             :block @(:start-col lb)
-                            :current (get-column (getf :base))))))
-      (let [pos (getf :pos)]
+                            :current (get-column (get-field this :base))))))
+      (let [pos (get-field this :pos)]
         (add-to-buffer this (make-indent-t lb relative-to offset pos pos))))))
 
 (defn- get-miser-width [this]
-  (getf :miser-width))
+  (get-field this :miser-width))
 
 ;;======================================================================
 ;; pprint_base.clj
@@ -2391,282 +2377,319 @@ not a pretty writer (which keeps track of columns), this function always outputs
 ;;; properties, and the compilation function
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(defdirectives
-  (\A
-    [:mincol [0 js/Number] :colinc [1 js/Number] :minpad [0 js/Number] :padchar [\space js/String]]
-    #{:at :colon :both} {}
-    #(format-ascii print-str %1 %2 %3))
+(defn- directive-entry [ch params flags bracket-info generator-fn]
+  {:directive ch
+   :params params
+   :flags flags
+   :bracket-info bracket-info
+   :generator-fn generator-fn})
 
-  (\S
-    [:mincol [0 js/Number] :colinc [1 js/Number] :minpad [0 js/Number] :padchar [\space js/String]]
-    #{:at :colon :both} {}
-    #(format-ascii pr-str %1 %2 %3))
+(def ^:private directive-table-cache nil)
 
-  (\D
-    [:mincol [0 js/Number] :padchar [\space js/String] :commachar [\, js/String]
-     :commainterval [3 js/Number]]
-    #{:at :colon :both} {}
-    #(format-integer 10 %1 %2 %3))
+(defn- get-directive-table []
+  (or directive-table-cache
+      (set! directive-table-cache
+            {\A (directive-entry \A
+                   (array-map :mincol [0 js/Number] :colinc [1 js/Number] :minpad [0 js/Number] :padchar [\space js/String])
+                   #{:at :colon :both} {}
+                   (fn [params offset] #(format-ascii print-str %1 %2 %3)))
 
-  (\B
-    [:mincol [0 js/Number] :padchar [\space js/String] :commachar [\, js/String]
-     :commainterval [3 js/Number]]
-    #{:at :colon :both} {}
-    #(format-integer 2 %1 %2 %3))
+              \S (directive-entry \S
+                   (array-map :mincol [0 js/Number] :colinc [1 js/Number] :minpad [0 js/Number] :padchar [\space js/String])
+                   #{:at :colon :both} {}
+                   (fn [params offset] #(format-ascii pr-str %1 %2 %3)))
 
-  (\O
-    [:mincol [0 js/Number] :padchar [\space js/String] :commachar [\, js/String]
-     :commainterval [3 js/Number]]
-    #{:at :colon :both} {}
-    #(format-integer 8 %1 %2 %3))
+              \D (directive-entry \D
+                   (array-map :mincol [0 js/Number] :padchar [\space js/String] :commachar [\, js/String]
+                              :commainterval [3 js/Number])
+                   #{:at :colon :both} {}
+                   (fn [params offset] #(format-integer 10 %1 %2 %3)))
 
-  (\X
-    [:mincol [0 js/Number] :padchar [\space js/String] :commachar [\, js/String]
-     :commainterval [3 js/Number]]
-    #{:at :colon :both} {}
-    #(format-integer 16 %1 %2 %3))
+              \B (directive-entry \B
+                   (array-map :mincol [0 js/Number] :padchar [\space js/String] :commachar [\, js/String]
+                              :commainterval [3 js/Number])
+                   #{:at :colon :both} {}
+                   (fn [params offset] #(format-integer 2 %1 %2 %3)))
 
-  (\R
-    [:base [nil js/Number] :mincol [0 js/Number] :padchar [\space js/String] :commachar [\, js/String]
-     :commainterval [3 js/Number]]
-    #{:at :colon :both} {}
-    (do
-      (cond                          ; ~R is overloaded with bizareness
-        (first (:base params))     #(format-integer (:base %1) %1 %2 %3)
-        (and (:at params) (:colon params))   #(format-old-roman %1 %2 %3)
-        (:at params)               #(format-new-roman %1 %2 %3)
-        (:colon params)            #(format-ordinal-english %1 %2 %3)
-        true                       #(format-cardinal-english %1 %2 %3))))
+              \O (directive-entry \O
+                   (array-map :mincol [0 js/Number] :padchar [\space js/String] :commachar [\, js/String]
+                              :commainterval [3 js/Number])
+                   #{:at :colon :both} {}
+                   (fn [params offset] #(format-integer 8 %1 %2 %3)))
 
-  (\P
-    []
-    #{:at :colon :both} {}
-    (fn [params navigator offsets]
-      (let [navigator (if (:colon params) (relative-reposition navigator -1) navigator)
-            strs (if (:at params) ["y" "ies"] ["" "s"])
-            [arg navigator] (next-arg navigator)]
-        (print (if (= arg 1) (first strs) (second strs)))
-        navigator)))
+              \X (directive-entry \X
+                   (array-map :mincol [0 js/Number] :padchar [\space js/String] :commachar [\, js/String]
+                              :commainterval [3 js/Number])
+                   #{:at :colon :both} {}
+                   (fn [params offset] #(format-integer 16 %1 %2 %3)))
 
-  (\C
-    [:char-format [nil js/String]]
-    #{:at :colon :both} {}
-    (cond
-      (:colon params) pretty-character
-      (:at params) readable-character
-      :else plain-character))
+              \R (directive-entry \R
+                   (array-map :base [nil js/Number] :mincol [0 js/Number] :padchar [\space js/String] :commachar [\, js/String]
+                              :commainterval [3 js/Number])
+                   #{:at :colon :both} {}
+                   (fn [params offset]
+                     (cond                          ; ~R is overloaded with bizareness
+                       (first (:base params))     #(format-integer (:base %1) %1 %2 %3)
+                       (and (:at params) (:colon params))   #(format-old-roman %1 %2 %3)
+                       (:at params)               #(format-new-roman %1 %2 %3)
+                       (:colon params)            #(format-ordinal-english %1 %2 %3)
+                       true                       #(format-cardinal-english %1 %2 %3))))
 
-  (\F
-    [:w [nil js/Number] :d [nil js/Number] :k [0 js/Number] :overflowchar [nil js/String]
-     :padchar [\space js/String]]
-    #{:at} {}
-    fixed-float)
+              \P (directive-entry \P
+                   (array-map)
+                   #{:at :colon :both} {}
+                   (fn [params offset]
+                     (fn [params navigator offsets]
+                       (let [navigator (if (:colon params) (relative-reposition navigator -1) navigator)
+                             strs (if (:at params) ["y" "ies"] ["" "s"])
+                             [arg navigator] (next-arg navigator)]
+                         (print (if (= arg 1) (first strs) (second strs)))
+                         navigator))))
 
-  (\E
-    [:w [nil js/Number] :d [nil js/Number] :e [nil js/Number] :k [1 js/Number]
-     :overflowchar [nil js/String] :padchar [\space js/String]
-     :exponentchar [nil js/String]]
-    #{:at} {}
-    exponential-float)
+              \C (directive-entry \C
+                   (array-map :char-format [nil js/String])
+                   #{:at :colon :both} {}
+                   (fn [params offset]
+                     (cond
+                       (:colon params) pretty-character
+                       (:at params) readable-character
+                       :else plain-character)))
 
-  (\G
-    [:w [nil js/Number] :d [nil js/Number] :e [nil js/Number] :k [1 js/Number]
-     :overflowchar [nil js/String] :padchar [\space js/String]
-     :exponentchar [nil js/String]]
-    #{:at} {}
-    general-float)
+              \F (directive-entry \F
+                   (array-map :w [nil js/Number] :d [nil js/Number] :k [0 js/Number] :overflowchar [nil js/String]
+                              :padchar [\space js/String])
+                   #{:at} {}
+                   (fn [params offset] fixed-float))
 
-  (\$
-    [:d [2 js/Number] :n [1 js/Number] :w [0 js/Number] :padchar [\space js/String]]
-    #{:at :colon :both} {}
-    dollar-float)
+              \E (directive-entry \E
+                   (array-map :w [nil js/Number] :d [nil js/Number] :e [nil js/Number] :k [1 js/Number]
+                              :overflowchar [nil js/String] :padchar [\space js/String]
+                              :exponentchar [nil js/String])
+                   #{:at} {}
+                   (fn [params offset] exponential-float))
 
-  (\%
-    [:count [1 js/Number]]
-    #{} {}
-    (fn [params arg-navigator offsets]
-      (dotimes [i (:count params)]
-        (prn))
-      arg-navigator))
+              \G (directive-entry \G
+                   (array-map :w [nil js/Number] :d [nil js/Number] :e [nil js/Number] :k [1 js/Number]
+                              :overflowchar [nil js/String] :padchar [\space js/String]
+                              :exponentchar [nil js/String])
+                   #{:at} {}
+                   (fn [params offset] general-float))
 
-  (\&
-    [:count [1 js/Number]]
-    #{:pretty} {}
-    (fn [params arg-navigator offsets]
-      (let [cnt (:count params)]
-        (if (pos? cnt) (fresh-line))
-        (dotimes [i (dec cnt)]
-          (prn)))
-      arg-navigator))
+              \$ (directive-entry \$
+                   (array-map :d [2 js/Number] :n [1 js/Number] :w [0 js/Number] :padchar [\space js/String])
+                   #{:at :colon :both} {}
+                   (fn [params offset] dollar-float))
 
-  (\|
-    [:count [1 js/Number]]
-    #{} {}
-    (fn [params arg-navigator offsets]
-      (dotimes [i (:count params)]
-        (print \formfeed))
-      arg-navigator))
+              \% (directive-entry \%
+                   (array-map :count [1 js/Number])
+                   #{} {}
+                   (fn [params offset]
+                     (fn [params arg-navigator offsets]
+                       (let [n (:count params)]
+                         (loop [i 0]
+                           (when (< i n)
+                             (prn)
+                             (recur (inc i)))))
+                       arg-navigator)))
 
-  (\~
-    [:n [1 js/Number]]
-    #{} {}
-    (fn [params arg-navigator offsets]
-      (let [n (:n params)]
-        (print (apply str (repeat n \~)))
-        arg-navigator)))
+              \& (directive-entry \&
+                   (array-map :count [1 js/Number])
+                   #{:pretty} {}
+                   (fn [params offset]
+                     (fn [params arg-navigator offsets]
+                       (let [cnt (:count params)]
+                         (if (pos? cnt) (fresh-line))
+                         (let [n (dec cnt)]
+                           (loop [i 0]
+                             (when (< i n)
+                               (prn)
+                               (recur (inc i))))))
+                       arg-navigator)))
 
-  (\newline ;; Whitespace supression is handled in the compilation loop
-    []
-    #{:colon :at} {}
-    (fn [params arg-navigator offsets]
-      (if (:at params)
-        (prn))
-      arg-navigator))
+              \| (directive-entry \|
+                   (array-map :count [1 js/Number])
+                   #{} {}
+                   (fn [params offset]
+                     (fn [params arg-navigator offsets]
+                       (let [n (:count params)]
+                         (loop [i 0]
+                           (when (< i n)
+                             (print \formfeed)
+                             (recur (inc i)))))
+                       arg-navigator)))
 
-  (\T
-    [:colnum [1 js/Number] :colinc [1 js/Number]]
-    #{:at :pretty} {}
-    (if (:at params)
-      #(relative-tabulation %1 %2 %3)
-      #(absolute-tabulation %1 %2 %3)))
+              \~ (directive-entry \~
+                   (array-map :n [1 js/Number])
+                   #{} {}
+                   (fn [params offset]
+                     (fn [params arg-navigator offsets]
+                       (let [n (:n params)]
+                         (print (apply str (repeat n \~)))
+                         arg-navigator))))
 
-  (\*
-    [:n [1 js/Number]]
-    #{:colon :at} {}
-    (fn [params navigator offsets]
-      (let [n (:n params)]
-        (if (:at params)
-          (absolute-reposition navigator n)
-          (relative-reposition navigator (if (:colon params) (- n) n))))))
+              \newline (directive-entry \newline ;; Whitespace supression is handled in the compilation loop
+                         (array-map)
+                         #{:colon :at} {}
+                         (fn [params offset]
+                           (fn [params arg-navigator offsets]
+                             (if (:at params)
+                               (prn))
+                             arg-navigator)))
 
-  (\?
-    []
-    #{:at} {}
-    (if (:at params)
-      (fn [params navigator offsets]     ; args from main arg list
-        (let [[subformat navigator] (get-format-arg navigator)]
-          (execute-sub-format subformat navigator (:base-args params))))
-      (fn [params navigator offsets]     ; args from sub-list
-        (let [[subformat navigator] (get-format-arg navigator)
-              [subargs navigator] (next-arg navigator)
-              sub-navigator (init-navigator subargs)]
-          (execute-sub-format subformat sub-navigator (:base-args params))
-          navigator))))
+              \T (directive-entry \T
+                   (array-map :colnum [1 js/Number] :colinc [1 js/Number])
+                   #{:at :pretty} {}
+                   (fn [params offset]
+                     (if (:at params)
+                       #(relative-tabulation %1 %2 %3)
+                       #(absolute-tabulation %1 %2 %3))))
 
-  (\(
-    []
-    #{:colon :at :both} {:right \), :allows-separator nil, :else nil}
-    (let [mod-case-writer (cond
-                            (and (:at params) (:colon params))
-                            upcase-writer
+              \* (directive-entry \*
+                   (array-map :n [1 js/Number])
+                   #{:colon :at} {}
+                   (fn [params offset]
+                     (fn [params navigator offsets]
+                       (let [n (:n params)]
+                         (if (:at params)
+                           (absolute-reposition navigator n)
+                           (relative-reposition navigator (if (:colon params) (- n) n)))))))
 
-                            (:colon params)
-                            capitalize-word-writer
+              \? (directive-entry \?
+                   (array-map)
+                   #{:at} {}
+                   (fn [params offset]
+                     (if (:at params)
+                       (fn [params navigator offsets]     ; args from main arg list
+                         (let [[subformat navigator] (get-format-arg navigator)]
+                           (execute-sub-format subformat navigator (:base-args params))))
+                       (fn [params navigator offsets]     ; args from sub-list
+                         (let [[subformat navigator] (get-format-arg navigator)
+                               [subargs navigator] (next-arg navigator)
+                               sub-navigator (init-navigator subargs)]
+                           (execute-sub-format subformat sub-navigator (:base-args params))
+                           navigator)))))
 
-                            (:at params)
-                            init-cap-writer
+              \( (directive-entry \(
+                   (array-map)
+                   #{:colon :at :both} {:right \), :allows-separator nil, :else nil}
+                   (fn [params offset]
+                     (let [mod-case-writer (cond
+                                             (and (:at params) (:colon params))
+                                             upcase-writer
 
-                            :else
-                            downcase-writer)]
-      #(modify-case mod-case-writer %1 %2 %3)))
+                                             (:colon params)
+                                             capitalize-word-writer
 
-  (\) [] #{} {} nil)
+                                             (:at params)
+                                             init-cap-writer
 
-  (\[
-    [:selector [nil js/Number]]
-    #{:colon :at} {:right \], :allows-separator true, :else :last}
-    (cond
-      (:colon params)
-      boolean-conditional
+                                             :else
+                                             downcase-writer)]
+                       #(modify-case mod-case-writer %1 %2 %3))))
 
-      (:at params)
-      check-arg-conditional
+              \) (directive-entry \) (array-map) #{} {} (fn [params offset] nil))
 
-      true
-      choice-conditional))
+              \[ (directive-entry \[
+                   (array-map :selector [nil js/Number])
+                   #{:colon :at} {:right \], :allows-separator true, :else :last}
+                   (fn [params offset]
+                     (cond
+                       (:colon params)
+                       boolean-conditional
 
-  (\; [:min-remaining [nil js/Number] :max-columns [nil js/Number]]
-    #{:colon} {:separator true} nil)
+                       (:at params)
+                       check-arg-conditional
 
-  (\] [] #{} {} nil)
+                       true
+                       choice-conditional)))
 
-  (\{
-    [:max-iterations [nil js/Number]]
-    #{:colon :at :both} {:right \}, :allows-separator false}
-    (cond
-      (and (:at params) (:colon params))
-      iterate-main-sublists
+              \; (directive-entry \;
+                   (array-map :min-remaining [nil js/Number] :max-columns [nil js/Number])
+                   #{:colon} {:separator true}
+                   (fn [params offset] nil))
 
-      (:colon params)
-      iterate-list-of-sublists
+              \] (directive-entry \] (array-map) #{} {} (fn [params offset] nil))
 
-      (:at params)
-      iterate-main-list
+              \{ (directive-entry \{
+                   (array-map :max-iterations [nil js/Number])
+                   #{:colon :at :both} {:right \}, :allows-separator false}
+                   (fn [params offset]
+                     (cond
+                       (and (:at params) (:colon params))
+                       iterate-main-sublists
 
-      true
-      iterate-sublist))
+                       (:colon params)
+                       iterate-list-of-sublists
 
-  (\} [] #{:colon} {} nil)
+                       (:at params)
+                       iterate-main-list
 
-  (\<
-    [:mincol [0 js/Number] :colinc [1 js/Number] :minpad [0 js/Number] :padchar [\space js/String]]
-    #{:colon :at :both :pretty} {:right \>, :allows-separator true, :else :first}
-    logical-block-or-justify)
+                       true
+                       iterate-sublist)))
 
-  (\> [] #{:colon} {} nil)
+              \} (directive-entry \} (array-map) #{:colon} {} (fn [params offset] nil))
 
-  ;; TODO: detect errors in cases where colon not allowed
-  (\^ [:arg1 [nil js/Number] :arg2 [nil js/Number] :arg3 [nil js/Number]]
-    #{:colon} {}
-    (fn [params navigator offsets]
-      (let [arg1 (:arg1 params)
-            arg2 (:arg2 params)
-            arg3 (:arg3 params)
-            exit (if (:colon params) :colon-up-arrow :up-arrow)]
-        (cond
-          (and arg1 arg2 arg3)
-          (if (<= arg1 arg2 arg3) [exit navigator] navigator)
+              \< (directive-entry \<
+                   (array-map :mincol [0 js/Number] :colinc [1 js/Number] :minpad [0 js/Number] :padchar [\space js/String])
+                   #{:colon :at :both :pretty} {:right \>, :allows-separator true, :else :first}
+                   (fn [params offset] logical-block-or-justify))
 
-          (and arg1 arg2)
-          (if (= arg1 arg2) [exit navigator] navigator)
+              \> (directive-entry \> (array-map) #{:colon} {} (fn [params offset] nil))
 
-          arg1
-          (if (= arg1 0) [exit navigator] navigator)
+              ;; TODO: detect errors in cases where colon not allowed
+              \^ (directive-entry \^
+                   (array-map :arg1 [nil js/Number] :arg2 [nil js/Number] :arg3 [nil js/Number])
+                   #{:colon} {}
+                   (fn [params offset]
+                     (fn [params navigator offsets]
+                       (let [arg1 (:arg1 params)
+                             arg2 (:arg2 params)
+                             arg3 (:arg3 params)
+                             exit (if (:colon params) :colon-up-arrow :up-arrow)]
+                         (cond
+                           (and arg1 arg2 arg3)
+                           (if (<= arg1 arg2 arg3) [exit navigator] navigator)
 
-          true     ; TODO: handle looking up the arglist stack for info
-          (if (if (:colon params)
-                (empty? (:rest (:base-args params)))
-                (empty? (:rest navigator)))
-            [exit navigator] navigator)))))
+                           (and arg1 arg2)
+                           (if (= arg1 arg2) [exit navigator] navigator)
 
-  (\W
-    []
-    #{:at :colon :both :pretty} {}
-    (if (or (:at params) (:colon params))
-      (let [bindings (concat
-                       (if (:at params) [:level nil :length nil] [])
-                       (if (:colon params) [:pretty true] []))]
-        (fn [params navigator offsets]
-          (let [[arg navigator] (next-arg navigator)]
-            (if (apply write arg bindings)
-              [:up-arrow navigator]
-              navigator))))
-      (fn [params navigator offsets]
-        (let [[arg navigator] (next-arg navigator)]
-          (if (write-out arg)
-            [:up-arrow navigator]
-            navigator)))))
+                           arg1
+                           (if (= arg1 0) [exit navigator] navigator)
 
-  (\_
-    []
-    #{:at :colon :both} {}
-    conditional-newline)
+                           true     ; TODO: handle looking up the arglist stack for info
+                           (if (if (:colon params)
+                                 (empty? (:rest (:base-args params)))
+                                 (empty? (:rest navigator)))
+                             [exit navigator] navigator))))))
 
-  (\I
-    [:n [0 js/Number]]
-    #{:colon} {}
-    set-indent)
-  )
+              \W (directive-entry \W
+                   (array-map)
+                   #{:at :colon :both :pretty} {}
+                   (fn [params offset]
+                     (if (or (:at params) (:colon params))
+                       (let [bindings (concat
+                                        (if (:at params) [:level nil :length nil] [])
+                                        (if (:colon params) [:pretty true] []))]
+                         (fn [params navigator offsets]
+                           (let [[arg navigator] (next-arg navigator)]
+                             (if (apply write arg bindings)
+                               [:up-arrow navigator]
+                               navigator))))
+                       (fn [params navigator offsets]
+                         (let [[arg navigator] (next-arg navigator)]
+                           (if (write-out arg)
+                             [:up-arrow navigator]
+                             navigator))))))
+
+              \_ (directive-entry \_
+                   (array-map)
+                   #{:at :colon :both} {}
+                   (fn [params offset] conditional-newline))
+
+              \I (directive-entry \I
+                   (array-map :n [0 js/Number])
+                   #{:colon} {}
+                   (fn [params offset] set-indent))})))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Code to manage the parameters and flags associated with each
